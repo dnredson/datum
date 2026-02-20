@@ -13,6 +13,8 @@ use super::plugins::{
     docker_windows_cli::DockerWindowsCliPlugin,
     host_telemetry_windows::HostTelemetryWindowsPlugin,
     process_windows_tasklist::ProcessWindowsTasklistPlugin,
+    host_telemetry_linux::HostTelemetryLinuxPlugin,
+    process_linux_ps::ProcessLinuxPsPlugin,
 };
 
 fn get_hostname_fallback() -> Result<String> {
@@ -87,6 +89,8 @@ pub fn run_cycle(
         Box::new(HostTelemetryWindowsPlugin::new()),
         Box::new(ProcessWindowsTasklistPlugin::new()),
         Box::new(ConnectionPingWindowsPlugin::new()),
+        Box::new(HostTelemetryLinuxPlugin::new()),
+        Box::new(ProcessLinuxPsPlugin::new()),
     ];
 
     for p in plugins {

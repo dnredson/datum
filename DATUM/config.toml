@@ -12,10 +12,16 @@ path = "snapshot.json"
 enabled = false
 url = "http://localhost:8080/v1/snapshots"
 
-[collectors.process_windows]
-enabled = true
-mode = "group_by_name"                                                   # novo (default recomendado)
-names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
-max_entries = 50
-include_pids = false                                                     # opcional
+#[collectors.process_windows]
+#enabled = true
+#mode = "group_by_name"                                                   # novo (default recomendado)
+#names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
+#max_entries = 50
+#include_pids = false                                                     # opcional
 
+[collectors.process_linux]
+enabled = true
+mode = "all"
+#mode = "allowlist"
+#names = ["mosquitto", "sshd", "datum"]
+max_entries = 50

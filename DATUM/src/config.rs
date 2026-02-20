@@ -46,7 +46,7 @@ pub struct CollectorsConfig {
     #[serde(default)]
     pub process_windows: Option<ProcessWindowsConfig>,
     pub process_linux: Option<ProcessLinuxConfig>,
-    pub connection_ping_windows: Option<ConnectionPingWindowsConfig>,
+   // pub connection_ping_windows: Option<ConnectionPingWindowsConfig>,
     // pub host_telemetry_windows: Option<HostTelemetryWindowsConfig>,
 }
 #[derive(Debug, Deserialize, Clone, Default)]
