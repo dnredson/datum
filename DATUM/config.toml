@@ -1,0 +1,21 @@
+[agent]
+node_id = "fog-01"
+cycle_s = 5
+schema_version = "0.0.1"
+
+[outputs.file_json]
+enabled = true
+path = "snapshot.json"
+
+# futuro (stub)
+[outputs.http]
+enabled = false
+url = "http://localhost:8080/v1/snapshots"
+
+[collectors.process_windows]
+enabled = true
+mode = "group_by_name"                                                   # novo (default recomendado)
+names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
+max_entries = 50
+include_pids = false                                                     # opcional
+

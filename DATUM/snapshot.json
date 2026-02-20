@@ -1,0 +1,231 @@
+{
+  "meta": {
+    "schema_version": "0.0.1",
+    "agent_version": "0.1.0",
+    "cycle_id": "b07ab9c9-faa0-4f54-ab89-b39aefaccc22",
+    "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+    "node_id": "fog-01",
+    "host_id": "host:DESKTOP-UD4LDKG"
+  },
+  "entities": [
+    {
+      "id": "host:DESKTOP-UD4LDKG",
+      "kind": "host",
+      "attrs": {
+        "hostname": "DESKTOP-UD4LDKG",
+        "node_id": "fog-01",
+        "system": {
+          "arch_bits": 64,
+          "cpu_logical": 12,
+          "cpu_usage_pct": 36,
+          "disks": [
+            {
+              "DeviceID": "C:",
+              "FreeSpace": 41466191872,
+              "Size": 510180454400
+            },
+            {
+              "DeviceID": "D:",
+              "FreeSpace": null,
+              "Size": null
+            },
+            {
+              "DeviceID": "E:",
+              "FreeSpace": 70791168,
+              "Size": 104853504
+            },
+            {
+              "DeviceID": "F:",
+              "FreeSpace": 839720796160,
+              "Size": 1468006395904
+            }
+          ],
+          "mem_free_mb": 10893,
+          "mem_total_mb": 32591,
+          "mem_used_mb": 21698,
+          "os_build": "26200",
+          "os_caption": "Microsoft Windows 11 Pro",
+          "os_version": "10.0.26200"
+        }
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "container:docker:b69e65b824929ab30dcc070f0c62935b99b51460eca0afa648b0178fd14b1f79",
+      "kind": "container",
+      "attrs": {
+        "command": "\"sh -c 'while true; do sleep 60; done'\"",
+        "container_id": "b69e65b824929ab30dcc070f0c62935b99b51460eca0afa648b0178fd14b1f79",
+        "created_at_raw": "2026-02-18 21:09:08 -0300 -03",
+        "host_id": "host:DESKTOP-UD4LDKG",
+        "image": "busybox",
+        "name": "ss-busybox",
+        "runtime": "docker",
+        "state": "running",
+        "status": "Up 43 hours"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:chrome.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 8.98,
+        "cpu_s_delta_total": 5.391,
+        "image_name": "chrome.exe",
+        "instance_count": 46,
+        "interval_s": 5.0,
+        "mem_used_kb_total": 7585208,
+        "os": "windows",
+        "sample_pids": [
+          2660,
+          3084,
+          4076,
+          5836,
+          6460
+        ]
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:datum.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 0.0,
+        "cpu_s_delta_total": 0.0,
+        "image_name": "datum.exe",
+        "instance_count": 1,
+        "interval_s": 5.0,
+        "mem_used_kb_total": 8408,
+        "os": "windows",
+        "sample_pids": [
+          800
+        ]
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:docker_desktop.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 0.0,
+        "cpu_s_delta_total": 0.0,
+        "image_name": "Docker Desktop.exe",
+        "instance_count": 3,
+        "interval_s": 5.0,
+        "mem_used_kb_total": 79348,
+        "os": "windows",
+        "sample_pids": [
+          23296,
+          23576,
+          23812
+        ]
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "connection:host:DESKTOP-UD4LDKG:1_1_1_1",
+      "kind": "connection",
+      "attrs": {
+        "available": true,
+        "from": "host:DESKTOP-UD4LDKG",
+        "loss_pct": 0,
+        "method": "ping",
+        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=56\r\nResposta de 1.1.1.1: bytes=32 tempo=6ms TTL=56\r\nResposta de 1.1.1.1: bytes=32 tempo=6ms TTL=56\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=56\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 6ms, M�ximo = 7ms, M�dia = 6ms",
+        "rtt_avg_ms": 6,
+        "rtt_max_ms": 6,
+        "rtt_min_ms": 7,
+        "samples": 4,
+        "to": "1.1.1.1"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "connection:host:DESKTOP-UD4LDKG:8_8_8_8",
+      "kind": "connection",
+      "attrs": {
+        "available": true,
+        "from": "host:DESKTOP-UD4LDKG",
+        "loss_pct": 0,
+        "method": "ping",
+        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=117\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=117\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=117\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=117\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 6ms, M�dia = 5ms",
+        "rtt_avg_ms": 5,
+        "rtt_max_ms": 5,
+        "rtt_min_ms": 6,
+        "samples": 4,
+        "to": "8.8.8.8"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z",
+      "ttl_s": 60
+    }
+  ],
+  "edges": [
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "container:docker:b69e65b824929ab30dcc070f0c62935b99b51460eca0afa648b0178fd14b1f79",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "docker"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:chrome.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:datum.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:docker_desktop.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "connection:host:DESKTOP-UD4LDKG:1_1_1_1",
+      "rel": "measures",
+      "attrs": {
+        "method": "ping"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "connection:host:DESKTOP-UD4LDKG:8_8_8_8",
+      "rel": "measures",
+      "attrs": {
+        "method": "ping"
+      },
+      "observed_at_utc": "2026-02-20T19:00:03.142720200Z"
+    }
+  ],
+  "events": []
+}
