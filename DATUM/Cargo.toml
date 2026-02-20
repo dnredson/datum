@@ -13,9 +13,4 @@ anyhow = "1.0"
 toml = "0.8"
 once_cell = "1.21.3"
 
-[collectors.process_windows]
-enabled = true
-mode = "allowlist"
-names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
-max_entries = 50
-once_cell = "1"
+
