@@ -31,3 +31,6 @@ enabled = true
 targets = ["1.1.1.1", "8.8.8.8"]
 count = 4
 timeout_s = 1
+
+[collectors.docker]
+enabled = true
