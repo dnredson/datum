@@ -21,7 +21,13 @@ url = "http://localhost:8080/v1/snapshots"
 
 [collectors.process_linux]
 enabled = true
-mode = "all"
-#mode = "allowlist"
-#names = ["mosquitto", "sshd", "datum"]
+#mode = "all"
+mode = "allowlist"
+names = ["mosquitto", "sshd", "datum"]
 max_entries = 50
+
+[collectors.connection_ping]
+enabled = true
+targets = ["1.1.1.1", "8.8.8.8"]
+count = 4
+timeout_s = 1

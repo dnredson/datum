@@ -7,10 +7,8 @@ pub struct Config {
     pub agent: AgentConfig,
     pub outputs: OutputsConfig,
 
-    /// Optional collectors config (Phase 1.1+)
     #[serde(default)]
     pub collectors: Option<CollectorsConfig>,
-    
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -30,39 +28,67 @@ pub struct OutputsConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct HttpConfig {
-    pub enabled: bool,
-    pub url: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct FileJsonConfig {
     pub enabled: bool,
     pub path: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct HttpConfig {
+    pub enabled: bool,
+    pub url: String,
+}
+
+// =========================
+// Collectors
+// =========================
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CollectorsConfig {
     #[serde(default)]
+    pub docker: Option<DockerConfig>,
+
+    #[serde(default)]
     pub process_windows: Option<ProcessWindowsConfig>,
+
+    #[serde(default)]
     pub process_linux: Option<ProcessLinuxConfig>,
-   // pub connection_ping_windows: Option<ConnectionPingWindowsConfig>,
-    // pub host_telemetry_windows: Option<HostTelemetryWindowsConfig>,
+
+    #[serde(default)]
+    pub connection_ping: Option<ConnectionPingConfig>,
 }
+
 #[derive(Debug, Deserialize, Clone, Default)]
- pub struct ProcessLinuxConfig {
-     pub enabled: bool,
-     pub mode: Option<String>, // "allowlist" | "top_mem" | "all" | "group_by_name"
-     pub names: Option<Vec<String>>,
-     pub max_entries: Option<usize>,
- }
+pub struct DockerConfig {
+    pub enabled: bool,
+    pub mode: Option<String>, // "allowlist" | "all" | "top" (futuro)
+    pub names: Option<Vec<String>>,  // nomes de containers (ex: ["teste-monitoramento"])
+    pub images: Option<Vec<String>>, // imagens (ex: ["busybox", "nginx:latest"])
+    pub max_entries: Option<usize>,  // limita quantidade retornada (após filtro)
+}
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ProcessWindowsConfig {
     pub enabled: bool,
-    pub mode: Option<String>, // "allowlist" | "top_mem" | "all"
-    pub names: Option<Vec<String>>,
+    pub mode: Option<String>,      // "allowlist" | "top_mem" | "all" | "group_by_name"
+    pub names: Option<Vec<String>>, // em Windows costuma ser "chrome.exe"
     pub max_entries: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ProcessLinuxConfig {
+    pub enabled: bool,
+    pub mode: Option<String>,      // "allowlist" | "top_mem" | "all" | "group_by_name"
+    pub names: Option<Vec<String>>, // em Linux: "sshd", "mosquitto"
+    pub max_entries: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ConnectionPingConfig {
+    pub enabled: bool,
+    pub targets: Option<Vec<String>>,
+    pub count: Option<u32>,
+    pub timeout_s: Option<u32>,
 }
 
 pub fn load_config(path: &str) -> Result<Config> {

@@ -49,7 +49,7 @@ $mem_used_mb  = $mem_total_mb - $mem_free_mb;
   cpu_logical = $cpu.NumberOfLogicalProcessors
   cpu_usage_pct = $perf.PercentProcessorTime
   mem_total_mb = $mem_total_mb
-  mem_free_mb  = $mem_free_mb
+  mem_available_mb  = $mem_free_mb
   mem_used_mb  = $mem_used_mb
   disks = $disks
 } | ConvertTo-Json -Compress

@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::process::Command;
 
+use crate::core::ids;
 use crate::core::model::{Edge, Entity, Snapshot};
 use crate::core::plugin::Plugin;
 
@@ -18,30 +19,36 @@ impl Plugin for ConnectionPingWindowsPlugin {
         "connection_ping_windows"
     }
 
-    fn apply(&self, snapshot: &mut Snapshot, _cfg: &crate::config::Config) -> Result<()> {
+    fn apply(&self, snapshot: &mut Snapshot, cfg: &crate::config::Config) -> Result<()> {
         if !cfg!(windows) {
             return Ok(());
         }
 
-        let targets = std::env::var("DATUM_PING_TARGETS")
-            .ok()
-            .map(|s| {
-                s.split(',')
-                    .map(|x| x.trim().to_string())
-                    .filter(|x| !x.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .filter(|v| !v.is_empty())
+        let ping_cfg = cfg
+            .collectors
+            .as_ref()
+            .and_then(|c| c.connection_ping.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        if !ping_cfg.enabled {
+            return Ok(());
+        }
+
+        let targets = ping_cfg
+            .targets
             .unwrap_or_else(|| vec!["1.1.1.1".to_string()]);
+        let count = ping_cfg.count.unwrap_or(4);
+        let timeout_s = ping_cfg.timeout_s.unwrap_or(1);
 
         let observed_at = snapshot.meta.observed_at_utc;
         let host_id = snapshot.meta.host_id.clone();
 
         for t in targets {
-            let res = ping_and_parse(&t);
+            let res = ping_and_parse(&t, count, timeout_s);
 
-            let safe_id = sanitize_id(&t);
-            let conn_id = format!("connection:{}:{}", host_id, safe_id);
+            let t_norm = ids::sanitize_id_component(&t.to_lowercase());
+            let conn_id = ids::connection_id(&host_id, &t_norm);
 
             let ent = Entity {
                 id: conn_id.clone(),
@@ -50,7 +57,8 @@ impl Plugin for ConnectionPingWindowsPlugin {
                     "from": host_id,
                     "to": t,
                     "method": "ping",
-                    "samples": 4,
+                    "samples": count,
+                    "timeout_s": timeout_s,
                     "available": res.available,
                     "loss_pct": res.loss_pct,
                     "rtt_min_ms": res.rtt_min_ms,
@@ -87,9 +95,11 @@ struct PingResult {
     raw: String,
 }
 
-fn ping_and_parse(target: &str) -> PingResult {
+fn ping_and_parse(target: &str, count: u32, timeout_s: u32) -> PingResult {
+    // Windows ping: -n <count> -w <timeout_ms>
+    let timeout_ms = timeout_s.saturating_mul(1000);
     let out = Command::new("ping")
-        .args(["-n", "4", "-w", "1000", target])
+        .args(["-n", &count.to_string(), "-w", &timeout_ms.to_string(), target])
         .output();
 
     match out {
@@ -173,10 +183,4 @@ fn extract_rtt_triplet_ms(s: &str) -> (Option<u64>, Option<u64>, Option<u64>) {
     } else {
         (None, None, None)
     }
-}
-
-fn sanitize_id(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
 }

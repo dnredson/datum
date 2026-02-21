@@ -3,6 +3,7 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
+use crate::core::ids;
 use crate::core::model::{Edge, Entity, Snapshot};
 use crate::core::plugin::Plugin;
 
@@ -46,15 +47,25 @@ impl Plugin for ProcessLinuxPsPlugin {
             return Ok(());
         }
 
-        let mode = proc_cfg.mode.unwrap_or_else(|| "group_by_name".to_string());
-        let max_entries = proc_cfg.max_entries.unwrap_or(50);
-
-        let allowset: HashSet<String> = proc_cfg
-            .names
-            .unwrap_or_default()
+        let names = proc_cfg.names.clone().unwrap_or_default();
+        let allowset: HashSet<String> = names
             .into_iter()
             .map(|s| s.trim().to_lowercase())
             .collect();
+
+        // allowlist-first default: if names present and mode missing -> allowlist
+        let mode = match proc_cfg.mode.as_deref() {
+            Some(m) => m.to_string(),
+            None => {
+                if !allowset.is_empty() {
+                    "allowlist".to_string()
+                } else {
+                    "top_mem".to_string()
+                }
+            }
+        };
+
+        let max_entries = proc_cfg.max_entries.unwrap_or(50);
 
         // ps: pid, comm, %cpu, rss(KB)
         let out = Command::new("ps")
@@ -135,7 +146,8 @@ impl Plugin for ProcessLinuxPsPlugin {
         }
 
         for (_rss_total, key, g) in groups.into_iter().take(max_entries) {
-            let id = format!("process:linux:{}", sanitize_id_component(&key));
+            let key_norm = ids::sanitize_id_component(&key);
+            let id = ids::process_group_id("linux", &key_norm);
 
             let ent = Entity {
                 id: id.clone(),
@@ -144,8 +156,9 @@ impl Plugin for ProcessLinuxPsPlugin {
                     "os": "linux",
                     "name": g.name,
                     "instance_count": g.instance_count,
-                    "mem_rss_kb_total": g.total_rss_kb,
-                    "cpu_pct_total": (g.cpu_pct_total * 100.0).round()/100.0,
+                    "cpu_pct_total": (g.cpu_pct_total * 100.0).round() / 100.0,
+                    "mem_used_kb_total": g.total_rss_kb,
+                    "mem_source": "rss",
                     "sample_pids": g.sample_pids,
                     "aggregation": "by_comm",
                 }),
@@ -167,10 +180,4 @@ impl Plugin for ProcessLinuxPsPlugin {
 
         Ok(())
     }
-}
-
-fn sanitize_id_component(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
-        .collect()
 }

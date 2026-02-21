@@ -8,13 +8,14 @@ use super::time;
 
 // plugins
 use super::plugins::{
+    connection_ping_linux::ConnectionPingLinuxPlugin,
     connection_ping_windows::ConnectionPingWindowsPlugin,
     docker_linux_cli::DockerLinuxCliPlugin,
     docker_windows_cli::DockerWindowsCliPlugin,
-    host_telemetry_windows::HostTelemetryWindowsPlugin,
-    process_windows_tasklist::ProcessWindowsTasklistPlugin,
     host_telemetry_linux::HostTelemetryLinuxPlugin,
+    host_telemetry_windows::HostTelemetryWindowsPlugin,
     process_linux_ps::ProcessLinuxPsPlugin,
+    process_windows_tasklist::ProcessWindowsTasklistPlugin,
 };
 
 fn get_hostname_fallback() -> Result<String> {
@@ -54,7 +55,7 @@ pub fn run_cycle(
 
     let host_id = ids::host_id(&hostname);
 
-    // Entidade host (base)
+    // Host entity (base)
     let host_entity = Entity {
         id: host_id.clone(),
         kind: "host".to_string(),
@@ -82,20 +83,28 @@ pub fn run_cycle(
         events: vec![],
     };
 
-    // Plugins habilitados no binário (ordem importa pouco aqui)
+    // Compile-time available plugins. Each plugin should self-skip on OS mismatch.
     let plugins: Vec<Box<dyn super::plugin::Plugin>> = vec![
+        // Docker
         Box::new(DockerWindowsCliPlugin::new()),
         Box::new(DockerLinuxCliPlugin::new()),
+
+        // Host telemetry
         Box::new(HostTelemetryWindowsPlugin::new()),
-        Box::new(ProcessWindowsTasklistPlugin::new()),
-        Box::new(ConnectionPingWindowsPlugin::new()),
         Box::new(HostTelemetryLinuxPlugin::new()),
+
+        // Processes (inventory + metrics)
+        Box::new(ProcessWindowsTasklistPlugin::new()),
         Box::new(ProcessLinuxPsPlugin::new()),
+
+        // Connectivity
+        Box::new(ConnectionPingWindowsPlugin::new()),
+        Box::new(ConnectionPingLinuxPlugin::new()),
     ];
 
     for p in plugins {
         if let Err(e) = p.apply(&mut snapshot, cfg) {
-            // FAIL-SAFE: não quebra o ciclo
+            // FAIL-SAFE: don't break the cycle
             eprintln!("plugin={} status=error err={}", p.name(), e);
         }
     }

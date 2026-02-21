@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::process::Command;
 
 use crate::core::ids;
@@ -39,6 +40,42 @@ fn docker_ps_json_lines() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+
+fn docker_filter(cfg: &crate::config::Config) -> crate::config::DockerConfig {
+    cfg.collectors
+        .as_ref()
+        .and_then(|c| c.docker.as_ref())
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn normalize_name(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+fn image_base(s: &str) -> String {
+    let s = normalize_name(s);
+    s.split(':').next().unwrap_or(&s).to_string()
+}
+
+fn should_keep_container(mode: &str, allow_names: &std::collections::HashSet<String>, allow_images: &std::collections::HashSet<String>, row_name: &str, row_image: &str) -> bool {
+    match mode {
+        "all" => true,
+        "allowlist" => {
+            if allow_names.is_empty() && allow_images.is_empty() {
+                return false;
+            }
+            let n = normalize_name(row_name);
+            let img_full = normalize_name(row_image);
+            let img_base = image_base(row_image);
+
+            allow_names.contains(&n) || allow_images.contains(&img_full) || allow_images.contains(&img_base)
+        }
+        _ => true,
+    }
+}
+
+
 pub struct DockerLinuxCliPlugin;
 
 impl DockerLinuxCliPlugin {
@@ -52,10 +89,31 @@ impl Plugin for DockerLinuxCliPlugin {
         "docker_linux_cli"
     }
 
-    fn apply(&self, snapshot: &mut Snapshot, _cfg: &crate::config::Config) -> Result<()> {
+    fn apply(&self, snapshot: &mut Snapshot, cfg: &crate::config::Config) -> Result<()> {
         if !cfg!(unix) {
             return Ok(());
         }
+
+        let dcfg = docker_filter(cfg);
+        if !dcfg.enabled {
+            // docker pode ser pesado em ambiente compartilhado; só roda se habilitado
+            return Ok(());
+        }
+
+        let names = dcfg.names.unwrap_or_default();
+        let images = dcfg.images.unwrap_or_default();
+
+        let mode = match dcfg.mode.as_deref() {
+            Some(m) => m.to_string(),
+            None => {
+                if !names.is_empty() || !images.is_empty() { "allowlist".to_string() } else { "all".to_string() }
+            }
+        };
+
+        let allow_names: HashSet<String> = names.into_iter().map(|s| normalize_name(&s)).collect();
+        let allow_images: HashSet<String> = images.into_iter().map(|s| normalize_name(&s)).collect();
+
+        let max_entries = dcfg.max_entries.unwrap_or(200);
 
         let stdout = match docker_ps_json_lines() {
             Ok(s) => s,
@@ -68,6 +126,8 @@ impl Plugin for DockerLinuxCliPlugin {
         let observed_at = snapshot.meta.observed_at_utc;
         let host_id = snapshot.meta.host_id.clone();
 
+        let mut emitted: usize = 0;
+
         for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let row: DockerPsRow = match serde_json::from_str(line) {
                 Ok(v) => v,
@@ -76,6 +136,14 @@ impl Plugin for DockerLinuxCliPlugin {
                     continue;
                 }
             };
+
+            if !should_keep_container(&mode, &allow_names, &allow_images, &row.names, &row.image) {
+                continue;
+            }
+
+            if emitted >= max_entries {
+                break;
+            }
 
             let container_eid = ids::container_id("docker", &row.id);
 
@@ -107,6 +175,7 @@ impl Plugin for DockerLinuxCliPlugin {
 
             snapshot.entities.push(ent);
             snapshot.edges.push(edge);
+            emitted += 1;
         }
 
         Ok(())
