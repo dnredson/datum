@@ -1,0 +1,48 @@
+[agent]
+node_id = "fog-01"
+cycle_s = 5
+schema_version = "0.0.1"
+
+[outputs.file_json]
+enabled = true
+path = "snapshot.json"
+
+# futuro (stub)
+[outputs.http]
+enabled = false
+url = "http://localhost:8080/v1/snapshots"
+
+#[collectors.process_windows]
+#enabled = true
+#mode = "group_by_name"                                                   # novo (default recomendado)
+#names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
+#max_entries = 50
+#include_pids = false                                                     # opcional
+
+[collectors.process_linux]
+enabled = true
+#mode = "all"
+mode = "allowlist"
+names = ["sshd", "datum"]
+max_entries = 50
+
+[collectors.connection_ping]
+enabled = true
+targets = ["1.1.1.1", "8.8.8.8"]
+count = 4
+timeout_s = 1
+
+[collectors.docker]
+enabled = false
+
+[services]
+enabled = true
+
+
+[[services.items]]
+name = "mosquitto"
+implemented_by = { container_name = "mosquitto" }
+
+[[services.items]]
+name = "datum-agent"
+implemented_by = { process_name = "datum" }

@@ -12,19 +12,26 @@ path = "snapshot.json"
 enabled = false
 url = "http://localhost:8080/v1/snapshots"
 
-#[collectors.process_windows]
-#enabled = true
-#mode = "group_by_name"                                                   # novo (default recomendado)
-#names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
-#max_entries = 50
-#include_pids = false                                                     # opcional
-
-[collectors.process_linux]
+[collectors.process_windows]
 enabled = true
+mode = "group_by_name"
+names = [
+    "docker desktop.exe",
+    "dockerd.exe",
+    "datum.exe",
+    "chrome.exe",
+    "python.exe",
+    "py.exe",
+]
+max_entries = 100
+include_pids = false
+
+#[collectors.process_linux]
+#enabled = true
 #mode = "all"
-mode = "allowlist"
-names = ["mosquitto", "sshd", "datum"]
-max_entries = 50
+#mode = "allowlist"
+#names = ["mosquitto", "sshd", "datum"]
+#max_entries = 50
 
 [collectors.connection_ping]
 enabled = true
@@ -34,3 +41,55 @@ timeout_s = 1
 
 [collectors.docker]
 enabled = true
+
+[services]
+enabled = true
+
+#[[services.items]]
+#name = "mosquitto"
+#implemented_by = [{ container_name = "mosquitto" }]
+#checks = [{ kind = "mqtt_pubsub", topic = "datum/health", timeout_ms = 1200 }]
+#depends_on = [{ kind = "connection", target = "1.1.1.1" }]
+
+#[[services.items]]
+#name = "magistrala"
+#implemented_by = [{ container_name = "magistrala" }]
+#checks = [
+#    { kind = "http_health", url = "http://127.0.0.1:9000/health", timeout_ms = 1200 },
+#]
+
+[[services.items]]
+name = "datum-agent"
+implemented_by = [{ process_name = "datum" }]
+checks = [{ kind = "process_alive", timeout_ms = 1000 }]
+depends_on = [{ kind = "connection", target = "1.1.1.1" }]
+
+[[services.items]]
+name = "fake-service"
+implemented_by = [{ process_name = "naoexiste123" }]
+checks = [
+    { kind = "http_health", url = "http://127.0.0.1:9999/health", timeout_ms = 1200 },
+]
+depends_on = [{ kind = "connection", target = "8.8.8.8" }]
+
+
+[[services.items]]
+name = "local-http"
+implemented_by = [{ process_name = "python" }, { process_name = "py" }]
+checks = [
+    { kind = "http_health", url = "http://127.0.0.1:8000", timeout_ms = 1200 },
+]
+depends_on = [{ kind = "connection", target = "17.7.2.1" }]
+
+[[services.items]]
+name = "backend"
+implemented_by = [{ process_name = "python" }, { process_name = "py" }]
+checks = [
+    { kind = "http_health", url = "http://127.0.0.1:8001", timeout_ms = 1200 },
+]
+
+[[services.items]]
+name = "frontend"
+implemented_by = [{ process_name = "datum" }]
+checks = [{ kind = "process_alive" }]
+depends_on = [{ kind = "service", target = "backend" }]

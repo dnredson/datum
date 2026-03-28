@@ -9,6 +9,12 @@ pub struct Config {
 
     #[serde(default)]
     pub collectors: Option<CollectorsConfig>,
+
+    // =========================
+    // Services (Fase 2.1)
+    // =========================
+    #[serde(default)]
+    pub services: Option<ServicesConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -70,7 +76,7 @@ pub struct DockerConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ProcessWindowsConfig {
     pub enabled: bool,
-    pub mode: Option<String>,      // "allowlist" | "top_mem" | "all" | "group_by_name"
+    pub mode: Option<String>,       // "allowlist" | "top_mem" | "all" | "group_by_name"
     pub names: Option<Vec<String>>, // em Windows costuma ser "chrome.exe"
     pub max_entries: Option<usize>,
 }
@@ -78,7 +84,7 @@ pub struct ProcessWindowsConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ProcessLinuxConfig {
     pub enabled: bool,
-    pub mode: Option<String>,      // "allowlist" | "top_mem" | "all" | "group_by_name"
+    pub mode: Option<String>,       // "allowlist" | "top_mem" | "all" | "group_by_name"
     pub names: Option<Vec<String>>, // em Linux: "sshd", "mosquitto"
     pub max_entries: Option<usize>,
 }
@@ -89,6 +95,50 @@ pub struct ConnectionPingConfig {
     pub targets: Option<Vec<String>>,
     pub count: Option<u32>,
     pub timeout_s: Option<u32>,
+}
+
+// =========================
+// Services (Fase 2.1)
+// =========================
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub items: Vec<ServiceItem>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceCheckSpec {
+    pub kind: String,               // "http_health" | "tcp_port" | "mqtt_pubsub"
+    #[serde(flatten)]
+    pub params: std::collections::BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceDependencySpec {
+    pub kind: String,               // "connection"
+    pub target: Option<String>,     // "1.1.1.1"
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ServiceItem {
+    pub name: String,
+
+    #[serde(default)]
+    pub implemented_by: Vec<ImplementedBy>,
+
+    #[serde(default)]
+    pub checks: Vec<ServiceCheckSpec>,
+
+    #[serde(default)]
+    pub depends_on: Vec<ServiceDependencySpec>,
+}
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ImplementedBy {
+    pub container_name: Option<String>,
+    pub process_name: Option<String>,
 }
 
 pub fn load_config(path: &str) -> Result<Config> {

@@ -32,3 +32,9 @@ pub fn sanitize_id_component(s: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
         .collect()
 }
+
+pub fn service_id(name: &str) -> String {
+    let n = sanitize_id_component(&name.trim().to_lowercase());
+    format!("service:{}", n)
+}
+

@@ -9,3 +9,6 @@ pub mod process_windows_tasklist;
 
 pub mod connection_ping_linux;
 pub mod connection_ping_windows;
+pub mod service_builder;
+pub mod service_health;
+pub mod checks;

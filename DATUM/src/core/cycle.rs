@@ -16,6 +16,9 @@ use super::plugins::{
     host_telemetry_windows::HostTelemetryWindowsPlugin,
     process_linux_ps::ProcessLinuxPsPlugin,
     process_windows_tasklist::ProcessWindowsTasklistPlugin,
+    service_builder::ServiceBuilderPlugin,
+    service_health::ServiceHealthPlugin,
+    
 };
 
 fn get_hostname_fallback() -> Result<String> {
@@ -100,6 +103,10 @@ pub fn run_cycle(
         // Connectivity
         Box::new(ConnectionPingWindowsPlugin::new()),
         Box::new(ConnectionPingLinuxPlugin::new()),
+
+        //Novo: Service builder (ex.: vincular processos/containers a serviços definidos pelo usuário)
+        Box::new(ServiceBuilderPlugin::new()),
+        Box::new(ServiceHealthPlugin::new()),
     ];
 
     for p in plugins {
