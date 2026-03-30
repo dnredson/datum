@@ -2,8 +2,8 @@
   "meta": {
     "schema_version": "0.0.1",
     "agent_version": "0.1.0",
-    "cycle_id": "72c1820f-85b2-4741-8ddc-032aac7588f3",
-    "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+    "cycle_id": "36209521-692a-4ed8-be99-70d2dd981d33",
+    "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
     "node_id": "fog-01",
     "host_id": "host:DESKTOP-UD4LDKG"
   },
@@ -17,11 +17,11 @@
         "system": {
           "arch_bits": 64,
           "cpu_logical": 12,
-          "cpu_usage_pct": 26,
+          "cpu_usage_pct": 10,
           "disks": [
             {
               "DeviceID": "C:",
-              "FreeSpace": 33470910464,
+              "FreeSpace": 32353095680,
               "Size": 510180454400
             },
             {
@@ -40,15 +40,15 @@
               "Size": 1468006395904
             }
           ],
-          "mem_available_mb": 10956,
+          "mem_available_mb": 9928,
           "mem_total_mb": 32591,
-          "mem_used_mb": 21635,
+          "mem_used_mb": 22663,
           "os_build": "26200",
           "os_caption": "Microsoft Windows 11 Pro",
           "os_version": "10.0.26200"
         }
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -63,9 +63,9 @@
         "name": "test-http",
         "runtime": "docker",
         "state": "running",
-        "status": "Up 12 minutes"
+        "status": "Up 45 seconds"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -74,23 +74,23 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 19.66,
-        "cpu_s_delta_total": 11.797,
+        "cpu_pct_total": 13.44,
+        "cpu_s_delta_total": 8.063,
         "image_name": "chrome.exe",
-        "instance_count": 36,
+        "instance_count": 39,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 7108932,
+        "mem_used_kb_total": 7381112,
         "os": "windows",
         "sample_pids": [
           1920,
           2948,
+          3316,
           4128,
-          4656,
-          5032
+          4656
         ]
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -99,19 +99,19 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.05,
-        "cpu_s_delta_total": 0.031,
+        "cpu_pct_total": 0.03,
+        "cpu_s_delta_total": 0.016,
         "image_name": "datum.exe",
         "instance_count": 1,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 16688,
+        "mem_used_kb_total": 21556,
         "os": "windows",
         "sample_pids": [
-          21356
+          31164
         ]
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -120,13 +120,13 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.81,
-        "cpu_s_delta_total": 0.484,
+        "cpu_pct_total": 0.36,
+        "cpu_s_delta_total": 0.219,
         "image_name": "Docker Desktop.exe",
         "instance_count": 4,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 405552,
+        "mem_used_kb_total": 458276,
         "os": "windows",
         "sample_pids": [
           476,
@@ -135,7 +135,7 @@
           28708
         ]
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -146,15 +146,15 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 8ms, M�ximo = 8ms, M�dia = 8ms",
-        "rtt_avg_ms": 8,
-        "rtt_max_ms": 8,
+        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 7ms, M�ximo = 8ms, M�dia = 7ms",
+        "rtt_avg_ms": 7,
+        "rtt_max_ms": 7,
         "rtt_min_ms": 8,
         "samples": 4,
         "timeout_s": 1,
         "to": "1.1.1.1"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -165,15 +165,15 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=7ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 7ms, M�dia = 6ms",
-        "rtt_avg_ms": 7,
-        "rtt_max_ms": 6,
+        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=11ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 11ms, M�dia = 6ms",
+        "rtt_avg_ms": 5,
+        "rtt_max_ms": 5,
         "rtt_min_ms": 5,
         "samples": 4,
         "timeout_s": 1,
         "to": "8.8.8.8"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     },
     {
@@ -203,9 +203,9 @@
         ],
         "checks_result": [
           {
-            "checked_at": "2026-03-30T17:29:43.570458400+00:00",
+            "checked_at": "2026-03-30T19:03:14.069904900+00:00",
             "kind": "http_health",
-            "latency_ms": 6,
+            "latency_ms": 3,
             "status": "available"
           }
         ],
@@ -216,7 +216,7 @@
         "source": "service_registry",
         "status": "available"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
       "ttl_s": 60
     }
   ],
@@ -228,7 +228,7 @@
       "attrs": {
         "runtime": "docker"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -237,7 +237,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -246,7 +246,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -255,7 +255,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -264,7 +264,7 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -273,7 +273,7 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     },
     {
       "from": "service:local-http-ctr",
@@ -282,7 +282,7 @@
       "attrs": {
         "via": "container_name"
       },
-      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
     }
   ],
   "events": [],

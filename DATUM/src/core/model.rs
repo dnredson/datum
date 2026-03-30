@@ -46,6 +46,14 @@ pub struct Event {
     pub severity: String,
     pub target: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<JsonValue>,
     pub observed_at_utc: DateTime<Utc>,
 }
 

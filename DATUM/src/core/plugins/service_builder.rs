@@ -487,6 +487,10 @@ impl Plugin for ServiceBuilderPlugin {
                         "Service '{}' has no resolved bindings for runtime {:?} (wanted {} '{}')",
                         service_name, runtime, target_kind, wanted
                     ),
+                    correlation_id: None,
+                    source_plugin: Some("service_builder".to_string()),
+                    status: Some("open".to_string()),
+                    details: Some(json!({"service_name": service_name, "runtime": runtime, "target_kind": target_kind, "wanted": wanted})),
                     observed_at_utc: observed_at,
                 });
             }
@@ -507,6 +511,10 @@ impl Plugin for ServiceBuilderPlugin {
                         "Service '{}' has no resolved bindings (check service_registry/services config)",
                         service_name
                     ),
+                    correlation_id: None,
+                    source_plugin: Some("service_builder".to_string()),
+                    status: Some("open".to_string()),
+                    details: Some(json!({"service_name": service_name, "reason": "no resolved bindings"})),
                     observed_at_utc: observed_at,
                 });
             }
@@ -580,6 +588,10 @@ impl Plugin for ServiceBuilderPlugin {
                             "Service '{}' has unresolved dependency kind='{}' target='{}'",
                             service_name, dep_kind, target
                         ),
+                        correlation_id: None,
+                        source_plugin: Some("service_builder".to_string()),
+                        status: Some("open".to_string()),
+                        details: Some(json!({"service_name": service_name, "dependency_kind": dep_kind, "dependency_target": target})),
                         observed_at_utc: observed_at,
                     });
                 }

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
+use serde_json::json;
 
 use crate::core::ids;
 use crate::core::model::{ActionRecord, Event, Snapshot};
@@ -108,6 +109,10 @@ impl Plugin for EventCompactorPlugin {
                     "Events truncated from {} to {} (original before dedup: {})",
                     compacted_len, final_len, original_len
                 ),
+                correlation_id: None,
+                source_plugin: Some("event_compactor".to_string()),
+                status: Some("resolved".to_string()),
+                details: Some(json!({"original_len": original_len, "compacted_len": compacted_len, "final_len": final_len, "max_per_snapshot": max_per_snapshot})),
                 observed_at_utc: snapshot.meta.observed_at_utc,
             });
         }

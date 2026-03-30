@@ -1,0 +1,611 @@
+{
+  "meta": {
+    "schema_version": "0.0.1",
+    "agent_version": "0.1.0",
+    "cycle_id": "326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+    "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+    "node_id": "fog-01",
+    "host_id": "host:DESKTOP-UD4LDKG"
+  },
+  "entities": [
+    {
+      "id": "host:DESKTOP-UD4LDKG",
+      "kind": "host",
+      "attrs": {
+        "hostname": "DESKTOP-UD4LDKG",
+        "node_id": "fog-01",
+        "system": {
+          "arch_bits": 64,
+          "cpu_logical": 12,
+          "cpu_usage_pct": 17,
+          "disks": [
+            {
+              "DeviceID": "C:",
+              "FreeSpace": 32335618048,
+              "Size": 510180454400
+            },
+            {
+              "DeviceID": "D:",
+              "FreeSpace": null,
+              "Size": null
+            },
+            {
+              "DeviceID": "E:",
+              "FreeSpace": 70791168,
+              "Size": 104853504
+            },
+            {
+              "DeviceID": "F:",
+              "FreeSpace": 838198685696,
+              "Size": 1468006395904
+            }
+          ],
+          "mem_available_mb": 9714,
+          "mem_total_mb": 32591,
+          "mem_used_mb": 22877,
+          "os_build": "26200",
+          "os_caption": "Microsoft Windows 11 Pro",
+          "os_version": "10.0.26200"
+        }
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:chrome.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 5.78,
+        "cpu_s_delta_total": 3.469,
+        "image_name": "chrome.exe",
+        "instance_count": 39,
+        "interval_s": 5.0,
+        "mem_source": "working_set",
+        "mem_used_kb_total": 7355160,
+        "os": "windows",
+        "sample_pids": [
+          1920,
+          2948,
+          3316,
+          4128,
+          4656
+        ]
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:datum.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 0.0,
+        "cpu_s_delta_total": 0.0,
+        "image_name": "datum.exe",
+        "instance_count": 1,
+        "interval_s": 5.0,
+        "mem_source": "working_set",
+        "mem_used_kb_total": 21300,
+        "os": "windows",
+        "sample_pids": [
+          31164
+        ]
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "process:windows:docker_desktop.exe",
+      "kind": "process",
+      "attrs": {
+        "aggregation": "by_image_name",
+        "cpu_cores": 12.0,
+        "cpu_pct_total": 2.66,
+        "cpu_s_delta_total": 1.594,
+        "image_name": "Docker Desktop.exe",
+        "instance_count": 4,
+        "interval_s": 5.0,
+        "mem_source": "working_set",
+        "mem_used_kb_total": 458256,
+        "os": "windows",
+        "sample_pids": [
+          476,
+          15204,
+          27884,
+          28708
+        ]
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "connection:host:DESKTOP-UD4LDKG:1.1.1.1",
+      "kind": "connection",
+      "attrs": {
+        "available": true,
+        "from": "host:DESKTOP-UD4LDKG",
+        "loss_pct": 0,
+        "method": "ping",
+        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=16ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 8ms, M�ximo = 16ms, M�dia = 10ms",
+        "rtt_avg_ms": 8,
+        "rtt_max_ms": 8,
+        "rtt_min_ms": 16,
+        "samples": 4,
+        "timeout_s": 1,
+        "to": "1.1.1.1"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "connection:host:DESKTOP-UD4LDKG:8.8.8.8",
+      "kind": "connection",
+      "attrs": {
+        "available": true,
+        "from": "host:DESKTOP-UD4LDKG",
+        "loss_pct": 0,
+        "method": "ping",
+        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 5ms, M�dia = 5ms",
+        "rtt_avg_ms": 5,
+        "rtt_max_ms": 5,
+        "rtt_min_ms": 5,
+        "samples": 4,
+        "timeout_s": 1,
+        "to": "8.8.8.8"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "service:local-http-ctr",
+      "kind": "service",
+      "attrs": {
+        "binding": {
+          "bound": false
+        },
+        "bindings": [
+          {
+            "bound": false,
+            "target_id": null,
+            "target_kind": "container",
+            "via": "container_name",
+            "wanted": "test-http"
+          }
+        ],
+        "checks_declared": [
+          {
+            "kind": "http",
+            "params": {
+              "timeout_ms": 1500,
+              "url": "http://127.0.0.1:8001"
+            }
+          }
+        ],
+        "checks_result": [],
+        "depends_on_declared": [],
+        "desired_state": "running",
+        "name": "local-http-ctr",
+        "runtime": "container",
+        "source": "service_registry",
+        "status": "unavailable"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "recovery_verification:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_verification",
+      "attrs": {
+        "action_kind": "start_container",
+        "action_status": "succeeded",
+        "checks_result": [
+          {
+            "kind": "http",
+            "reason": "request_failed",
+            "status": "unavailable"
+          }
+        ],
+        "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+        "origin": "desired_state_planner",
+        "service_id": "service:local-http-ctr",
+        "service_name": "local-http-ctr",
+        "validation_status": "unavailable",
+        "verification_status": "pending_observation"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "recovery_verification:recovery_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_verification",
+      "attrs": {
+        "action_kind": "noop",
+        "action_status": "skipped",
+        "checks_result": [
+          {
+            "kind": "http",
+            "reason": "request_failed",
+            "status": "unavailable"
+          }
+        ],
+        "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+        "origin": "recovery_planner",
+        "service_id": "service:local-http-ctr",
+        "service_name": "local-http-ctr",
+        "validation_status": "unavailable",
+        "verification_status": "skipped"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z",
+      "ttl_s": 60
+    }
+  ],
+  "edges": [
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:chrome.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:datum.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "process:windows:docker_desktop.exe",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "process"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "connection:host:DESKTOP-UD4LDKG:1.1.1.1",
+      "rel": "measures",
+      "attrs": {
+        "method": "ping"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "connection:host:DESKTOP-UD4LDKG:8.8.8.8",
+      "rel": "measures",
+      "attrs": {
+        "method": "ping"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "event:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:recovery_execution_succeeded:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_execution_succeeded",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "Recovery action result for service 'local-http-ctr': action=start_container mode=executed success=true msg=command executed: docker [\"start\", \"test-http\"]",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "action_executor",
+      "status": "resolved",
+      "details": {
+        "action_kind": "start_container",
+        "duration_ms": 500,
+        "exit_code": 0,
+        "message": "command executed: docker [\"start\", \"test-http\"]",
+        "mode": "executed",
+        "origin": "desired_state_planner",
+        "service_name": "local-http-ctr",
+        "stderr": "",
+        "stdout": "test-http\n",
+        "success": true,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:recovery_started:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_started",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "Recovery action started for service 'local-http-ctr': action=start_container target_kind=container_name target_id=test-http dry_run=false",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "action_executor",
+      "status": "executing",
+      "details": {
+        "action_kind": "start_container",
+        "dry_run": false,
+        "origin": "desired_state_planner",
+        "service_name": "local-http-ctr",
+        "suppressed": false,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:local-http-ctr:desired_state_action_planned:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "desired_state_action_planned",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "desired_state planned action for service 'local-http-ctr': kind=start_container desired=running observed=unavailable",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "desired_state_planner",
+      "status": "planned",
+      "details": {
+        "action_kind": "start_container",
+        "desired": "running",
+        "dry_run": false,
+        "observed_status": "unavailable",
+        "service_name": "local-http-ctr",
+        "suppression_reason": null,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:service_local-http-ctr:service_unavailable:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "service_unavailable",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "Service 'local-http-ctr' became unavailable",
+      "source_plugin": "service_transitions",
+      "status": "open",
+      "details": {
+        "current_status": "unavailable",
+        "previous_status": "available",
+        "service_name": "local-http-ctr"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:recovery_pending_observation:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_pending_observation",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Recovery for service 'local-http-ctr' executed, but confirmation should be observed in the next cycle",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "revalidator",
+      "status": "pending_observation",
+      "details": {
+        "action_kind": "start_container",
+        "action_status": "succeeded",
+        "checks_result": [
+          {
+            "kind": "http",
+            "reason": "request_failed",
+            "status": "unavailable"
+          }
+        ],
+        "service_name": "local-http-ctr",
+        "validation_status": "unavailable",
+        "verification_status": "pending_observation"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:recovery_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:recovery_skipped:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_skipped",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Recovery action result for service 'local-http-ctr': action=noop mode=skipped success=true msg=action suppressed by planner",
+      "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "action_executor",
+      "status": "skipped",
+      "details": {
+        "action_kind": "noop",
+        "duration_ms": 0,
+        "exit_code": null,
+        "message": "action suppressed by planner",
+        "mode": "skipped",
+        "origin": "recovery_planner",
+        "service_name": "local-http-ctr",
+        "stderr": "",
+        "stdout": "",
+        "success": true,
+        "target_id": "service:local-http-ctr",
+        "target_kind": "service"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:service_local-http-ctr:recovery_suppressed:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "recovery_suppressed",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Recovery plan suppressed for service 'local-http-ctr': service is unbound",
+      "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "source_plugin": "recovery_planner",
+      "status": "suppressed",
+      "details": {
+        "action_kind": "noop",
+        "attempt_window_s": 300,
+        "attempts_in_window": 0,
+        "cooldown_s": 60,
+        "dry_run": false,
+        "last_attempt_at_utc": null,
+        "max_attempts_per_window": 3,
+        "reason": "service has no resolved binding",
+        "service_name": "local-http-ctr",
+        "service_status": "unavailable",
+        "suppressed": true,
+        "suppression_reason": "service is unbound",
+        "target_id": "service:local-http-ctr",
+        "target_kind": "service"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:service_local-http-ctr:status_changed_available_to_unavailable:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "service_status_changed",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Service 'local-http-ctr' changed status from 'available' to 'unavailable'",
+      "source_plugin": "service_transitions",
+      "status": "open",
+      "details": {
+        "current_status": "unavailable",
+        "previous_status": "available",
+        "service_name": "local-http-ctr"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "event:service_local-http-ctr:unbound_container_test-http:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "kind": "service_unbound",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Service 'local-http-ctr' has no resolved bindings for runtime Some(\"container\") (wanted container 'test-http')",
+      "source_plugin": "service_builder",
+      "status": "open",
+      "details": {
+        "runtime": "container",
+        "service_name": "local-http-ctr",
+        "target_kind": "container",
+        "wanted": "test-http"
+      },
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    }
+  ],
+  "actions": [
+    {
+      "id": "action:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:planned:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "planned",
+      "status": "pending",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": null,
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "action:recovery_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:planned:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "recovery_planner",
+      "kind": "noop",
+      "phase": "planned",
+      "status": "suppressed",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "service",
+      "target_id": "service:local-http-ctr",
+      "reason": "service has no resolved binding",
+      "message": "service is unbound",
+      "dry_run": false,
+      "suppressed": true,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "action:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:started:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "started",
+      "status": "running",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": "Recovery action started for service 'local-http-ctr': action=start_container target_kind=container_name target_id=test-http dry_run=false",
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "action:desired_state_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:finished:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "desired_state:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "finished",
+      "status": "succeeded",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": "command executed: docker [\"start\", \"test-http\"]",
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": 0,
+      "duration_ms": 500,
+      "stdout": "test-http\n",
+      "stderr": "",
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "action:recovery_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:started:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "recovery_planner",
+      "kind": "noop",
+      "phase": "started",
+      "status": "skipped",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "service",
+      "target_id": "service:local-http-ctr",
+      "reason": "service has no resolved binding",
+      "message": "Recovery action started for service 'local-http-ctr': action=noop target_kind=service target_id=service:local-http-ctr dry_run=false",
+      "dry_run": false,
+      "suppressed": true,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    },
+    {
+      "id": "action:recovery_local-http-ctr_326d6285-f1b3-4dcf-be2e-eb1cd212905b:finished:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "correlation_id": "recovery:local-http-ctr:326d6285-f1b3-4dcf-be2e-eb1cd212905b",
+      "origin": "recovery_planner",
+      "kind": "noop",
+      "phase": "finished",
+      "status": "skipped",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "service",
+      "target_id": "service:local-http-ctr",
+      "reason": "service has no resolved binding",
+      "message": "action suppressed by planner",
+      "dry_run": false,
+      "suppressed": true,
+      "exit_code": null,
+      "duration_ms": 0,
+      "stdout": "",
+      "stderr": "",
+      "observed_at_utc": "2026-03-30T19:00:54.225211500Z"
+    }
+  ]
+}

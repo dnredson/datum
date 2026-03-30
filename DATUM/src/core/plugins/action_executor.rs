@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde_json::json;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -504,6 +505,10 @@ impl Plugin for ActionExecutorPlugin {
                     "Recovery action started for service '{}': action={} target_kind={} target_id={} dry_run={}",
                     action.service_name, action.kind, action.target_kind, action.target_id, action.dry_run
                 ),
+                correlation_id: Some(action.correlation_id.clone()),
+                source_plugin: Some("action_executor".to_string()),
+                status: Some(if action.suppressed { "skipped" } else { "executing" }.to_string()),
+                details: Some(json!({"service_name": action.service_name, "action_kind": action.kind, "target_kind": action.target_kind, "target_id": action.target_id, "dry_run": action.dry_run, "suppressed": action.suppressed, "origin": action.origin})),
                 observed_at_utc: observed_at,
             });
 
@@ -556,6 +561,10 @@ impl Plugin for ActionExecutorPlugin {
                     "Recovery action result for service '{}': action={} mode={} success={} msg={}",
                     action.service_name, action.kind, result.mode, result.success, result.message
                 ),
+                correlation_id: Some(action.correlation_id.clone()),
+                source_plugin: Some("action_executor".to_string()),
+                status: Some(match result.mode.as_str() { "dry_run" => "dry_run", "skipped" => "skipped", _ if result.success => "resolved", _ => "failed" }.to_string()),
+                details: Some(json!({"service_name": action.service_name, "action_kind": action.kind, "target_kind": action.target_kind, "target_id": action.target_id, "mode": result.mode, "success": result.success, "exit_code": result.exit_code, "duration_ms": result.duration_ms, "stdout": trunc(&result.stdout, 400), "stderr": trunc(&result.stderr, 400), "message": result.message, "origin": action.origin})),
                 observed_at_utc: observed_at,
             });
         }

@@ -168,6 +168,10 @@ fn dependency_degrades_service(
                                 "Service '{}' is degraded because dependency connection '{}' is unavailable",
                                 service_name, target
                             ),
+                            correlation_id: None,
+                            source_plugin: Some("service_health".to_string()),
+                            status: Some("open".to_string()),
+                            details: Some(json!({"service_name": service_name, "dependency_kind": "connection", "dependency_target": target, "dependency_status": "unavailable"})),
                             observed_at_utc: observed_at,
                         });
                     }
@@ -196,6 +200,10 @@ fn dependency_degrades_service(
                                 "Service '{}' is degraded because dependent service '{}' is {}",
                                 service_name, target, dep_status
                             ),
+                            correlation_id: None,
+                            source_plugin: Some("service_health".to_string()),
+                            status: Some("open".to_string()),
+                            details: Some(json!({"service_name": service_name, "dependency_kind": "service", "dependency_target": target, "dependency_status": dep_status})),
                             observed_at_utc: observed_at,
                         });
                     }
@@ -284,6 +292,10 @@ impl Plugin for ServiceHealthPlugin {
                             "Service check '{}' failed for '{}'",
                             reported_kind, service_name
                         ),
+                        correlation_id: None,
+                        source_plugin: Some("service_health".to_string()),
+                        status: Some("open".to_string()),
+                        details: Some(json!({"service_name": service_name, "check_kind": reported_kind, "check_result": result})),
                         observed_at_utc: observed_at,
                     });
                 }

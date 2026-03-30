@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 use crate::core::ids;
 use crate::core::model::{Event, Snapshot};
@@ -164,6 +164,10 @@ impl Plugin for ServiceTransitionsPlugin {
                             "Service '{}' changed status from '{}' to '{}'",
                             service_name, prev, current_status
                         ),
+                        correlation_id: None,
+                        source_plugin: Some("service_transitions".to_string()),
+                        status: Some("open".to_string()),
+                        details: Some(json!({"service_name": service_name, "previous_status": prev, "current_status": current_status})),
                         observed_at_utc: observed_at,
                     });
 
@@ -174,6 +178,10 @@ impl Plugin for ServiceTransitionsPlugin {
                             severity: "info".to_string(),
                             target: service_id.clone(),
                             message: format!("Service '{}' recovered", service_name),
+                            correlation_id: None,
+                            source_plugin: Some("service_transitions".to_string()),
+                            status: Some("resolved".to_string()),
+                            details: Some(json!({"service_name": service_name, "previous_status": prev, "current_status": current_status})),
                             observed_at_utc: observed_at,
                         });
                     }
@@ -185,6 +193,10 @@ impl Plugin for ServiceTransitionsPlugin {
                             severity: "warning".to_string(),
                             target: service_id.clone(),
                             message: format!("Service '{}' became degraded", service_name),
+                            correlation_id: None,
+                            source_plugin: Some("service_transitions".to_string()),
+                            status: Some("open".to_string()),
+                            details: Some(json!({"service_name": service_name, "previous_status": prev, "current_status": current_status})),
                             observed_at_utc: observed_at,
                         });
                     }
@@ -196,6 +208,10 @@ impl Plugin for ServiceTransitionsPlugin {
                             severity: "warning".to_string(),
                             target: service_id.clone(),
                             message: format!("Service '{}' became unavailable", service_name),
+                            correlation_id: None,
+                            source_plugin: Some("service_transitions".to_string()),
+                            status: Some("open".to_string()),
+                            details: Some(json!({"service_name": service_name, "previous_status": prev, "current_status": current_status})),
                             observed_at_utc: observed_at,
                         });
                     }

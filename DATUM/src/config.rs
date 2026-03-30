@@ -33,7 +33,9 @@ impl Config {
     }
 
     pub fn find_registry_service(&self, name: &str) -> Option<&ServiceRegistryService> {
-        self.registry_services().iter().find(|s| s.name.eq_ignore_ascii_case(name))
+        self.registry_services()
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))
     }
 
     pub fn desired_services(&self) -> &[DesiredServiceSpec] {
@@ -44,7 +46,9 @@ impl Config {
     }
 
     pub fn find_desired_service(&self, name: &str) -> Option<&DesiredServiceSpec> {
-        self.desired_services().iter().find(|s| s.name.eq_ignore_ascii_case(name))
+        self.desired_services()
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -55,6 +59,12 @@ pub struct AutoRecoveryConfig {
     pub dry_run: Option<bool>,
     #[serde(default)]
     pub allow_services: Option<Vec<String>>,
+    #[serde(default)]
+    pub cooldown_s: Option<u64>,
+    #[serde(default)]
+    pub max_attempts_per_window: Option<u32>,
+    #[serde(default)]
+    pub attempt_window_s: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

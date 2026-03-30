@@ -113,7 +113,7 @@ impl Plugin for RevalidatorPlugin {
                 observed_at_utc: observed_at,
                 ttl_s: 60,
             });
-            new_events.push(Event { id: mk_event_id(&cycle_id, &action.correlation_id, event_kind), kind: event_kind.to_string(), severity: severity.to_string(), target: action.service_id.clone(), message, observed_at_utc: observed_at });
+            new_events.push(Event { id: mk_event_id(&cycle_id, &action.correlation_id, event_kind), kind: event_kind.to_string(), severity: severity.to_string(), target: action.service_id.clone(), message, correlation_id: Some(action.correlation_id.clone()), source_plugin: Some("revalidator".to_string()), status: Some(match verification_status { "confirmed" => "resolved", "pending_observation" => "pending_observation", "dry_run" => "dry_run", "skipped" => "skipped", _ => "failed" }.to_string()), details: Some(json!({"service_name": action.service_name, "action_kind": action.kind, "action_status": action.status, "verification_status": verification_status, "validation_status": validation_status, "checks_result": checks_result})), observed_at_utc: observed_at });
         }
         snapshot.entities.extend(new_entities);
         snapshot.events.extend(new_events);

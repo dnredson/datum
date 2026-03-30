@@ -53,6 +53,9 @@ mode = "all"
 enabled = true
 dry_run = false
 allow_services = ["local-http-proc", "local-http-ctr"]
+cooldown_s = 60
+max_attempts_per_window = 3
+attempt_window_s = 300
 
 [services]
 enabled = true
@@ -118,3 +121,4 @@ enabled = true
 [[desired_state.services]]
 name = "local-http-ctr"
 desired = "running"
+
