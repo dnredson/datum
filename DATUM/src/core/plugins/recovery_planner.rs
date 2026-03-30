@@ -1,15 +1,17 @@
+use std::fs;
+use std::path::PathBuf;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::json;
-use std::collections::BTreeSet;
-use std::fs;
 
-use crate::config::{Config, ServiceRecoverySpec, ServiceRegistryService};
+use crate::config::{Config, ServiceRegistryService};
 use crate::core::ids;
 use crate::core::model::{ActionRecord, Event, Snapshot};
 use crate::core::plugin::Plugin;
 
 pub struct RecoveryPlannerPlugin;
+
 impl RecoveryPlannerPlugin {
     pub fn new() -> Self {
         Self
@@ -29,14 +31,313 @@ struct PlannedRecovery {
     suppression_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct RecoveryHistory {
-    last_attempt_at: Option<DateTime<Utc>>,
-    attempts_in_window: usize,
-}
-
 fn norm(s: &str) -> String {
     s.trim().to_lowercase()
+}
+
+fn service_entity<'a>(
+    snapshot: &'a Snapshot,
+    name: &str,
+) -> Option<&'a crate::core::model::Entity> {
+    let wanted = norm(name);
+    snapshot.entities.iter().find(|e| {
+        e.kind == "service"
+            && e.attrs
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| norm(s) == wanted)
+                .unwrap_or(false)
+    })
+}
+
+fn service_id(snapshot: &Snapshot, name: &str) -> String {
+    service_entity(snapshot, name)
+        .map(|e| e.id.clone())
+        .unwrap_or_else(|| ids::service_id(name))
+}
+
+fn service_status(snapshot: &Snapshot, name: &str) -> String {
+    service_entity(snapshot, name)
+        .and_then(|e| e.attrs.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn service_runtime(snapshot: &Snapshot, name: &str) -> Option<String> {
+    service_entity(snapshot, name)
+        .and_then(|e| e.attrs.get("runtime"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn service_has_binding(snapshot: &Snapshot, name: &str) -> bool {
+    service_entity(snapshot, name)
+        .and_then(|e| e.attrs.get("binding"))
+        .and_then(|b| b.get("bound"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn declared_container_name(snapshot: &Snapshot, name: &str) -> Option<String> {
+    let bindings = service_entity(snapshot, name)?
+        .attrs
+        .get("bindings")
+        .and_then(|v| v.as_array())?;
+
+    bindings.iter().find_map(|b| {
+        let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
+        let via = b.get("via").and_then(|v| v.as_str()).unwrap_or("");
+        let wanted = b
+            .get("wanted")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        if target_kind == "container" && via == "container_name" && !wanted.is_empty() {
+            Some(wanted.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_remediation_origin(origin: &str) -> bool {
+    origin == "recovery_planner" || origin == "desired_state_planner"
+}
+
+fn is_real_attempt(action: &ActionRecord) -> bool {
+    if action.suppressed {
+        return false;
+    }
+
+    if !is_remediation_origin(&action.origin) {
+        return false;
+    }
+
+    matches!(action.phase.as_str(), "planned" | "executing" | "finished")
+}
+
+fn existing_open_remediation(snapshot: &Snapshot, service_name: &str) -> bool {
+    let wanted = norm(service_name);
+
+    snapshot.actions.iter().any(|a| {
+        norm(&a.service_name) == wanted
+            && !a.suppressed
+            && is_remediation_origin(&a.origin)
+            && matches!(a.phase.as_str(), "planned" | "executing")
+    })
+}
+
+fn find_recovery_candidate_services(snapshot: &Snapshot) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for e in &snapshot.entities {
+        if e.kind != "service" {
+            continue;
+        }
+
+        let Some(name) = e.attrs.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        let status = e
+            .attrs
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        if matches!(status, "unavailable" | "degraded" | "failed" | "missing") {
+            out.push(name.to_string());
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn policy_matches_runtime(runtime: &str, policy: &str) -> bool {
+    matches!(
+        (runtime, policy),
+        ("process", "restart_command")
+            | ("container", "docker_restart")
+            | ("container", "docker_start")
+    )
+}
+
+fn plan_from_registry(
+    snapshot: &Snapshot,
+    service_name: &str,
+    svc: &ServiceRegistryService,
+) -> PlannedRecovery {
+    let sid = service_id(snapshot, service_name);
+    let sstatus = service_status(snapshot, service_name);
+    let runtime = service_runtime(snapshot, service_name).unwrap_or_else(|| svc.runtime.clone());
+
+    let Some(recovery) = svc.recovery.as_ref() else {
+        return PlannedRecovery {
+            service_id: sid.clone(),
+            service_name: service_name.to_string(),
+            service_status: sstatus.clone(),
+            action_kind: "noop".to_string(),
+            target_kind: "service".to_string(),
+            target_id: sid,
+            reason: format!("service is {}", sstatus),
+            suppressed: true,
+            suppression_reason: Some("service has no recovery policy".to_string()),
+        };
+    };
+
+    let policy = recovery.policy.trim();
+
+    if policy.is_empty() {
+        return PlannedRecovery {
+            service_id: sid.clone(),
+            service_name: service_name.to_string(),
+            service_status: sstatus.clone(),
+            action_kind: "noop".to_string(),
+            target_kind: "service".to_string(),
+            target_id: sid,
+            reason: format!("service is {}", sstatus),
+            suppressed: true,
+            suppression_reason: Some("service has empty recovery policy".to_string()),
+        };
+    }
+
+    if !policy_matches_runtime(&runtime, policy) {
+        return PlannedRecovery {
+            service_id: sid.clone(),
+            service_name: service_name.to_string(),
+            service_status: sstatus.clone(),
+            action_kind: "noop".to_string(),
+            target_kind: "service".to_string(),
+            target_id: sid,
+            reason: format!("service is {}", sstatus),
+            suppressed: true,
+            suppression_reason: Some(format!(
+                "recovery policy '{}' is incompatible with runtime '{}'",
+                policy, runtime
+            )),
+        };
+    }
+
+    match policy {
+        "restart_command" => PlannedRecovery {
+            service_id: sid.clone(),
+            service_name: service_name.to_string(),
+            service_status: sstatus.clone(),
+            action_kind: "restart_command".to_string(),
+            target_kind: "service".to_string(),
+            target_id: sid,
+            reason: format!("service is {}", sstatus),
+            suppressed: false,
+            suppression_reason: None,
+        },
+        "docker_restart" => {
+            if service_has_binding(snapshot, service_name) {
+                let tid = service_entity(snapshot, service_name)
+                    .and_then(|e| e.attrs.get("bindings"))
+                    .and_then(|v| v.as_array())
+                    .and_then(|bindings| {
+                        bindings.iter().find_map(|b| {
+                            let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let target_kind =
+                                b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
+                            let target_id =
+                                b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
+
+                            if bound && target_kind == "container" && !target_id.is_empty() {
+                                Some(target_id.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                if let Some(target_id) = tid {
+                    PlannedRecovery {
+                        service_id: sid.clone(),
+                        service_name: service_name.to_string(),
+                        service_status: sstatus.clone(),
+                        action_kind: "restart_container".to_string(),
+                        target_kind: "container".to_string(),
+                        target_id,
+                        reason: format!("service is {}", sstatus),
+                        suppressed: false,
+                        suppression_reason: None,
+                    }
+                } else {
+                    PlannedRecovery {
+                        service_id: sid.clone(),
+                        service_name: service_name.to_string(),
+                        service_status: sstatus.clone(),
+                        action_kind: "noop".to_string(),
+                        target_kind: "service".to_string(),
+                        target_id: sid,
+                        reason: format!("service is {}", sstatus),
+                        suppressed: true,
+                        suppression_reason: Some(
+                            "service has binding metadata but no bound container target"
+                                .to_string(),
+                        ),
+                    }
+                }
+            } else {
+                PlannedRecovery {
+                    service_id: sid.clone(),
+                    service_name: service_name.to_string(),
+                    service_status: sstatus.clone(),
+                    action_kind: "noop".to_string(),
+                    target_kind: "service".to_string(),
+                    target_id: sid,
+                    reason: format!("service is {}", sstatus),
+                    suppressed: true,
+                    suppression_reason: Some("service is unbound".to_string()),
+                }
+            }
+        }
+        "docker_start" => {
+            if let Some(container_name) = declared_container_name(snapshot, service_name) {
+                PlannedRecovery {
+                    service_id: sid.clone(),
+                    service_name: service_name.to_string(),
+                    service_status: sstatus.clone(),
+                    action_kind: "start_container".to_string(),
+                    target_kind: "container_name".to_string(),
+                    target_id: container_name,
+                    reason: format!("service is {}", sstatus),
+                    suppressed: false,
+                    suppression_reason: None,
+                }
+            } else {
+                PlannedRecovery {
+                    service_id: sid.clone(),
+                    service_name: service_name.to_string(),
+                    service_status: sstatus.clone(),
+                    action_kind: "noop".to_string(),
+                    target_kind: "service".to_string(),
+                    target_id: sid,
+                    reason: format!("service is {}", sstatus),
+                    suppressed: true,
+                    suppression_reason: Some(
+                        "service has no declared container_name binding".to_string(),
+                    ),
+                }
+            }
+        }
+        _ => PlannedRecovery {
+            service_id: sid.clone(),
+            service_name: service_name.to_string(),
+            service_status: sstatus.clone(),
+            action_kind: "noop".to_string(),
+            target_kind: "service".to_string(),
+            target_id: sid,
+            reason: format!("service is {}", sstatus),
+            suppressed: true,
+            suppression_reason: Some(format!("unsupported recovery policy '{}'", policy)),
+        },
+    }
 }
 
 fn mk_correlation_id(service_name: &str, cycle_id: &str) -> String {
@@ -45,272 +346,66 @@ fn mk_correlation_id(service_name: &str, cycle_id: &str) -> String {
     format!("recovery:{}:{}", s, c)
 }
 
-fn mk_action_id(cycle_id: &str, correlation_id: &str) -> String {
-    let c = ids::sanitize_id_component(cycle_id);
+fn mk_action_id(correlation_id: &str, cycle_id: &str) -> String {
     let x = ids::sanitize_id_component(correlation_id);
+    let c = ids::sanitize_id_component(cycle_id);
     format!("action:{}:planned:{}", x, c)
 }
 
-fn mk_event_id(cycle_id: &str, service_id: &str, suffix: &str) -> String {
-    let c = ids::sanitize_id_component(cycle_id);
-    let s = ids::sanitize_id_component(service_id);
+fn mk_event_id(service_name: &str, suffix: &str, cycle_id: &str) -> String {
+    let s = ids::sanitize_id_component(service_name);
     let x = ids::sanitize_id_component(suffix);
+    let c = ids::sanitize_id_component(cycle_id);
     format!("event:{}:{}:{}", s, x, c)
 }
 
-fn is_service_allowed(service_name: &str, allow: &Option<Vec<String>>) -> bool {
-    match allow {
-        None => true,
-        Some(list) if list.is_empty() => true,
-        Some(list) => list.iter().any(|x| x.eq_ignore_ascii_case(service_name)),
-    }
-}
-
-fn service_has_binding(attrs: &serde_json::Value) -> bool {
-    attrs
-        .get("binding")
-        .and_then(|b| b.get("bound"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
-fn service_runtime(attrs: &serde_json::Value) -> Option<&str> {
-    attrs.get("runtime").and_then(|v| v.as_str())
-}
-
-fn find_registry_service<'a>(cfg: &'a Config, service_name: &str) -> Option<&'a ServiceRegistryService> {
-    cfg.find_registry_service(service_name)
-}
-
-fn planned_action_exists(snapshot: &Snapshot, service_name: &str) -> bool {
-    let wanted = norm(service_name);
-    snapshot.actions.iter().any(|a| {
-        a.phase == "planned"
-            && norm(&a.service_name) == wanted
-            && a.origin == "recovery_planner"
-    })
-}
-
-fn policy_matches_runtime(runtime: Option<&str>, policy: &str) -> bool {
-    matches!(
-        (runtime.unwrap_or(""), policy),
-        ("process", "restart_command")
-            | ("container", "docker_restart")
-            | ("container", "docker_start")
-            | ("", "restart_container")
-            | ("", "start_container")
-            | ("", "restart_process")
-    )
-}
-
-fn resolve_restart_command(_recovery: &ServiceRecoverySpec) -> bool {
-    true
-}
-
-fn plan_from_registry_policy(
-    attrs: &serde_json::Value,
-    svc: &ServiceRegistryService,
-) -> Option<(String, String, String)> {
-    let runtime = service_runtime(attrs);
-    let recovery = svc.recovery.as_ref()?;
-    let policy = recovery.policy.trim();
-    if policy.is_empty() || !policy_matches_runtime(runtime, policy) {
-        return None;
-    }
-
-    let bindings = attrs
-        .get("bindings")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    match policy {
-        "docker_restart" => {
-            for b in &bindings {
-                let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
-                let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-                let target_id = b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
-                if bound && target_kind == "container" && !target_id.is_empty() {
-                    return Some((
-                        "restart_container".to_string(),
-                        "container".to_string(),
-                        target_id.to_string(),
-                    ));
-                }
-            }
-            None
-        }
-        "docker_start" => {
-            for b in &bindings {
-                let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-                let via = b.get("via").and_then(|v| v.as_str()).unwrap_or("");
-                let wanted = b
-                    .get("wanted")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if target_kind == "container" && via == "container_name" && !wanted.is_empty() {
-                    return Some((
-                        "start_container".to_string(),
-                        "container_name".to_string(),
-                        wanted.to_string(),
-                    ));
-                }
-            }
-            None
-        }
-        "restart_command" => {
-            if resolve_restart_command(recovery) {
-                Some((
-                    "restart_command".to_string(),
-                    "service".to_string(),
-                    svc.name.clone(),
-                ))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn choose_recovery_target_legacy(attrs: &serde_json::Value) -> Option<(String, String, String)> {
-    let bindings = attrs
-        .get("bindings")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    for b in &bindings {
-        let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
-        let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-        let target_id = b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
-        if bound && target_kind == "container" && !target_id.is_empty() {
-            return Some((
-                "restart_container".to_string(),
-                "container".to_string(),
-                target_id.to_string(),
-            ));
-        }
-    }
-
-    for b in &bindings {
-        let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
-        let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-        let via = b.get("via").and_then(|v| v.as_str()).unwrap_or("");
-        let wanted = b
-            .get("wanted")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if !bound && target_kind == "container" && via == "container_name" && !wanted.is_empty() {
-            return Some((
-                "start_container".to_string(),
-                "container_name".to_string(),
-                wanted.to_string(),
-            ));
-        }
-    }
-
-    for b in &bindings {
-        let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
-        let target_kind = b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-        let target_id = b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
-        if bound && target_kind == "process" && !target_id.is_empty() {
-            return Some((
-                "restart_process".to_string(),
-                "process".to_string(),
-                target_id.to_string(),
-            ));
-        }
-    }
-
-    None
+fn snapshot_history_path(cfg: &Config) -> Option<PathBuf> {
+    let file_json = cfg.outputs.file_json.as_ref()?;
+    Some(PathBuf::from(file_json.path.clone()))
 }
 
 fn load_previous_snapshot(cfg: &Config) -> Option<Snapshot> {
-    let file_cfg = cfg.outputs.file_json.as_ref()?;
-    if !file_cfg.enabled {
-        return None;
-    }
-    let raw = fs::read_to_string(&file_cfg.path).ok()?;
-    serde_json::from_str::<Snapshot>(&raw).ok()
+    let path = snapshot_history_path(cfg)?;
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Snapshot>(&text).ok()
 }
 
-fn collect_recovery_history(
-    previous: Option<&Snapshot>,
+fn collect_attempt_history(
+    snapshot: Option<&Snapshot>,
     service_name: &str,
-    observed_at: DateTime<Utc>,
-    window_s: u64,
-) -> RecoveryHistory {
-    let Some(prev) = previous else {
-        return RecoveryHistory {
-            last_attempt_at: None,
-            attempts_in_window: 0,
-        };
+    now: DateTime<Utc>,
+    attempt_window_s: i64,
+) -> (Option<DateTime<Utc>>, usize) {
+    let Some(snapshot) = snapshot else {
+        return (None, 0);
     };
 
     let wanted = norm(service_name);
-    let mut correlations_in_window = BTreeSet::new();
     let mut last_attempt_at: Option<DateTime<Utc>> = None;
+    let mut attempts_in_window = 0usize;
 
-    for action in &prev.actions {
+    for action in &snapshot.actions {
         if norm(&action.service_name) != wanted {
             continue;
         }
-        if action.origin != "recovery_planner" {
-            continue;
-        }
-        if action.suppressed {
+
+        if !is_real_attempt(action) {
             continue;
         }
 
         let ts = action.observed_at_utc;
-        if last_attempt_at.map(|x| ts > x).unwrap_or(true) {
+
+        if last_attempt_at.map(|prev| ts > prev).unwrap_or(true) {
             last_attempt_at = Some(ts);
         }
 
-        let age_s = observed_at.signed_duration_since(ts).num_seconds();
-        if age_s >= 0 && (age_s as u64) <= window_s {
-            correlations_in_window.insert(action.correlation_id.clone());
+        let age_s = now.signed_duration_since(ts).num_seconds();
+        if age_s >= 0 && age_s <= attempt_window_s {
+            attempts_in_window += 1;
         }
     }
 
-    RecoveryHistory {
-        last_attempt_at,
-        attempts_in_window: correlations_in_window.len(),
-    }
-}
-
-fn make_suppressed_action(
-    cycle_id: &str,
-    correlation_id: &str,
-    observed_at: DateTime<Utc>,
-    dry_run: bool,
-    plan: &PlannedRecovery,
-    message: Option<String>,
-) -> ActionRecord {
-    ActionRecord {
-        id: mk_action_id(cycle_id, correlation_id),
-        correlation_id: correlation_id.to_string(),
-        origin: "recovery_planner".to_string(),
-        kind: plan.action_kind.clone(),
-        phase: "planned".to_string(),
-        status: "suppressed".to_string(),
-        service_id: plan.service_id.clone(),
-        service_name: plan.service_name.clone(),
-        target_kind: plan.target_kind.clone(),
-        target_id: plan.target_id.clone(),
-        reason: Some(plan.reason.clone()),
-        message,
-        dry_run,
-        suppressed: true,
-        exit_code: None,
-        duration_ms: None,
-        stdout: None,
-        stderr: None,
-        observed_at_utc: observed_at,
-    }
+    (last_attempt_at, attempts_in_window)
 }
 
 impl Plugin for RecoveryPlannerPlugin {
@@ -318,438 +413,278 @@ impl Plugin for RecoveryPlannerPlugin {
         "recovery_planner"
     }
 
-    fn apply(&self, snapshot: &mut Snapshot, cfg: &crate::config::Config) -> Result<()> {
+    fn apply(&self, snapshot: &mut Snapshot, cfg: &Config) -> Result<()> {
         let rcfg = match cfg.auto_recovery.as_ref() {
             Some(r) if r.enabled => r,
             _ => return Ok(()),
         };
 
+        let dry_run = rcfg.dry_run.unwrap_or(true);
+        let cooldown_s = rcfg.cooldown_s.unwrap_or(60) as i64;
+        let max_attempts_per_window = rcfg.max_attempts_per_window.unwrap_or(3) as usize;
+        let attempt_window_s = rcfg.attempt_window_s.unwrap_or(300) as i64;
+
         let observed_at = snapshot.meta.observed_at_utc;
         let cycle_id = snapshot.meta.cycle_id.clone();
-        let dry_run = rcfg.dry_run.unwrap_or(true);
-        let allow_services = rcfg.allow_services.clone();
-        let cooldown_s = rcfg.cooldown_s.unwrap_or(60);
-        let max_attempts_per_window = rcfg.max_attempts_per_window.unwrap_or(3) as usize;
-        let attempt_window_s = rcfg.attempt_window_s.unwrap_or(300);
-        let previous_snapshot = load_previous_snapshot(cfg);
 
-        let service_views: Vec<(String, String, String, serde_json::Value)> = snapshot
-            .entities
-            .iter()
-            .filter(|e| e.kind == "service")
-            .map(|e| {
-                let name = e
-                    .attrs
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&e.id)
-                    .to_string();
-                let status = e
-                    .attrs
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                (e.id.clone(), name, status, e.attrs.clone())
-            })
-            .collect();
+        let previous_snapshot = load_previous_snapshot(cfg);
 
         let mut new_actions = Vec::new();
         let mut new_events = Vec::new();
 
-        for (service_id, service_name, service_status, attrs) in service_views {
-            if !matches!(service_status.as_str(), "degraded" | "unavailable") {
-                continue;
-            }
-            if planned_action_exists(snapshot, &service_name) {
+        for service_name in find_recovery_candidate_services(snapshot) {
+            if existing_open_remediation(snapshot, &service_name) {
                 continue;
             }
 
-            let correlation_id = mk_correlation_id(&service_name, &cycle_id);
-
-            if !is_service_allowed(&service_name, &allow_services) {
-                let plan = PlannedRecovery {
-                    service_id: service_id.clone(),
-                    service_name: service_name.clone(),
-                    service_status: service_status.clone(),
-                    action_kind: "noop".to_string(),
-                    target_kind: "service".to_string(),
-                    target_id: service_id.clone(),
-                    reason: format!("service is {}", service_status),
-                    suppressed: true,
-                    suppression_reason: Some("service is not in allow_services".to_string()),
-                };
-                new_actions.push(make_suppressed_action(
-                    &cycle_id,
-                    &correlation_id,
-                    observed_at,
-                    dry_run,
-                    &plan,
-                    plan.suppression_reason.clone(),
-                ));
+            let Some(registry_service) = cfg.find_registry_service(&service_name) else {
+                let sid = service_id(snapshot, &service_name);
                 new_events.push(Event {
-                    id: mk_event_id(&cycle_id, &service_id, "recovery_suppressed_not_allowed"),
-                    kind: "recovery_suppressed_not_allowed".to_string(),
-                    severity: "info".to_string(),
-                    target: service_id.clone(),
+                    id: mk_event_id(&service_name, "recovery_missing_registry", &cycle_id),
+                    kind: "recovery_missing_registry".to_string(),
+                    severity: "warning".to_string(),
+                    target: sid,
                     message: format!(
-                        "Recovery planning suppressed for service '{}' because it is not in allow_services",
+                        "recovery planning skipped for service '{}' because it is not in service_registry",
                         service_name
                     ),
-                    correlation_id: Some(correlation_id),
+                    correlation_id: None,
                     source_plugin: Some("recovery_planner".to_string()),
-                    status: Some("suppressed".to_string()),
+                    status: Some("open".to_string()),
                     details: Some(json!({
                         "service_name": service_name,
-                        "service_status": service_status,
-                        "allow_services": allow_services,
-                        "suppression_reason": "service is not in allow_services",
-                        "dry_run": dry_run
+                        "reason": "missing service_registry entry"
                     })),
                     observed_at_utc: observed_at,
                 });
                 continue;
-            }
+            };
 
-            let history = collect_recovery_history(
+            let sid = service_id(snapshot, &service_name);
+            let correlation_id = mk_correlation_id(&service_name, &cycle_id);
+
+            let (last_attempt_at, attempts_in_window) = collect_attempt_history(
                 previous_snapshot.as_ref(),
                 &service_name,
                 observed_at,
                 attempt_window_s,
             );
 
-            if let Some(last_attempt_at) = history.last_attempt_at {
-                let elapsed_s = observed_at
-                    .signed_duration_since(last_attempt_at)
-                    .num_seconds()
-                    .max(0) as u64;
-                if elapsed_s < cooldown_s {
-                    let suppression_reason = format!(
-                        "cooldown active: last recovery attempt was {}s ago and cooldown is {}s",
-                        elapsed_s, cooldown_s
+            let seconds_since_last_attempt = last_attempt_at
+                .map(|ts| observed_at.signed_duration_since(ts).num_seconds());
+
+            if let Some(delta_s) = seconds_since_last_attempt {
+                if delta_s >= 0 && delta_s < cooldown_s {
+                    let reason = format!(
+                        "cooldown active: last recovery attempt for '{}' happened {}s ago (cooldown={}s)",
+                        service_name, delta_s, cooldown_s
                     );
-                    let plan = PlannedRecovery {
-                        service_id: service_id.clone(),
+
+                    let action = ActionRecord {
+                        id: mk_action_id(&correlation_id, &cycle_id),
+                        correlation_id: correlation_id.clone(),
+                        origin: "recovery_planner".to_string(),
+                        kind: "noop".to_string(),
+                        phase: "planned".to_string(),
+                        status: "suppressed".to_string(),
+                        service_id: sid.clone(),
                         service_name: service_name.clone(),
-                        service_status: service_status.clone(),
-                        action_kind: "noop".to_string(),
                         target_kind: "service".to_string(),
-                        target_id: service_id.clone(),
-                        reason: format!("service is {}", service_status),
-                        suppressed: true,
-                        suppression_reason: Some(suppression_reason.clone()),
-                    };
-                    new_actions.push(make_suppressed_action(
-                        &cycle_id,
-                        &correlation_id,
-                        observed_at,
+                        target_id: sid.clone(),
+                        reason: Some("recovery cooldown suppression".to_string()),
+                        message: Some(reason.clone()),
                         dry_run,
-                        &plan,
-                        Some(suppression_reason.clone()),
-                    ));
+                        suppressed: true,
+                        exit_code: None,
+                        duration_ms: None,
+                        stdout: None,
+                        stderr: None,
+                        observed_at_utc: observed_at,
+                    };
+
+                    new_actions.push(action);
+
                     new_events.push(Event {
-                        id: mk_event_id(&cycle_id, &service_id, "recovery_suppressed_cooldown"),
+                        id: mk_event_id(&service_name, "recovery_suppressed_cooldown", &cycle_id),
                         kind: "recovery_suppressed_cooldown".to_string(),
                         severity: "info".to_string(),
-                        target: service_id.clone(),
-                        message: format!(
-                            "Recovery suppressed for service '{}': cooldown active ({}s < {}s)",
-                            service_name, elapsed_s, cooldown_s
-                        ),
-                        correlation_id: Some(correlation_id),
+                        target: sid.clone(),
+                        message: reason,
+                        correlation_id: Some(correlation_id.clone()),
                         source_plugin: Some("recovery_planner".to_string()),
                         status: Some("suppressed".to_string()),
                         details: Some(json!({
                             "service_name": service_name,
-                            "service_status": service_status,
                             "cooldown_s": cooldown_s,
-                            "seconds_since_last_attempt": elapsed_s,
                             "last_attempt_at_utc": last_attempt_at,
+                            "seconds_since_last_attempt": delta_s,
+                            "attempts_in_window": attempts_in_window,
                             "attempt_window_s": attempt_window_s,
-                            "attempts_in_window": history.attempts_in_window,
                             "max_attempts_per_window": max_attempts_per_window,
-                            "suppression_reason": suppression_reason,
-                            "dry_run": dry_run
+                            "counted_origins": ["recovery_planner", "desired_state_planner"]
                         })),
                         observed_at_utc: observed_at,
                     });
+
                     continue;
                 }
             }
 
-            if history.attempts_in_window >= max_attempts_per_window {
-                let suppression_reason = format!(
-                    "attempt window exceeded: {} attempts in last {}s (max={})",
-                    history.attempts_in_window, attempt_window_s, max_attempts_per_window
+            if attempts_in_window >= max_attempts_per_window {
+                let reason = format!(
+                    "attempt window exceeded for '{}': {} attempts in {}s (max={})",
+                    service_name, attempts_in_window, attempt_window_s, max_attempts_per_window
                 );
-                let plan = PlannedRecovery {
-                    service_id: service_id.clone(),
-                    service_name: service_name.clone(),
-                    service_status: service_status.clone(),
-                    action_kind: "noop".to_string(),
-                    target_kind: "service".to_string(),
-                    target_id: service_id.clone(),
-                    reason: format!("service is {}", service_status),
-                    suppressed: true,
-                    suppression_reason: Some(suppression_reason.clone()),
-                };
-                new_actions.push(make_suppressed_action(
-                    &cycle_id,
-                    &correlation_id,
-                    observed_at,
-                    dry_run,
-                    &plan,
-                    Some(suppression_reason.clone()),
-                ));
-                new_events.push(Event {
-                    id: mk_event_id(
-                        &cycle_id,
-                        &service_id,
-                        "recovery_suppressed_attempt_window",
-                    ),
-                    kind: "recovery_suppressed_attempt_window".to_string(),
-                    severity: "warning".to_string(),
-                    target: service_id.clone(),
-                    message: format!(
-                        "Recovery suppressed for service '{}': too many attempts in time window",
-                        service_name
-                    ),
-                    correlation_id: Some(correlation_id),
-                    source_plugin: Some("recovery_planner".to_string()),
-                    status: Some("suppressed".to_string()),
-                    details: Some(json!({
-                        "service_name": service_name,
-                        "service_status": service_status,
-                        "cooldown_s": cooldown_s,
-                        "attempt_window_s": attempt_window_s,
-                        "attempts_in_window": history.attempts_in_window,
-                        "max_attempts_per_window": max_attempts_per_window,
-                        "last_attempt_at_utc": history.last_attempt_at,
-                        "suppression_reason": suppression_reason,
-                        "dry_run": dry_run
-                    })),
-                    observed_at_utc: observed_at,
-                });
-                continue;
-            }
 
-            let runtime = service_runtime(&attrs);
-            let registry_service = find_registry_service(cfg, &service_name);
-            let plan = if let Some(svc) = registry_service {
-                if let Some(recovery) = svc.recovery.as_ref() {
-                    if !policy_matches_runtime(runtime, recovery.policy.as_str()) {
-                        PlannedRecovery {
-                            service_id: service_id.clone(),
-                            service_name: service_name.clone(),
-                            service_status: service_status.clone(),
-                            action_kind: "noop".to_string(),
-                            target_kind: "service".to_string(),
-                            target_id: service_id.clone(),
-                            reason: "recovery policy is incompatible with service runtime".to_string(),
-                            suppressed: true,
-                            suppression_reason: Some("recovery policy mismatch".to_string()),
-                        }
-                    } else if let Some((action_kind, target_kind, target_id)) =
-                        plan_from_registry_policy(&attrs, svc)
-                    {
-                        PlannedRecovery {
-                            service_id: service_id.clone(),
-                            service_name: service_name.clone(),
-                            service_status: service_status.clone(),
-                            action_kind,
-                            target_kind,
-                            target_id,
-                            reason: format!("service is {}", service_status),
-                            suppressed: false,
-                            suppression_reason: None,
-                        }
-                    } else if !service_has_binding(&attrs) {
-                        PlannedRecovery {
-                            service_id: service_id.clone(),
-                            service_name: service_name.clone(),
-                            service_status: service_status.clone(),
-                            action_kind: "noop".to_string(),
-                            target_kind: "service".to_string(),
-                            target_id: service_id.clone(),
-                            reason: "service has no resolved binding".to_string(),
-                            suppressed: true,
-                            suppression_reason: Some("service is unbound".to_string()),
-                        }
-                    } else {
-                        PlannedRecovery {
-                            service_id: service_id.clone(),
-                            service_name: service_name.clone(),
-                            service_status: service_status.clone(),
-                            action_kind: "escalate".to_string(),
-                            target_kind: "service".to_string(),
-                            target_id: service_id.clone(),
-                            reason:
-                                "registry policy exists but planner could not infer a recovery target"
-                                    .to_string(),
-                            suppressed: true,
-                            suppression_reason: Some(
-                                "planner could not infer a recovery target from registry policy"
-                                    .to_string(),
-                            ),
-                        }
-                    }
-                } else if let Some((action_kind, target_kind, target_id)) =
-                    choose_recovery_target_legacy(&attrs)
-                {
-                    PlannedRecovery {
-                        service_id: service_id.clone(),
-                        service_name: service_name.clone(),
-                        service_status: service_status.clone(),
-                        action_kind,
-                        target_kind,
-                        target_id,
-                        reason: format!("service is {}", service_status),
-                        suppressed: false,
-                        suppression_reason: None,
-                    }
-                } else {
-                    PlannedRecovery {
-                        service_id: service_id.clone(),
-                        service_name: service_name.clone(),
-                        service_status: service_status.clone(),
-                        action_kind: "noop".to_string(),
-                        target_kind: "service".to_string(),
-                        target_id: service_id.clone(),
-                        reason: "service has no resolved binding".to_string(),
-                        suppressed: true,
-                        suppression_reason: Some("service is unbound".to_string()),
-                    }
-                }
-            } else if let Some((action_kind, target_kind, target_id)) =
-                choose_recovery_target_legacy(&attrs)
-            {
-                PlannedRecovery {
-                    service_id: service_id.clone(),
-                    service_name: service_name.clone(),
-                    service_status: service_status.clone(),
-                    action_kind,
-                    target_kind,
-                    target_id,
-                    reason: format!("service is {}", service_status),
-                    suppressed: false,
-                    suppression_reason: None,
-                }
-            } else {
-                PlannedRecovery {
-                    service_id: service_id.clone(),
-                    service_name: service_name.clone(),
-                    service_status: service_status.clone(),
-                    action_kind: "noop".to_string(),
-                    target_kind: "service".to_string(),
-                    target_id: service_id.clone(),
-                    reason: "service has no resolved binding".to_string(),
-                    suppressed: true,
-                    suppression_reason: Some("service is unbound".to_string()),
-                }
-            };
-
-            if plan.suppressed {
-                let suppression_reason_for_message = plan
-                    .suppression_reason
-                    .clone()
-                    .unwrap_or_else(|| "unknown reason".to_string());
-                let suppression_reason_for_details = plan.suppression_reason.clone();
-
-                new_actions.push(make_suppressed_action(
-                    &cycle_id,
-                    &correlation_id,
-                    observed_at,
-                    dry_run,
-                    &plan,
-                    plan.suppression_reason.clone(),
-                ));
-
-                new_events.push(Event {
-                    id: mk_event_id(&cycle_id, &service_id, "recovery_suppressed"),
-                    kind: "recovery_suppressed".to_string(),
-                    severity: "info".to_string(),
-                    target: plan.service_id.clone(),
-                    message: format!(
-                        "Recovery plan suppressed for service '{}': {}",
-                        plan.service_name, suppression_reason_for_message
-                    ),
-                    correlation_id: Some(correlation_id),
-                    source_plugin: Some("recovery_planner".to_string()),
-                    status: Some("suppressed".to_string()),
-                    details: Some(json!({
-                        "service_name": plan.service_name,
-                        "service_status": plan.service_status,
-                        "action_kind": plan.action_kind,
-                        "target_kind": plan.target_kind,
-                        "target_id": plan.target_id,
-                        "reason": plan.reason,
-                        "suppressed": true,
-                        "suppression_reason": suppression_reason_for_details,
-                        "cooldown_s": cooldown_s,
-                        "attempt_window_s": attempt_window_s,
-                        "attempts_in_window": history.attempts_in_window,
-                        "max_attempts_per_window": max_attempts_per_window,
-                        "last_attempt_at_utc": history.last_attempt_at,
-                        "dry_run": dry_run
-                    })),
-                    observed_at_utc: observed_at,
-                });
-            } else {
-                new_actions.push(ActionRecord {
-                    id: mk_action_id(&cycle_id, &correlation_id),
+                let action = ActionRecord {
+                    id: mk_action_id(&correlation_id, &cycle_id),
                     correlation_id: correlation_id.clone(),
                     origin: "recovery_planner".to_string(),
-                    kind: plan.action_kind.clone(),
+                    kind: "noop".to_string(),
                     phase: "planned".to_string(),
-                    status: "pending".to_string(),
-                    service_id: plan.service_id.clone(),
-                    service_name: plan.service_name.clone(),
-                    target_kind: plan.target_kind.clone(),
-                    target_id: plan.target_id.clone(),
-                    reason: Some(plan.reason.clone()),
-                    message: None,
+                    status: "suppressed".to_string(),
+                    service_id: sid.clone(),
+                    service_name: service_name.clone(),
+                    target_kind: "service".to_string(),
+                    target_id: sid.clone(),
+                    reason: Some("recovery attempt-window suppression".to_string()),
+                    message: Some(reason.clone()),
                     dry_run,
-                    suppressed: false,
+                    suppressed: true,
                     exit_code: None,
                     duration_ms: None,
                     stdout: None,
                     stderr: None,
                     observed_at_utc: observed_at,
-                });
+                };
+
+                new_actions.push(action);
 
                 new_events.push(Event {
-                    id: mk_event_id(&cycle_id, &service_id, "recovery_planned"),
-                    kind: "recovery_planned".to_string(),
-                    severity: "warning".to_string(),
-                    target: plan.service_id.clone(),
-                    message: format!(
-                        "Recovery planned for service '{}': action={} target_kind={} target_id={} dry_run={}",
-                        plan.service_name, plan.action_kind, plan.target_kind, plan.target_id, dry_run
+                    id: mk_event_id(
+                        &service_name,
+                        "recovery_suppressed_attempt_window",
+                        &cycle_id,
                     ),
-                    correlation_id: Some(correlation_id),
+                    kind: "recovery_suppressed_attempt_window".to_string(),
+                    severity: "warning".to_string(),
+                    target: sid.clone(),
+                    message: reason,
+                    correlation_id: Some(correlation_id.clone()),
                     source_plugin: Some("recovery_planner".to_string()),
-                    status: Some("planned".to_string()),
+                    status: Some("suppressed".to_string()),
                     details: Some(json!({
-                        "service_name": plan.service_name,
-                        "service_status": plan.service_status,
-                        "action_kind": plan.action_kind,
-                        "target_kind": plan.target_kind,
-                        "target_id": plan.target_id,
-                        "reason": plan.reason,
+                        "service_name": service_name,
                         "cooldown_s": cooldown_s,
+                        "last_attempt_at_utc": last_attempt_at,
+                        "seconds_since_last_attempt": seconds_since_last_attempt,
+                        "attempts_in_window": attempts_in_window,
                         "attempt_window_s": attempt_window_s,
-                        "attempts_in_window": history.attempts_in_window,
                         "max_attempts_per_window": max_attempts_per_window,
-                        "last_attempt_at_utc": history.last_attempt_at,
-                        "dry_run": dry_run
+                        "counted_origins": ["recovery_planner", "desired_state_planner"]
                     })),
                     observed_at_utc: observed_at,
                 });
+
+                continue;
             }
+
+            let plan = plan_from_registry(snapshot, &service_name, registry_service);
+
+            let action_status = if plan.suppressed {
+                "suppressed".to_string()
+            } else {
+                "pending".to_string()
+            };
+
+            let suppression_reason_for_message = plan
+                .suppression_reason
+                .clone()
+                .unwrap_or_else(|| "unknown reason".to_string());
+
+            let suppression_reason_for_details = plan.suppression_reason.clone();
+
+            let (event_kind, severity, message) = if plan.suppressed {
+                (
+                    "recovery_suppressed".to_string(),
+                    "info".to_string(),
+                    format!(
+                        "Recovery plan suppressed for service '{}': {}",
+                        plan.service_name, suppression_reason_for_message
+                    ),
+                )
+            } else {
+                (
+                    "recovery_planned".to_string(),
+                    "warning".to_string(),
+                    format!(
+                        "Recovery planned for service '{}': kind={} target_kind={} target_id={}",
+                        plan.service_name, plan.action_kind, plan.target_kind, plan.target_id
+                    ),
+                )
+            };
+
+            let action = ActionRecord {
+                id: mk_action_id(&correlation_id, &cycle_id),
+                correlation_id: correlation_id.clone(),
+                origin: "recovery_planner".to_string(),
+                kind: plan.action_kind.clone(),
+                phase: "planned".to_string(),
+                status: action_status,
+                service_id: plan.service_id.clone(),
+                service_name: plan.service_name.clone(),
+                target_kind: plan.target_kind.clone(),
+                target_id: plan.target_id.clone(),
+                reason: Some(plan.reason.clone()),
+                message: plan.suppression_reason.clone(),
+                dry_run,
+                suppressed: plan.suppressed,
+                exit_code: None,
+                duration_ms: None,
+                stdout: None,
+                stderr: None,
+                observed_at_utc: observed_at,
+            };
+
+            new_actions.push(action);
+
+            new_events.push(Event {
+                id: mk_event_id(&plan.service_name, &event_kind, &cycle_id),
+                kind: event_kind,
+                severity,
+                target: plan.service_id.clone(),
+                message,
+                correlation_id: Some(correlation_id),
+                source_plugin: Some("recovery_planner".to_string()),
+                status: Some(if plan.suppressed {
+                    "suppressed".to_string()
+                } else {
+                    "planned".to_string()
+                }),
+                details: Some(json!({
+                    "service_name": plan.service_name,
+                    "service_status": plan.service_status,
+                    "action_kind": plan.action_kind,
+                    "target_kind": plan.target_kind,
+                    "target_id": plan.target_id,
+                    "reason": plan.reason,
+                    "suppressed": plan.suppressed,
+                    "suppression_reason": suppression_reason_for_details,
+                    "dry_run": dry_run,
+                    "last_attempt_at_utc": last_attempt_at,
+                    "seconds_since_last_attempt": seconds_since_last_attempt,
+                    "attempts_in_window": attempts_in_window,
+                    "attempt_window_s": attempt_window_s,
+                    "max_attempts_per_window": max_attempts_per_window,
+                    "counted_origins": ["recovery_planner", "desired_state_planner"]
+                })),
+                observed_at_utc: observed_at,
+            });
         }
 
         snapshot.actions.extend(new_actions);
         snapshot.events.extend(new_events);
+
         Ok(())
     }
 }

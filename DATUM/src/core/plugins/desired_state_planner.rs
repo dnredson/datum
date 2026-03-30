@@ -1,4 +1,8 @@
+use std::fs;
+use std::path::PathBuf;
+
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::config::{Config, ServiceRegistryService};
@@ -105,12 +109,40 @@ fn declared_container_name(snapshot: &Snapshot, name: &str) -> Option<String> {
     })
 }
 
+fn is_remediation_origin(origin: &str) -> bool {
+    origin == "recovery_planner" || origin == "desired_state_planner"
+}
+
+fn is_real_attempt(action: &ActionRecord) -> bool {
+    if action.suppressed {
+        return false;
+    }
+
+    if !is_remediation_origin(&action.origin) {
+        return false;
+    }
+
+    matches!(action.phase.as_str(), "planned" | "executing" | "finished")
+}
+
+fn existing_open_remediation(snapshot: &Snapshot, service_name: &str) -> bool {
+    let wanted = norm(service_name);
+
+    snapshot.actions.iter().any(|a| {
+        norm(&a.service_name) == wanted
+            && !a.suppressed
+            && is_remediation_origin(&a.origin)
+            && matches!(a.phase.as_str(), "planned" | "executing")
+    })
+}
+
 fn planned_action_exists(snapshot: &Snapshot, service_name: &str) -> bool {
     let wanted = norm(service_name);
-    snapshot
-        .actions
-        .iter()
-        .any(|a| a.phase == "planned" && norm(&a.service_name) == wanted)
+    snapshot.actions.iter().any(|a| {
+        norm(&a.service_name) == wanted
+            && a.phase == "planned"
+            && is_remediation_origin(&a.origin)
+    })
 }
 
 fn policy_matches_runtime(runtime: &str, policy: &str) -> bool {
@@ -232,6 +264,55 @@ fn plan_from_registry(
     }
 }
 
+fn snapshot_history_path(cfg: &Config) -> Option<PathBuf> {
+    let file_json = cfg.outputs.file_json.as_ref()?;
+    Some(PathBuf::from(file_json.path.clone()))
+}
+
+fn load_previous_snapshot(cfg: &Config) -> Option<Snapshot> {
+    let path = snapshot_history_path(cfg)?;
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Snapshot>(&text).ok()
+}
+
+fn collect_attempt_history(
+    snapshot: Option<&Snapshot>,
+    service_name: &str,
+    now: DateTime<Utc>,
+    attempt_window_s: i64,
+) -> (Option<DateTime<Utc>>, usize) {
+    let Some(snapshot) = snapshot else {
+        return (None, 0);
+    };
+
+    let wanted = norm(service_name);
+    let mut last_attempt_at: Option<DateTime<Utc>> = None;
+    let mut attempts_in_window = 0usize;
+
+    for action in &snapshot.actions {
+        if norm(&action.service_name) != wanted {
+            continue;
+        }
+
+        if !is_real_attempt(action) {
+            continue;
+        }
+
+        let ts = action.observed_at_utc;
+
+        if last_attempt_at.map(|prev| ts > prev).unwrap_or(true) {
+            last_attempt_at = Some(ts);
+        }
+
+        let age_s = now.signed_duration_since(ts).num_seconds();
+        if age_s >= 0 && age_s <= attempt_window_s {
+            attempts_in_window += 1;
+        }
+    }
+
+    (last_attempt_at, attempts_in_window)
+}
+
 impl Plugin for DesiredStatePlannerPlugin {
     fn name(&self) -> &'static str {
         "desired_state_planner"
@@ -249,8 +330,28 @@ impl Plugin for DesiredStatePlannerPlugin {
             .and_then(|r| r.dry_run)
             .unwrap_or(true);
 
+        let cooldown_s = cfg
+            .auto_recovery
+            .as_ref()
+            .and_then(|r| r.cooldown_s)
+            .unwrap_or(60) as i64;
+
+        let max_attempts_per_window = cfg
+            .auto_recovery
+            .as_ref()
+            .and_then(|r| r.max_attempts_per_window)
+            .unwrap_or(3) as usize;
+
+        let attempt_window_s = cfg
+            .auto_recovery
+            .as_ref()
+            .and_then(|r| r.attempt_window_s)
+            .unwrap_or(300) as i64;
+
         let observed_at = snapshot.meta.observed_at_utc;
         let cycle_id = snapshot.meta.cycle_id.clone();
+
+        let previous_snapshot = load_previous_snapshot(cfg);
 
         let mut new_actions = Vec::new();
         let mut new_events = Vec::new();
@@ -260,7 +361,7 @@ impl Plugin for DesiredStatePlannerPlugin {
                 continue;
             }
 
-            if planned_action_exists(snapshot, &ds.name) {
+            if planned_action_exists(snapshot, &ds.name) || existing_open_remediation(snapshot, &ds.name) {
                 continue;
             }
 
@@ -270,13 +371,140 @@ impl Plugin for DesiredStatePlannerPlugin {
             }
 
             let service_target_id = service_id(snapshot, &ds.name);
+            let correlation_id = mk_correlation_id(&ds.name, &cycle_id);
+
+            let (last_attempt_at, attempts_in_window) = collect_attempt_history(
+                previous_snapshot.as_ref(),
+                &ds.name,
+                observed_at,
+                attempt_window_s,
+            );
+
+            let seconds_since_last_attempt = last_attempt_at
+                .map(|ts| observed_at.signed_duration_since(ts).num_seconds());
+
+            if let Some(delta_s) = seconds_since_last_attempt {
+                if delta_s >= 0 && delta_s < cooldown_s {
+                    let reason = format!(
+                        "desired_state cooldown active for '{}': last remediation happened {}s ago (cooldown={}s)",
+                        ds.name, delta_s, cooldown_s
+                    );
+
+                    let action = ActionRecord {
+                        id: mk_action_id(&cycle_id, &correlation_id),
+                        correlation_id: correlation_id.clone(),
+                        origin: "desired_state_planner".to_string(),
+                        kind: "noop".to_string(),
+                        phase: "planned".to_string(),
+                        status: "suppressed".to_string(),
+                        service_id: service_target_id.clone(),
+                        service_name: ds.name.clone(),
+                        target_kind: "service".to_string(),
+                        target_id: service_target_id.clone(),
+                        reason: Some("desired_state cooldown suppression".to_string()),
+                        message: Some(reason.clone()),
+                        dry_run,
+                        suppressed: true,
+                        exit_code: None,
+                        duration_ms: None,
+                        stdout: None,
+                        stderr: None,
+                        observed_at_utc: observed_at,
+                    };
+
+                    new_actions.push(action);
+
+                    new_events.push(Event {
+                        id: mk_event_id(&cycle_id, &ds.name, "desired_state_action_suppressed_cooldown"),
+                        kind: "desired_state_action_suppressed_cooldown".to_string(),
+                        severity: "info".to_string(),
+                        target: service_target_id.clone(),
+                        message: reason,
+                        correlation_id: Some(correlation_id.clone()),
+                        source_plugin: Some("desired_state_planner".to_string()),
+                        status: Some("suppressed".to_string()),
+                        details: Some(json!({
+                            "service_name": ds.name,
+                            "desired": ds.desired,
+                            "observed_status": status,
+                            "cooldown_s": cooldown_s,
+                            "last_attempt_at_utc": last_attempt_at,
+                            "seconds_since_last_attempt": delta_s,
+                            "attempts_in_window": attempts_in_window,
+                            "attempt_window_s": attempt_window_s,
+                            "max_attempts_per_window": max_attempts_per_window,
+                            "counted_origins": ["recovery_planner", "desired_state_planner"]
+                        })),
+                        observed_at_utc: observed_at,
+                    });
+
+                    continue;
+                }
+            }
+
+            if attempts_in_window >= max_attempts_per_window {
+                let reason = format!(
+                    "desired_state attempt window exceeded for '{}': {} attempts in {}s (max={})",
+                    ds.name, attempts_in_window, attempt_window_s, max_attempts_per_window
+                );
+
+                let action = ActionRecord {
+                    id: mk_action_id(&cycle_id, &correlation_id),
+                    correlation_id: correlation_id.clone(),
+                    origin: "desired_state_planner".to_string(),
+                    kind: "noop".to_string(),
+                    phase: "planned".to_string(),
+                    status: "suppressed".to_string(),
+                    service_id: service_target_id.clone(),
+                    service_name: ds.name.clone(),
+                    target_kind: "service".to_string(),
+                    target_id: service_target_id.clone(),
+                    reason: Some("desired_state attempt-window suppression".to_string()),
+                    message: Some(reason.clone()),
+                    dry_run,
+                    suppressed: true,
+                    exit_code: None,
+                    duration_ms: None,
+                    stdout: None,
+                    stderr: None,
+                    observed_at_utc: observed_at,
+                };
+
+                new_actions.push(action);
+
+                new_events.push(Event {
+                    id: mk_event_id(&cycle_id, &ds.name, "desired_state_action_suppressed_attempt_window"),
+                    kind: "desired_state_action_suppressed_attempt_window".to_string(),
+                    severity: "warning".to_string(),
+                    target: service_target_id.clone(),
+                    message: reason,
+                    correlation_id: Some(correlation_id.clone()),
+                    source_plugin: Some("desired_state_planner".to_string()),
+                    status: Some("suppressed".to_string()),
+                    details: Some(json!({
+                        "service_name": ds.name,
+                        "desired": ds.desired,
+                        "observed_status": status,
+                        "cooldown_s": cooldown_s,
+                        "last_attempt_at_utc": last_attempt_at,
+                        "seconds_since_last_attempt": seconds_since_last_attempt,
+                        "attempts_in_window": attempts_in_window,
+                        "attempt_window_s": attempt_window_s,
+                        "max_attempts_per_window": max_attempts_per_window,
+                        "counted_origins": ["recovery_planner", "desired_state_planner"]
+                    })),
+                    observed_at_utc: observed_at,
+                });
+
+                continue;
+            }
 
             let Some(registry_service) = cfg.find_registry_service(&ds.name) else {
                 new_events.push(Event {
                     id: mk_event_id(&cycle_id, &ds.name, "desired_state_missing_registry"),
                     kind: "desired_state_missing_registry".to_string(),
                     severity: "warning".to_string(),
-                    target: service_target_id,
+                    target: service_target_id.clone(),
                     message: format!(
                         "desired_state for service '{}' has no matching service_registry entry",
                         ds.name
@@ -299,8 +527,6 @@ impl Plugin for DesiredStatePlannerPlugin {
             else {
                 continue;
             };
-
-            let correlation_id = mk_correlation_id(&ds.name, &cycle_id);
 
             let action_reason =
                 Some(format!("desired_state=running but observed status is {}", status));
@@ -372,7 +598,13 @@ impl Plugin for DesiredStatePlannerPlugin {
                     "target_kind": target_kind,
                     "target_id": target_id,
                     "dry_run": dry_run,
-                    "suppression_reason": action_message
+                    "suppression_reason": action_message,
+                    "last_attempt_at_utc": last_attempt_at,
+                    "seconds_since_last_attempt": seconds_since_last_attempt,
+                    "attempts_in_window": attempts_in_window,
+                    "attempt_window_s": attempt_window_s,
+                    "max_attempts_per_window": max_attempts_per_window,
+                    "counted_origins": ["recovery_planner", "desired_state_planner"]
                 })),
                 observed_at_utc: observed_at,
             });

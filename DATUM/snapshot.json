@@ -2,8 +2,8 @@
   "meta": {
     "schema_version": "0.0.1",
     "agent_version": "0.1.0",
-    "cycle_id": "36209521-692a-4ed8-be99-70d2dd981d33",
-    "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+    "cycle_id": "57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+    "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
     "node_id": "fog-01",
     "host_id": "host:DESKTOP-UD4LDKG"
   },
@@ -17,11 +17,11 @@
         "system": {
           "arch_bits": 64,
           "cpu_logical": 12,
-          "cpu_usage_pct": 10,
+          "cpu_usage_pct": 8,
           "disks": [
             {
               "DeviceID": "C:",
-              "FreeSpace": 32353095680,
+              "FreeSpace": 31701565440,
               "Size": 510180454400
             },
             {
@@ -40,32 +40,15 @@
               "Size": 1468006395904
             }
           ],
-          "mem_available_mb": 9928,
+          "mem_available_mb": 10611,
           "mem_total_mb": 32591,
-          "mem_used_mb": 22663,
+          "mem_used_mb": 21980,
           "os_build": "26200",
           "os_caption": "Microsoft Windows 11 Pro",
           "os_version": "10.0.26200"
         }
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
-      "ttl_s": 60
-    },
-    {
-      "id": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
-      "kind": "container",
-      "attrs": {
-        "command": "\"python -m http.server 8000\"",
-        "container_id": "115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
-        "created_at_raw": "2026-03-28 13:36:24 -0300 -03",
-        "host_id": "host:DESKTOP-UD4LDKG",
-        "image": "python:3.11-slim",
-        "name": "test-http",
-        "runtime": "docker",
-        "state": "running",
-        "status": "Up 45 seconds"
-      },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -74,23 +57,23 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 13.44,
-        "cpu_s_delta_total": 8.063,
+        "cpu_pct_total": 0.91,
+        "cpu_s_delta_total": 0.547,
         "image_name": "chrome.exe",
         "instance_count": 39,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 7381112,
+        "mem_used_kb_total": 7047200,
         "os": "windows",
         "sample_pids": [
+          1636,
           1920,
-          2948,
-          3316,
+          3912,
           4128,
-          4656
+          4420
         ]
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -99,19 +82,19 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.03,
-        "cpu_s_delta_total": 0.016,
+        "cpu_pct_total": 0.0,
+        "cpu_s_delta_total": 0.0,
         "image_name": "datum.exe",
         "instance_count": 1,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 21556,
+        "mem_used_kb_total": 21544,
         "os": "windows",
         "sample_pids": [
-          31164
+          33604
         ]
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -120,13 +103,13 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.36,
-        "cpu_s_delta_total": 0.219,
+        "cpu_pct_total": 0.16,
+        "cpu_s_delta_total": 0.094,
         "image_name": "Docker Desktop.exe",
         "instance_count": 4,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 458276,
+        "mem_used_kb_total": 314296,
         "os": "windows",
         "sample_pids": [
           476,
@@ -135,7 +118,7 @@
           28708
         ]
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -146,15 +129,15 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=7ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 7ms, M�ximo = 8ms, M�dia = 7ms",
-        "rtt_avg_ms": 7,
-        "rtt_max_ms": 7,
+        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 8ms, M�ximo = 9ms, M�dia = 8ms",
+        "rtt_avg_ms": 9,
+        "rtt_max_ms": 9,
         "rtt_min_ms": 8,
         "samples": 4,
         "timeout_s": 1,
         "to": "1.1.1.1"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -165,15 +148,15 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=11ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 11ms, M�dia = 6ms",
-        "rtt_avg_ms": 5,
-        "rtt_max_ms": 5,
-        "rtt_min_ms": 5,
+        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 6ms, M�ximo = 6ms, M�dia = 6ms",
+        "rtt_avg_ms": 6,
+        "rtt_max_ms": 6,
+        "rtt_min_ms": 6,
         "samples": 4,
         "timeout_s": 1,
         "to": "8.8.8.8"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     },
     {
@@ -181,12 +164,12 @@
       "kind": "service",
       "attrs": {
         "binding": {
-          "bound": true
+          "bound": false
         },
         "bindings": [
           {
-            "bound": true,
-            "target_id": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
+            "bound": false,
+            "target_id": null,
             "target_kind": "container",
             "via": "container_name",
             "wanted": "test-http"
@@ -201,35 +184,37 @@
             }
           }
         ],
-        "checks_result": [
-          {
-            "checked_at": "2026-03-30T19:03:14.069904900+00:00",
-            "kind": "http_health",
-            "latency_ms": 3,
-            "status": "available"
-          }
-        ],
+        "checks_result": [],
         "depends_on_declared": [],
         "desired_state": "running",
         "name": "local-http-ctr",
         "runtime": "container",
         "source": "service_registry",
-        "status": "available"
+        "status": "unavailable"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "recovery_verification:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "recovery_verification",
+      "attrs": {
+        "action_kind": "start_container",
+        "action_phase": "finished",
+        "action_status": "succeeded",
+        "checks_result": [],
+        "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+        "origin": "desired_state_planner",
+        "service_id": "service:local-http-ctr",
+        "service_name": "local-http-ctr",
+        "validation_status": "unavailable",
+        "verification_status": "pending_observation"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z",
       "ttl_s": 60
     }
   ],
   "edges": [
-    {
-      "from": "host:DESKTOP-UD4LDKG",
-      "to": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
-      "rel": "runs",
-      "attrs": {
-        "runtime": "docker"
-      },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
-    },
     {
       "from": "host:DESKTOP-UD4LDKG",
       "to": "process:windows:chrome.exe",
@@ -237,7 +222,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -246,7 +231,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -255,7 +240,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -264,7 +249,7 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -273,18 +258,187 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
-    },
-    {
-      "from": "service:local-http-ctr",
-      "to": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
-      "rel": "implemented_by",
-      "attrs": {
-        "via": "container_name"
-      },
-      "observed_at_utc": "2026-03-30T19:03:14.069904900Z"
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
     }
   ],
-  "events": [],
-  "actions": []
+  "events": [
+    {
+      "id": "event:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:recovery_execution_succeeded:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "recovery_execution_succeeded",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "Recovery action result for service 'local-http-ctr': action=start_container mode=executed success=true msg=command executed: docker [\"start\", \"test-http\"]",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "source_plugin": "action_executor",
+      "status": "resolved",
+      "details": {
+        "action_kind": "start_container",
+        "duration_ms": 519,
+        "exit_code": 0,
+        "message": "command executed: docker [\"start\", \"test-http\"]",
+        "mode": "executed",
+        "origin": "desired_state_planner",
+        "service_name": "local-http-ctr",
+        "stderr": "",
+        "stdout": "test-http\n",
+        "success": true,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "event:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:recovery_started:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "recovery_started",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "Recovery action started for service 'local-http-ctr': action=start_container target_kind=container_name target_id=test-http dry_run=false",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "source_plugin": "action_executor",
+      "status": "executing",
+      "details": {
+        "action_kind": "start_container",
+        "dry_run": false,
+        "origin": "desired_state_planner",
+        "service_name": "local-http-ctr",
+        "suppressed": false,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "event:local-http-ctr:desired_state_action_planned:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "desired_state_action_planned",
+      "severity": "warning",
+      "target": "service:local-http-ctr",
+      "message": "desired_state planned action for service 'local-http-ctr': kind=start_container desired=running observed=unavailable",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "source_plugin": "desired_state_planner",
+      "status": "planned",
+      "details": {
+        "action_kind": "start_container",
+        "attempt_window_s": 300,
+        "attempts_in_window": 0,
+        "counted_origins": [
+          "recovery_planner",
+          "desired_state_planner"
+        ],
+        "desired": "running",
+        "dry_run": false,
+        "last_attempt_at_utc": null,
+        "max_attempts_per_window": 3,
+        "observed_status": "unavailable",
+        "seconds_since_last_attempt": null,
+        "service_name": "local-http-ctr",
+        "suppression_reason": null,
+        "target_id": "test-http",
+        "target_kind": "container_name"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "event:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:recovery_pending_observation:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "recovery_pending_observation",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Recovery for service 'local-http-ctr' executed, but confirmation should be observed in the next cycle",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "source_plugin": "revalidator",
+      "status": "pending_observation",
+      "details": {
+        "action_kind": "start_container",
+        "action_phase": "finished",
+        "action_status": "succeeded",
+        "checks_result": [],
+        "origin": "desired_state_planner",
+        "service_id": "service:local-http-ctr",
+        "service_name": "local-http-ctr",
+        "validation_status": "unavailable",
+        "verification_status": "pending_observation"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "event:service_local-http-ctr:unbound_container_test-http:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "kind": "service_unbound",
+      "severity": "info",
+      "target": "service:local-http-ctr",
+      "message": "Service 'local-http-ctr' has no resolved bindings for runtime Some(\"container\") (wanted container 'test-http')",
+      "source_plugin": "service_builder",
+      "status": "open",
+      "details": {
+        "runtime": "container",
+        "service_name": "local-http-ctr",
+        "target_kind": "container",
+        "wanted": "test-http"
+      },
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    }
+  ],
+  "actions": [
+    {
+      "id": "action:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:planned:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "planned",
+      "status": "pending",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": null,
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "action:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:started:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "started",
+      "status": "running",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": "Recovery action started for service 'local-http-ctr': action=start_container target_kind=container_name target_id=test-http dry_run=false",
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": null,
+      "duration_ms": null,
+      "stdout": null,
+      "stderr": null,
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    },
+    {
+      "id": "action:desired_state_local-http-ctr_57b9d74f-c95b-4b0f-8828-a70f5ca2711c:finished:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "correlation_id": "desired_state:local-http-ctr:57b9d74f-c95b-4b0f-8828-a70f5ca2711c",
+      "origin": "desired_state_planner",
+      "kind": "start_container",
+      "phase": "finished",
+      "status": "succeeded",
+      "service_id": "service:local-http-ctr",
+      "service_name": "local-http-ctr",
+      "target_kind": "container_name",
+      "target_id": "test-http",
+      "reason": "desired_state=running but observed status is unavailable",
+      "message": "command executed: docker [\"start\", \"test-http\"]",
+      "dry_run": false,
+      "suppressed": false,
+      "exit_code": 0,
+      "duration_ms": 519,
+      "stdout": "test-http\n",
+      "stderr": "",
+      "observed_at_utc": "2026-03-30T23:45:44.256583300Z"
+    }
+  ]
 }
