@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -10,21 +11,63 @@ pub struct Config {
     #[serde(default)]
     pub collectors: Option<CollectorsConfig>,
 
-    // =========================
-    // Services (Fase 2.1)
-    // =========================
     #[serde(default)]
     pub services: Option<ServicesConfig>,
+
+    #[serde(default)]
+    pub service_registry: Option<ServiceRegistryConfig>,
+
+    #[serde(default)]
+    pub auto_recovery: Option<AutoRecoveryConfig>,
+
+    #[serde(default)]
+    pub desired_state: Option<DesiredStateConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct AgentConfig {
-    pub node_id: String,
-    pub cycle_s: u64,
-    pub schema_version: String,
+impl Config {
+    pub fn registry_services(&self) -> &[ServiceRegistryService] {
+        match &self.service_registry {
+            Some(sr) if sr.enabled => &sr.services,
+            _ => &[],
+        }
+    }
 
-    /// opcional, só para fixar host_id em cenários de teste
-    pub hostname: Option<String>,
+    pub fn find_registry_service(&self, name: &str) -> Option<&ServiceRegistryService> {
+        self.registry_services().iter().find(|s| s.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn desired_services(&self) -> &[DesiredServiceSpec] {
+        match &self.desired_state {
+            Some(ds) if ds.enabled => &ds.services,
+            _ => &[],
+        }
+    }
+
+    pub fn find_desired_service(&self, name: &str) -> Option<&DesiredServiceSpec> {
+        self.desired_services().iter().find(|s| s.name.eq_ignore_ascii_case(name))
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AutoRecoveryConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    #[serde(default)]
+    pub allow_services: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DesiredStateConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub services: Vec<DesiredServiceSpec>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DesiredServiceSpec {
+    pub name: String,
+    pub desired: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -45,21 +88,14 @@ pub struct HttpConfig {
     pub url: String,
 }
 
-// =========================
-// Collectors
-// =========================
-
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CollectorsConfig {
     #[serde(default)]
     pub docker: Option<DockerConfig>,
-
     #[serde(default)]
     pub process_windows: Option<ProcessWindowsConfig>,
-
     #[serde(default)]
     pub process_linux: Option<ProcessLinuxConfig>,
-
     #[serde(default)]
     pub connection_ping: Option<ConnectionPingConfig>,
 }
@@ -67,25 +103,27 @@ pub struct CollectorsConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct DockerConfig {
     pub enabled: bool,
-    pub mode: Option<String>, // "allowlist" | "all" | "top" (futuro)
-    pub names: Option<Vec<String>>,  // nomes de containers (ex: ["teste-monitoramento"])
-    pub images: Option<Vec<String>>, // imagens (ex: ["busybox", "nginx:latest"])
-    pub max_entries: Option<usize>,  // limita quantidade retornada (após filtro)
+    pub mode: Option<String>,
+    pub names: Option<Vec<String>>,
+    pub images: Option<Vec<String>>,
+    pub max_entries: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ProcessWindowsConfig {
     pub enabled: bool,
-    pub mode: Option<String>,       // "allowlist" | "top_mem" | "all" | "group_by_name"
-    pub names: Option<Vec<String>>, // em Windows costuma ser "chrome.exe"
+    pub mode: Option<String>,
+    pub names: Option<Vec<String>>,
     pub max_entries: Option<usize>,
+    #[serde(default)]
+    pub include_pids: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ProcessLinuxConfig {
     pub enabled: bool,
-    pub mode: Option<String>,       // "allowlist" | "top_mem" | "all" | "group_by_name"
-    pub names: Option<Vec<String>>, // em Linux: "sshd", "mosquitto"
+    pub mode: Option<String>,
+    pub names: Option<Vec<String>>,
     pub max_entries: Option<usize>,
 }
 
@@ -97,48 +135,101 @@ pub struct ConnectionPingConfig {
     pub timeout_s: Option<u32>,
 }
 
-// =========================
-// Services (Fase 2.1)
-// =========================
+#[derive(Debug, Deserialize, Clone)]
+pub struct AgentConfig {
+    pub node_id: String,
+    pub cycle_s: u64,
+    pub schema_version: String,
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub events: Option<AgentEventsConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AgentEventsConfig {
+    pub max_per_snapshot: Option<usize>,
+    pub deduplicate: Option<bool>,
+    pub prefer_severity: Option<bool>,
+}
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ServicesConfig {
     pub enabled: bool,
-
     #[serde(default)]
     pub items: Vec<ServiceItem>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ServiceCheckSpec {
-    pub kind: String,               // "http_health" | "tcp_port" | "mqtt_pubsub"
+    pub kind: String,
     #[serde(flatten)]
-    pub params: std::collections::BTreeMap<String, toml::Value>,
+    pub params: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ServiceDependencySpec {
-    pub kind: String,               // "connection"
-    pub target: Option<String>,     // "1.1.1.1"
+    pub kind: String,
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServiceItem {
     pub name: String,
-
     #[serde(default)]
     pub implemented_by: Vec<ImplementedBy>,
-
     #[serde(default)]
     pub checks: Vec<ServiceCheckSpec>,
-
     #[serde(default)]
     pub depends_on: Vec<ServiceDependencySpec>,
 }
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ImplementedBy {
     pub container_name: Option<String>,
     pub process_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceRegistryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub services: Vec<ServiceRegistryService>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceRegistryService {
+    pub name: String,
+    pub runtime: String,
+    #[serde(default)]
+    pub selector: Option<ServiceSelector>,
+    #[serde(default)]
+    pub recovery: Option<ServiceRecoverySpec>,
+    #[serde(default)]
+    pub checks: Vec<ServiceCheckSpec>,
+    #[serde(default)]
+    pub depends_on: Vec<ServiceDependencySpec>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceSelector {
+    #[serde(default)]
+    pub container_name: Option<String>,
+    #[serde(default)]
+    pub process_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServiceRecoverySpec {
+    pub policy: String,
+    #[serde(default)]
+    pub command_windows: Option<String>,
+    #[serde(default)]
+    pub command_linux: Option<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub shell: Option<bool>,
 }
 
 pub fn load_config(path: &str) -> Result<Config> {

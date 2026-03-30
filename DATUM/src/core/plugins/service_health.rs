@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde_json::{json, Value as JsonValue};
 
+use crate::config::Config;
 use crate::core::ids;
 use crate::core::model::{Entity, Event, Snapshot};
 use crate::core::plugin::Plugin;
@@ -25,7 +26,7 @@ fn mk_event_id(cycle_id: &str, service_id: &str, suffix: &str) -> String {
 
 fn result_is_available(result: &JsonValue) -> bool {
     matches!(
-        result.get("status").and_then(serde_json::Value::as_str),
+        result.get("status").and_then(JsonValue::as_str),
         Some("available") | Some("ok")
     )
 }
@@ -74,12 +75,146 @@ fn find_service_entity_by_name<'a>(snapshot: &'a Snapshot, wanted: &str) -> Opti
     })
 }
 
+fn check_kind_alias(kind: &str) -> &str {
+    match kind {
+        "http" | "http_health" => "http",
+        "tcp" | "tcp_port" => "tcp",
+        "process" | "process_alive" => "process",
+        other => other,
+    }
+}
+
+fn check_params_object(chk: &JsonValue) -> JsonValue {
+    chk.get("params")
+        .cloned()
+        .unwrap_or_else(|| chk.clone())
+}
+
+fn get_param_str<'a>(params: &'a JsonValue, key: &str) -> Option<&'a str> {
+    params.get(key).and_then(|v| v.as_str())
+}
+
+fn get_param_u64(params: &JsonValue, key: &str) -> Option<u64> {
+    params.get(key).and_then(|v| v.as_u64())
+}
+
+fn run_declared_check(
+    snapshot: &Snapshot,
+    service_attrs: &JsonValue,
+    chk: &JsonValue,
+    observed_at_str: &str,
+) -> JsonValue {
+    let raw_kind = chk.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = check_kind_alias(raw_kind);
+    let params = check_params_object(chk);
+
+    match kind {
+        "http" => {
+            let url = get_param_str(&params, "url").unwrap_or("");
+            let timeout_ms = get_param_u64(&params, "timeout_ms").unwrap_or(1200);
+
+            run_http_health(url, timeout_ms, observed_at_str)
+        }
+
+        "tcp" => {
+            let host = get_param_str(&params, "host").unwrap_or("");
+            let port = get_param_u64(&params, "port").unwrap_or(0) as u16;
+            let timeout_ms = get_param_u64(&params, "timeout_ms").unwrap_or(1000);
+
+            run_tcp_port(host, port, timeout_ms, observed_at_str)
+        }
+
+        "process" => run_process_alive(snapshot, service_attrs, observed_at_str),
+
+        _ => json!({
+            "kind": raw_kind,
+            "status": "unavailable",
+            "error": "unsupported_check_kind",
+            "checked_at": observed_at_str
+        }),
+    }
+}
+
+fn dependency_degrades_service(
+    snapshot: &Snapshot,
+    service_id: &str,
+    service_name: &str,
+    cycle_id: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
+    depends_on_declared: &[JsonValue],
+) -> Option<Event> {
+    for dep in depends_on_declared {
+        let dep_kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let target = dep.get("target").and_then(|v| v.as_str()).unwrap_or("");
+
+        if target.trim().is_empty() {
+            continue;
+        }
+
+        match dep_kind {
+            "connection" => {
+                if let Some(conn) = find_connection_entity(snapshot, target) {
+                    if !connection_is_available(conn) {
+                        return Some(Event {
+                            id: mk_event_id(
+                                cycle_id,
+                                service_id,
+                                &format!("dependency_connection_degraded_{}", target),
+                            ),
+                            kind: "service_dependency_degraded".to_string(),
+                            severity: "warning".to_string(),
+                            target: service_id.to_string(),
+                            message: format!(
+                                "Service '{}' is degraded because dependency connection '{}' is unavailable",
+                                service_name, target
+                            ),
+                            observed_at_utc: observed_at,
+                        });
+                    }
+                }
+            }
+
+            "service" => {
+                if let Some(dep_service) = find_service_entity_by_name(snapshot, target) {
+                    let dep_status = dep_service
+                        .attrs
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+
+                    if matches!(dep_status, "unavailable" | "degraded") {
+                        return Some(Event {
+                            id: mk_event_id(
+                                cycle_id,
+                                service_id,
+                                &format!("dependency_service_degraded_{}", target),
+                            ),
+                            kind: "service_dependency_degraded".to_string(),
+                            severity: "warning".to_string(),
+                            target: service_id.to_string(),
+                            message: format!(
+                                "Service '{}' is degraded because dependent service '{}' is {}",
+                                service_name, target, dep_status
+                            ),
+                            observed_at_utc: observed_at,
+                        });
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    None
+}
+
 impl Plugin for ServiceHealthPlugin {
     fn name(&self) -> &'static str {
         "service_health"
     }
 
-    fn apply(&self, snapshot: &mut Snapshot, _cfg: &crate::config::Config) -> Result<()> {
+    fn apply(&self, snapshot: &mut Snapshot, _cfg: &Config) -> Result<()> {
         let observed_at = snapshot.meta.observed_at_utc;
         let observed_at_str = observed_at.to_rfc3339();
         let cycle_id = snapshot.meta.cycle_id.clone();
@@ -105,7 +240,6 @@ impl Plugin for ServiceHealthPlugin {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // Sem binding resolvido => indisponível
             if !bound {
                 snapshot.entities[idx].attrs["status"] = json!("unavailable");
                 snapshot.entities[idx].attrs["checks_result"] = json!([]);
@@ -118,7 +252,6 @@ impl Plugin for ServiceHealthPlugin {
                 .cloned()
                 .unwrap_or_default();
 
-            // Sem checks => unknown
             if checks_declared.is_empty() {
                 snapshot.entities[idx].attrs["status"] = json!("unknown");
                 snapshot.entities[idx].attrs["checks_result"] = json!([]);
@@ -129,66 +262,28 @@ impl Plugin for ServiceHealthPlugin {
             let mut all_checks_available = true;
 
             for chk in checks_declared {
-                let kind = chk.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                let params = chk.get("params").cloned().unwrap_or(json!({}));
+                let result =
+                    run_declared_check(snapshot, &service_attrs_clone, &chk, &observed_at_str);
 
-                let result = match kind {
-                    "http_health" => {
-                        let url = params
-                            .get("url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        let timeout_ms = params
-                            .get("timeout_ms")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(1200);
-
-                        run_http_health(url, timeout_ms, &observed_at_str)
-                    }
-
-                    "process_alive" => {
-                        run_process_alive(snapshot, &service_attrs_clone, &observed_at_str)
-                    }
-
-                    "tcp_port" => {
-                        let host = params
-                            .get("host")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        let port = params
-                            .get("port")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u16;
-
-                        let timeout_ms = params
-                            .get("timeout_ms")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(1000);
-
-                        run_tcp_port(host, port, timeout_ms, &observed_at_str)
-                    }
-
-                    _ => json!({
-                        "kind": kind,
-                        "status": "unavailable",
-                        "error": "unsupported_check_kind",
-                        "checked_at": observed_at_str
-                    }),
-                };
-
+                let reported_kind = chk.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let ok = result_is_available(&result);
 
                 if !ok {
                     all_checks_available = false;
 
                     snapshot.events.push(Event {
-                        id: mk_event_id(&cycle_id, &service_id, &format!("check_failed_{}", kind)),
+                        id: mk_event_id(
+                            &cycle_id,
+                            &service_id,
+                            &format!("check_failed_{}", reported_kind),
+                        ),
                         kind: "service_check_failed".to_string(),
                         severity: "warning".to_string(),
                         target: service_id.clone(),
-                        message: format!("Service check '{}' failed for '{}'", kind, service_name),
+                        message: format!(
+                            "Service check '{}' failed for '{}'",
+                            reported_kind, service_name
+                        ),
                         observed_at_utc: observed_at,
                     });
                 }
@@ -198,14 +293,12 @@ impl Plugin for ServiceHealthPlugin {
 
             snapshot.entities[idx].attrs["checks_result"] = json!(results);
 
-            // status base: resultado dos checks próprios
             let mut final_status = if all_checks_available {
                 "available"
             } else {
                 "unavailable"
             };
 
-            // só propaga dependência se o próprio serviço já está disponível
             if final_status == "available" {
                 let depends_on_declared = service_attrs_clone
                     .get("depends_on_declared")
@@ -213,75 +306,16 @@ impl Plugin for ServiceHealthPlugin {
                     .cloned()
                     .unwrap_or_default();
 
-                for dep in depends_on_declared {
-                    let dep_kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                    let target = dep.get("target").and_then(|v| v.as_str()).unwrap_or("");
-
-                    if target.trim().is_empty() {
-                        continue;
-                    }
-
-                    match dep_kind {
-                        "connection" => {
-                            if let Some(conn) = find_connection_entity(snapshot, target) {
-                                if !connection_is_available(conn) {
-                                    final_status = "degraded";
-
-                                    snapshot.events.push(Event {
-                                        id: mk_event_id(
-                                            &cycle_id,
-                                            &service_id,
-                                            &format!("dependency_connection_degraded_{}", target),
-                                        ),
-                                        kind: "service_dependency_degraded".to_string(),
-                                        severity: "warning".to_string(),
-                                        target: service_id.clone(),
-                                        message: format!(
-                                            "Service '{}' is degraded because dependency connection '{}' is unavailable",
-                                            service_name, target
-                                        ),
-                                        observed_at_utc: observed_at,
-                                    });
-
-                                    break;
-                                }
-                            }
-                        }
-
-                        "service" => {
-                            if let Some(dep_service) = find_service_entity_by_name(snapshot, target) {
-                                let dep_status = dep_service
-                                    .attrs
-                                    .get("status")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown");
-
-                                if matches!(dep_status, "unavailable" | "degraded") {
-                                    final_status = "degraded";
-
-                                    snapshot.events.push(Event {
-                                        id: mk_event_id(
-                                            &cycle_id,
-                                            &service_id,
-                                            &format!("dependency_service_degraded_{}", target),
-                                        ),
-                                        kind: "service_dependency_degraded".to_string(),
-                                        severity: "warning".to_string(),
-                                        target: service_id.clone(),
-                                        message: format!(
-                                            "Service '{}' is degraded because dependent service '{}' is {}",
-                                            service_name, target, dep_status
-                                        ),
-                                        observed_at_utc: observed_at,
-                                    });
-
-                                    break;
-                                }
-                            }
-                        }
-
-                        _ => {}
-                    }
+                if let Some(event) = dependency_degrades_service(
+                    snapshot,
+                    &service_id,
+                    &service_name,
+                    &cycle_id,
+                    observed_at,
+                    &depends_on_declared,
+                ) {
+                    final_status = "degraded";
+                    snapshot.events.push(event);
                 }
             }
 

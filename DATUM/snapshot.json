@@ -2,8 +2,8 @@
   "meta": {
     "schema_version": "0.0.1",
     "agent_version": "0.1.0",
-    "cycle_id": "8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-    "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+    "cycle_id": "72c1820f-85b2-4741-8ddc-032aac7588f3",
+    "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
     "node_id": "fog-01",
     "host_id": "host:DESKTOP-UD4LDKG"
   },
@@ -17,11 +17,11 @@
         "system": {
           "arch_bits": 64,
           "cpu_logical": 12,
-          "cpu_usage_pct": 20,
+          "cpu_usage_pct": 26,
           "disks": [
             {
               "DeviceID": "C:",
-              "FreeSpace": 29481902080,
+              "FreeSpace": 33470910464,
               "Size": 510180454400
             },
             {
@@ -40,15 +40,32 @@
               "Size": 1468006395904
             }
           ],
-          "mem_available_mb": 10344,
+          "mem_available_mb": 10956,
           "mem_total_mb": 32591,
-          "mem_used_mb": 22247,
+          "mem_used_mb": 21635,
           "os_build": "26200",
           "os_caption": "Microsoft Windows 11 Pro",
           "os_version": "10.0.26200"
         }
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
+      "ttl_s": 60
+    },
+    {
+      "id": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
+      "kind": "container",
+      "attrs": {
+        "command": "\"python -m http.server 8000\"",
+        "container_id": "115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
+        "created_at_raw": "2026-03-28 13:36:24 -0300 -03",
+        "host_id": "host:DESKTOP-UD4LDKG",
+        "image": "python:3.11-slim",
+        "name": "test-http",
+        "runtime": "docker",
+        "state": "running",
+        "status": "Up 12 minutes"
+      },
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
@@ -57,23 +74,23 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 13.96,
-        "cpu_s_delta_total": 8.375,
+        "cpu_pct_total": 19.66,
+        "cpu_s_delta_total": 11.797,
         "image_name": "chrome.exe",
-        "instance_count": 39,
+        "instance_count": 36,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 7771676,
+        "mem_used_kb_total": 7108932,
         "os": "windows",
         "sample_pids": [
-          1048,
-          2116,
-          2208,
-          3088,
-          3872
+          1920,
+          2948,
+          4128,
+          4656,
+          5032
         ]
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
@@ -82,41 +99,43 @@
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.03,
-        "cpu_s_delta_total": 0.016,
+        "cpu_pct_total": 0.05,
+        "cpu_s_delta_total": 0.031,
         "image_name": "datum.exe",
         "instance_count": 1,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 18832,
+        "mem_used_kb_total": 16688,
         "os": "windows",
         "sample_pids": [
-          7124
+          21356
         ]
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
-      "id": "process:windows:python.exe",
+      "id": "process:windows:docker_desktop.exe",
       "kind": "process",
       "attrs": {
         "aggregation": "by_image_name",
         "cpu_cores": 12.0,
-        "cpu_pct_total": 0.0,
-        "cpu_s_delta_total": 0.0,
-        "image_name": "python.exe",
-        "instance_count": 2,
+        "cpu_pct_total": 0.81,
+        "cpu_s_delta_total": 0.484,
+        "image_name": "Docker Desktop.exe",
+        "instance_count": 4,
         "interval_s": 5.0,
         "mem_source": "working_set",
-        "mem_used_kb_total": 18696,
+        "mem_used_kb_total": 405552,
         "os": "windows",
         "sample_pids": [
-          2216,
-          22844
+          476,
+          15204,
+          27884,
+          28708
         ]
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
@@ -127,15 +146,15 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=9ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 8ms, M�ximo = 9ms, M�dia = 8ms",
-        "rtt_avg_ms": 9,
-        "rtt_max_ms": 9,
+        "raw": "Disparando 1.1.1.1 com 32 bytes de dados:\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\nResposta de 1.1.1.1: bytes=32 tempo=8ms TTL=55\r\n\r\nEstat�sticas do Ping para 1.1.1.1:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 8ms, M�ximo = 8ms, M�dia = 8ms",
+        "rtt_avg_ms": 8,
+        "rtt_max_ms": 8,
         "rtt_min_ms": 8,
         "samples": 4,
         "timeout_s": 1,
         "to": "1.1.1.1"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
@@ -146,19 +165,19 @@
         "from": "host:DESKTOP-UD4LDKG",
         "loss_pct": 0,
         "method": "ping",
-        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=7ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 6ms, M�ximo = 7ms, M�dia = 6ms",
-        "rtt_avg_ms": 6,
+        "raw": "Disparando 8.8.8.8 com 32 bytes de dados:\r\nResposta de 8.8.8.8: bytes=32 tempo=5ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=7ms TTL=118\r\nResposta de 8.8.8.8: bytes=32 tempo=6ms TTL=118\r\n\r\nEstat�sticas do Ping para 8.8.8.8:\r\n    Pacotes: Enviados = 4, Recebidos = 4, Perdidos = 0 (0% de\r\n             perda),\r\nAproximar um n�mero redondo de vezes em milissegundos:\r\n    M�nimo = 5ms, M�ximo = 7ms, M�dia = 6ms",
+        "rtt_avg_ms": 7,
         "rtt_max_ms": 6,
-        "rtt_min_ms": 7,
+        "rtt_min_ms": 5,
         "samples": 4,
         "timeout_s": 1,
         "to": "8.8.8.8"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     },
     {
-      "id": "service:datum-agent",
+      "id": "service:local-http-ctr",
       "kind": "service",
       "attrs": {
         "binding": {
@@ -167,228 +186,50 @@
         "bindings": [
           {
             "bound": true,
-            "target_id": "process:windows:datum.exe",
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "datum"
+            "target_id": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
+            "target_kind": "container",
+            "via": "container_name",
+            "wanted": "test-http"
           }
         ],
         "checks_declared": [
           {
-            "kind": "process_alive",
+            "kind": "http",
             "params": {
-              "timeout_ms": 1000
-            }
-          }
-        ],
-        "checks_result": [
-          {
-            "checked_at": "2026-03-28T02:07:24.922008200+00:00",
-            "instance_count": 1,
-            "kind": "process_alive",
-            "status": "available",
-            "target_id": "process:windows:datum.exe"
-          }
-        ],
-        "depends_on_declared": [
-          {
-            "kind": "connection",
-            "target": "1.1.1.1"
-          }
-        ],
-        "desired_state": "running",
-        "name": "datum-agent",
-        "status": "available"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
-      "ttl_s": 60
-    },
-    {
-      "id": "service:fake-service",
-      "kind": "service",
-      "attrs": {
-        "binding": {
-          "bound": false
-        },
-        "bindings": [
-          {
-            "bound": false,
-            "target_id": null,
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "naoexiste123"
-          }
-        ],
-        "checks_declared": [
-          {
-            "kind": "http_health",
-            "params": {
-              "timeout_ms": 1200,
-              "url": "http://127.0.0.1:9999/health"
-            }
-          }
-        ],
-        "checks_result": [],
-        "depends_on_declared": [
-          {
-            "kind": "connection",
-            "target": "8.8.8.8"
-          }
-        ],
-        "desired_state": "running",
-        "name": "fake-service",
-        "status": "unavailable"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
-      "ttl_s": 60
-    },
-    {
-      "id": "service:local-http",
-      "kind": "service",
-      "attrs": {
-        "binding": {
-          "bound": true
-        },
-        "bindings": [
-          {
-            "bound": true,
-            "target_id": "process:windows:python.exe",
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "python"
-          },
-          {
-            "bound": false,
-            "target_id": null,
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "py"
-          }
-        ],
-        "checks_declared": [
-          {
-            "kind": "http_health",
-            "params": {
-              "timeout_ms": 1200,
-              "url": "http://127.0.0.1:8000"
-            }
-          }
-        ],
-        "checks_result": [
-          {
-            "checked_at": "2026-03-28T02:07:24.922008200+00:00",
-            "error": "error sending request for url (http://127.0.0.1:8000/)",
-            "kind": "http_health",
-            "status": "unavailable"
-          }
-        ],
-        "depends_on_declared": [
-          {
-            "kind": "connection",
-            "target": "17.7.2.1"
-          }
-        ],
-        "desired_state": "running",
-        "name": "local-http",
-        "status": "unavailable"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
-      "ttl_s": 60
-    },
-    {
-      "id": "service:backend",
-      "kind": "service",
-      "attrs": {
-        "binding": {
-          "bound": true
-        },
-        "bindings": [
-          {
-            "bound": true,
-            "target_id": "process:windows:python.exe",
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "python"
-          },
-          {
-            "bound": false,
-            "target_id": null,
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "py"
-          }
-        ],
-        "checks_declared": [
-          {
-            "kind": "http_health",
-            "params": {
-              "timeout_ms": 1200,
+              "timeout_ms": 1500,
               "url": "http://127.0.0.1:8001"
             }
           }
         ],
         "checks_result": [
           {
-            "checked_at": "2026-03-28T02:07:24.922008200+00:00",
-            "error": "error sending request for url (http://127.0.0.1:8001/)",
+            "checked_at": "2026-03-30T17:29:43.570458400+00:00",
             "kind": "http_health",
-            "status": "unavailable"
+            "latency_ms": 6,
+            "status": "available"
           }
         ],
         "depends_on_declared": [],
         "desired_state": "running",
-        "name": "backend",
-        "status": "unavailable"
+        "name": "local-http-ctr",
+        "runtime": "container",
+        "source": "service_registry",
+        "status": "available"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
-      "ttl_s": 60
-    },
-    {
-      "id": "service:frontend",
-      "kind": "service",
-      "attrs": {
-        "binding": {
-          "bound": true
-        },
-        "bindings": [
-          {
-            "bound": true,
-            "target_id": "process:windows:datum.exe",
-            "target_kind": "process",
-            "via": "process_name",
-            "wanted": "datum"
-          }
-        ],
-        "checks_declared": [
-          {
-            "kind": "process_alive",
-            "params": {}
-          }
-        ],
-        "checks_result": [
-          {
-            "checked_at": "2026-03-28T02:07:24.922008200+00:00",
-            "instance_count": 1,
-            "kind": "process_alive",
-            "status": "available",
-            "target_id": "process:windows:datum.exe"
-          }
-        ],
-        "depends_on_declared": [
-          {
-            "kind": "service",
-            "target": "backend"
-          }
-        ],
-        "desired_state": "running",
-        "name": "frontend",
-        "status": "degraded"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z",
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z",
       "ttl_s": 60
     }
   ],
   "edges": [
+    {
+      "from": "host:DESKTOP-UD4LDKG",
+      "to": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
+      "rel": "runs",
+      "attrs": {
+        "runtime": "docker"
+      },
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
+    },
     {
       "from": "host:DESKTOP-UD4LDKG",
       "to": "process:windows:chrome.exe",
@@ -396,7 +237,7 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -405,16 +246,16 @@
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
-      "to": "process:windows:python.exe",
+      "to": "process:windows:docker_desktop.exe",
       "rel": "runs",
       "attrs": {
         "runtime": "process"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -423,7 +264,7 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     },
     {
       "from": "host:DESKTOP-UD4LDKG",
@@ -432,115 +273,18 @@
       "attrs": {
         "method": "ping"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     },
     {
-      "from": "service:datum-agent",
-      "to": "process:windows:datum.exe",
+      "from": "service:local-http-ctr",
+      "to": "container:docker:115814d7c3c388da1374110374866d3dd94ed9606b959d9241bd2e4045cbe290",
       "rel": "implemented_by",
       "attrs": {
-        "via": "process_name"
+        "via": "container_name"
       },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:datum-agent",
-      "to": "connection:host:DESKTOP-UD4LDKG:1.1.1.1",
-      "rel": "depends_on",
-      "attrs": {
-        "kind": "connection",
-        "target": "1.1.1.1"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:fake-service",
-      "to": "connection:host:DESKTOP-UD4LDKG:8.8.8.8",
-      "rel": "depends_on",
-      "attrs": {
-        "kind": "connection",
-        "target": "8.8.8.8"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:local-http",
-      "to": "process:windows:python.exe",
-      "rel": "implemented_by",
-      "attrs": {
-        "via": "process_name"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:backend",
-      "to": "process:windows:python.exe",
-      "rel": "implemented_by",
-      "attrs": {
-        "via": "process_name"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:frontend",
-      "to": "process:windows:datum.exe",
-      "rel": "implemented_by",
-      "attrs": {
-        "via": "process_name"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "from": "service:frontend",
-      "to": "service:backend",
-      "rel": "depends_on",
-      "attrs": {
-        "kind": "service",
-        "target": "backend"
-      },
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
+      "observed_at_utc": "2026-03-30T17:29:43.570458400Z"
     }
   ],
-  "events": [
-    {
-      "id": "event:service_fake-service:service_unbound:8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-      "kind": "service_unbound",
-      "severity": "info",
-      "target": "service:fake-service",
-      "message": "Service 'fake-service' has no resolved bindings (check implemented_by in config)",
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "id": "event:service_local-http:dependency_connection_unresolved_17.7.2.1:8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-      "kind": "service_dependency_unresolved",
-      "severity": "info",
-      "target": "service:local-http",
-      "message": "Service 'local-http' declares dependency on connection '17.7.2.1' but no matching connection entity was found",
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "id": "event:service_local-http:check_failed_http_health:8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-      "kind": "service_check_failed",
-      "severity": "warning",
-      "target": "service:local-http",
-      "message": "Service check 'http_health' failed for 'local-http'",
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "id": "event:service_backend:check_failed_http_health:8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-      "kind": "service_check_failed",
-      "severity": "warning",
-      "target": "service:backend",
-      "message": "Service check 'http_health' failed for 'backend'",
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    },
-    {
-      "id": "event:service_frontend:dependency_service_degraded_backend:8b01dbfe-733d-4381-a1bd-65bdf8a093a3",
-      "kind": "service_dependency_degraded",
-      "severity": "warning",
-      "target": "service:frontend",
-      "message": "Service 'frontend' is degraded because dependent service 'backend' is unavailable",
-      "observed_at_utc": "2026-03-28T02:07:24.922008200Z"
-    }
-  ]
+  "events": [],
+  "actions": []
 }

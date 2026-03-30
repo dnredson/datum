@@ -1,6 +1,11 @@
 use anyhow::Result;
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashSet;
 
+use crate::config::{
+    Config, ImplementedBy, ServiceCheckSpec, ServiceDependencySpec, ServiceRegistryService,
+    ServiceSelector,
+};
 use crate::core::ids;
 use crate::core::model::{Edge, Entity, Event, Snapshot};
 use crate::core::plugin::Plugin;
@@ -31,12 +36,42 @@ fn norm_key(raw: &str) -> String {
     if let Some(pos) = s.rfind('\\') {
         s = s[pos + 1..].to_string();
     }
-
     if let Some(stripped) = s.strip_suffix(".exe") {
         s = stripped.to_string();
     }
 
     s
+}
+
+fn mk_event_id(cycle_id: &str, service_id: &str, suffix: &str) -> String {
+    let c = ids::sanitize_id_component(cycle_id);
+    let s = ids::sanitize_id_component(service_id);
+    let x = ids::sanitize_id_component(suffix);
+    format!("event:{}:{}:{}", s, x, c)
+}
+
+fn check_spec_to_json(check: &ServiceCheckSpec) -> JsonValue {
+    let mut params_map = serde_json::Map::new();
+
+    for (k, v) in check.params.iter() {
+        let json_value = match serde_json::to_value(v) {
+            Ok(v) => v,
+            Err(_) => JsonValue::Null,
+        };
+        params_map.insert(k.clone(), json_value);
+    }
+
+    json!({
+        "kind": check.kind,
+        "params": params_map
+    })
+}
+
+fn dependency_spec_to_json(dep: &ServiceDependencySpec) -> JsonValue {
+    json!({
+        "kind": dep.kind,
+        "target": dep.target
+    })
 }
 
 fn container_name_candidates(attrs: &JsonValue) -> Vec<String> {
@@ -91,43 +126,43 @@ fn process_name_candidates(attrs: &JsonValue) -> Vec<String> {
 fn find_container_by_name(snapshot: &Snapshot, wanted: &str) -> Option<String> {
     let wanted = norm_key(wanted);
 
-    for e in snapshot.entities.iter() {
+    snapshot.entities.iter().find_map(|e| {
         if e.kind != "container" {
-            continue;
+            return None;
         }
 
         let candidates = container_name_candidates(&e.attrs);
         if candidates.iter().any(|c| c == &wanted) {
-            return Some(e.id.clone());
+            Some(e.id.clone())
+        } else {
+            None
         }
-    }
-
-    None
+    })
 }
 
 fn find_process_group_by_name(snapshot: &Snapshot, wanted: &str) -> Option<String> {
     let wanted = norm_key(wanted);
 
-    for e in snapshot.entities.iter() {
+    snapshot.entities.iter().find_map(|e| {
         if e.kind != "process" {
-            continue;
+            return None;
         }
 
         let candidates = process_name_candidates(&e.attrs);
         if candidates.iter().any(|c| c == &wanted) {
-            return Some(e.id.clone());
+            Some(e.id.clone())
+        } else {
+            None
         }
-    }
-
-    None
+    })
 }
 
 fn find_connection_by_target(snapshot: &Snapshot, wanted: &str) -> Option<String> {
     let wanted = norm_key(wanted);
 
-    for e in snapshot.entities.iter() {
+    snapshot.entities.iter().find_map(|e| {
         if e.kind != "connection" {
-            continue;
+            return None;
         }
 
         let candidate = e
@@ -136,63 +171,199 @@ fn find_connection_by_target(snapshot: &Snapshot, wanted: &str) -> Option<String
             .and_then(|v| v.as_str())
             .or_else(|| e.attrs.get("to").and_then(|v| v.as_str()));
 
-        if let Some(target) = candidate {
-            if norm_key(target) == wanted {
-                return Some(e.id.clone());
-            }
+        match candidate {
+            Some(target) if norm_key(target) == wanted => Some(e.id.clone()),
+            _ => None,
         }
-    }
-
-    None
+    })
 }
 
 fn find_service_by_name(snapshot: &Snapshot, wanted: &str) -> Option<String> {
     let wanted = norm_key(wanted);
 
-    for e in snapshot.entities.iter() {
+    snapshot.entities.iter().find_map(|e| {
         if e.kind != "service" {
-            continue;
+            return None;
         }
 
-        if let Some(name) = e.attrs.get("name").and_then(|v| v.as_str()) {
-            if norm_key(name) == wanted {
-                return Some(e.id.clone());
+        match e.attrs.get("name").and_then(|v| v.as_str()) {
+            Some(name) if norm_key(name) == wanted => Some(e.id.clone()),
+            _ => None,
+        }
+    })
+}
+
+fn build_bindings_from_legacy(implemented_by: &[ImplementedBy]) -> Vec<JsonValue> {
+    let mut out = Vec::new();
+
+    for imp in implemented_by {
+        if let Some(name) = &imp.container_name {
+            out.push(json!({
+                "target_kind": "container",
+                "wanted": name,
+                "via": "container_name",
+                "bound": false,
+                "target_id": null
+            }));
+        }
+
+        if let Some(name) = &imp.process_name {
+            out.push(json!({
+                "target_kind": "process",
+                "wanted": name,
+                "via": "process_name",
+                "bound": false,
+                "target_id": null
+            }));
+        }
+    }
+
+    out
+}
+
+fn build_bindings_from_registry(runtime: &str, selector: &Option<ServiceSelector>) -> Vec<JsonValue> {
+    let mut out = Vec::new();
+
+    if let Some(sel) = selector {
+        match runtime {
+            "container" => {
+                if let Some(name) = &sel.container_name {
+                    out.push(json!({
+                        "target_kind": "container",
+                        "wanted": name,
+                        "via": "container_name",
+                        "bound": false,
+                        "target_id": null
+                    }));
+                }
             }
+            "process" => {
+                if let Some(name) = &sel.process_name {
+                    out.push(json!({
+                        "target_kind": "process",
+                        "wanted": name,
+                        "via": "process_name",
+                        "bound": false,
+                        "target_id": null
+                    }));
+                }
+            }
+            _ => {}
         }
     }
 
-    None
+    out
 }
 
-fn mk_event_id(cycle_id: &str, service_id: &str, suffix: &str) -> String {
-    let c = ids::sanitize_id_component(cycle_id);
-    let s = ids::sanitize_id_component(service_id);
-    let x = ids::sanitize_id_component(suffix);
-    format!("event:{}:{}:{}", s, x, c)
-}
+/// Resolve binding respeitando runtime do serviço.
+/// - runtime=process -> só aceita process
+/// - runtime=container -> só aceita container
+/// - runtime ausente (legado) -> aceita conforme target_kind
+fn resolve_binding_target(snapshot: &Snapshot, binding: &JsonValue, runtime: Option<&str>) -> Option<String> {
+    let target_kind = binding.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
+    let wanted = binding.get("wanted").and_then(|v| v.as_str()).unwrap_or("");
 
-fn check_spec_to_json(check: &crate::config::ServiceCheckSpec) -> JsonValue {
-    let mut params_map = serde_json::Map::new();
-
-    for (k, v) in check.params.iter() {
-        let json_value = match serde_json::to_value(v) {
-            Ok(v) => v,
-            Err(_) => JsonValue::Null,
-        };
-        params_map.insert(k.clone(), json_value);
+    if wanted.is_empty() {
+        return None;
     }
 
-    json!({
-        "kind": check.kind,
-        "params": params_map
-    })
+    match (runtime.unwrap_or(""), target_kind) {
+        ("process", "process") => find_process_group_by_name(snapshot, wanted),
+        ("container", "container") => find_container_by_name(snapshot, wanted),
+
+        // legado
+        ("", "process") => find_process_group_by_name(snapshot, wanted),
+        ("", "container") => find_container_by_name(snapshot, wanted),
+
+        _ => None,
+    }
 }
 
-fn dependency_spec_to_json(dep: &crate::config::ServiceDependencySpec) -> JsonValue {
-    json!({
-        "kind": dep.kind,
-        "target": dep.target
-    })
+fn edge_exists(snapshot: &Snapshot, from: &str, to: &str, rel: &str) -> bool {
+    snapshot
+        .edges
+        .iter()
+        .any(|e| e.from == from && e.to == to && e.rel == rel)
+}
+
+fn create_service_entity(
+    service_name: &str,
+    source: &str,
+    runtime: Option<&str>,
+    checks: &[ServiceCheckSpec],
+    depends_on: &[ServiceDependencySpec],
+    bindings: Vec<JsonValue>,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> Entity {
+    let checks_declared: Vec<JsonValue> = checks.iter().map(check_spec_to_json).collect();
+    let depends_on_declared: Vec<JsonValue> =
+        depends_on.iter().map(dependency_spec_to_json).collect();
+
+    Entity {
+        id: ids::service_id(service_name),
+        kind: "service".to_string(),
+        attrs: json!({
+            "name": service_name,
+            "runtime": runtime,
+            "status": "unknown",
+            "desired_state": "running",
+            "binding": {
+                "bound": false
+            },
+            "bindings": bindings,
+            "checks_declared": checks_declared,
+            "depends_on_declared": depends_on_declared,
+            "source": source
+        }),
+        observed_at_utc: observed_at,
+        ttl_s: 60,
+    }
+}
+
+fn add_service_from_registry(
+    snapshot: &mut Snapshot,
+    seen: &mut HashSet<String>,
+    svc: &ServiceRegistryService,
+) {
+    if seen.contains(&svc.name) {
+        return;
+    }
+
+    let ent = create_service_entity(
+        &svc.name,
+        "service_registry",
+        Some(&svc.runtime),
+        &svc.checks,
+        &svc.depends_on,
+        build_bindings_from_registry(&svc.runtime, &svc.selector),
+        snapshot.meta.observed_at_utc,
+    );
+
+    seen.insert(svc.name.clone());
+    snapshot.entities.push(ent);
+}
+
+fn add_service_from_legacy(
+    snapshot: &mut Snapshot,
+    seen: &mut HashSet<String>,
+    item: &crate::config::ServiceItem,
+) {
+    if seen.contains(&item.name) {
+        return;
+    }
+
+    let ent = create_service_entity(
+        &item.name,
+        "services_legacy",
+        None,
+        &item.checks,
+        &item.depends_on,
+        build_bindings_from_legacy(&item.implemented_by),
+        snapshot.meta.observed_at_utc,
+    );
+
+    seen.insert(item.name.clone());
+    snapshot.entities.push(ent);
 }
 
 impl Plugin for ServiceBuilderPlugin {
@@ -200,263 +371,217 @@ impl Plugin for ServiceBuilderPlugin {
         "service_builder"
     }
 
-    fn apply(&self, snapshot: &mut Snapshot, cfg: &crate::config::Config) -> Result<()> {
-        let scfg = match cfg.services.as_ref() {
-            Some(s) if s.enabled => s,
-            _ => return Ok(()),
-        };
-
+    fn apply(&self, snapshot: &mut Snapshot, cfg: &Config) -> Result<()> {
         let observed_at = snapshot.meta.observed_at_utc;
         let cycle_id = snapshot.meta.cycle_id.clone();
 
-        // =========================================================
-        // PASS 1: cria todas as entidades service primeiro
-        // =========================================================
-        for item in scfg.items.iter() {
-            let service_eid = ids::service_id(&item.name);
+        let legacy_enabled = cfg.services.as_ref().map(|s| s.enabled).unwrap_or(false);
+        let registry_enabled = cfg
+            .service_registry
+            .as_ref()
+            .map(|s| s.enabled)
+            .unwrap_or(false);
 
-            // evita duplicar se por algum motivo já existir
-            let already_exists = snapshot
-                .entities
-                .iter()
-                .any(|e| e.kind == "service" && e.id == service_eid);
-
-            if already_exists {
-                continue;
-            }
-
-            let checks_declared: Vec<JsonValue> =
-                item.checks.iter().map(check_spec_to_json).collect();
-
-            let depends_on_declared: Vec<JsonValue> =
-                item.depends_on.iter().map(dependency_spec_to_json).collect();
-
-            let ent = Entity {
-                id: service_eid,
-                kind: "service".to_string(),
-                attrs: json!({
-                    "name": item.name,
-                    "status": "unknown",
-                    "desired_state": "running",
-                    "binding": {
-                        "bound": false
-                    },
-                    "bindings": [],
-                    "checks_declared": checks_declared,
-                    "depends_on_declared": depends_on_declared
-                }),
-                observed_at_utc: observed_at,
-                ttl_s: 60,
-            };
-
-            snapshot.entities.push(ent);
+        if !legacy_enabled && !registry_enabled {
+            return Ok(());
         }
 
-        // =========================================================
-        // PASS 2: resolve implemented_by e depends_on
-        // =========================================================
-        for item in scfg.items.iter() {
-            let service_eid = ids::service_id(&item.name);
+        let mut seen: HashSet<String> = HashSet::new();
 
-            let mut bindings_json: Vec<JsonValue> = Vec::new();
-            let mut edges_to_push: Vec<Edge> = Vec::new();
+        // PASS 1: cria entidades do registry primeiro
+        for svc in cfg.registry_services() {
+            add_service_from_registry(snapshot, &mut seen, svc);
+        }
 
-            // implemented_by
-            for impl_ in item.implemented_by.iter() {
-                if let Some(ref cname) = impl_.container_name {
-                    if let Some(cid) = find_container_by_name(snapshot, cname) {
-                        bindings_json.push(json!({
-                            "bound": true,
-                            "target_id": cid,
-                            "target_kind": "container",
-                            "via": "container_name",
-                            "wanted": cname
-                        }));
-
-                        let to_id = bindings_json
-                            .last()
-                            .and_then(|b| b.get("target_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap()
-                            .to_string();
-
-                        edges_to_push.push(Edge {
-                            from: service_eid.clone(),
-                            to: to_id,
-                            rel: "implemented_by".to_string(),
-                            attrs: json!({ "via": "container_name" }),
-                            observed_at_utc: observed_at,
-                        });
-                        continue;
-                    } else {
-                        bindings_json.push(json!({
-                            "bound": false,
-                            "target_id": null,
-                            "target_kind": "container",
-                            "via": "container_name",
-                            "wanted": cname
-                        }));
-                        continue;
-                    }
-                }
-
-                if let Some(ref pname) = impl_.process_name {
-                    if let Some(pid) = find_process_group_by_name(snapshot, pname) {
-                        bindings_json.push(json!({
-                            "bound": true,
-                            "target_id": pid,
-                            "target_kind": "process",
-                            "via": "process_name",
-                            "wanted": pname
-                        }));
-
-                        let to_id = bindings_json
-                            .last()
-                            .and_then(|b| b.get("target_id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap()
-                            .to_string();
-
-                        edges_to_push.push(Edge {
-                            from: service_eid.clone(),
-                            to: to_id,
-                            rel: "implemented_by".to_string(),
-                            attrs: json!({ "via": "process_name" }),
-                            observed_at_utc: observed_at,
-                        });
-                    } else {
-                        bindings_json.push(json!({
-                            "bound": false,
-                            "target_id": null,
-                            "target_kind": "process",
-                            "via": "process_name",
-                            "wanted": pname
-                        }));
-                    }
+        // PASS 2: completa com legado, sem duplicar por nome
+        if let Some(scfg) = cfg.services.as_ref() {
+            if scfg.enabled {
+                for item in scfg.items.iter() {
+                    add_service_from_legacy(snapshot, &mut seen, item);
                 }
             }
+        }
 
-            let bound_any = bindings_json
-                .iter()
-                .any(|b| b.get("bound").and_then(|v| v.as_bool()) == Some(true));
+        // PASS 3: resolve bindings e cria edges implemented_by
+        let service_ids: Vec<String> = snapshot
+            .entities
+            .iter()
+            .filter(|e| e.kind == "service")
+            .map(|e| e.id.clone())
+            .collect();
 
-            // atualiza a entidade service já criada no pass 1
-            if let Some(service_ent) = snapshot
-                .entities
-                .iter_mut()
-                .find(|e| e.kind == "service" && e.id == service_eid)
-            {
-                service_ent.attrs["binding"] = json!({
-                    "bound": bound_any
-                });
-                service_ent.attrs["bindings"] = json!(bindings_json);
-            }
+        for service_id in service_ids {
+            let Some(pos) = snapshot.entities.iter().position(|e| e.id == service_id) else {
+                continue;
+            };
 
-            for e in edges_to_push {
-                snapshot.edges.push(e);
-            }
+            let runtime = snapshot.entities[pos]
+                .attrs
+                .get("runtime")
+                .and_then(|v| v.as_str());
 
-            if !bound_any {
+            let service_name = snapshot.entities[pos]
+                .attrs
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let current_bindings = snapshot.entities[pos]
+                .attrs
+                .get("bindings")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut resolved_bindings = Vec::new();
+            let mut any_bound = false;
+
+            for binding in current_bindings {
+            let mut b = binding.clone();
+
+            let target_kind = b
+                .get("target_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let wanted = b
+                .get("wanted")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let target_id = resolve_binding_target(snapshot, &b, runtime);
+
+            if let Some(tid) = target_id {
+                b["bound"] = json!(true);
+                b["target_id"] = json!(tid.clone());
+                any_bound = true;
+
+                if !edge_exists(snapshot, &service_id, &tid, "implemented_by") {
+                    snapshot.edges.push(Edge {
+                        from: service_id.clone(),
+                        to: tid,
+                        rel: "implemented_by".to_string(),
+                        attrs: json!({
+                            "via": b.get("via").and_then(|v| v.as_str()).unwrap_or("unknown")
+                        }),
+                        observed_at_utc: observed_at,
+                    });
+                }
+            } else {
+                b["bound"] = json!(false);
+                b["target_id"] = JsonValue::Null;
+
                 snapshot.events.push(Event {
-                    id: mk_event_id(&cycle_id, &service_eid, "service_unbound"),
+                    id: mk_event_id(
+                        &cycle_id,
+                        &service_id,
+                        &format!("unbound_{}_{}", target_kind, wanted),
+                    ),
                     kind: "service_unbound".to_string(),
                     severity: "info".to_string(),
-                    target: service_eid.clone(),
+                    target: service_id.clone(),
                     message: format!(
-                        "Service '{}' has no resolved bindings (check implemented_by in config)",
-                        item.name
+                        "Service '{}' has no resolved bindings for runtime {:?} (wanted {} '{}')",
+                        service_name, runtime, target_kind, wanted
                     ),
                     observed_at_utc: observed_at,
                 });
             }
 
-            // depends_on
-            for dep in item.depends_on.iter() {
-                let target = match dep.target.as_ref() {
-                    Some(t) if !t.trim().is_empty() => t,
-                    _ => continue,
+            resolved_bindings.push(b);
+        }
+
+            snapshot.entities[pos].attrs["bindings"] = json!(resolved_bindings);
+            snapshot.entities[pos].attrs["binding"] = json!({ "bound": any_bound });
+
+            if !any_bound {
+                snapshot.events.push(Event {
+                    id: mk_event_id(&cycle_id, &service_id, "service_unbound"),
+                    kind: "service_unbound".to_string(),
+                    severity: "info".to_string(),
+                    target: service_id.clone(),
+                    message: format!(
+                        "Service '{}' has no resolved bindings (check service_registry/services config)",
+                        service_name
+                    ),
+                    observed_at_utc: observed_at,
+                });
+            }
+        }
+
+        // PASS 4: depends_on -> edges
+        let service_ids: Vec<String> = snapshot
+            .entities
+            .iter()
+            .filter(|e| e.kind == "service")
+            .map(|e| e.id.clone())
+            .collect();
+
+        for service_id in service_ids {
+            let Some(pos) = snapshot.entities.iter().position(|e| e.id == service_id) else {
+                continue;
+            };
+
+            let service_name = snapshot.entities[pos]
+                .attrs
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let depends_on = snapshot.entities[pos]
+                .attrs
+                .get("depends_on_declared")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for dep in depends_on {
+                let dep_kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let target = dep.get("target").and_then(|v| v.as_str()).unwrap_or("").trim();
+
+                if target.is_empty() {
+                    continue;
+                }
+
+                let target_id = match dep_kind {
+                    "connection" => find_connection_by_target(snapshot, target),
+                    "service" => find_service_by_name(snapshot, target),
+                    _ => None,
                 };
 
-                match dep.kind.as_str() {
-                    "connection" => {
-                        if let Some(conn_id) = find_connection_by_target(snapshot, target) {
-                            snapshot.edges.push(Edge {
-                                from: service_eid.clone(),
-                                to: conn_id,
-                                rel: "depends_on".to_string(),
-                                attrs: json!({
-                                    "kind": "connection",
-                                    "target": target
-                                }),
-                                observed_at_utc: observed_at,
-                            });
-                        } else {
-                            snapshot.events.push(Event {
-                                id: mk_event_id(
-                                    &cycle_id,
-                                    &service_eid,
-                                    &format!("dependency_connection_unresolved_{}", target),
-                                ),
-                                kind: "service_dependency_unresolved".to_string(),
-                                severity: "info".to_string(),
-                                target: service_eid.clone(),
-                                message: format!(
-                                    "Service '{}' declares dependency on connection '{}' but no matching connection entity was found",
-                                    item.name, target
-                                ),
-                                observed_at_utc: observed_at,
-                            });
-                        }
-                    }
-
-                    "service" => {
-                        if let Some(dep_service_id) = find_service_by_name(snapshot, target) {
-                            snapshot.edges.push(Edge {
-                                from: service_eid.clone(),
-                                to: dep_service_id,
-                                rel: "depends_on".to_string(),
-                                attrs: json!({
-                                    "kind": "service",
-                                    "target": target
-                                }),
-                                observed_at_utc: observed_at,
-                            });
-                        } else {
-                            snapshot.events.push(Event {
-                                id: mk_event_id(
-                                    &cycle_id,
-                                    &service_eid,
-                                    &format!("dependency_service_unresolved_{}", target),
-                                ),
-                                kind: "service_dependency_unresolved".to_string(),
-                                severity: "info".to_string(),
-                                target: service_eid.clone(),
-                                message: format!(
-                                    "Service '{}' declares dependency on service '{}' but no matching service entity was found",
-                                    item.name, target
-                                ),
-                                observed_at_utc: observed_at,
-                            });
-                        }
-                    }
-
-                    _ => {
-                        snapshot.events.push(Event {
-                            id: mk_event_id(
-                                &cycle_id,
-                                &service_eid,
-                                &format!("dependency_kind_unsupported_{}", dep.kind),
-                            ),
-                            kind: "service_dependency_unresolved".to_string(),
-                            severity: "info".to_string(),
-                            target: service_eid.clone(),
-                            message: format!(
-                                "Service '{}' declares unsupported dependency kind '{}'",
-                                item.name, dep.kind
-                            ),
+                if let Some(tid) = target_id {
+                    if !edge_exists(snapshot, &service_id, &tid, "depends_on") {
+                        snapshot.edges.push(Edge {
+                            from: service_id.clone(),
+                            to: tid,
+                            rel: "depends_on".to_string(),
+                            attrs: json!({
+                                "kind": dep_kind,
+                                "target": target
+                            }),
                             observed_at_utc: observed_at,
                         });
                     }
+                } else {
+                    snapshot.events.push(Event {
+                        id: mk_event_id(
+                            &cycle_id,
+                            &service_id,
+                            &format!("dependency_unresolved_{}_{}", dep_kind, target),
+                        ),
+                        kind: "service_dependency_unresolved".to_string(),
+                        severity: "info".to_string(),
+                        target: service_id.clone(),
+                        message: format!(
+                            "Service '{}' has unresolved dependency kind='{}' target='{}'",
+                            service_name, dep_kind, target
+                        ),
+                        observed_at_utc: observed_at,
+                    });
                 }
             }
         }

@@ -2,6 +2,12 @@
 node_id = "fog-01"
 cycle_s = 5
 schema_version = "0.0.1"
+reqwest = { version = "0.11", features = ["blocking"] }
+
+[agent.events]
+max_per_snapshot = 50
+deduplicate = true
+prefer_severity = true
 
 [outputs.file_json]
 enabled = true
@@ -41,9 +47,16 @@ timeout_s = 1
 
 [collectors.docker]
 enabled = true
+mode = "all"
+
+[auto_recovery]
+enabled = true
+dry_run = false
+allow_services = ["local-http-proc", "local-http-ctr"]
 
 [services]
 enabled = true
+
 
 #[[services.items]]
 #name = "mosquitto"
@@ -58,38 +71,50 @@ enabled = true
 #    { kind = "http_health", url = "http://127.0.0.1:9000/health", timeout_ms = 1200 },
 #]
 
-[[services.items]]
-name = "datum-agent"
-implemented_by = [{ process_name = "datum" }]
-checks = [{ kind = "process_alive", timeout_ms = 1000 }]
-depends_on = [{ kind = "connection", target = "1.1.1.1" }]
+[service_registry]
+enabled = true
 
-[[services.items]]
-name = "fake-service"
-implemented_by = [{ process_name = "naoexiste123" }]
-checks = [
-    { kind = "http_health", url = "http://127.0.0.1:9999/health", timeout_ms = 1200 },
-]
-depends_on = [{ kind = "connection", target = "8.8.8.8" }]
+#[[service_registry.services]]
+#name = "local-http-proc"
+#runtime = "process"
 
+#[service_registry.services.selector]
+#process_name = "python.exe"
 
-[[services.items]]
-name = "local-http"
-implemented_by = [{ process_name = "python" }, { process_name = "py" }]
-checks = [
-    { kind = "http_health", url = "http://127.0.0.1:8000", timeout_ms = 1200 },
-]
-depends_on = [{ kind = "connection", target = "17.7.2.1" }]
+#[service_registry.services.recovery]
+#policy = "restart_command"
+#command_windows = "py -m http.server 8001"
+#command_linux = "python3 -m http.server 8001"
+#working_dir = "."
+#shell = false
 
-[[services.items]]
-name = "backend"
-implemented_by = [{ process_name = "python" }, { process_name = "py" }]
-checks = [
-    { kind = "http_health", url = "http://127.0.0.1:8001", timeout_ms = 1200 },
-]
+#[[service_registry.services.checks]]
+#kind = "http"
+#url = "http://127.0.0.1:8001"
+#timeout_ms = 1500
 
-[[services.items]]
-name = "frontend"
-implemented_by = [{ process_name = "datum" }]
-checks = [{ kind = "process_alive" }]
-depends_on = [{ kind = "service", target = "backend" }]
+[[service_registry.services]]
+name = "local-http-ctr"
+runtime = "container"
+
+[service_registry.services.selector]
+container_name = "test-http"
+
+[service_registry.services.recovery]
+policy = "docker_restart"
+
+[[service_registry.services.checks]]
+kind = "http"
+url = "http://127.0.0.1:8001"
+timeout_ms = 1500
+
+[desired_state]
+enabled = true
+
+#[[desired_state.services]]
+#name = "local-http-proc"
+#desired = "running"
+
+[[desired_state.services]]
+name = "local-http-ctr"
+desired = "running"
