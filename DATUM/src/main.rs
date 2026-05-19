@@ -7,10 +7,12 @@ mod capabilities;
 mod cli;
 mod config;
 mod core;
+mod deployment_planning;
 mod dispatch;
 mod outputs;
 
 use cli::capabilities::run_capabilities_command;
+use cli::deployment_planning::run_deployment_planning_command;
 use cli::dispatch::run_dispatch_command;
 use cli::show::show_command;
 use cli::top::top_command;
@@ -25,7 +27,14 @@ fn main() -> Result<()> {
     // Senão, mantém o comportamento antigo (run por padrão).
     if raw_args.len() >= 2 {
         match raw_args[1].as_str() {
-            "top" | "show" | "once" | "run" | "dispatch" | "capabilities" => {
+            "top"
+            | "show"
+            | "once"
+            | "run"
+            | "dispatch"
+            | "capabilities"
+            | "deployment-planning"
+            | "deploy-plan" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -58,6 +67,13 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             dispatch_command(&args.config, args.execute, args.publish_results)
         }
         Command::Capabilities(args) => capabilities_command(&args.config, args.publish),
+        Command::DeploymentPlanning(args) => deployment_planning_command(
+            &args.config,
+            args.node_id.as_deref(),
+            args.project_id.as_deref(),
+            args.url.as_deref(),
+            args.json,
+        ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -77,6 +93,8 @@ enum Command {
     Once(OnceArgs),
     Dispatch(DispatchArgs),
     Capabilities(CapabilitiesArgs),
+    #[command(name = "deployment-planning", alias = "deploy-plan")]
+    DeploymentPlanning(DeploymentPlanningArgs),
     Top(TopArgs),
     Show(ShowArgs),
 }
@@ -142,6 +160,24 @@ struct CapabilitiesArgs {
 
     #[arg(long, default_value_t = false)]
     publish: bool,
+}
+
+#[derive(Args, Debug)]
+struct DeploymentPlanningArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    project_id: Option<String>,
+
+    #[arg(long)]
+    url: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -380,4 +416,15 @@ fn dispatch_command(config_path: &str, execute: bool, publish_results: bool) -> 
 fn capabilities_command(config_path: &str, publish: bool) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     run_capabilities_command(&cfg, publish)
+}
+
+fn deployment_planning_command(
+    config_path: &str,
+    node_id: Option<&str>,
+    project_id: Option<&str>,
+    url: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_deployment_planning_command(&cfg, node_id, project_id, url, json)
 }
