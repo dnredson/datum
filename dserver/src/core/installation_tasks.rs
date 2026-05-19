@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 const STATUS_PLANNED: &str = "planned";
@@ -218,6 +218,13 @@ pub struct AssistedExecutionClaimList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionClaimStatusPatch {
+    pub status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationPolicyDecision {
     pub policy_version: String,
     pub decision: String,
@@ -232,6 +239,17 @@ fn is_valid_status(status: &str) -> bool {
     matches!(
         status,
         STATUS_PLANNED | STATUS_ACKNOWLEDGED | STATUS_BLOCKED | STATUS_CANCELLED | STATUS_COMPLETED
+    )
+}
+
+fn is_valid_assisted_execution_claim_status(status: &str) -> bool {
+    matches!(
+        status,
+        CLAIM_STATUS_CLAIMED
+            | CLAIM_STATUS_RELEASED
+            | CLAIM_STATUS_EXPIRED
+            | CLAIM_STATUS_COMPLETED
+            | CLAIM_STATUS_CANCELLED
     )
 }
 
@@ -919,6 +937,74 @@ pub fn build_assisted_execution_claim(
     }
 }
 
+pub fn validate_assisted_execution_claim_status_transition(
+    current_status: &str,
+    new_status: &str,
+) -> Result<(), String> {
+    if !is_valid_assisted_execution_claim_status(current_status) {
+        return Err(format!(
+            "current claim status is invalid: {}",
+            current_status
+        ));
+    }
+
+    if !is_valid_assisted_execution_claim_status(new_status) {
+        return Err(format!("new claim status is invalid: {}", new_status));
+    }
+
+    let allowed = matches!(
+        (current_status, new_status),
+        (CLAIM_STATUS_CLAIMED, CLAIM_STATUS_RELEASED)
+            | (CLAIM_STATUS_CLAIMED, CLAIM_STATUS_EXPIRED)
+            | (CLAIM_STATUS_CLAIMED, CLAIM_STATUS_COMPLETED)
+            | (CLAIM_STATUS_CLAIMED, CLAIM_STATUS_CANCELLED)
+            | (CLAIM_STATUS_RELEASED, CLAIM_STATUS_CLAIMED)
+            | (CLAIM_STATUS_RELEASED, CLAIM_STATUS_CANCELLED)
+            | (CLAIM_STATUS_EXPIRED, CLAIM_STATUS_CLAIMED)
+            | (CLAIM_STATUS_EXPIRED, CLAIM_STATUS_CANCELLED)
+    );
+
+    if allowed {
+        Ok(())
+    } else if matches!(
+        current_status,
+        CLAIM_STATUS_COMPLETED | CLAIM_STATUS_CANCELLED
+    ) {
+        Err(format!(
+            "assisted execution claim status transition not allowed from terminal status: {} -> {}",
+            current_status, new_status
+        ))
+    } else {
+        Err(format!(
+            "assisted execution claim status transition not allowed: {} -> {}",
+            current_status, new_status
+        ))
+    }
+}
+
+pub fn apply_assisted_execution_claim_status_patch(
+    claim: &AssistedExecutionClaim,
+    new_status: &str,
+    reason: Option<&str>,
+) -> AssistedExecutionClaim {
+    let mut updated_claim = claim.clone();
+    let now = Utc::now().to_rfc3339();
+
+    updated_claim.claim_status = new_status.trim().to_string();
+    updated_claim.safe_to_auto_execute = false;
+
+    let mut metadata = updated_claim.metadata.clone().unwrap_or_else(|| json!({}));
+    if let Some(obj) = metadata.as_object_mut() {
+        if let Some(reason) = reason.map(str::trim).filter(|value| !value.is_empty()) {
+            obj.insert("status_reason".to_string(), json!(reason));
+        }
+        obj.insert("updated_at_utc".to_string(), json!(now));
+    }
+    updated_claim.metadata = Some(metadata);
+
+    updated_claim
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -1019,10 +1105,12 @@ pub fn derive_installation_tasks_from_plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        annotate_installation_task_policy, build_assisted_execution_claim,
-        build_assisted_execution_request, build_installation_task_approval,
-        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
-        normalize_installation_task, validate_assisted_execution_claim_allowed,
+        annotate_installation_task_policy, apply_assisted_execution_claim_status_patch,
+        build_assisted_execution_claim, build_assisted_execution_request,
+        build_installation_task_approval, derive_installation_tasks_from_plan,
+        evaluate_installation_task_readiness, normalize_installation_task,
+        validate_assisted_execution_claim_allowed,
+        validate_assisted_execution_claim_status_transition,
         validate_assisted_execution_request_allowed, validate_installation_task,
         validate_installation_task_can_be_approved, validate_installation_task_status_transition,
         AssistedExecutionClaim, AssistedExecutionRequest, InstallationTask,
@@ -1984,5 +2072,139 @@ mod tests {
         assert!(claim.request_snapshot.is_some());
         assert!(claim.task_snapshot.is_some());
         assert!(claim.readiness_snapshot.is_some());
+    }
+
+    #[test]
+    fn claimed_to_released_passes() {
+        assert!(validate_assisted_execution_claim_status_transition("claimed", "released").is_ok());
+    }
+
+    #[test]
+    fn claimed_to_expired_passes() {
+        assert!(validate_assisted_execution_claim_status_transition("claimed", "expired").is_ok());
+    }
+
+    #[test]
+    fn claimed_to_completed_passes() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("claimed", "completed").is_ok()
+        );
+    }
+
+    #[test]
+    fn claimed_to_cancelled_passes() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("claimed", "cancelled").is_ok()
+        );
+    }
+
+    #[test]
+    fn released_to_claimed_passes() {
+        assert!(validate_assisted_execution_claim_status_transition("released", "claimed").is_ok());
+    }
+
+    #[test]
+    fn released_to_cancelled_passes() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("released", "cancelled").is_ok()
+        );
+    }
+
+    #[test]
+    fn expired_to_claimed_passes() {
+        assert!(validate_assisted_execution_claim_status_transition("expired", "claimed").is_ok());
+    }
+
+    #[test]
+    fn expired_to_cancelled_passes() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("expired", "cancelled").is_ok()
+        );
+    }
+
+    #[test]
+    fn completed_to_claimed_fails() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("completed", "claimed").is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_to_claimed_fails() {
+        assert!(
+            validate_assisted_execution_claim_status_transition("cancelled", "claimed").is_err()
+        );
+    }
+
+    #[test]
+    fn unknown_current_claim_status_fails() {
+        assert!(validate_assisted_execution_claim_status_transition("mystery", "claimed").is_err());
+    }
+
+    #[test]
+    fn unknown_new_claim_status_fails() {
+        assert!(validate_assisted_execution_claim_status_transition("claimed", "mystery").is_err());
+    }
+
+    #[test]
+    fn claim_status_patch_does_not_change_safe_to_auto_execute() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim".to_string()),
+            None,
+        );
+
+        let updated = apply_assisted_execution_claim_status_patch(
+            &claim,
+            "released",
+            Some("operator released claim metadata"),
+        );
+
+        assert!(!updated.safe_to_auto_execute);
+    }
+
+    #[test]
+    fn claim_status_patch_preserves_snapshots() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim".to_string()),
+            None,
+        );
+
+        let updated = apply_assisted_execution_claim_status_patch(
+            &claim,
+            "released",
+            Some("operator released claim metadata"),
+        );
+
+        assert_eq!(updated.request_snapshot, claim.request_snapshot);
+        assert_eq!(updated.readiness_snapshot, claim.readiness_snapshot);
+        assert_eq!(updated.task_snapshot, claim.task_snapshot);
+        assert_eq!(
+            updated
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("status_reason"))
+                .and_then(Value::as_str),
+            Some("operator released claim metadata")
+        );
+        assert!(updated
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("updated_at_utc"))
+            .and_then(Value::as_str)
+            .is_some());
     }
 }

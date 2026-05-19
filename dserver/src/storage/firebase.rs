@@ -7,8 +7,9 @@ use serde_json::{json, Value};
 use crate::core::{
     action_results::ActionExecutionReport,
     installation_tasks::{
-        annotate_installation_task_policy, normalize_installation_task, AssistedExecutionClaim,
-        AssistedExecutionRequest, InstallationTask, InstallationTaskApproval,
+        annotate_installation_task_policy, apply_assisted_execution_claim_status_patch,
+        normalize_installation_task, AssistedExecutionClaim, AssistedExecutionRequest,
+        InstallationTask, InstallationTaskApproval,
     },
     model::SnapshotEnvelope,
 };
@@ -1750,5 +1751,28 @@ impl FirebaseClient {
         }
 
         Ok(claims)
+    }
+
+    pub async fn update_assisted_execution_claim_status(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+        new_status: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<AssistedExecutionClaim>> {
+        let Some(claim) = self
+            .get_latest_assisted_execution_claim(project_id, node_id, task_id, request_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let updated_claim = apply_assisted_execution_claim_status_patch(&claim, new_status, reason);
+        self.put_assisted_execution_claim(project_id, node_id, task_id, request_id, &updated_claim)
+            .await?;
+
+        Ok(Some(updated_claim))
     }
 }

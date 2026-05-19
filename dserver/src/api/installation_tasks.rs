@@ -19,12 +19,14 @@ use crate::{
             build_assisted_execution_request, build_installation_task_approval,
             derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
             normalize_installation_task, validate_assisted_execution_claim_allowed,
+            validate_assisted_execution_claim_status_transition,
             validate_assisted_execution_request_allowed, validate_installation_task,
             validate_installation_task_can_be_approved,
             validate_installation_task_status_transition, AssistedExecutionClaim,
-            AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
-            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
+            AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch,
+            AssistedExecutionRequest, AssistedExecutionRequestList, InstallationTask,
+            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+            InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
     AppState,
@@ -65,6 +67,13 @@ pub struct AssistedExecutionClaimBody {
     pub reason: Option<String>,
     #[serde(default)]
     pub lease_expires_at_utc: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssistedExecutionClaimStatusPatchBody {
+    pub status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -824,6 +833,83 @@ pub async fn get_latest_assisted_execution_claim(
             })),
         )),
     }
+}
+
+pub async fn patch_assisted_execution_claim_status(
+    State(state): State<AppState>,
+    Path((node_id, task_id, request_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<AssistedExecutionClaimStatusPatchBody>,
+) -> Result<JsonResponse<AssistedExecutionClaim>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let Some(current_claim) = state
+        .firebase
+        .get_latest_assisted_execution_claim(&project_id, &node_id, &task_id, &request_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution claim not found for project '{}' node '{}' task '{}' request '{}'",
+                    project_id, node_id, task_id, request_id
+                )
+            })),
+        ));
+    };
+
+    let patch = AssistedExecutionClaimStatusPatch {
+        status: payload.status,
+        reason: payload.reason,
+    };
+
+    validate_assisted_execution_claim_status_transition(
+        &current_claim.claim_status,
+        patch.status.trim(),
+    )
+    .map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({ "error": err })),
+        )
+    })?;
+
+    let updated_claim = state
+        .firebase
+        .update_assisted_execution_claim_status(
+            &project_id,
+            &node_id,
+            &task_id,
+            &request_id,
+            patch.status.trim(),
+            patch.reason.as_deref(),
+        )
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({
+                    "error": format!(
+                        "assisted execution claim not found for project '{}' node '{}' task '{}' request '{}'",
+                        project_id, node_id, task_id, request_id
+                    )
+                })),
+            )
+        })?;
+
+    Ok(JsonResponse(updated_claim))
 }
 
 pub async fn list_installation_task_approvals_for_node(
