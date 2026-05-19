@@ -70,6 +70,13 @@ What it validates:
 - optional client latest assisted execution request viewer via `installation-tasks --execution-request`
 - optional client assisted execution request list viewer via `installation-tasks --execution-requests`
 - `safe_to_auto_execute` remains false in assisted execution request responses
+- optional detection of requested assisted execution requests when available
+- optional client assisted execution claim submission via `installation-tasks --claim-assisted-execution`
+- optional server latest assisted execution claim read-back for a requested task/request pair
+- optional server assisted execution claim list for the node
+- optional client latest assisted execution claim viewer via `installation-tasks --execution-claim`
+- optional client assisted execution claim list viewer via `installation-tasks --execution-claims`
+- `safe_to_auto_execute` remains false in assisted execution claim responses
 
 What it does not do:
 - start `dserver`
@@ -88,5 +95,8 @@ Notes:
 - Approval submission is metadata-only; it does not execute deployment or installation work.
 - Readiness is informational only; it does not execute deployment or installation work, even when readiness is `ready_for_assisted_execution`.
 - Assisted execution request submission is metadata-only; it does not execute deployment or installation work.
+- Assisted execution claim submission is metadata-only; it does not execute deployment or installation work.
 - If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.
 - If no `ready_for_assisted_execution` task exists for the node, assisted execution request checks are skipped and the smoke test still succeeds.
+- If no requested assisted execution request exists for the node, assisted execution claim checks are skipped and the smoke test still succeeds.
+- If a requested assisted execution request is already claimed, the smoke test may validate the latest claim instead of failing.
