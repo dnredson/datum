@@ -237,6 +237,51 @@ function Assert-PlanningContract {
     Assert-JsonHasProperty $Json "$PlanningProperty.summary" $StepName
 }
 
+function Assert-InstallationTaskListContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [switch]$RequireNodeId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "tasks" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ($Json.tasks -isnot [System.Array] -and $Json.tasks -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'tasks' as an array."
+    }
+}
+
+function Assert-InstallationTaskContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "status" $StepName
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.task_id)) {
+        throw "$StepName did not include a non-empty task_id."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.status)) {
+        throw "$StepName did not include a non-empty status."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -412,6 +457,92 @@ Run-CommandOrFail `
     -Command @("cargo", "run", "--", "installation-plan", "--config", $ResolvedClientConfig) `
     -StepName "DATUM installation plan viewer" | Out-Null
 
+Write-Step "Materialize installation tasks from DATUM"
+Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--", "installation-tasks", "--config", $ResolvedClientConfig, "--materialize") `
+    -StepName "DATUM installation task materialize" | Out-Null
+
+$taskUpdatePerformed = $false
+if (-not $SkipServerChecks) {
+    Write-Step "Read installation tasks from server"
+
+    $nodeInstallationTasks = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId" `
+        -Headers $headers `
+        -StepName "Node installation tasks"
+    Assert-HttpOk $nodeInstallationTasks "Node installation tasks"
+    Assert-InstallationTaskListContract `
+        -Json $nodeInstallationTasks.Json `
+        -StepName "Node installation tasks" `
+        -RequireNodeId
+
+    $projectInstallationTasks = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/installation-tasks" `
+        -Headers $headers `
+        -StepName "Project installation tasks"
+    Assert-HttpOk $projectInstallationTasks "Project installation tasks"
+    Assert-InstallationTaskListContract `
+        -Json $projectInstallationTasks.Json `
+        -StepName "Project installation tasks"
+
+    $firstTaskId = $nodeInstallationTasks.Json.tasks `
+        | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.task_id) } `
+        | Select-Object -First 1 -ExpandProperty task_id
+
+    if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
+        Write-Host "No installation tasks were materialized for this node; skipping single-task get/status update."
+    }
+    else {
+        $encodedTaskId = [System.Uri]::EscapeDataString($firstTaskId)
+
+        Write-Step "Read one installation task from server"
+        $singleInstallationTask = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedTaskId" `
+            -Headers $headers `
+            -StepName "Single installation task"
+        Assert-HttpOk $singleInstallationTask "Single installation task"
+        Assert-InstallationTaskContract `
+            -Json $singleInstallationTask.Json `
+            -StepName "Single installation task"
+
+        Write-Step "Acknowledge installation task from DATUM"
+        Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $firstTaskId,
+                "--status",
+                "acknowledged",
+                "--reason",
+                "smoke test acknowledged task"
+            ) `
+            -StepName "DATUM installation task acknowledge" | Out-Null
+
+        Write-Step "Confirm acknowledged installation task from server"
+        $acknowledgedInstallationTask = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedTaskId" `
+            -Headers $headers `
+            -StepName "Acknowledged installation task"
+        Assert-HttpOk $acknowledgedInstallationTask "Acknowledged installation task"
+        Assert-InstallationTaskContract `
+            -Json $acknowledgedInstallationTask.Json `
+            -StepName "Acknowledged installation task"
+
+        if ($acknowledgedInstallationTask.Json.status -ne "acknowledged") {
+            throw "Acknowledged installation task returned status '$($acknowledgedInstallationTask.Json.status)', expected 'acknowledged'."
+        }
+
+        $taskUpdatePerformed = $true
+    }
+}
+
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
 Write-Host ""
@@ -434,6 +565,18 @@ Write-Host "- client deployment planning viewer"
 Write-Host "- installation plan global endpoint"
 Write-Host "- installation plan node-scoped endpoint"
 Write-Host "- client installation plan viewer"
+Write-Host "- client installation task materialization"
+Write-Host "- server node installation task list"
+Write-Host "- server project installation task list"
+if ($taskUpdatePerformed) {
+    Write-Host "- installation task single-task get"
+    Write-Host "- installation task acknowledgement"
+}
+else {
+    Write-Host "- installation task single-task get (skipped: no tasks materialized)"
+    Write-Host "- installation task acknowledgement (skipped: no tasks materialized)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
+Write-Host "No Docker/container/WASM/migration side effects were performed."

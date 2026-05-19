@@ -44,6 +44,11 @@ What it validates:
 - server global `installation-plan/latest` endpoint
 - server node-scoped `installation-plan/for-node/{node_id}` endpoint
 - client `installation-plan` and `install-plan` viewer contract
+- client `installation-tasks --materialize` contract
+- server installation task list for node
+- server installation task list for project
+- optional server installation task get when tasks exist
+- optional client installation task status update to `acknowledged` when tasks exist
 
 What it does not do:
 - start `dserver`
@@ -55,3 +60,7 @@ What it does not do:
 - install anything
 - modify local mappings
 - perform destructive operations
+
+Notes:
+- When at least one installation task exists for the node, the smoke test may update that server-side installation task record to `acknowledged`.
+- That status update is part of the installation task lifecycle contract only; it does not execute deployment or installation work.
