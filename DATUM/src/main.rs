@@ -95,8 +95,13 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.project_id.as_deref(),
             args.url.as_deref(),
             args.task_id.as_deref(),
+            args.approvals,
+            args.approval,
+            args.approve,
+            args.approved_by.as_deref(),
             args.status.as_deref(),
             args.reason.as_deref(),
+            args.expires_at_utc.as_deref(),
             args.materialize,
             args.json,
         ),
@@ -245,11 +250,26 @@ struct InstallationTasksArgs {
     #[arg(long)]
     task_id: Option<String>,
 
+    #[arg(long, default_value_t = false)]
+    approvals: bool,
+
+    #[arg(long, default_value_t = false)]
+    approval: bool,
+
+    #[arg(long, default_value_t = false)]
+    approve: bool,
+
+    #[arg(long)]
+    approved_by: Option<String>,
+
     #[arg(long)]
     status: Option<String>,
 
     #[arg(long)]
     reason: Option<String>,
+
+    #[arg(long)]
+    expires_at_utc: Option<String>,
 
     #[arg(long, default_value_t = false)]
     materialize: bool,
@@ -524,8 +544,13 @@ fn installation_tasks_command(
     project_id: Option<&str>,
     url: Option<&str>,
     task_id: Option<&str>,
+    approvals: bool,
+    approval: bool,
+    approve: bool,
+    approved_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
+    expires_at_utc: Option<&str>,
     materialize: bool,
     json: bool,
 ) -> Result<()> {
@@ -536,8 +561,13 @@ fn installation_tasks_command(
         project_id,
         url,
         task_id,
+        approvals,
+        approval,
+        approve,
+        approved_by,
         status,
         reason,
+        expires_at_utc,
         materialize,
         json,
     )

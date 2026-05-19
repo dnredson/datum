@@ -4,10 +4,15 @@ use crate::{
     config::Config,
     installation_tasks::{
         client::{
-            fetch_installation_task, fetch_installation_tasks_for_node,
+            fetch_installation_task, fetch_installation_task_approvals_for_node,
+            fetch_installation_tasks_for_node, fetch_latest_installation_task_approval,
             materialize_installation_tasks_for_node, patch_installation_task_status,
+            submit_installation_task_approval,
         },
-        model::{InstallationTask, InstallationTaskList},
+        model::{
+            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+            InstallationTaskList,
+        },
     },
 };
 
@@ -19,8 +24,13 @@ pub fn run_installation_tasks_command(
     project_id_override: Option<&str>,
     url_override: Option<&str>,
     task_id: Option<&str>,
+    approvals: bool,
+    approval: bool,
+    approve: bool,
+    approved_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
+    expires_at_utc: Option<&str>,
     materialize: bool,
     json_output: bool,
 ) -> Result<()> {
@@ -29,6 +39,89 @@ pub fn run_installation_tasks_command(
         .unwrap_or_else(|| cfg.agent.node_id.clone());
     let project_id = resolve_project_id(cfg, project_id_override)?;
     let base_url = resolve_base_url(cfg, url_override)?;
+    validate_command_mode(
+        task_id,
+        approvals,
+        approval,
+        approve,
+        status,
+        materialize,
+        approved_by,
+        expires_at_utc,
+    )?;
+
+    if approvals {
+        let response =
+            fetch_installation_task_approvals_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!("{}", format_approval_list(&response, &project_id, &node_id));
+        return Ok(());
+    }
+
+    if approval {
+        let task_id =
+            task_id.ok_or_else(|| anyhow!("--task-id is required when --approval is provided"))?;
+        match fetch_latest_installation_task_approval(&base_url, &project_id, &node_id, task_id) {
+            Ok(response) => {
+                if json_output {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&response).unwrap_or_else(|_| {
+                            "{\"error\":\"failed to render JSON\"}".to_string()
+                        })
+                    );
+                    return Ok(());
+                }
+
+                print!("{}", format_latest_approval(&response, task_id));
+                return Ok(());
+            }
+            Err(error) if error.to_string().contains("status=404") => {
+                if json_output {
+                    return Err(error);
+                }
+
+                println!("No approval record found for task {}.", task_id);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    if approve {
+        let task_id =
+            task_id.ok_or_else(|| anyhow!("--task-id is required when --approve is provided"))?;
+        let response = submit_installation_task_approval(
+            &base_url,
+            &project_id,
+            &node_id,
+            task_id,
+            approved_by,
+            reason,
+            expires_at_utc,
+        )?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!("{}", format_submitted_approval(&response));
+        return Ok(());
+    }
 
     if let Some(status) = status {
         let task_id =
@@ -88,6 +181,57 @@ pub fn run_installation_tasks_command(
     }
 
     print!("{}", format_task_list(&response, &project_id, &node_id));
+    Ok(())
+}
+
+fn validate_command_mode(
+    task_id: Option<&str>,
+    approvals: bool,
+    approval: bool,
+    approve: bool,
+    status: Option<&str>,
+    materialize: bool,
+    approved_by: Option<&str>,
+    expires_at_utc: Option<&str>,
+) -> Result<()> {
+    let selected_modes = [
+        approvals,
+        approval,
+        approve,
+        status.is_some(),
+        materialize,
+        task_id.is_some() && !approval && !approve && status.is_none(),
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+
+    if selected_modes > 1 {
+        return Err(anyhow!(
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --approval, --approvals, or --approve"
+        ));
+    }
+
+    if approvals && task_id.is_some() {
+        return Err(anyhow!("--task-id cannot be combined with --approvals"));
+    }
+
+    if approval && task_id.is_none() {
+        return Err(anyhow!("--task-id is required when --approval is provided"));
+    }
+
+    if approve && task_id.is_none() {
+        return Err(anyhow!("--task-id is required when --approve is provided"));
+    }
+
+    if approved_by.is_some() && !approve {
+        return Err(anyhow!("--approved-by can only be used with --approve"));
+    }
+
+    if expires_at_utc.is_some() && !approve {
+        return Err(anyhow!("--expires-at-utc can only be used with --approve"));
+    }
+
     Ok(())
 }
 
@@ -304,6 +448,128 @@ fn format_status_update(task: &InstallationTask) -> String {
     lines.join("\n")
 }
 
+fn format_approval_list(
+    response: &InstallationTaskApprovalList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response.count.unwrap_or(response.approvals.len() as u64);
+
+    let mut lines = vec![
+        format!("Installation task approvals for node {}", effective_node_id),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.approvals.is_empty() {
+        lines.push("No installation task approvals for this node.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Approvals: {}", count));
+    lines.push(String::new());
+
+    for (index, approval) in response.approvals.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_approval_block(approval));
+    }
+
+    lines.join("\n")
+}
+
+fn format_latest_approval(approval: &InstallationTaskApproval, task_id: &str) -> String {
+    let mut lines = vec![format!("Latest approval for task {}", task_id)];
+
+    if let Some(approved) = approval.approved {
+        lines.push(format!("  approved: {}", approved));
+    }
+
+    if let Some(mode) = approval.approval_mode.as_deref() {
+        lines.push(format!("  mode: {}", mode));
+    }
+
+    if let Some(approved_by) = approval.approved_by.as_deref() {
+        lines.push(format!("  approved_by: {}", approved_by));
+    }
+
+    if let Some(approved_at_utc) = approval.approved_at_utc.as_deref() {
+        lines.push(format!("  approved_at_utc: {}", approved_at_utc));
+    }
+
+    if let Some(reason) = approval.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines.join("\n")
+}
+
+fn format_submitted_approval(approval: &InstallationTaskApproval) -> String {
+    let mut lines = vec!["Submitted installation task approval".to_string()];
+
+    if let Some(task_id) = approval.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(approval_id) = approval.approval_id.as_deref() {
+        lines.push(format!("  approval_id: {}", approval_id));
+    }
+
+    if let Some(approved) = approval.approved {
+        lines.push(format!("  approved: {}", approved));
+    }
+
+    if let Some(mode) = approval.approval_mode.as_deref() {
+        lines.push(format!("  mode: {}", mode));
+    }
+
+    if let Some(approved_by) = approval.approved_by.as_deref() {
+        lines.push(format!("  approved_by: {}", approved_by));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: approval metadata was recorded on the server. This client command did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn format_approval_block(approval: &InstallationTaskApproval) -> Vec<String> {
+    let approved = if approval.approved == Some(true) {
+        "APPROVED"
+    } else {
+        "UNKNOWN"
+    };
+    let mode = approval.approval_mode.as_deref().unwrap_or("unknown");
+    let mut lines = vec![format!("[{}] {}", approved, mode)];
+
+    if let Some(task_id) = approval.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(approval_id) = approval.approval_id.as_deref() {
+        lines.push(format!("  approval_id: {}", approval_id));
+    }
+
+    if let Some(approved_by) = approval.approved_by.as_deref() {
+        lines.push(format!("  approved_by: {}", approved_by));
+    }
+
+    if let Some(approved_at_utc) = approval.approved_at_utc.as_deref() {
+        lines.push(format!("  approved_at_utc: {}", approved_at_utc));
+    }
+
+    if let Some(reason) = approval.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines
+}
+
 fn task_has_candidate_policy(task: &InstallationTask) -> bool {
     task.installation_policy
         .as_ref()
@@ -313,10 +579,16 @@ fn task_has_candidate_policy(task: &InstallationTask) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_status_update, format_task_list, validate_client_status};
+    use super::{
+        format_approval_list, format_latest_approval, format_status_update,
+        format_submitted_approval, format_task_list, validate_client_status, validate_command_mode,
+    };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
-        installation_tasks::model::{InstallationPolicy, InstallationTask, InstallationTaskList},
+        installation_tasks::model::{
+            InstallationPolicy, InstallationTask, InstallationTaskApproval,
+            InstallationTaskApprovalList, InstallationTaskList,
+        },
     };
 
     fn base_config() -> Config {
@@ -514,5 +786,108 @@ mod tests {
         let cfg = base_config();
         assert!(cfg.dispatch.as_ref().and_then(|dispatch| dispatch.execute) == Some(true));
         assert_eq!(cfg.agent.node_id, "fog-01");
+    }
+
+    #[test]
+    fn approval_formatting_includes_key_fields() {
+        let rendered = format_approval_list(
+            &InstallationTaskApprovalList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                approvals: vec![InstallationTaskApproval {
+                    task_id: Some("task-1".to_string()),
+                    approval_id: Some("approval-1".to_string()),
+                    approved: Some(true),
+                    approved_by: Some("operator".to_string()),
+                    approved_at_utc: Some("2026-05-19T13:00:00Z".to_string()),
+                    approval_mode: Some("operator_approved".to_string()),
+                    reason: Some("approved for future assisted execution".to_string()),
+                    ..InstallationTaskApproval::default()
+                }],
+                ..InstallationTaskApprovalList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("approval_id: approval-1"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("approved_by: operator"));
+        assert!(rendered.contains("approved_at_utc: 2026-05-19T13:00:00Z"));
+        assert!(rendered.contains("[APPROVED] operator_approved"));
+        assert!(rendered.contains("reason: approved for future assisted execution"));
+    }
+
+    #[test]
+    fn successful_submit_output_includes_metadata_only_note() {
+        let rendered = format_submitted_approval(&InstallationTaskApproval {
+            task_id: Some("task-1".to_string()),
+            approval_id: Some("approval-1".to_string()),
+            approved: Some(true),
+            approval_mode: Some("operator_approved".to_string()),
+            approved_by: Some("operator".to_string()),
+            ..InstallationTaskApproval::default()
+        });
+
+        assert!(rendered.contains("Submitted installation task approval"));
+        assert!(rendered.contains("approval_id: approval-1"));
+        assert!(rendered.contains(
+            "Note: approval metadata was recorded on the server. This client command did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn latest_approval_formatting_includes_key_fields() {
+        let rendered = format_latest_approval(
+            &InstallationTaskApproval {
+                approved: Some(true),
+                approval_mode: Some("operator_approved".to_string()),
+                approved_by: Some("operator".to_string()),
+                approved_at_utc: Some("2026-05-19T13:00:00Z".to_string()),
+                reason: Some("approved for future assisted execution".to_string()),
+                ..InstallationTaskApproval::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("Latest approval for task task-1"));
+        assert!(rendered.contains("approved: true"));
+        assert!(rendered.contains("mode: operator_approved"));
+        assert!(rendered.contains("approved_by: operator"));
+        assert!(rendered.contains("approved_at_utc: 2026-05-19T13:00:00Z"));
+        assert!(rendered.contains("reason: approved for future assisted execution"));
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_ambiguous_combinations() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            false,
+            true,
+            true,
+            None,
+            false,
+            Some("operator"),
+            None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_accepts_approval_mode() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            false,
+            false,
+            true,
+            None,
+            false,
+            Some("operator"),
+            Some("2026-06-01T00:00:00Z"),
+        );
+
+        assert!(result.is_ok());
     }
 }

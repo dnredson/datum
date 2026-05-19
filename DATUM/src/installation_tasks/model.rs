@@ -85,9 +85,68 @@ pub struct InstallationTaskList {
     pub extra: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallationTaskApproval {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub approved: Option<bool>,
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub approved_at_utc: Option<String>,
+    #[serde(default)]
+    pub approval_mode: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
+    #[serde(default)]
+    pub installation_policy_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallationTaskApprovalList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub approvals: Vec<InstallationTaskApproval>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApprovalRequest {
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{InstallationTask, InstallationTaskList};
+    use super::{
+        ApprovalRequest, InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+        InstallationTaskList,
+    };
 
     #[test]
     fn parse_task_list_with_tasks() {
@@ -221,5 +280,82 @@ mod tests {
         let parsed: InstallationTask = serde_json::from_str(raw).expect("task should parse");
 
         assert!(parsed.installation_policy.is_none());
+    }
+
+    #[test]
+    fn parse_installation_task_approval() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "approval_id":"approval-1",
+          "approved":true,
+          "approved_by":"operator",
+          "approved_at_utc":"2026-05-19T13:00:00Z",
+          "approval_mode":"operator_approved",
+          "reason":"approved for future assisted execution",
+          "future_field":"ok"
+        }"#;
+
+        let parsed: InstallationTaskApproval =
+            serde_json::from_str(raw).expect("approval should parse");
+
+        assert_eq!(parsed.task_id.as_deref(), Some("task-1"));
+        assert_eq!(parsed.approved, Some(true));
+        assert_eq!(parsed.approval_mode.as_deref(), Some("operator_approved"));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_installation_task_approval_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "approvals":[
+            {
+              "task_id":"task-1",
+              "approval_id":"approval-1",
+              "approved":true
+            }
+          ]
+        }"#;
+
+        let parsed: InstallationTaskApprovalList =
+            serde_json::from_str(raw).expect("approval list should parse");
+
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.approvals.len(), 1);
+        assert_eq!(
+            parsed.approvals[0].approval_id.as_deref(),
+            Some("approval-1")
+        );
+    }
+
+    #[test]
+    fn approval_request_serializes_optional_fields() {
+        let request = ApprovalRequest {
+            approved_by: Some("operator".to_string()),
+            reason: Some("approved for future assisted execution".to_string()),
+            expires_at_utc: Some("2026-06-01T00:00:00Z".to_string()),
+        };
+
+        let value = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(value["approved_by"].as_str(), Some("operator"));
+        assert_eq!(
+            value["reason"].as_str(),
+            Some("approved for future assisted execution")
+        );
+        assert_eq!(
+            value["expires_at_utc"].as_str(),
+            Some("2026-06-01T00:00:00Z")
+        );
     }
 }

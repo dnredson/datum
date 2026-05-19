@@ -8,7 +8,10 @@ use reqwest::{
 };
 use serde_json::json;
 
-use crate::installation_tasks::model::{InstallationTask, InstallationTaskList};
+use crate::installation_tasks::model::{
+    ApprovalRequest, InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+    InstallationTaskList,
+};
 
 pub fn materialize_installation_tasks_for_node(
     base_url: &str,
@@ -83,6 +86,62 @@ pub fn patch_installation_task_status(
     parse_task_response(response, "patch installation task status")
 }
 
+pub fn submit_installation_task_approval(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+    approved_by: Option<&str>,
+    reason: Option<&str>,
+    expires_at_utc: Option<&str>,
+) -> Result<InstallationTaskApproval> {
+    let endpoint = installation_task_approval_submit_endpoint_url(base_url, node_id, task_id)?;
+    let client = build_client()?;
+    let body = approval_request_body(approved_by, reason, expires_at_utc);
+    let response = client
+        .post(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .with_context(|| format!("submit installation task approval to {}", endpoint))?;
+
+    parse_approval_response(response, "submit installation task approval")
+}
+
+pub fn fetch_latest_installation_task_approval(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<InstallationTaskApproval> {
+    let endpoint = installation_task_approval_latest_endpoint_url(base_url, node_id, task_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch latest installation task approval from {}", endpoint))?;
+
+    parse_approval_response(response, "fetch latest installation task approval")
+}
+
+pub fn fetch_installation_task_approvals_for_node(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<InstallationTaskApprovalList> {
+    let endpoint = installation_task_approvals_list_endpoint_url(base_url, node_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch installation task approvals from {}", endpoint))?;
+
+    parse_approval_list_response(response, "fetch installation task approvals")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -117,6 +176,34 @@ fn parse_task_response(
     response: reqwest::blocking::Response,
     label: &str,
 ) -> Result<InstallationTask> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_approval_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<InstallationTaskApproval> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_approval_list_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<InstallationTaskApprovalList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -203,6 +290,49 @@ pub fn installation_task_patch_endpoint_url(
     with_segments(base_url, &segments)
 }
 
+pub fn installation_task_approval_submit_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "approval".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn installation_task_approval_latest_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "approval".to_string(),
+        "latest".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn installation_task_approvals_list_endpoint_url(base_url: &str, node_id: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-task-approvals".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Value {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => json!({
@@ -215,12 +345,35 @@ pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Valu
     }
 }
 
+pub fn approval_request_body(
+    approved_by: Option<&str>,
+    reason: Option<&str>,
+    expires_at_utc: Option<&str>,
+) -> ApprovalRequest {
+    ApprovalRequest {
+        approved_by: approved_by
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        reason: reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        expires_at_utc: expires_at_utc
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        installation_task_get_endpoint_url, installation_task_patch_endpoint_url,
-        installation_tasks_list_endpoint_url, installation_tasks_materialize_endpoint_url,
-        patch_status_body, project_header,
+        approval_request_body, installation_task_approval_latest_endpoint_url,
+        installation_task_approval_submit_endpoint_url,
+        installation_task_approvals_list_endpoint_url, installation_task_get_endpoint_url,
+        installation_task_patch_endpoint_url, installation_tasks_list_endpoint_url,
+        installation_tasks_materialize_endpoint_url, patch_status_body, project_header,
     };
 
     #[test]
@@ -282,6 +435,50 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_construction_for_submit_approval_is_correct() {
+        let url = installation_task_approval_submit_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "task-1",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/task-1/approval"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_latest_approval_is_correct() {
+        let url = installation_task_approval_latest_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "task-1",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/task-1/approval/latest"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_list_approvals_is_correct() {
+        let url = installation_task_approvals_list_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-task-approvals/for-node/fog-01"
+        );
+    }
+
+    #[test]
     fn patch_body_includes_status_and_optional_reason() {
         let with_reason = patch_status_body("acknowledged", Some("operator reviewed this task"));
         let without_reason = patch_status_body("blocked", None);
@@ -293,6 +490,26 @@ mod tests {
         );
         assert_eq!(without_reason["status"].as_str(), Some("blocked"));
         assert!(without_reason.get("reason").is_none());
+    }
+
+    #[test]
+    fn approval_request_body_includes_optional_fields_when_provided() {
+        let body = approval_request_body(
+            Some("operator"),
+            Some("approved for future assisted execution"),
+            Some("2026-06-01T00:00:00Z"),
+        );
+        let value = serde_json::to_value(body).expect("body should serialize");
+
+        assert_eq!(value["approved_by"].as_str(), Some("operator"));
+        assert_eq!(
+            value["reason"].as_str(),
+            Some("approved for future assisted execution")
+        );
+        assert_eq!(
+            value["expires_at_utc"].as_str(),
+            Some("2026-06-01T00:00:00Z")
+        );
     }
 
     #[test]
