@@ -48,6 +48,8 @@ pub struct FirebaseConfig {
     pub collection_assisted_execution_requests_latest: Option<String>,
     pub collection_assisted_execution_claims: Option<String>,
     pub collection_assisted_execution_claims_latest: Option<String>,
+    pub collection_assisted_execution_attempts: Option<String>,
+    pub collection_assisted_execution_attempts_latest: Option<String>,
 }
 
 impl AppConfig {

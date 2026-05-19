@@ -8,8 +8,8 @@ use crate::core::{
     action_results::ActionExecutionReport,
     installation_tasks::{
         annotate_installation_task_policy, apply_assisted_execution_claim_status_patch,
-        normalize_installation_task, AssistedExecutionClaim, AssistedExecutionRequest,
-        InstallationTask, InstallationTaskApproval,
+        normalize_installation_task, AssistedExecutionAttempt, AssistedExecutionClaim,
+        AssistedExecutionRequest, InstallationTask, InstallationTaskApproval,
     },
     model::SnapshotEnvelope,
 };
@@ -41,6 +41,8 @@ pub struct FirebaseClient {
     pub collection_assisted_execution_requests_latest: String,
     pub collection_assisted_execution_claims: String,
     pub collection_assisted_execution_claims_latest: String,
+    pub collection_assisted_execution_attempts: String,
+    pub collection_assisted_execution_attempts_latest: String,
     pub _config: Arc<AppConfig>,
 }
 
@@ -159,6 +161,16 @@ impl FirebaseClient {
             .collection_assisted_execution_claims_latest
             .clone()
             .unwrap_or_else(|| "datum_assisted_execution_claims_latest".to_string());
+        let collection_assisted_execution_attempts = app_config
+            .firebase
+            .collection_assisted_execution_attempts
+            .clone()
+            .unwrap_or_else(|| "datum_assisted_execution_attempts".to_string());
+        let collection_assisted_execution_attempts_latest = app_config
+            .firebase
+            .collection_assisted_execution_attempts_latest
+            .clone()
+            .unwrap_or_else(|| "datum_assisted_execution_attempts_latest".to_string());
         Ok(Self {
             client: Client::new(),
             project_id,
@@ -183,6 +195,8 @@ impl FirebaseClient {
             collection_assisted_execution_requests_latest,
             collection_assisted_execution_claims,
             collection_assisted_execution_claims_latest,
+            collection_assisted_execution_attempts,
+            collection_assisted_execution_attempts_latest,
             _config: app_config,
         })
     }
@@ -1753,6 +1767,40 @@ impl FirebaseClient {
         Ok(claims)
     }
 
+    pub async fn get_assisted_execution_claim(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+        claim_id: &str,
+    ) -> Result<Option<AssistedExecutionClaim>> {
+        let doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}:claim:{}",
+            project_id, node_id, task_id, request_id, claim_id
+        );
+        let url = self.doc_url(&self.collection_assisted_execution_claims, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_assisted_execution_claim failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "assisted execution claim",
+        )?))
+    }
+
     pub async fn update_assisted_execution_claim_status(
         &self,
         project_id: &str,
@@ -1774,5 +1822,157 @@ impl FirebaseClient {
             .await?;
 
         Ok(Some(updated_claim))
+    }
+
+    pub async fn put_assisted_execution_attempt(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+        claim_id: &str,
+        attempt: &AssistedExecutionAttempt,
+    ) -> Result<()> {
+        let raw_doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}:claim:{}:attempt:{}",
+            project_id, node_id, task_id, request_id, claim_id, attempt.attempt_id
+        );
+        let latest_doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}:claim:{}",
+            project_id, node_id, task_id, request_id, claim_id
+        );
+        let raw_url = self.doc_url(&self.collection_assisted_execution_attempts, &raw_doc_id);
+        let latest_url = self.doc_url(
+            &self.collection_assisted_execution_attempts_latest,
+            &latest_doc_id,
+        );
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "task_id": Self::firestore_string(task_id),
+                "request_id": Self::firestore_string(request_id),
+                "claim_id": Self::firestore_string(claim_id),
+                "attempt_id": Self::firestore_string(&attempt.attempt_id),
+                "attempt_status": Self::firestore_string(&attempt.attempt_status),
+                "attempted_at_utc": Self::firestore_string(&attempt.attempted_at_utc),
+                "payload": Self::firestore_json_string(attempt)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_assisted_execution_attempt raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_assisted_execution_attempt latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_assisted_execution_attempt(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+        claim_id: &str,
+    ) -> Result<Option<AssistedExecutionAttempt>> {
+        let doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}:claim:{}",
+            project_id, node_id, task_id, request_id, claim_id
+        );
+        let url = self.doc_url(&self.collection_assisted_execution_attempts_latest, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "get_latest_assisted_execution_attempt failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "assisted execution attempt",
+        )?))
+    }
+
+    pub async fn list_assisted_execution_attempts_for_node(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Vec<AssistedExecutionAttempt>> {
+        let url = self.collection_url(&self.collection_assisted_execution_attempts_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_assisted_execution_attempts_for_node failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut attempts = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let doc_node_id = fields
+                .get("node_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id || doc_node_id != node_id {
+                continue;
+            }
+
+            attempts.push(Self::parse_payload_from_document(
+                doc,
+                "assisted execution attempt",
+            )?);
+        }
+
+        Ok(attempts)
     }
 }

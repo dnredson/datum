@@ -32,6 +32,12 @@ const CLAIM_STATUS_RELEASED: &str = "released";
 const CLAIM_STATUS_EXPIRED: &str = "expired";
 const CLAIM_STATUS_COMPLETED: &str = "completed";
 const CLAIM_STATUS_CANCELLED: &str = "cancelled";
+const ATTEMPT_STATUS_RECORDED: &str = "recorded";
+const ATTEMPT_EXECUTION_MODE_NO_OP: &str = "no_op";
+const ATTEMPT_EXECUTION_MODE_DRY_RUN: &str = "dry_run";
+const ATTEMPT_EXECUTION_RESULT_NO_OP_RECORDED: &str = "no_op_recorded";
+const ATTEMPT_EXECUTION_RESULT_DRY_RUN_RECORDED: &str = "dry_run_recorded";
+const ATTEMPT_EXECUTION_RESULT_REJECTED_INVALID_REQUEST: &str = "rejected_invalid_request";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -218,10 +224,56 @@ pub struct AssistedExecutionClaimList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionAttempt {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub request_id: String,
+    pub claim_id: String,
+    pub attempt_id: String,
+    pub attempt_status: String,
+    #[serde(default)]
+    pub attempted_by: Option<String>,
+    pub attempted_at_utc: String,
+    pub execution_mode: String,
+    pub execution_result: String,
+    pub safe_to_auto_execute: bool,
+    pub side_effects_performed: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub claim_snapshot: Option<Value>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionAttemptList {
+    pub project_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    pub count: u64,
+    pub attempts: Vec<AssistedExecutionAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistedExecutionClaimStatusPatch {
     pub status: String,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionAttemptBody {
+    pub execution_mode: String,
+    #[serde(default)]
+    pub attempted_by: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -250,6 +302,13 @@ fn is_valid_assisted_execution_claim_status(status: &str) -> bool {
             | CLAIM_STATUS_EXPIRED
             | CLAIM_STATUS_COMPLETED
             | CLAIM_STATUS_CANCELLED
+    )
+}
+
+fn is_valid_assisted_execution_attempt_mode(mode: &str) -> bool {
+    matches!(
+        mode,
+        ATTEMPT_EXECUTION_MODE_NO_OP | ATTEMPT_EXECUTION_MODE_DRY_RUN
     )
 }
 
@@ -1005,6 +1064,96 @@ pub fn apply_assisted_execution_claim_status_patch(
     updated_claim
 }
 
+pub fn validate_assisted_execution_attempt_allowed(
+    task: &InstallationTask,
+    request: &AssistedExecutionRequest,
+    claim: &AssistedExecutionClaim,
+    execution_mode: &str,
+) -> Result<(), String> {
+    if !is_valid_assisted_execution_attempt_mode(execution_mode) {
+        return Err(format!(
+            "assisted execution attempt requires execution_mode to be '{}' or '{}', got '{}'",
+            ATTEMPT_EXECUTION_MODE_NO_OP, ATTEMPT_EXECUTION_MODE_DRY_RUN, execution_mode
+        ));
+    }
+
+    if task.project_id != request.project_id
+        || task.project_id != claim.project_id
+        || task.node_id != request.node_id
+        || task.node_id != claim.node_id
+        || task.task_id != request.task_id
+        || task.task_id != claim.task_id
+        || request.request_id != claim.request_id
+    {
+        return Err(
+            "assisted execution attempt metadata does not match task/request/claim identity"
+                .to_string(),
+        );
+    }
+
+    if request.request_status != REQUEST_STATUS_REQUESTED {
+        return Err(format!(
+            "assisted execution attempt requires request_status='{}', got '{}'",
+            REQUEST_STATUS_REQUESTED, request.request_status
+        ));
+    }
+
+    if claim.claim_status != CLAIM_STATUS_CLAIMED {
+        return Err(format!(
+            "assisted execution attempt requires claim_status='{}', got '{}'",
+            CLAIM_STATUS_CLAIMED, claim.claim_status
+        ));
+    }
+
+    if matches!(task.status.trim(), STATUS_COMPLETED | STATUS_CANCELLED) {
+        return Err("task status is not eligible for assisted execution attempt".to_string());
+    }
+
+    if task.safe_to_auto_execute || request.safe_to_auto_execute || claim.safe_to_auto_execute {
+        return Err("safe_to_auto_execute must remain false across task/request/claim".to_string());
+    }
+
+    Ok(())
+}
+
+pub fn build_assisted_execution_attempt(
+    project_id: &str,
+    node_id: &str,
+    task: &InstallationTask,
+    request: &AssistedExecutionRequest,
+    claim: &AssistedExecutionClaim,
+    execution_mode: &str,
+    attempted_by: Option<String>,
+    message: Option<String>,
+) -> AssistedExecutionAttempt {
+    let execution_result = match execution_mode {
+        ATTEMPT_EXECUTION_MODE_NO_OP => ATTEMPT_EXECUTION_RESULT_NO_OP_RECORDED,
+        ATTEMPT_EXECUTION_MODE_DRY_RUN => ATTEMPT_EXECUTION_RESULT_DRY_RUN_RECORDED,
+        _ => ATTEMPT_EXECUTION_RESULT_REJECTED_INVALID_REQUEST,
+    };
+
+    AssistedExecutionAttempt {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.task_id.clone(),
+        request_id: request.request_id.clone(),
+        claim_id: claim.claim_id.clone(),
+        attempt_id: format!("attempt:{}", Uuid::new_v4()),
+        attempt_status: ATTEMPT_STATUS_RECORDED.to_string(),
+        attempted_by,
+        attempted_at_utc: Utc::now().to_rfc3339(),
+        execution_mode: execution_mode.to_string(),
+        execution_result: execution_result.to_string(),
+        safe_to_auto_execute: false,
+        side_effects_performed: false,
+        message,
+        claim_snapshot: serde_json::to_value(claim).ok(),
+        request_snapshot: serde_json::to_value(request).ok(),
+        task_snapshot: serde_json::to_value(task).ok(),
+        metadata: None,
+    }
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -1106,14 +1255,16 @@ pub fn derive_installation_tasks_from_plan(
 mod tests {
     use super::{
         annotate_installation_task_policy, apply_assisted_execution_claim_status_patch,
-        build_assisted_execution_claim, build_assisted_execution_request,
-        build_installation_task_approval, derive_installation_tasks_from_plan,
-        evaluate_installation_task_readiness, normalize_installation_task,
+        build_assisted_execution_attempt, build_assisted_execution_claim,
+        build_assisted_execution_request, build_installation_task_approval,
+        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+        normalize_installation_task, validate_assisted_execution_attempt_allowed,
         validate_assisted_execution_claim_allowed,
         validate_assisted_execution_claim_status_transition,
         validate_assisted_execution_request_allowed, validate_installation_task,
         validate_installation_task_can_be_approved, validate_installation_task_status_transition,
-        AssistedExecutionClaim, AssistedExecutionRequest, InstallationTask,
+        AssistedExecutionAttempt, AssistedExecutionClaim, AssistedExecutionRequest,
+        InstallationTask,
     };
     use chrono::{Duration, Utc};
     use serde_json::{json, Value};
@@ -1207,17 +1358,42 @@ mod tests {
     fn existing_claim(claim_status: &str) -> AssistedExecutionClaim {
         let task = candidate_task();
         let request = requested_request();
+        existing_claim_for_request(&task, &request, claim_status)
+    }
+
+    fn existing_claim_for_request(
+        task: &InstallationTask,
+        request: &AssistedExecutionRequest,
+        claim_status: &str,
+    ) -> AssistedExecutionClaim {
         let mut claim = build_assisted_execution_claim(
             "smart-city-campinas",
             "fog-01",
-            &task,
-            &request,
+            task,
+            request,
             Some("operator".to_string()),
             Some("claim for future assisted execution".to_string()),
             None,
         );
         claim.claim_status = claim_status.to_string();
         claim
+    }
+
+    fn recorded_attempt(execution_mode: &str) -> AssistedExecutionAttempt {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+
+        build_assisted_execution_attempt(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            &claim,
+            execution_mode,
+            Some("operator".to_string()),
+            Some("recording metadata-only attempt".to_string()),
+        )
     }
 
     #[test]
@@ -2206,5 +2382,151 @@ mod tests {
             .and_then(|value| value.get("updated_at_utc"))
             .and_then(Value::as_str)
             .is_some());
+    }
+
+    #[test]
+    fn claimed_claim_with_requested_request_can_record_no_op_attempt() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_ok()
+        );
+    }
+
+    #[test]
+    fn claimed_claim_with_requested_request_can_record_dry_run_attempt() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "dry_run").is_ok()
+        );
+    }
+
+    #[test]
+    fn non_claimed_claim_is_rejected_for_attempt() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim("released");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+    }
+
+    #[test]
+    fn completed_task_is_rejected_for_attempt() {
+        let mut task = candidate_task();
+        task.status = "completed".to_string();
+        let request = requested_request();
+        let claim = existing_claim("claimed");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_task_is_rejected_for_attempt() {
+        let mut task = candidate_task();
+        task.status = "cancelled".to_string();
+        let request = requested_request();
+        let claim = existing_claim("claimed");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+    }
+
+    #[test]
+    fn request_status_not_requested_is_rejected_for_attempt() {
+        let task = candidate_task();
+        let mut request = requested_request();
+        let claim = existing_claim("claimed");
+        request.request_status = "cancelled".to_string();
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+    }
+
+    #[test]
+    fn safe_to_auto_execute_true_on_task_request_or_claim_is_rejected_for_attempt() {
+        let request = requested_request();
+        let claim = existing_claim("claimed");
+        let mut task = candidate_task();
+        task.safe_to_auto_execute = true;
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+
+        let task = candidate_task();
+        let mut request = requested_request();
+        request.safe_to_auto_execute = true;
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+
+        let task = candidate_task();
+        let request = requested_request();
+        let mut claim = existing_claim("claimed");
+        claim.safe_to_auto_execute = true;
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "no_op").is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_execution_mode_is_rejected_for_attempt() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim("claimed");
+
+        assert!(
+            validate_assisted_execution_attempt_allowed(&task, &request, &claim, "execute")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn attempt_side_effects_performed_remains_false() {
+        let attempt = recorded_attempt("no_op");
+
+        assert!(!attempt.side_effects_performed);
+    }
+
+    #[test]
+    fn attempt_safe_to_auto_execute_remains_false() {
+        let attempt = recorded_attempt("no_op");
+
+        assert!(!attempt.safe_to_auto_execute);
+    }
+
+    #[test]
+    fn attempt_includes_task_request_and_claim_snapshots() {
+        let attempt = recorded_attempt("no_op");
+
+        assert!(attempt.task_snapshot.is_some());
+        assert!(attempt.request_snapshot.is_some());
+        assert!(attempt.claim_snapshot.is_some());
+    }
+
+    #[test]
+    fn attempt_starts_with_attempt_status_recorded() {
+        let attempt = recorded_attempt("no_op");
+
+        assert_eq!(attempt.attempt_status, "recorded");
+    }
+
+    #[test]
+    fn execution_result_is_no_op_or_dry_run_recorded() {
+        let no_op = recorded_attempt("no_op");
+        let dry_run = recorded_attempt("dry_run");
+
+        assert_eq!(no_op.execution_result, "no_op_recorded");
+        assert_eq!(dry_run.execution_result, "dry_run_recorded");
     }
 }

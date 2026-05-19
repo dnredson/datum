@@ -15,14 +15,16 @@ use crate::{
             empty_installation_plan,
         },
         installation_tasks::{
-            annotate_installation_task_policy, build_assisted_execution_claim,
-            build_assisted_execution_request, build_installation_task_approval,
-            derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
-            normalize_installation_task, validate_assisted_execution_claim_allowed,
+            annotate_installation_task_policy, build_assisted_execution_attempt,
+            build_assisted_execution_claim, build_assisted_execution_request,
+            build_installation_task_approval, derive_installation_tasks_from_plan,
+            evaluate_installation_task_readiness, normalize_installation_task,
+            validate_assisted_execution_attempt_allowed, validate_assisted_execution_claim_allowed,
             validate_assisted_execution_claim_status_transition,
             validate_assisted_execution_request_allowed, validate_installation_task,
             validate_installation_task_can_be_approved,
-            validate_installation_task_status_transition, AssistedExecutionClaim,
+            validate_installation_task_status_transition, AssistedExecutionAttempt,
+            AssistedExecutionAttemptBody, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch,
             AssistedExecutionRequest, AssistedExecutionRequestList, InstallationTask,
             InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
@@ -237,6 +239,25 @@ fn assisted_execution_claim_list(
         node_id: Some(node_id),
         count: claims.len() as u64,
         claims,
+    }
+}
+
+fn assisted_execution_attempt_list(
+    project_id: String,
+    node_id: String,
+    mut attempts: Vec<AssistedExecutionAttempt>,
+) -> AssistedExecutionAttemptList {
+    attempts.sort_by(|a, b| {
+        a.task_id
+            .cmp(&b.task_id)
+            .then_with(|| a.request_id.cmp(&b.request_id))
+            .then_with(|| a.claim_id.cmp(&b.claim_id))
+    });
+    AssistedExecutionAttemptList {
+        project_id,
+        node_id: Some(node_id),
+        count: attempts.len() as u64,
+        attempts,
     }
 }
 
@@ -910,6 +931,185 @@ pub async fn patch_assisted_execution_claim_status(
         })?;
 
     Ok(JsonResponse(updated_claim))
+}
+
+pub async fn post_assisted_execution_attempt(
+    State(state): State<AppState>,
+    Path((node_id, task_id, request_id, claim_id)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<AssistedExecutionAttemptBody>,
+) -> Result<JsonResponse<AssistedExecutionAttempt>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let Some(task) = state
+        .firebase
+        .get_installation_task(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let Some(request) = state
+        .firebase
+        .get_assisted_execution_request(&project_id, &node_id, &task_id, &request_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution request not found for project '{}' node '{}' task '{}' request '{}'",
+                    project_id, node_id, task_id, request_id
+                )
+            })),
+        ));
+    };
+
+    let Some(claim) = state
+        .firebase
+        .get_assisted_execution_claim(&project_id, &node_id, &task_id, &request_id, &claim_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution claim not found for project '{}' node '{}' task '{}' request '{}' claim '{}'",
+                    project_id, node_id, task_id, request_id, claim_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(&project_id, Some(&node_id), task);
+
+    validate_assisted_execution_attempt_allowed(
+        &normalized_task,
+        &request,
+        &claim,
+        payload.execution_mode.trim(),
+    )
+    .map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({ "error": err })),
+        )
+    })?;
+
+    let attempt = build_assisted_execution_attempt(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        &request,
+        &claim,
+        payload.execution_mode.trim(),
+        payload.attempted_by,
+        payload.message,
+    );
+
+    state
+        .firebase
+        .put_assisted_execution_attempt(
+            &project_id,
+            &node_id,
+            &task_id,
+            &request_id,
+            &claim_id,
+            &attempt,
+        )
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(attempt))
+}
+
+pub async fn get_latest_assisted_execution_attempt(
+    State(state): State<AppState>,
+    Path((node_id, task_id, request_id, claim_id)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionAttempt>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let attempt = state
+        .firebase
+        .get_latest_assisted_execution_attempt(
+            &project_id,
+            &node_id,
+            &task_id,
+            &request_id,
+            &claim_id,
+        )
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    match attempt {
+        Some(attempt) => Ok(JsonResponse(attempt)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution attempt not found for project '{}' node '{}' task '{}' request '{}' claim '{}'",
+                    project_id, node_id, task_id, request_id, claim_id
+                )
+            })),
+        )),
+    }
+}
+
+pub async fn list_assisted_execution_attempts_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionAttemptList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let attempts = state
+        .firebase
+        .list_assisted_execution_attempts_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(assisted_execution_attempt_list(
+        project_id, node_id, attempts,
+    )))
 }
 
 pub async fn list_installation_task_approvals_for_node(
