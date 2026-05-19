@@ -6,6 +6,7 @@ pub mod deployment_plan;
 pub mod dispatch_policy;
 pub mod events;
 pub mod graph_builder;
+pub mod installation_plan;
 pub mod model;
 pub mod planner;
 pub mod topology;

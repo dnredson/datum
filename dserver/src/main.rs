@@ -20,6 +20,7 @@ use api::deployment_planning::{get_deployment_planning_for_node, get_latest_depl
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
+use api::installation_plan::{get_installation_plan_for_node, get_latest_installation_plan};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::topology::{get_topology, set_topology};
 use api::{
@@ -102,6 +103,14 @@ async fn main() {
         .route(
             "/api/v1/deployment-planning/for-node/:node_id",
             get(get_deployment_planning_for_node),
+        )
+        .route(
+            "/api/v1/installation-plan/latest",
+            get(get_latest_installation_plan),
+        )
+        .route(
+            "/api/v1/installation-plan/for-node/:node_id",
+            get(get_installation_plan_for_node),
         )
         .route("/api/v1/dispatch/latest", get(publish_latest_dispatch))
         .route(
