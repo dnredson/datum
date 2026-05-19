@@ -10,6 +10,10 @@ use axum::{
     Router,
 };
 
+use api::action_results::{
+    get_latest_action_execution_report, list_latest_action_execution_reports,
+    post_action_execution_report,
+};
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
 use api::dashboard::get_dashboard;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
@@ -65,7 +69,19 @@ async fn main() {
             "/api/v1/nodes/:node_id/capabilities",
             post(put_node_capabilities).get(get_node_capabilities),
         )
+        .route(
+            "/api/v1/nodes/:node_id/action-results",
+            post(post_action_execution_report),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/action-results/latest",
+            get(get_latest_action_execution_report),
+        )
         .route("/api/v1/capabilities", get(list_capabilities))
+        .route(
+            "/api/v1/action-results/latest",
+            get(list_latest_action_execution_reports),
+        )
         .route("/api/v1/graph/latest", get(get_latest_graph))
         .route("/api/v1/graph/materialized", get(get_materialized_graph))
         .route("/api/v1/analysis/latest", get(analyze_latest_graph))

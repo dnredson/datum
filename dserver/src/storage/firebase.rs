@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 
-use crate::core::model::SnapshotEnvelope;
+use crate::core::{action_results::ActionExecutionReport, model::SnapshotEnvelope};
 use crate::{config::AppConfig, core::capabilities::NodeCapabilities};
 
 pub struct FirebaseClient {
@@ -24,6 +24,8 @@ pub struct FirebaseClient {
     pub collection_action_plan_latest: String,
     pub collection_dispatch_latest: String,
     pub collection_node_capabilities: String,
+    pub collection_action_results: String,
+    pub collection_action_results_latest: String,
     pub _config: Arc<AppConfig>,
 }
 
@@ -97,6 +99,16 @@ impl FirebaseClient {
             .collection_node_capabilities
             .clone()
             .unwrap_or_else(|| "datum_node_capabilities".to_string());
+        let collection_action_results = app_config
+            .firebase
+            .collection_action_results
+            .clone()
+            .unwrap_or_else(|| "datum_action_results".to_string());
+        let collection_action_results_latest = app_config
+            .firebase
+            .collection_action_results_latest
+            .clone()
+            .unwrap_or_else(|| "datum_action_results_latest".to_string());
         Ok(Self {
             client: Client::new(),
             project_id,
@@ -112,6 +124,8 @@ impl FirebaseClient {
             collection_action_plan_latest,
             collection_dispatch_latest,
             collection_node_capabilities,
+            collection_action_results,
+            collection_action_results_latest,
             _config: app_config,
         })
     }
@@ -146,6 +160,20 @@ impl FirebaseClient {
         Ok(json!({
             "stringValue": serde_json::to_string(value)?
         }))
+    }
+
+    fn parse_payload_from_document<T: serde::de::DeserializeOwned>(
+        raw: Value,
+        label: &str,
+    ) -> Result<T> {
+        let payload = raw
+            .get("fields")
+            .and_then(|f| f.get("payload"))
+            .and_then(|p| p.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| anyhow!("{label} payload missing"))?;
+
+        Ok(serde_json::from_str(payload)?)
     }
 
     pub async fn list_latest_snapshots_by_project(&self, project_id: &str) -> Result<Vec<Value>> {
@@ -915,5 +943,136 @@ impl FirebaseClient {
         }
 
         Ok(capabilities)
+    }
+
+    pub async fn put_action_execution_report(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        report: &ActionExecutionReport,
+    ) -> Result<()> {
+        let report_id = report
+            .report_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("put_action_execution_report requires report_id"))?;
+        let latest_doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let raw_doc_id = format!(
+            "project:{}:node:{}:report:{}",
+            project_id, node_id, report_id
+        );
+        let raw_url = self.doc_url(&self.collection_action_results, &raw_doc_id);
+        let latest_url = self.doc_url(&self.collection_action_results_latest, &latest_doc_id);
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "report_id": Self::firestore_string(report_id),
+                "reported_at_utc": Self::firestore_string(&report.reported_at_utc),
+                "payload": Self::firestore_json_string(report)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_action_execution_report raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_action_execution_report latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_action_execution_report(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Option<ActionExecutionReport>> {
+        let doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let url = self.doc_url(&self.collection_action_results_latest, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "get_latest_action_execution_report failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "action execution report",
+        )?))
+    }
+
+    pub async fn list_latest_action_execution_reports(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ActionExecutionReport>> {
+        let url = self.collection_url(&self.collection_action_results_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_latest_action_execution_reports failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut reports = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id {
+                continue;
+            }
+
+            reports.push(Self::parse_payload_from_document(
+                doc,
+                "action execution report",
+            )?);
+        }
+
+        Ok(reports)
     }
 }
