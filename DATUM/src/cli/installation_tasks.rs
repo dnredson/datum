@@ -4,15 +4,17 @@ use crate::{
     config::Config,
     installation_tasks::{
         client::{
-            fetch_installation_task, fetch_installation_task_approvals_for_node,
-            fetch_installation_task_readiness, fetch_installation_task_readiness_for_node,
-            fetch_installation_tasks_for_node, fetch_latest_installation_task_approval,
+            fetch_assisted_execution_requests_for_node, fetch_installation_task,
+            fetch_installation_task_approvals_for_node, fetch_installation_task_readiness,
+            fetch_installation_task_readiness_for_node, fetch_installation_tasks_for_node,
+            fetch_latest_assisted_execution_request, fetch_latest_installation_task_approval,
             materialize_installation_tasks_for_node, patch_installation_task_status,
-            submit_installation_task_approval,
+            submit_assisted_execution_request, submit_installation_task_approval,
         },
         model::{
-            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
+            AssistedExecutionRequest, AssistedExecutionRequestList, InstallationTask,
+            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+            InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
 };
@@ -26,10 +28,14 @@ pub fn run_installation_tasks_command(
     url_override: Option<&str>,
     task_id: Option<&str>,
     readiness: bool,
+    execution_requests: bool,
+    execution_request: bool,
+    request_assisted_execution: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
     approved_by: Option<&str>,
+    requested_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
@@ -44,14 +50,97 @@ pub fn run_installation_tasks_command(
     validate_command_mode(
         task_id,
         readiness,
+        execution_requests,
+        execution_request,
+        request_assisted_execution,
         approvals,
         approval,
         approve,
         status,
         materialize,
         approved_by,
+        requested_by,
         expires_at_utc,
     )?;
+
+    if execution_requests {
+        let response =
+            fetch_assisted_execution_requests_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_assisted_execution_request_list(&response, &project_id, &node_id)
+        );
+        return Ok(());
+    }
+
+    if execution_request {
+        let task_id = task_id
+            .ok_or_else(|| anyhow!("--task-id is required when --execution-request is provided"))?;
+        match fetch_latest_assisted_execution_request(&base_url, &project_id, &node_id, task_id) {
+            Ok(response) => {
+                if json_output {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&response).unwrap_or_else(|_| {
+                            "{\"error\":\"failed to render JSON\"}".to_string()
+                        })
+                    );
+                    return Ok(());
+                }
+
+                print!(
+                    "{}",
+                    format_latest_assisted_execution_request(&response, task_id)
+                );
+                return Ok(());
+            }
+            Err(error) if error.to_string().contains("status=404") => {
+                if json_output {
+                    return Err(error);
+                }
+
+                println!("No assisted execution request found for task {}.", task_id);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    if request_assisted_execution {
+        let task_id = task_id.ok_or_else(|| {
+            anyhow!("--task-id is required when --request-assisted-execution is provided")
+        })?;
+        let response = submit_assisted_execution_request(
+            &base_url,
+            &project_id,
+            &node_id,
+            task_id,
+            requested_by,
+            reason,
+        )?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!("{}", format_submitted_assisted_execution_request(&response));
+        return Ok(());
+    }
 
     if readiness {
         if let Some(task_id) = task_id {
@@ -238,23 +327,36 @@ pub fn run_installation_tasks_command(
 fn validate_command_mode(
     task_id: Option<&str>,
     readiness: bool,
+    execution_requests: bool,
+    execution_request: bool,
+    request_assisted_execution: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
     status: Option<&str>,
     materialize: bool,
     approved_by: Option<&str>,
+    requested_by: Option<&str>,
     expires_at_utc: Option<&str>,
 ) -> Result<()> {
     let selected_modes = [
         readiness && task_id.is_none(),
         readiness && task_id.is_some(),
+        execution_requests,
+        execution_request,
+        request_assisted_execution,
         approvals,
         approval,
         approve,
         status.is_some(),
         materialize,
-        task_id.is_some() && !approval && !approve && status.is_none(),
+        task_id.is_some()
+            && !readiness
+            && !execution_request
+            && !request_assisted_execution
+            && !approval
+            && !approve
+            && status.is_none(),
     ]
     .into_iter()
     .filter(|selected| *selected)
@@ -262,7 +364,25 @@ fn validate_command_mode(
 
     if selected_modes > 1 {
         return Err(anyhow!(
-            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --approval, --approvals, or --approve"
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --approval, --approvals, or --approve"
+        ));
+    }
+
+    if execution_requests && task_id.is_some() {
+        return Err(anyhow!(
+            "--task-id cannot be combined with --execution-requests"
+        ));
+    }
+
+    if execution_request && task_id.is_none() {
+        return Err(anyhow!(
+            "--task-id is required when --execution-request is provided"
+        ));
+    }
+
+    if request_assisted_execution && task_id.is_none() {
+        return Err(anyhow!(
+            "--task-id is required when --request-assisted-execution is provided"
         ));
     }
 
@@ -300,6 +420,12 @@ fn validate_command_mode(
 
     if expires_at_utc.is_some() && !approve {
         return Err(anyhow!("--expires-at-utc can only be used with --approve"));
+    }
+
+    if requested_by.is_some() && !request_assisted_execution {
+        return Err(anyhow!(
+            "--requested-by can only be used with --request-assisted-execution"
+        ));
     }
 
     Ok(())
@@ -637,6 +763,111 @@ fn format_readiness_detail_lines(readiness: &InstallationTaskReadiness) -> Vec<S
     lines
 }
 
+fn format_assisted_execution_request_list(
+    response: &AssistedExecutionRequestList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response.count.unwrap_or(response.requests.len() as u64);
+
+    let mut lines = vec![
+        format!("Assisted execution requests for node {}", effective_node_id),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.requests.is_empty() {
+        lines.push("No assisted execution requests for this node.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Requests: {}", count));
+    lines.push(String::new());
+
+    for (index, request) in response.requests.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_assisted_execution_request_block(request));
+    }
+
+    lines.join("\n")
+}
+
+fn format_latest_assisted_execution_request(
+    request: &AssistedExecutionRequest,
+    requested_task_id: &str,
+) -> String {
+    let task_id = request.task_id.as_deref().unwrap_or(requested_task_id);
+    let mut lines = vec![format!(
+        "Latest assisted execution request for task {}",
+        task_id
+    )];
+
+    if let Some(status) = request.request_status.as_deref() {
+        lines.push(format!("  status: {}", status));
+    }
+
+    if let Some(mode) = request.execution_mode.as_deref() {
+        lines.push(format!("  mode: {}", mode));
+    }
+
+    if let Some(requested_by) = request.requested_by.as_deref() {
+        lines.push(format!("  requested_by: {}", requested_by));
+    }
+
+    if let Some(requested_at_utc) = request.requested_at_utc.as_deref() {
+        lines.push(format!("  requested_at_utc: {}", requested_at_utc));
+    }
+
+    if let Some(safe_to_auto_execute) = request.safe_to_auto_execute {
+        lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
+    }
+
+    if let Some(reason) = request.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines.join("\n")
+}
+
+fn format_submitted_assisted_execution_request(request: &AssistedExecutionRequest) -> String {
+    let mut lines = vec!["Submitted assisted execution request".to_string()];
+
+    if let Some(task_id) = request.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(request_id) = request.request_id.as_deref() {
+        lines.push(format!("  request_id: {}", request_id));
+    }
+
+    if let Some(status) = request.request_status.as_deref() {
+        lines.push(format!("  status: {}", status));
+    }
+
+    if let Some(mode) = request.execution_mode.as_deref() {
+        lines.push(format!("  mode: {}", mode));
+    }
+
+    if let Some(requested_by) = request.requested_by.as_deref() {
+        lines.push(format!("  requested_by: {}", requested_by));
+    }
+
+    if let Some(safe_to_auto_execute) = request.safe_to_auto_execute {
+        lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: request metadata was recorded on the server. This client command did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
 fn format_approval_list(
     response: &InstallationTaskApprovalList,
     project_id: &str,
@@ -759,6 +990,42 @@ fn format_approval_block(approval: &InstallationTaskApproval) -> Vec<String> {
     lines
 }
 
+fn format_assisted_execution_request_block(request: &AssistedExecutionRequest) -> Vec<String> {
+    let status = request
+        .request_status
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_uppercase();
+    let mode = request.execution_mode.as_deref().unwrap_or("unknown");
+    let mut lines = vec![format!("[{}] {}", status, mode)];
+
+    if let Some(task_id) = request.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(request_id) = request.request_id.as_deref() {
+        lines.push(format!("  request_id: {}", request_id));
+    }
+
+    if let Some(requested_by) = request.requested_by.as_deref() {
+        lines.push(format!("  requested_by: {}", requested_by));
+    }
+
+    if let Some(requested_at_utc) = request.requested_at_utc.as_deref() {
+        lines.push(format!("  requested_at_utc: {}", requested_at_utc));
+    }
+
+    if let Some(safe_to_auto_execute) = request.safe_to_auto_execute {
+        lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
+    }
+
+    if let Some(reason) = request.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines
+}
+
 fn task_has_candidate_policy(task: &InstallationTask) -> bool {
     task.installation_policy
         .as_ref()
@@ -773,16 +1040,18 @@ fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_approval_list, format_latest_approval, format_readiness_list,
-        format_single_readiness, format_status_update, format_submitted_approval, format_task_list,
-        validate_client_status, validate_command_mode,
+        format_approval_list, format_assisted_execution_request_list, format_latest_approval,
+        format_latest_assisted_execution_request, format_readiness_list, format_single_readiness,
+        format_status_update, format_submitted_approval,
+        format_submitted_assisted_execution_request, format_task_list, validate_client_status,
+        validate_command_mode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
         installation_tasks::model::{
-            InstallationPolicy, InstallationTask, InstallationTaskApproval,
-            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-            InstallationTaskReadinessList,
+            AssistedExecutionRequest, AssistedExecutionRequestList, InstallationPolicy,
+            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     };
 
@@ -1127,9 +1396,106 @@ mod tests {
     }
 
     #[test]
+    fn assisted_execution_request_formatting_includes_key_fields() {
+        let rendered = format_assisted_execution_request_list(
+            &AssistedExecutionRequestList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                requests: vec![AssistedExecutionRequest {
+                    task_id: Some("task-1".to_string()),
+                    request_id: Some("request-1".to_string()),
+                    request_status: Some("requested".to_string()),
+                    requested_by: Some("operator".to_string()),
+                    requested_at_utc: Some("2026-05-19T13:00:00Z".to_string()),
+                    execution_mode: Some("assisted_operator_approved".to_string()),
+                    safe_to_auto_execute: Some(false),
+                    reason: Some("request future assisted execution".to_string()),
+                    ..AssistedExecutionRequest::default()
+                }],
+                ..AssistedExecutionRequestList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("[REQUESTED] assisted_operator_approved"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("request_id: request-1"));
+        assert!(rendered.contains("requested_by: operator"));
+        assert!(rendered.contains("requested_at_utc: 2026-05-19T13:00:00Z"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("reason: request future assisted execution"));
+    }
+
+    #[test]
+    fn successful_submit_request_output_includes_metadata_only_note() {
+        let rendered = format_submitted_assisted_execution_request(&AssistedExecutionRequest {
+            task_id: Some("task-1".to_string()),
+            request_id: Some("request-1".to_string()),
+            request_status: Some("requested".to_string()),
+            execution_mode: Some("assisted_operator_approved".to_string()),
+            requested_by: Some("operator".to_string()),
+            safe_to_auto_execute: Some(false),
+            ..AssistedExecutionRequest::default()
+        });
+
+        assert!(rendered.contains("Submitted assisted execution request"));
+        assert!(rendered.contains("request_id: request-1"));
+        assert!(rendered.contains(
+            "Note: request metadata was recorded on the server. This client command did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn latest_assisted_execution_request_formatting_includes_key_fields() {
+        let rendered = format_latest_assisted_execution_request(
+            &AssistedExecutionRequest {
+                request_status: Some("requested".to_string()),
+                execution_mode: Some("assisted_operator_approved".to_string()),
+                requested_by: Some("operator".to_string()),
+                requested_at_utc: Some("2026-05-19T13:00:00Z".to_string()),
+                safe_to_auto_execute: Some(false),
+                reason: Some("request future assisted execution".to_string()),
+                ..AssistedExecutionRequest::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("Latest assisted execution request for task task-1"));
+        assert!(rendered.contains("status: requested"));
+        assert!(rendered.contains("mode: assisted_operator_approved"));
+        assert!(rendered.contains("requested_by: operator"));
+        assert!(rendered.contains("requested_at_utc: 2026-05-19T13:00:00Z"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("reason: request future assisted execution"));
+    }
+
+    #[test]
+    fn assisted_execution_request_json_preserves_raw_response() {
+        let response = AssistedExecutionRequest {
+            task_id: Some("task-1".to_string()),
+            request_id: Some("request-1".to_string()),
+            request_status: Some("requested".to_string()),
+            safe_to_auto_execute: Some(false),
+            ..AssistedExecutionRequest::default()
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"task_id\": \"task-1\""));
+        assert!(rendered.contains("\"request_id\": \"request-1\""));
+        assert!(rendered.contains("\"request_status\": \"requested\""));
+        assert!(rendered.contains("\"safe_to_auto_execute\": false"));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_command_mode(
             Some("task-1"),
+            false,
+            false,
+            false,
             false,
             false,
             true,
@@ -1137,6 +1503,7 @@ mod tests {
             None,
             false,
             Some("operator"),
+            None,
             None,
         );
 
@@ -1150,10 +1517,14 @@ mod tests {
             false,
             false,
             false,
+            false,
+            false,
+            false,
             true,
             None,
             false,
             Some("operator"),
+            None,
             Some("2026-06-01T00:00:00Z"),
         );
 
@@ -1166,11 +1537,36 @@ mod tests {
             Some("task-1"),
             true,
             false,
+            false,
+            false,
+            false,
             true,
             false,
             None,
             false,
             None,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_execution_request_ambiguity() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            false,
+            false,
+            true,
+            true,
+            false,
+            false,
+            false,
+            None,
+            false,
+            None,
+            Some("operator"),
             None,
         );
 

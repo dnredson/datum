@@ -96,10 +96,14 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.task_id.as_deref(),
             args.readiness,
+            args.execution_requests,
+            args.execution_request,
+            args.request_assisted_execution,
             args.approvals,
             args.approval,
             args.approve,
             args.approved_by.as_deref(),
+            args.requested_by.as_deref(),
             args.status.as_deref(),
             args.reason.as_deref(),
             args.expires_at_utc.as_deref(),
@@ -255,6 +259,15 @@ struct InstallationTasksArgs {
     readiness: bool,
 
     #[arg(long, default_value_t = false)]
+    execution_requests: bool,
+
+    #[arg(long, default_value_t = false)]
+    execution_request: bool,
+
+    #[arg(long, default_value_t = false)]
+    request_assisted_execution: bool,
+
+    #[arg(long, default_value_t = false)]
     approvals: bool,
 
     #[arg(long, default_value_t = false)]
@@ -265,6 +278,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     approved_by: Option<String>,
+
+    #[arg(long)]
+    requested_by: Option<String>,
 
     #[arg(long)]
     status: Option<String>,
@@ -549,10 +565,14 @@ fn installation_tasks_command(
     url: Option<&str>,
     task_id: Option<&str>,
     readiness: bool,
+    execution_requests: bool,
+    execution_request: bool,
+    request_assisted_execution: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
     approved_by: Option<&str>,
+    requested_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
@@ -567,10 +587,14 @@ fn installation_tasks_command(
         url,
         task_id,
         readiness,
+        execution_requests,
+        execution_request,
+        request_assisted_execution,
         approvals,
         approval,
         approve,
         approved_by,
+        requested_by,
         status,
         reason,
         expires_at_utc,
