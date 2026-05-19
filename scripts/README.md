@@ -52,6 +52,12 @@ What it validates:
 - client `installation-tasks` output displays policy information when available
 - optional server installation task get when tasks exist
 - optional client installation task status update to `acknowledged` when tasks exist
+- optional detection of `candidate_for_assisted_execution` tasks
+- optional client approval submission via `installation-tasks --approve`
+- optional server latest approval read-back for a candidate task
+- optional server approval list for the node
+- optional client latest approval viewer via `installation-tasks --approval`
+- optional client approval list viewer via `installation-tasks --approvals`
 
 What it does not do:
 - start `dserver`
@@ -67,3 +73,5 @@ What it does not do:
 Notes:
 - When at least one installation task exists for the node, the smoke test may update that server-side installation task record to `acknowledged`.
 - That status update is part of the installation task lifecycle contract only; it does not execute deployment or installation work.
+- Approval submission is metadata-only; it does not execute deployment or installation work.
+- If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.

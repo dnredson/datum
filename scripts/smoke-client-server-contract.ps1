@@ -303,6 +303,78 @@ function Assert-InstallationPolicyContract {
     return $true
 }
 
+function Assert-InstallationTaskApprovalContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$ExpectedTaskId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "approved" $StepName
+    Assert-JsonHasProperty $Json "approval_mode" $StepName
+    Assert-JsonHasProperty $Json "approval_id" $StepName
+    Assert-JsonHasProperty $Json "approved_at_utc" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.task_id -ne $ExpectedTaskId) {
+        throw "$StepName returned task_id '$($Json.task_id)', expected '$ExpectedTaskId'."
+    }
+
+    if ($Json.approved -ne $true) {
+        throw "$StepName returned approved='$($Json.approved)', expected 'True'."
+    }
+
+    if ($Json.approval_mode -ne "operator_approved") {
+        throw "$StepName returned approval_mode '$($Json.approval_mode)', expected 'operator_approved'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.approval_id)) {
+        throw "$StepName did not include a non-empty approval_id."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.approved_at_utc)) {
+        throw "$StepName did not include a non-empty approved_at_utc."
+    }
+
+    if (-not $Json.PSObject.Properties.Name.Contains("approved_by")) {
+        throw "$StepName did not include approved_by."
+    }
+}
+
+function Assert-InstallationTaskApprovalListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "approvals" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.approvals -isnot [System.Array] -and $Json.approvals -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'approvals' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -493,6 +565,12 @@ $installationTasksOutput = Run-CommandOrFail `
 $taskUpdatePerformed = $false
 $policyValidated = $false
 $taskCount = 0
+$approvalCandidateDetected = $false
+$approvalSubmissionPerformed = $false
+$serverLatestApprovalReadPerformed = $false
+$serverApprovalListReadPerformed = $false
+$clientLatestApprovalReadPerformed = $false
+$clientApprovalListReadPerformed = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -596,6 +674,130 @@ if (-not $SkipServerChecks) {
 
         $taskUpdatePerformed = $true
     }
+
+    $candidateTask = $nodeInstallationTasks.Json.tasks `
+        | Where-Object {
+            $null -ne $_.installation_policy -and
+            $_.installation_policy.decision -eq "candidate_for_assisted_execution"
+        } `
+        | Select-Object -First 1
+
+    if ($null -eq $candidateTask) {
+        Write-Host "No candidate_for_assisted_execution task found; skipping operator approval checks."
+    }
+    else {
+        $approvalCandidateDetected = $true
+        $candidateTaskId = [string]$candidateTask.task_id
+        $encodedCandidateTaskId = [System.Uri]::EscapeDataString($candidateTaskId)
+
+        Write-Step "Submit installation task approval from DATUM"
+        $approvalSubmitOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $candidateTaskId,
+                "--approve",
+                "--approved-by",
+                "smoke-test",
+                "--reason",
+                "smoke test operator approval"
+            ) `
+            -StepName "DATUM installation task approve"
+
+        if ($approvalSubmitOutput -notmatch "Submitted installation task approval" -or
+            $approvalSubmitOutput -notmatch "approval metadata was recorded on the server" -or
+            $approvalSubmitOutput -notmatch "did not execute installation") {
+            throw "DATUM installation task approve output did not confirm metadata-only approval submission."
+        }
+        $approvalSubmissionPerformed = $true
+
+        Write-Step "Read latest installation task approval from server"
+        $latestApproval = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedCandidateTaskId/approval/latest" `
+            -Headers $headers `
+            -StepName "Latest installation task approval"
+        Assert-HttpOk $latestApproval "Latest installation task approval"
+        Assert-InstallationTaskApprovalContract `
+            -Json $latestApproval.Json `
+            -StepName "Latest installation task approval" `
+            -ExpectedTaskId $candidateTaskId
+        $serverLatestApprovalReadPerformed = $true
+
+        Write-Step "List installation task approvals from server"
+        $approvalList = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-task-approvals/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Installation task approvals for node"
+        Assert-HttpOk $approvalList "Installation task approvals for node"
+        Assert-InstallationTaskApprovalListContract `
+            -Json $approvalList.Json `
+            -StepName "Installation task approvals for node"
+        $matchingApproval = @($approvalList.Json.approvals | Where-Object {
+            $_.task_id -eq $candidateTaskId -and
+            $_.approved -eq $true -and
+            $_.approval_mode -eq "operator_approved"
+        } | Select-Object -First 1)
+        if ($matchingApproval.Count -eq 0) {
+            throw "Installation task approvals for node did not include the submitted operator approval for task '$candidateTaskId'."
+        }
+        $serverApprovalListReadPerformed = $true
+
+        Write-Step "Read latest installation task approval from DATUM"
+        $clientLatestApprovalOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $candidateTaskId,
+                "--approval"
+            ) `
+            -StepName "DATUM latest installation task approval"
+
+        if ($clientLatestApprovalOutput -notmatch [regex]::Escape("Latest approval for task $candidateTaskId") -or
+            $clientLatestApprovalOutput -notmatch "approved:\s+true" -or
+            $clientLatestApprovalOutput -notmatch "mode:\s+operator_approved") {
+            throw "DATUM latest installation task approval output did not include the expected approval details."
+        }
+        $clientLatestApprovalReadPerformed = $true
+
+        Write-Step "List installation task approvals from DATUM"
+        $clientApprovalListOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--approvals"
+            ) `
+            -StepName "DATUM installation task approvals"
+
+        if ($clientApprovalListOutput -notmatch [regex]::Escape("Installation task approvals for node $NodeId")) {
+            throw "DATUM installation task approvals output did not include the node approval list header."
+        }
+
+        if ($clientApprovalListOutput -match "No installation task approvals for this node\." ) {
+            throw "DATUM installation task approvals output reported no approvals after approval submission."
+        }
+
+        if ($clientApprovalListOutput -notmatch [regex]::Escape("task_id: $candidateTaskId")) {
+            throw "DATUM installation task approvals output did not include the submitted approval task id."
+        }
+        $clientApprovalListReadPerformed = $true
+    }
 }
 
 Write-Host ""
@@ -633,7 +835,44 @@ else {
     Write-Host "- installation task single-task get (skipped: no tasks materialized)"
     Write-Host "- installation task acknowledgement (skipped: no tasks materialized)"
 }
+if ($approvalCandidateDetected) {
+    Write-Host "- operator approval candidate detection"
+}
+else {
+    Write-Host "- operator approval candidate detection (skipped: no candidate_for_assisted_execution task found)"
+}
+if ($approvalSubmissionPerformed) {
+    Write-Host "- client approval submission"
+}
+else {
+    Write-Host "- client approval submission (skipped: no candidate_for_assisted_execution task found)"
+}
+if ($serverLatestApprovalReadPerformed) {
+    Write-Host "- server latest approval read-back"
+}
+else {
+    Write-Host "- server latest approval read-back (skipped: no candidate_for_assisted_execution task found)"
+}
+if ($serverApprovalListReadPerformed) {
+    Write-Host "- server approval list for node"
+}
+else {
+    Write-Host "- server approval list for node (skipped: no candidate_for_assisted_execution task found)"
+}
+if ($clientLatestApprovalReadPerformed) {
+    Write-Host "- client latest approval viewer"
+}
+else {
+    Write-Host "- client latest approval viewer (skipped: no candidate_for_assisted_execution task found)"
+}
+if ($clientApprovalListReadPerformed) {
+    Write-Host "- client approval list viewer"
+}
+else {
+    Write-Host "- client approval list viewer (skipped: no candidate_for_assisted_execution task found)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
 Write-Host "No Docker/container/WASM/migration side effects were performed."
+Write-Host "Operator approval, when performed, recorded metadata only."
