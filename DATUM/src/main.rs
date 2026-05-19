@@ -9,11 +9,13 @@ mod config;
 mod core;
 mod deployment_planning;
 mod dispatch;
+mod installation_plan;
 mod outputs;
 
 use cli::capabilities::run_capabilities_command;
 use cli::deployment_planning::run_deployment_planning_command;
 use cli::dispatch::run_dispatch_command;
+use cli::installation_plan::run_installation_plan_command;
 use cli::show::show_command;
 use cli::top::top_command;
 use core::cycle::run_cycle;
@@ -34,7 +36,9 @@ fn main() -> Result<()> {
             | "dispatch"
             | "capabilities"
             | "deployment-planning"
-            | "deploy-plan" => {
+            | "deploy-plan"
+            | "installation-plan"
+            | "install-plan" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -74,6 +78,13 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.json,
         ),
+        Command::InstallationPlan(args) => installation_plan_command(
+            &args.config,
+            args.node_id.as_deref(),
+            args.project_id.as_deref(),
+            args.url.as_deref(),
+            args.json,
+        ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -95,6 +106,8 @@ enum Command {
     Capabilities(CapabilitiesArgs),
     #[command(name = "deployment-planning", alias = "deploy-plan")]
     DeploymentPlanning(DeploymentPlanningArgs),
+    #[command(name = "installation-plan", alias = "install-plan")]
+    InstallationPlan(InstallationPlanArgs),
     Top(TopArgs),
     Show(ShowArgs),
 }
@@ -164,6 +177,24 @@ struct CapabilitiesArgs {
 
 #[derive(Args, Debug)]
 struct DeploymentPlanningArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    project_id: Option<String>,
+
+    #[arg(long)]
+    url: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct InstallationPlanArgs {
     #[arg(long, default_value = "config.toml")]
     config: String,
 
@@ -427,4 +458,15 @@ fn deployment_planning_command(
 ) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     run_deployment_planning_command(&cfg, node_id, project_id, url, json)
+}
+
+fn installation_plan_command(
+    config_path: &str,
+    node_id: Option<&str>,
+    project_id: Option<&str>,
+    url: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_installation_plan_command(&cfg, node_id, project_id, url, json)
 }
