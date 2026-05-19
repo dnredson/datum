@@ -375,6 +375,51 @@ function Assert-InstallationTaskApprovalListContract {
     }
 }
 
+function Assert-InstallationTaskReadinessContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$ExpectedTaskId
+    )
+
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "readiness" $StepName
+    Assert-JsonHasProperty $Json "reason" $StepName
+    Assert-JsonHasProperty $Json "safe_to_auto_execute" $StepName
+
+    if ($Json.task_id -ne $ExpectedTaskId) {
+        throw "$StepName returned task_id '$($Json.task_id)', expected '$ExpectedTaskId'."
+    }
+
+    if ($Json.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned safe_to_auto_execute='$($Json.safe_to_auto_execute)', expected 'False'."
+    }
+}
+
+function Assert-InstallationTaskReadinessListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "readiness" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.readiness -isnot [System.Array] -and $Json.readiness -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'readiness' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -571,6 +616,12 @@ $serverLatestApprovalReadPerformed = $false
 $serverApprovalListReadPerformed = $false
 $clientLatestApprovalReadPerformed = $false
 $clientApprovalListReadPerformed = $false
+$serverNodeReadinessListReadPerformed = $false
+$clientNodeReadinessViewerPerformed = $false
+$serverSingleTaskReadinessReadPerformed = $false
+$clientSingleTaskReadinessViewerPerformed = $false
+$safeToAutoExecuteFalseValidated = $false
+$readinessReadyObserved = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -798,6 +849,98 @@ if (-not $SkipServerChecks) {
         }
         $clientApprovalListReadPerformed = $true
     }
+
+    Write-Step "Read installation task readiness list from server"
+    $nodeReadiness = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/installation-task-readiness/for-node/$NodeId" `
+        -Headers $headers `
+        -StepName "Installation task readiness for node"
+    Assert-HttpOk $nodeReadiness "Installation task readiness for node"
+    Assert-InstallationTaskReadinessListContract `
+        -Json $nodeReadiness.Json `
+        -StepName "Installation task readiness for node"
+    $serverNodeReadinessListReadPerformed = $true
+
+    $firstReadinessEntry = @($nodeReadiness.Json.readiness | Select-Object -First 1)
+    if ($firstReadinessEntry.Count -gt 0) {
+        Assert-JsonHasProperty $firstReadinessEntry[0] "task_id" "Installation task readiness for node"
+        Assert-JsonHasProperty $firstReadinessEntry[0] "readiness" "Installation task readiness for node"
+        Assert-JsonHasProperty $firstReadinessEntry[0] "reason" "Installation task readiness for node"
+        Assert-JsonHasProperty $firstReadinessEntry[0] "safe_to_auto_execute" "Installation task readiness for node"
+        if ($firstReadinessEntry[0].safe_to_auto_execute -ne $false) {
+            throw "Installation task readiness for node returned safe_to_auto_execute='$($firstReadinessEntry[0].safe_to_auto_execute)', expected 'False'."
+        }
+        $safeToAutoExecuteFalseValidated = $true
+    }
+
+    Write-Step "Read installation task readiness from DATUM"
+    $clientNodeReadinessOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--",
+            "installation-tasks",
+            "--config",
+            $ResolvedClientConfig,
+            "--readiness"
+        ) `
+        -StepName "DATUM installation task readiness viewer"
+
+    if ($clientNodeReadinessOutput -notmatch [regex]::Escape("Assisted installation readiness for node $NodeId") -and
+        $clientNodeReadinessOutput -notmatch "No readiness decisions for this node\.") {
+        throw "DATUM installation task readiness viewer output did not include readiness details or an empty-state message."
+    }
+    $clientNodeReadinessViewerPerformed = $true
+
+    if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
+        Write-Host "No installation task available; skipping single-task readiness checks."
+    }
+    else {
+        Write-Step "Read one installation task readiness from server"
+        $singleTaskReadiness = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedTaskId/readiness" `
+            -Headers $headers `
+            -StepName "Single installation task readiness"
+        Assert-HttpOk $singleTaskReadiness "Single installation task readiness"
+        Assert-InstallationTaskReadinessContract `
+            -Json $singleTaskReadiness.Json `
+            -StepName "Single installation task readiness" `
+            -ExpectedTaskId $firstTaskId
+        $serverSingleTaskReadinessReadPerformed = $true
+        $safeToAutoExecuteFalseValidated = $true
+
+        Write-Step "Read one installation task readiness from DATUM"
+        $clientSingleTaskReadinessOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $firstTaskId,
+                "--readiness"
+            ) `
+            -StepName "DATUM single installation task readiness viewer"
+
+        if ($clientSingleTaskReadinessOutput -notmatch [regex]::Escape("Readiness for task $firstTaskId") -or
+            $clientSingleTaskReadinessOutput -notmatch "readiness:") {
+            throw "DATUM single installation task readiness viewer output did not include readiness details."
+        }
+        $clientSingleTaskReadinessViewerPerformed = $true
+    }
+
+    $allReadinessEntries = @($nodeReadiness.Json.readiness)
+    if ($serverSingleTaskReadinessReadPerformed) {
+        $allReadinessEntries += @($singleTaskReadiness.Json)
+    }
+    if (@($allReadinessEntries | Where-Object { $_.readiness -eq "ready_for_assisted_execution" }).Count -gt 0) {
+        $readinessReadyObserved = $true
+        Write-Host "Readiness is informational only; no installation execution was performed."
+    }
 }
 
 Write-Host ""
@@ -871,8 +1014,39 @@ if ($clientApprovalListReadPerformed) {
 else {
     Write-Host "- client approval list viewer (skipped: no candidate_for_assisted_execution task found)"
 }
+if ($serverNodeReadinessListReadPerformed) {
+    Write-Host "- server node readiness list"
+}
+else {
+    Write-Host "- server node readiness list (skipped: server checks disabled)"
+}
+if ($clientNodeReadinessViewerPerformed) {
+    Write-Host "- client readiness viewer"
+}
+else {
+    Write-Host "- client readiness viewer (skipped: server checks disabled)"
+}
+if ($serverSingleTaskReadinessReadPerformed) {
+    Write-Host "- server single-task readiness"
+}
+else {
+    Write-Host "- server single-task readiness (skipped: no tasks materialized)"
+}
+if ($clientSingleTaskReadinessViewerPerformed) {
+    Write-Host "- client single-task readiness viewer"
+}
+else {
+    Write-Host "- client single-task readiness viewer (skipped: no tasks materialized)"
+}
+if ($safeToAutoExecuteFalseValidated) {
+    Write-Host "- safe_to_auto_execute false validation"
+}
+else {
+    Write-Host "- safe_to_auto_execute false validation (skipped: no readiness entries returned)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
 Write-Host "No Docker/container/WASM/migration side effects were performed."
 Write-Host "Operator approval, when performed, recorded metadata only."
+Write-Host "Assisted readiness, when ready, was informational only."
