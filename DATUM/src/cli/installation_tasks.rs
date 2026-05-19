@@ -162,6 +162,14 @@ fn format_task_list(
         lines.extend(format_task_block(task));
     }
 
+    if response.tasks.iter().any(task_has_candidate_policy) {
+        lines.push(String::new());
+        lines.push(
+            "Note: assisted execution is not implemented in this client command; this is informational only."
+                .to_string(),
+        );
+    }
+
     lines.join("\n")
 }
 
@@ -179,6 +187,13 @@ fn format_single_task(
         String::new(),
     ];
     lines.extend(format_task_block(task));
+    if task_has_candidate_policy(task) {
+        lines.push(String::new());
+        lines.push(
+            "Note: assisted execution is not implemented in this client command; this is informational only."
+                .to_string(),
+        );
+    }
     lines.join("\n")
 }
 
@@ -221,6 +236,29 @@ fn format_task_block(task: &InstallationTask) -> Vec<String> {
         lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
     }
 
+    match task.installation_policy.as_ref() {
+        Some(policy) => {
+            lines.push(format!(
+                "  policy: {}",
+                policy.decision.as_deref().unwrap_or("unknown")
+            ));
+
+            if let Some(policy_reason) = policy.reason.as_deref() {
+                lines.push(format!("  policy reason: {}", policy_reason));
+            }
+
+            if let Some(allowed_future_modes) = policy.allowed_future_modes.as_ref() {
+                if !allowed_future_modes.is_empty() {
+                    lines.push(format!(
+                        "  allowed future modes: {}",
+                        allowed_future_modes.join(", ")
+                    ));
+                }
+            }
+        }
+        None => lines.push("  policy: not provided by server".to_string()),
+    }
+
     if let Some(reason) = task.reason.as_deref() {
         lines.push(format!("  reason: {}", reason));
     }
@@ -243,15 +281,42 @@ fn format_status_update(task: &InstallationTask) -> String {
         lines.push(format!("  updated_at_utc: {}", updated_at_utc));
     }
 
+    if let Some(policy) = task.installation_policy.as_ref() {
+        lines.push(format!(
+            "  policy: {}",
+            policy.decision.as_deref().unwrap_or("unknown")
+        ));
+
+        if let Some(policy_reason) = policy.reason.as_deref() {
+            lines.push(format!("  policy reason: {}", policy_reason));
+        }
+
+        if let Some(allowed_future_modes) = policy.allowed_future_modes.as_ref() {
+            if !allowed_future_modes.is_empty() {
+                lines.push(format!(
+                    "  allowed future modes: {}",
+                    allowed_future_modes.join(", ")
+                ));
+            }
+        }
+    }
+
     lines.join("\n")
+}
+
+fn task_has_candidate_policy(task: &InstallationTask) -> bool {
+    task.installation_policy
+        .as_ref()
+        .and_then(|policy| policy.decision.as_deref())
+        == Some("candidate_for_assisted_execution")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_task_list, validate_client_status};
+    use super::{format_status_update, format_task_list, validate_client_status};
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
-        installation_tasks::model::{InstallationTask, InstallationTaskList},
+        installation_tasks::model::{InstallationPolicy, InstallationTask, InstallationTaskList},
     };
 
     fn base_config() -> Config {
@@ -307,6 +372,13 @@ mod tests {
                     artifact: Some("chirpstack/chirpstack:latest".to_string()),
                     requires_operator: Some(true),
                     safe_to_auto_execute: Some(false),
+                    installation_policy: Some(InstallationPolicy {
+                        decision: Some("manual_only".to_string()),
+                        reason: Some(
+                            "local trusted mapping requires operator confirmation".to_string(),
+                        ),
+                        ..InstallationPolicy::default()
+                    }),
                     reason: Some("client lacks trusted local mapping for this action".to_string()),
                     ..InstallationTask::default()
                 }],
@@ -322,7 +394,105 @@ mod tests {
         assert!(rendered.contains("artifact: chirpstack/chirpstack:latest"));
         assert!(rendered.contains("requires operator: true"));
         assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("policy: manual_only"));
+        assert!(rendered
+            .contains("policy reason: local trusted mapping requires operator confirmation"));
         assert!(rendered.contains("reason: client lacks trusted local mapping for this action"));
+    }
+
+    #[test]
+    fn formatting_includes_allowed_future_modes() {
+        let rendered = format_task_list(
+            &InstallationTaskList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                tasks: vec![InstallationTask {
+                    task_id: Some("task-1".to_string()),
+                    status: Some("planned".to_string()),
+                    priority: Some("high".to_string()),
+                    installation_action: Some(
+                        "prepare_existing_artifact_installation".to_string(),
+                    ),
+                    installation_policy: Some(InstallationPolicy {
+                        decision: Some("candidate_for_assisted_execution".to_string()),
+                        reason: Some(
+                            "artifact installation may be assisted in a future milestone, but is not executable yet".to_string(),
+                        ),
+                        allowed_future_modes: Some(vec!["operator_approved".to_string()]),
+                        ..InstallationPolicy::default()
+                    }),
+                    ..InstallationTask::default()
+                }],
+                ..InstallationTaskList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("policy: candidate_for_assisted_execution"));
+        assert!(rendered.contains(
+            "policy reason: artifact installation may be assisted in a future milestone, but is not executable yet"
+        ));
+        assert!(rendered.contains("allowed future modes: operator_approved"));
+    }
+
+    #[test]
+    fn candidate_policy_includes_informational_only_note() {
+        let rendered = format_task_list(
+            &InstallationTaskList {
+                tasks: vec![InstallationTask {
+                    installation_policy: Some(InstallationPolicy {
+                        decision: Some("candidate_for_assisted_execution".to_string()),
+                        ..InstallationPolicy::default()
+                    }),
+                    ..InstallationTask::default()
+                }],
+                ..InstallationTaskList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains(
+            "Note: assisted execution is not implemented in this client command; this is informational only."
+        ));
+    }
+
+    #[test]
+    fn formatting_missing_policy_does_not_panic() {
+        let rendered = format_task_list(
+            &InstallationTaskList {
+                tasks: vec![InstallationTask {
+                    task_id: Some("task-1".to_string()),
+                    ..InstallationTask::default()
+                }],
+                ..InstallationTaskList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("policy: not provided by server"));
+    }
+
+    #[test]
+    fn status_patch_response_formatting_includes_policy_when_present() {
+        let rendered = format_status_update(&InstallationTask {
+            task_id: Some("task-1".to_string()),
+            status: Some("acknowledged".to_string()),
+            updated_at_utc: Some("2026-05-19T13:00:00Z".to_string()),
+            installation_policy: Some(InstallationPolicy {
+                decision: Some("manual_only".to_string()),
+                reason: Some("local trusted mapping requires operator confirmation".to_string()),
+                ..InstallationPolicy::default()
+            }),
+            ..InstallationTask::default()
+        });
+
+        assert!(rendered.contains("policy: manual_only"));
+        assert!(rendered
+            .contains("policy reason: local trusted mapping requires operator confirmation"));
     }
 
     #[test]

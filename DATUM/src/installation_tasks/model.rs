@@ -46,7 +46,27 @@ pub struct InstallationTask {
     #[serde(default)]
     pub source_installation_item: Option<Value>,
     #[serde(default)]
+    pub installation_policy: Option<InstallationPolicy>,
+    #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallationPolicy {
+    #[serde(default)]
+    pub policy_version: Option<String>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub requires_operator: Option<bool>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
+    #[serde(default)]
+    pub allowed_future_modes: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -147,5 +167,59 @@ mod tests {
             parsed.updated_at_utc.as_deref(),
             Some("2026-05-19T13:00:00Z")
         );
+    }
+
+    #[test]
+    fn parse_task_with_installation_policy() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "status":"planned",
+          "installation_policy":{
+            "policy_version":"0.1.0",
+            "decision":"candidate_for_assisted_execution",
+            "reason":"artifact installation may be assisted in a future milestone, but is not executable yet",
+            "requires_operator":true,
+            "safe_to_auto_execute":false,
+            "allowed_future_modes":["operator_approved"],
+            "future_field":"ok"
+          }
+        }"#;
+
+        let parsed: InstallationTask = serde_json::from_str(raw).expect("task should parse");
+
+        let policy = parsed
+            .installation_policy
+            .expect("installation_policy should parse");
+        assert_eq!(
+            policy.decision.as_deref(),
+            Some("candidate_for_assisted_execution")
+        );
+        assert_eq!(
+            policy.allowed_future_modes,
+            Some(vec!["operator_approved".to_string()])
+        );
+        assert_eq!(
+            policy
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_task_without_installation_policy() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "status":"planned"
+        }"#;
+
+        let parsed: InstallationTask = serde_json::from_str(raw).expect("task should parse");
+
+        assert!(parsed.installation_policy.is_none());
     }
 }
