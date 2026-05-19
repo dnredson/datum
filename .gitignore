@@ -2,3 +2,5 @@
 # Rust build artifacts
 target/
 **/target/
+DATUM/target/
+dserver/target/
