@@ -278,6 +278,33 @@ mod tests {
     }
 
     #[test]
+    fn feedback_fields_are_preserved() {
+        let dispatch = apply_dispatch_policy(&json!({
+            "actions": [
+                {
+                    "action_id": "a1",
+                    "target_node": "fog-01",
+                    "feedback": {
+                        "source": "latest_action_results",
+                        "status": "matched",
+                        "execution_status": "dry_run"
+                    },
+                    "capability": { "decision": "supported", "reason": "ok", "node_id": "fog-01", "source": "registered" }
+                }
+            ]
+        }));
+
+        assert_eq!(
+            dispatch["actions"][0]["feedback"]["status"].as_str(),
+            Some("matched")
+        );
+        assert_eq!(
+            dispatch["actions"][0]["feedback"]["execution_status"].as_str(),
+            Some("dry_run")
+        );
+    }
+
+    #[test]
     fn summary_counts_are_correct() {
         let dispatch = apply_dispatch_policy(&json!({
             "actions": [

@@ -8,6 +8,8 @@ use axum::{
 
 use crate::{
     core::{
+        action_feedback::annotate_action_plan_with_latest_results,
+        action_results::ActionExecutionReport,
         capabilities::NodeCapabilities,
         planner::{annotate_action_plan_with_capabilities, build_global_action_plan},
     },
@@ -118,10 +120,32 @@ pub async fn build_latest_action_plan(
         .map(|capability: NodeCapabilities| (capability.node_id.clone(), capability))
         .collect::<BTreeMap<_, _>>();
 
-    let plan = annotate_action_plan_with_capabilities(
+    let mut plan = annotate_action_plan_with_capabilities(
         build_global_action_plan(&project_id, &graph, &analysis, dmap.as_ref()),
         &capabilities_by_node,
     );
+
+    match state
+        .firebase
+        .list_latest_action_execution_reports(&project_id)
+        .await
+    {
+        Ok(reports) => {
+            let reports_by_node = reports
+                .into_iter()
+                .map(|report: ActionExecutionReport| (report.node_id.clone(), report))
+                .collect::<std::collections::HashMap<_, _>>();
+            plan = annotate_action_plan_with_latest_results(plan, &reports_by_node);
+        }
+        Err(err) => {
+            if let Some(plan_obj) = plan.as_object_mut() {
+                plan_obj.insert(
+                    "feedback_load_error".to_string(),
+                    serde_json::json!(err.to_string()),
+                );
+            }
+        }
+    }
 
     state
         .firebase
