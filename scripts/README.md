@@ -47,6 +47,9 @@ What it validates:
 - client `installation-tasks --materialize` contract
 - server installation task list for node
 - server installation task list for project
+- server `installation_policy` metadata in installation tasks
+- `safe_to_auto_execute` remains false in installation policy when present
+- client `installation-tasks` output displays policy information when available
 - optional server installation task get when tasks exist
 - optional client installation task status update to `acknowledged` when tasks exist
 

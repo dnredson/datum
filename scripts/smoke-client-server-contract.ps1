@@ -282,6 +282,27 @@ function Assert-InstallationTaskContract {
     }
 }
 
+function Assert-InstallationPolicyContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    if ($null -eq $Json.installation_policy) {
+        Write-Warning "Installation task does not include installation_policy; this may indicate an old stored record."
+        return $false
+    }
+
+    Assert-JsonHasProperty $Json "installation_policy.decision" $StepName
+    Assert-JsonHasProperty $Json "installation_policy.safe_to_auto_execute" $StepName
+
+    if ($Json.installation_policy.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned installation_policy.safe_to_auto_execute='$($Json.installation_policy.safe_to_auto_execute)', expected 'False'."
+    }
+
+    return $true
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -463,7 +484,15 @@ Run-CommandOrFail `
     -Command @("cargo", "run", "--", "installation-tasks", "--config", $ResolvedClientConfig, "--materialize") `
     -StepName "DATUM installation task materialize" | Out-Null
 
+Write-Step "Read installation tasks from DATUM"
+$installationTasksOutput = Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--", "installation-tasks", "--config", $ResolvedClientConfig) `
+    -StepName "DATUM installation task viewer"
+
 $taskUpdatePerformed = $false
+$policyValidated = $false
+$taskCount = 0
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -476,6 +505,7 @@ if (-not $SkipServerChecks) {
         -Json $nodeInstallationTasks.Json `
         -StepName "Node installation tasks" `
         -RequireNodeId
+    $taskCount = @($nodeInstallationTasks.Json.tasks).Count
 
     $projectInstallationTasks = Invoke-JsonEndpoint `
         -Url "$ServerUrl/api/v1/installation-tasks" `
@@ -485,6 +515,25 @@ if (-not $SkipServerChecks) {
     Assert-InstallationTaskListContract `
         -Json $projectInstallationTasks.Json `
         -StepName "Project installation tasks"
+
+    $firstPolicyTask = $nodeInstallationTasks.Json.tasks `
+        | Where-Object { $null -ne $_.installation_policy } `
+        | Select-Object -First 1
+    if ($null -ne $firstPolicyTask) {
+        $policyValidated = Assert-InstallationPolicyContract `
+            -Json $firstPolicyTask `
+            -StepName "Node installation tasks"
+    }
+
+    if ($taskCount -gt 0 -and $policyValidated) {
+        if ($installationTasksOutput -notmatch "policy:" -and
+            $installationTasksOutput -notmatch "candidate_for_assisted_execution" -and
+            $installationTasksOutput -notmatch "manual_only" -and
+            $installationTasksOutput -notmatch "blocked" -and
+            $installationTasksOutput -notmatch "unknown") {
+            throw "DATUM installation task viewer output did not include installation policy display markers."
+        }
+    }
 
     $firstTaskId = $nodeInstallationTasks.Json.tasks `
         | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.task_id) } `
@@ -503,6 +552,9 @@ if (-not $SkipServerChecks) {
             -StepName "Single installation task"
         Assert-HttpOk $singleInstallationTask "Single installation task"
         Assert-InstallationTaskContract `
+            -Json $singleInstallationTask.Json `
+            -StepName "Single installation task"
+        $null = Assert-InstallationPolicyContract `
             -Json $singleInstallationTask.Json `
             -StepName "Single installation task"
 
@@ -532,6 +584,9 @@ if (-not $SkipServerChecks) {
             -StepName "Acknowledged installation task"
         Assert-HttpOk $acknowledgedInstallationTask "Acknowledged installation task"
         Assert-InstallationTaskContract `
+            -Json $acknowledgedInstallationTask.Json `
+            -StepName "Acknowledged installation task"
+        $null = Assert-InstallationPolicyContract `
             -Json $acknowledgedInstallationTask.Json `
             -StepName "Acknowledged installation task"
 
@@ -568,6 +623,8 @@ Write-Host "- client installation plan viewer"
 Write-Host "- client installation task materialization"
 Write-Host "- server node installation task list"
 Write-Host "- server project installation task list"
+Write-Host "- installation policy metadata check"
+Write-Host "- client installation policy display check"
 if ($taskUpdatePerformed) {
     Write-Host "- installation task single-task get"
     Write-Host "- installation task acknowledgement"
