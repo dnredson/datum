@@ -41,6 +41,7 @@ pub struct FirebaseConfig {
     pub collection_node_capabilities: Option<String>,
     pub collection_action_results: Option<String>,
     pub collection_action_results_latest: Option<String>,
+    pub collection_installation_tasks: Option<String>,
 }
 
 impl AppConfig {

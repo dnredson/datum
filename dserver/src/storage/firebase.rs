@@ -4,7 +4,10 @@ use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 
-use crate::core::{action_results::ActionExecutionReport, model::SnapshotEnvelope};
+use crate::core::{
+    action_results::ActionExecutionReport, installation_tasks::InstallationTask,
+    model::SnapshotEnvelope,
+};
 use crate::{config::AppConfig, core::capabilities::NodeCapabilities};
 
 pub struct FirebaseClient {
@@ -26,6 +29,7 @@ pub struct FirebaseClient {
     pub collection_node_capabilities: String,
     pub collection_action_results: String,
     pub collection_action_results_latest: String,
+    pub collection_installation_tasks: String,
     pub _config: Arc<AppConfig>,
 }
 
@@ -109,6 +113,11 @@ impl FirebaseClient {
             .collection_action_results_latest
             .clone()
             .unwrap_or_else(|| "datum_action_results_latest".to_string());
+        let collection_installation_tasks = app_config
+            .firebase
+            .collection_installation_tasks
+            .clone()
+            .unwrap_or_else(|| "datum_installation_tasks".to_string());
         Ok(Self {
             client: Client::new(),
             project_id,
@@ -126,6 +135,7 @@ impl FirebaseClient {
             collection_node_capabilities,
             collection_action_results,
             collection_action_results_latest,
+            collection_installation_tasks,
             _config: app_config,
         })
     }
@@ -1097,5 +1107,139 @@ impl FirebaseClient {
         }
 
         Ok(reports)
+    }
+
+    pub async fn put_installation_task(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task: &InstallationTask,
+    ) -> Result<()> {
+        let doc_id = format!(
+            "project:{}:node:{}:task:{}",
+            project_id, node_id, task.task_id
+        );
+        let url = self.doc_url(&self.collection_installation_tasks, &doc_id);
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "task_id": Self::firestore_string(&task.task_id),
+                "status": Self::firestore_string(&task.status),
+                "updated_at_utc": Self::firestore_string(&task.updated_at_utc),
+                "payload": Self::firestore_json_string(task)?
+            }
+        });
+
+        let res = self.client.patch(&url).json(&body).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("put_installation_task failed: {}", text));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_installation_task(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+    ) -> Result<Option<InstallationTask>> {
+        let doc_id = format!("project:{}:node:{}:task:{}", project_id, node_id, task_id);
+        let url = self.doc_url(&self.collection_installation_tasks, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_installation_task failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "installation task",
+        )?))
+    }
+
+    pub async fn list_installation_tasks(&self, project_id: &str) -> Result<Vec<InstallationTask>> {
+        let url = self.collection_url(&self.collection_installation_tasks);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("list_installation_tasks failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut tasks = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id {
+                continue;
+            }
+
+            tasks.push(Self::parse_payload_from_document(doc, "installation task")?);
+        }
+
+        Ok(tasks)
+    }
+
+    pub async fn list_installation_tasks_for_node(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Vec<InstallationTask>> {
+        let tasks = self.list_installation_tasks(project_id).await?;
+
+        Ok(tasks
+            .into_iter()
+            .filter(|task| task.node_id == node_id)
+            .collect())
+    }
+
+    pub async fn update_installation_task_status(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        new_status: &str,
+    ) -> Result<Option<InstallationTask>> {
+        let Some(mut task) = self
+            .get_installation_task(project_id, node_id, task_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        task.status = new_status.to_string();
+        self.put_installation_task(project_id, node_id, &task)
+            .await?;
+        Ok(Some(task))
     }
 }
