@@ -1,0 +1,11 @@
+[[links]]
+from = "project:smart-city-campinas:node:fog-01:entity:service:local-http-ctr"
+to = "project:smart-city-campinas:external:cloud:http-api"
+rel = "depends_on"
+kind = "cross_node"
+
+[[links]]
+from = "project:smart-city-campinas:node:fog-01"
+to = "project:smart-city-campinas:external:internet"
+rel = "connected_to"
+kind = "cross_node"

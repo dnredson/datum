@@ -23,10 +23,7 @@ impl ServiceTransitionsPlugin {
         }
     }
 
-    fn bootstrap_from_previous_snapshot(
-        &self,
-        cfg: &crate::config::Config,
-    ) -> Result<()> {
+    fn bootstrap_from_previous_snapshot(&self, cfg: &crate::config::Config) -> Result<()> {
         let mut initialized = self
             .initialized
             .lock()

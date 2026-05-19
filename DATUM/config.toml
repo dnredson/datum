@@ -2,7 +2,7 @@
 node_id = "fog-01"
 cycle_s = 5
 schema_version = "0.0.1"
-reqwest = { version = "0.11", features = ["blocking"] }
+
 
 [agent.events]
 max_per_snapshot = 50
@@ -15,8 +15,18 @@ path = "snapshot.json"
 
 # futuro (stub)
 [outputs.http]
+enabled = true
+url = "http://localhost:8080/api/v1/snapshots"
+project_id = "smart-city-campinas"
+timeout_s = 10
+
+[dispatch]
 enabled = false
-url = "http://localhost:8080/v1/snapshots"
+url = "http://localhost:8080/api/v1/dispatch/for-node/{node_id}"
+project_id = "smart-city-campinas"
+timeout_s = 10
+execute = false
+allow_container_execution = false
 
 [collectors.process_windows]
 enabled = true

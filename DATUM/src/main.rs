@@ -2,15 +2,20 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use std::time::Instant;
 
+mod capabilities;
 mod cli;
 mod config;
 mod core;
+mod dispatch;
 mod outputs;
 
+use cli::capabilities::run_capabilities_command;
+use cli::dispatch::run_dispatch_command;
 use cli::show::show_command;
 use cli::top::top_command;
 use core::cycle::run_cycle;
 use outputs::file_json::FileJsonOutput;
+use outputs::http_json::HttpJsonOutput;
 
 fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
@@ -19,7 +24,7 @@ fn main() -> Result<()> {
     // Senão, mantém o comportamento antigo (run por padrão).
     if raw_args.len() >= 2 {
         match raw_args[1].as_str() {
-            "top" | "show" | "once" | "run" => {
+            "top" | "show" | "once" | "run" | "dispatch" | "capabilities" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -47,12 +52,9 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.node_id,
             args.hostname,
         ),
-        Command::Once(args) => once_command(
-            &args.config,
-            args.out,
-            args.node_id,
-            args.hostname,
-        ),
+        Command::Once(args) => once_command(&args.config, args.out, args.node_id, args.hostname),
+        Command::Dispatch(args) => dispatch_command(&args.config, args.execute),
+        Command::Capabilities(args) => capabilities_command(&args.config, args.publish),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -70,6 +72,8 @@ struct Cli {
 enum Command {
     Run(RunArgs),
     Once(OnceArgs),
+    Dispatch(DispatchArgs),
+    Capabilities(CapabilitiesArgs),
     Top(TopArgs),
     Show(ShowArgs),
 }
@@ -117,6 +121,24 @@ struct TopArgs {
 }
 
 #[derive(Args, Debug)]
+struct DispatchArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long, default_value_t = false)]
+    execute: bool,
+}
+
+#[derive(Args, Debug)]
+struct CapabilitiesArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long, default_value_t = false)]
+    publish: bool,
+}
+
+#[derive(Args, Debug)]
 struct ShowArgs {
     #[arg(long, default_value = "config.toml")]
     config: String,
@@ -156,10 +178,14 @@ fn run_command(
     let cycle_s = cycle_s_override.unwrap_or(cfg.agent.cycle_s);
     let hostname = hostname_override.or(cfg.agent.hostname.clone());
 
-    let file_cfg = cfg.outputs.file_json.clone().unwrap_or(config::FileJsonConfig {
-        enabled: true,
-        path: "snapshot.json".to_string(),
-    });
+    let file_cfg = cfg
+        .outputs
+        .file_json
+        .clone()
+        .unwrap_or(config::FileJsonConfig {
+            enabled: true,
+            path: "snapshot.json".to_string(),
+        });
 
     let out_path = out_override.unwrap_or(file_cfg.path);
 
@@ -169,10 +195,31 @@ fn run_command(
         None
     };
 
+    let http_output = match cfg.outputs.http.clone() {
+        Some(http_cfg) if http_cfg.enabled => {
+            let project_id = http_cfg
+                .project_id
+                .clone()
+                .unwrap_or_else(|| "default-project".to_string());
+
+            Some(HttpJsonOutput::new(
+                http_cfg.url.clone(),
+                project_id,
+                http_cfg.timeout_s.unwrap_or(10),
+            )?)
+        }
+        _ => None,
+    };
+
     loop {
         let t0 = Instant::now();
 
-        let snapshot_res = run_cycle(&node_id, hostname.as_deref(), &cfg.agent.schema_version, &cfg);
+        let snapshot_res = run_cycle(
+            &node_id,
+            hostname.as_deref(),
+            &cfg.agent.schema_version,
+            &cfg,
+        );
 
         match snapshot_res {
             Ok(snapshot) => {
@@ -185,6 +232,22 @@ fn run_command(
                     }
                 } else {
                     out_status.push_str("file_json=disabled");
+                }
+
+                if let Some(out) = &http_output {
+                    if !out_status.is_empty() {
+                        out_status.push_str(", ");
+                    }
+
+                    match out.emit(&snapshot) {
+                        Ok(_) => out_status.push_str("http_json=ok"),
+                        Err(e) => out_status.push_str(&format!("http_json=err({})", e)),
+                    }
+                } else {
+                    if !out_status.is_empty() {
+                        out_status.push_str(", ");
+                    }
+                    out_status.push_str("http_json=disabled");
                 }
 
                 let dur_ms = t0.elapsed().as_millis();
@@ -220,10 +283,14 @@ fn once_command(
     let node_id = node_id_override.unwrap_or(cfg.agent.node_id.clone());
     let hostname = hostname_override.or(cfg.agent.hostname.clone());
 
-    let file_cfg = cfg.outputs.file_json.clone().unwrap_or(config::FileJsonConfig {
-        enabled: true,
-        path: "snapshot.json".to_string(),
-    });
+    let file_cfg = cfg
+        .outputs
+        .file_json
+        .clone()
+        .unwrap_or(config::FileJsonConfig {
+            enabled: true,
+            path: "snapshot.json".to_string(),
+        });
 
     let out_path = out_override.unwrap_or(file_cfg.path);
 
@@ -233,10 +300,32 @@ fn once_command(
         None
     };
 
+    let http_output = match cfg.outputs.http.clone() {
+        Some(http_cfg) if http_cfg.enabled => {
+            let project_id = http_cfg
+                .project_id
+                .clone()
+                .unwrap_or_else(|| "default-project".to_string());
+
+            Some(HttpJsonOutput::new(
+                http_cfg.url.clone(),
+                project_id,
+                http_cfg.timeout_s.unwrap_or(10),
+            )?)
+        }
+        _ => None,
+    };
+
     let t0 = Instant::now();
-    let snapshot = run_cycle(&node_id, hostname.as_deref(), &cfg.agent.schema_version, &cfg)?;
+    let snapshot = run_cycle(
+        &node_id,
+        hostname.as_deref(),
+        &cfg.agent.schema_version,
+        &cfg,
+    )?;
 
     let mut out_status = String::new();
+
     if let Some(out) = &file_output {
         match out.emit(&snapshot) {
             Ok(_) => out_status.push_str("file_json=ok"),
@@ -244,6 +333,22 @@ fn once_command(
         }
     } else {
         out_status.push_str("file_json=disabled");
+    }
+
+    if let Some(out) = &http_output {
+        if !out_status.is_empty() {
+            out_status.push_str(", ");
+        }
+
+        match out.emit(&snapshot) {
+            Ok(_) => out_status.push_str("http_json=ok"),
+            Err(e) => out_status.push_str(&format!("http_json=err({})", e)),
+        }
+    } else {
+        if !out_status.is_empty() {
+            out_status.push_str(", ");
+        }
+        out_status.push_str("http_json=disabled");
     }
 
     let dur_ms = t0.elapsed().as_millis();
@@ -259,4 +364,14 @@ fn once_command(
     );
 
     Ok(())
+}
+
+fn dispatch_command(config_path: &str, execute: bool) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_dispatch_command(&cfg, execute)
+}
+
+fn capabilities_command(config_path: &str, publish: bool) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_capabilities_command(&cfg, publish)
 }

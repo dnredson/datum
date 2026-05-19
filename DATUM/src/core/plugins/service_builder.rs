@@ -109,7 +109,14 @@ fn container_name_candidates(attrs: &JsonValue) -> Vec<String> {
 
 fn process_name_candidates(attrs: &JsonValue) -> Vec<String> {
     let mut out = Vec::new();
-    let keys = ["name", "image_name", "comm", "exe", "binary", "process_name"];
+    let keys = [
+        "name",
+        "image_name",
+        "comm",
+        "exe",
+        "binary",
+        "process_name",
+    ];
 
     for k in keys {
         if let Some(s) = attrs.get(k).and_then(|v| v.as_str()) {
@@ -221,7 +228,10 @@ fn build_bindings_from_legacy(implemented_by: &[ImplementedBy]) -> Vec<JsonValue
     out
 }
 
-fn build_bindings_from_registry(runtime: &str, selector: &Option<ServiceSelector>) -> Vec<JsonValue> {
+fn build_bindings_from_registry(
+    runtime: &str,
+    selector: &Option<ServiceSelector>,
+) -> Vec<JsonValue> {
     let mut out = Vec::new();
 
     if let Some(sel) = selector {
@@ -259,8 +269,15 @@ fn build_bindings_from_registry(runtime: &str, selector: &Option<ServiceSelector
 /// - runtime=process -> só aceita process
 /// - runtime=container -> só aceita container
 /// - runtime ausente (legado) -> aceita conforme target_kind
-fn resolve_binding_target(snapshot: &Snapshot, binding: &JsonValue, runtime: Option<&str>) -> Option<String> {
-    let target_kind = binding.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
+fn resolve_binding_target(
+    snapshot: &Snapshot,
+    binding: &JsonValue,
+    runtime: Option<&str>,
+) -> Option<String> {
+    let target_kind = binding
+        .get("target_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let wanted = binding.get("wanted").and_then(|v| v.as_str()).unwrap_or("");
 
     if wanted.is_empty() {
@@ -438,43 +455,43 @@ impl Plugin for ServiceBuilderPlugin {
             let mut any_bound = false;
 
             for binding in current_bindings {
-            let mut b = binding.clone();
+                let mut b = binding.clone();
 
-            let target_kind = b
-                .get("target_kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                let target_kind = b
+                    .get("target_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-            let wanted = b
-                .get("wanted")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                let wanted = b
+                    .get("wanted")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
-            let target_id = resolve_binding_target(snapshot, &b, runtime);
+                let target_id = resolve_binding_target(snapshot, &b, runtime);
 
-            if let Some(tid) = target_id {
-                b["bound"] = json!(true);
-                b["target_id"] = json!(tid.clone());
-                any_bound = true;
+                if let Some(tid) = target_id {
+                    b["bound"] = json!(true);
+                    b["target_id"] = json!(tid.clone());
+                    any_bound = true;
 
-                if !edge_exists(snapshot, &service_id, &tid, "implemented_by") {
-                    snapshot.edges.push(Edge {
-                        from: service_id.clone(),
-                        to: tid,
-                        rel: "implemented_by".to_string(),
-                        attrs: json!({
-                            "via": b.get("via").and_then(|v| v.as_str()).unwrap_or("unknown")
-                        }),
-                        observed_at_utc: observed_at,
-                    });
-                }
-            } else {
-                b["bound"] = json!(false);
-                b["target_id"] = JsonValue::Null;
+                    if !edge_exists(snapshot, &service_id, &tid, "implemented_by") {
+                        snapshot.edges.push(Edge {
+                            from: service_id.clone(),
+                            to: tid,
+                            rel: "implemented_by".to_string(),
+                            attrs: json!({
+                                "via": b.get("via").and_then(|v| v.as_str()).unwrap_or("unknown")
+                            }),
+                            observed_at_utc: observed_at,
+                        });
+                    }
+                } else {
+                    b["bound"] = json!(false);
+                    b["target_id"] = JsonValue::Null;
 
-                snapshot.events.push(Event {
+                    snapshot.events.push(Event {
                     id: mk_event_id(
                         &cycle_id,
                         &service_id,
@@ -493,10 +510,10 @@ impl Plugin for ServiceBuilderPlugin {
                     details: Some(json!({"service_name": service_name, "runtime": runtime, "target_kind": target_kind, "wanted": wanted})),
                     observed_at_utc: observed_at,
                 });
-            }
+                }
 
-            resolved_bindings.push(b);
-        }
+                resolved_bindings.push(b);
+            }
 
             snapshot.entities[pos].attrs["bindings"] = json!(resolved_bindings);
             snapshot.entities[pos].attrs["binding"] = json!({ "bound": any_bound });
@@ -549,7 +566,11 @@ impl Plugin for ServiceBuilderPlugin {
 
             for dep in depends_on {
                 let dep_kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                let target = dep.get("target").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let target = dep
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
 
                 if target.is_empty() {
                     continue;

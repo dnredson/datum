@@ -20,7 +20,11 @@ pub fn run_process_alive(
             continue;
         }
 
-        if let Some(proc_ent) = snapshot.entities.iter().find(|e| e.id == target_id && e.kind == "process") {
+        if let Some(proc_ent) = snapshot
+            .entities
+            .iter()
+            .find(|e| e.id == target_id && e.kind == "process")
+        {
             let instance_count = proc_ent
                 .attrs
                 .get("instance_count")

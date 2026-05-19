@@ -1,5 +1,5 @@
-use std::time::Instant;
 use serde_json::{json, Value as JsonValue};
+use std::time::Instant;
 
 pub fn run_http_health(url: &str, timeout_ms: u64, observed_at: &str) -> JsonValue {
     let client = match reqwest::blocking::Client::builder()

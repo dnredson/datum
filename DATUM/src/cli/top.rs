@@ -154,7 +154,11 @@ fn render_top(
 
     let refresh_s = refresh_ms as f64 / 1000.0;
     let status_text = if changed { "updated" } else { "unchanged" };
-    let status_color = if changed { Color::Green } else { Color::DarkGrey };
+    let status_color = if changed {
+        Color::Green
+    } else {
+        Color::DarkGrey
+    };
 
     write_colored(out, "DATUM TOP", Color::Cyan, true)?;
     write!(
@@ -305,7 +309,11 @@ fn render_footer(
     write_colored(
         out,
         if changed { "fresh" } else { "same" },
-        if changed { Color::Green } else { Color::DarkGrey },
+        if changed {
+            Color::Green
+        } else {
+            Color::DarkGrey
+        },
         true,
     )?;
     writeln!(out)?;
@@ -520,7 +528,11 @@ fn collect_graph_lines(
         }
 
         let last_edge = idx + 1 == edges.len();
-        let edge_branch = if last_edge { "└── " } else { "├── " };
+        let edge_branch = if last_edge {
+            "└── "
+        } else {
+            "├── "
+        };
         lines.push(format!(
             "{}{}{} -> {}",
             next_prefix,

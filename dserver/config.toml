@@ -1,0 +1,29 @@
+
+
+[server]
+bind = "0.0.0.0:8080"
+debug = true
+
+[firebase]
+project_id = "monitor-f49c8"
+credentials_path = "fbkeymonitor.json"
+collection_raw = "datum_snapshots_raw"
+collection_latest = "datum_snapshots_latest"
+collection_nodes = "datum_nodes"
+collection_graph_latest = "datum_graph_latest"
+collection_analysis_latest = "datum_analysis_latest"
+collection_global_events_latest = "datum_global_events_latest"
+collection_topology = "datum_topology"
+collection_project_dmap = "datum_project_dmap"
+collection_action_plan_latest = "datum_action_plan_latest"
+collection_dispatch_latest = "datum_dispatch_latest"
+
+[topology]
+collection_project_topology = "datum_project_topology"
+
+[cors]
+enabled = true
+allow_any_origin = true
+allowed_origins = ["http://localhost:3000", "http://127.0.0.1:5173"]
+allowed_methods = ["GET", "POST", "OPTIONS"]
+allowed_headers = ["content-type", "x-datum-project"]

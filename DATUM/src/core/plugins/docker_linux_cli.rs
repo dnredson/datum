@@ -40,7 +40,6 @@ fn docker_ps_json_lines() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-
 fn docker_filter(cfg: &crate::config::Config) -> crate::config::DockerConfig {
     cfg.collectors
         .as_ref()
@@ -58,7 +57,13 @@ fn image_base(s: &str) -> String {
     s.split(':').next().unwrap_or(&s).to_string()
 }
 
-fn should_keep_container(mode: &str, allow_names: &std::collections::HashSet<String>, allow_images: &std::collections::HashSet<String>, row_name: &str, row_image: &str) -> bool {
+fn should_keep_container(
+    mode: &str,
+    allow_names: &std::collections::HashSet<String>,
+    allow_images: &std::collections::HashSet<String>,
+    row_name: &str,
+    row_image: &str,
+) -> bool {
     match mode {
         "all" => true,
         "allowlist" => {
@@ -69,12 +74,13 @@ fn should_keep_container(mode: &str, allow_names: &std::collections::HashSet<Str
             let img_full = normalize_name(row_image);
             let img_base = image_base(row_image);
 
-            allow_names.contains(&n) || allow_images.contains(&img_full) || allow_images.contains(&img_base)
+            allow_names.contains(&n)
+                || allow_images.contains(&img_full)
+                || allow_images.contains(&img_base)
         }
         _ => true,
     }
 }
-
 
 pub struct DockerLinuxCliPlugin;
 
@@ -106,12 +112,17 @@ impl Plugin for DockerLinuxCliPlugin {
         let mode = match dcfg.mode.as_deref() {
             Some(m) => m.to_string(),
             None => {
-                if !names.is_empty() || !images.is_empty() { "allowlist".to_string() } else { "all".to_string() }
+                if !names.is_empty() || !images.is_empty() {
+                    "allowlist".to_string()
+                } else {
+                    "all".to_string()
+                }
             }
         };
 
         let allow_names: HashSet<String> = names.into_iter().map(|s| normalize_name(&s)).collect();
-        let allow_images: HashSet<String> = images.into_iter().map(|s| normalize_name(&s)).collect();
+        let allow_images: HashSet<String> =
+            images.into_iter().map(|s| normalize_name(&s)).collect();
 
         let max_entries = dcfg.max_entries.unwrap_or(200);
 
@@ -132,7 +143,11 @@ impl Plugin for DockerLinuxCliPlugin {
             let row: DockerPsRow = match serde_json::from_str(line) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("plugin={} status=warn msg=parse_line_failed err={}", self.name(), e);
+                    eprintln!(
+                        "plugin={} status=warn msg=parse_line_failed err={}",
+                        self.name(),
+                        e
+                    );
                     continue;
                 }
             };

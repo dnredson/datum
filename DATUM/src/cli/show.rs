@@ -61,11 +61,7 @@ fn show_events(snapshot: &Snapshot, limit: usize) {
     for ev in events.into_iter().take(limit) {
         println!(
             "{}  {:<7} {:<24} target={} msg={}",
-            ev.observed_at_utc,
-            ev.severity,
-            ev.kind,
-            ev.target,
-            ev.message
+            ev.observed_at_utc, ev.severity, ev.kind, ev.target, ev.message
         );
     }
 }
@@ -98,7 +94,14 @@ fn show_graph(snapshot: &Snapshot) {
         return;
     }
 
-    print_graph_from(root.as_str(), &outgoing, snapshot, "", true, &mut BTreeSet::new());
+    print_graph_from(
+        root.as_str(),
+        &outgoing,
+        snapshot,
+        "",
+        true,
+        &mut BTreeSet::new(),
+    );
 }
 
 fn print_graph_from(
@@ -136,7 +139,11 @@ fn print_graph_from(
 
     for (idx, edge) in edges.iter().enumerate() {
         let last_edge = idx + 1 == edges.len();
-        let edge_branch = if last_edge { "└── " } else { "├── " };
+        let edge_branch = if last_edge {
+            "└── "
+        } else {
+            "├── "
+        };
         println!(
             "{}{}{} -> {}",
             next_prefix,

@@ -85,9 +85,7 @@ fn check_kind_alias(kind: &str) -> &str {
 }
 
 fn check_params_object(chk: &JsonValue) -> JsonValue {
-    chk.get("params")
-        .cloned()
-        .unwrap_or_else(|| chk.clone())
+    chk.get("params").cloned().unwrap_or_else(|| chk.clone())
 }
 
 fn get_param_str<'a>(params: &'a JsonValue, key: &str) -> Option<&'a str> {
@@ -203,7 +201,9 @@ fn dependency_degrades_service(
                             correlation_id: None,
                             source_plugin: Some("service_health".to_string()),
                             status: Some("open".to_string()),
-                            details: Some(json!({"service_name": service_name, "dependency_kind": "service", "dependency_target": target, "dependency_status": dep_status})),
+                            details: Some(
+                                json!({"service_name": service_name, "dependency_kind": "service", "dependency_target": target, "dependency_status": dep_status}),
+                            ),
                             observed_at_utc: observed_at,
                         });
                     }
@@ -273,7 +273,10 @@ impl Plugin for ServiceHealthPlugin {
                 let result =
                     run_declared_check(snapshot, &service_attrs_clone, &chk, &observed_at_str);
 
-                let reported_kind = chk.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let reported_kind = chk
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let ok = result_is_available(&result);
 
                 if !ok {

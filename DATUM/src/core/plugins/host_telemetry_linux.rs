@@ -47,7 +47,9 @@ impl Plugin for HostTelemetryLinuxPlugin {
         let mem_used_kb = mem_total_kb.saturating_sub(mem_available_kb);
 
         // CPU logical
-        let cpu_logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let cpu_logical = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         // CPU usage %
         let stat = fs::read_to_string("/proc/stat").unwrap_or_default();
@@ -91,7 +93,9 @@ fn parse_os_release(s: &str) -> (String, String) {
             version = v.trim_matches('"').to_string();
         }
     }
-    if name.is_empty() { name = "linux".to_string(); }
+    if name.is_empty() {
+        name = "linux".to_string();
+    }
     (name, version)
 }
 
@@ -120,13 +124,17 @@ fn extract_first_u64(s: &str) -> Option<u64> {
 fn parse_proc_stat_cpu(s: &str) -> Option<(u64, u64)> {
     // cpu  user nice system idle iowait irq softirq steal guest guest_nice
     let line = s.lines().next()?;
-    if !line.starts_with("cpu ") { return None; }
+    if !line.starts_with("cpu ") {
+        return None;
+    }
     let nums: Vec<u64> = line
         .split_whitespace()
         .skip(1)
         .filter_map(|x| x.parse::<u64>().ok())
         .collect();
-    if nums.len() < 4 { return None; }
+    if nums.len() < 4 {
+        return None;
+    }
     let idle = nums[3] + nums.get(4).copied().unwrap_or(0); // idle + iowait
     let total: u64 = nums.iter().sum();
     Some((total, idle))
@@ -151,9 +159,7 @@ fn calc_cpu_usage_pct(total: u64, idle: u64) -> f64 {
 
 fn disk_usage_root_kb() -> (u64, u64, u64) {
     // Best-effort via `df -kP /`
-    let out = std::process::Command::new("df")
-        .args(["-kP", "/"])
-        .output();
+    let out = std::process::Command::new("df").args(["-kP", "/"]).output();
 
     if let Ok(o) = out {
         let s = String::from_utf8_lossy(&o.stdout);

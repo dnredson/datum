@@ -3,12 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as JsonValue};
 
-pub fn run_tcp_port(
-    host: &str,
-    port: u16,
-    timeout_ms: u64,
-    observed_at: &str,
-) -> JsonValue {
+pub fn run_tcp_port(host: &str, port: u16, timeout_ms: u64, observed_at: &str) -> JsonValue {
     let addr = format!("{}:{}", host, port);
 
     let start = Instant::now();

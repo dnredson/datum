@@ -13,7 +13,9 @@ pub fn snapshot_path_from_config(cfg: &Config) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("outputs.file_json is not configured"))?;
 
     if !file_cfg.enabled {
-        return Err(anyhow!("outputs.file_json.enabled=false; no snapshot file to read"));
+        return Err(anyhow!(
+            "outputs.file_json.enabled=false; no snapshot file to read"
+        ));
     }
 
     Ok(PathBuf::from(&file_cfg.path))

@@ -99,7 +99,13 @@ fn ping_and_parse(target: &str, count: u32, timeout_s: u32) -> PingResult {
     // Windows ping: -n <count> -w <timeout_ms>
     let timeout_ms = timeout_s.saturating_mul(1000);
     let out = Command::new("ping")
-        .args(["-n", &count.to_string(), "-w", &timeout_ms.to_string(), target])
+        .args([
+            "-n",
+            &count.to_string(),
+            "-w",
+            &timeout_ms.to_string(),
+            target,
+        ])
         .output();
 
     match out {

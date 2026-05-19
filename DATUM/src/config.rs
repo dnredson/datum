@@ -7,6 +7,8 @@ use std::fs;
 pub struct Config {
     pub agent: AgentConfig,
     pub outputs: OutputsConfig,
+    #[serde(default)]
+    pub dispatch: Option<DispatchConfig>,
 
     #[serde(default)]
     pub collectors: Option<CollectorsConfig>,
@@ -96,8 +98,36 @@ pub struct FileJsonConfig {
 pub struct HttpConfig {
     pub enabled: bool,
     pub url: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DispatchConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
+    #[serde(default)]
+    pub execute: Option<bool>,
+    #[serde(default)]
+    pub allow_container_execution: Option<bool>,
+    #[serde(default)]
+    pub container_mappings: Vec<DispatchContainerMapping>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DispatchContainerMapping {
+    pub module_id: Option<String>,
+    pub service_name: Option<String>,
+    pub container_name: String,
+    pub artifact: Option<String>,
+}
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CollectorsConfig {
     #[serde(default)]
@@ -151,6 +181,8 @@ pub struct AgentConfig {
     pub cycle_s: u64,
     pub schema_version: String,
     pub hostname: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
     #[serde(default)]
     pub events: Option<AgentEventsConfig>,
 }

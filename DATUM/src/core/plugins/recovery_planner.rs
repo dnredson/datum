@@ -470,8 +470,8 @@ impl Plugin for RecoveryPlannerPlugin {
                 attempt_window_s,
             );
 
-            let seconds_since_last_attempt = last_attempt_at
-                .map(|ts| observed_at.signed_duration_since(ts).num_seconds());
+            let seconds_since_last_attempt =
+                last_attempt_at.map(|ts| observed_at.signed_duration_since(ts).num_seconds());
 
             if let Some(delta_s) = seconds_since_last_attempt {
                 if delta_s >= 0 && delta_s < cooldown_s {

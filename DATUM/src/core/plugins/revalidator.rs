@@ -338,8 +338,11 @@ impl Plugin for RevalidatorPlugin {
                         checks_result.clone(),
                     ));
 
-                    if !has_event_kind_for_correlation(snapshot, &correlation_id, "recovery_confirmed")
-                    {
+                    if !has_event_kind_for_correlation(
+                        snapshot,
+                        &correlation_id,
+                        "recovery_confirmed",
+                    ) {
                         new_events.push(Event {
                             id: mk_event_id(&correlation_id, "recovery_confirmed", &cycle_id),
                             kind: "recovery_confirmed".to_string(),

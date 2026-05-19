@@ -139,9 +139,7 @@ fn existing_open_remediation(snapshot: &Snapshot, service_name: &str) -> bool {
 fn planned_action_exists(snapshot: &Snapshot, service_name: &str) -> bool {
     let wanted = norm(service_name);
     snapshot.actions.iter().any(|a| {
-        norm(&a.service_name) == wanted
-            && a.phase == "planned"
-            && is_remediation_origin(&a.origin)
+        norm(&a.service_name) == wanted && a.phase == "planned" && is_remediation_origin(&a.origin)
     })
 }
 
@@ -195,8 +193,7 @@ fn plan_from_registry(
                         let bound = b.get("bound").and_then(|v| v.as_bool()).unwrap_or(false);
                         let target_kind =
                             b.get("target_kind").and_then(|v| v.as_str()).unwrap_or("");
-                        let target_id =
-                            b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let target_id = b.get("target_id").and_then(|v| v.as_str()).unwrap_or("");
 
                         if bound && target_kind == "container" && !target_id.is_empty() {
                             Some(target_id.to_string())
@@ -256,10 +253,7 @@ fn plan_from_registry(
             "service".to_string(),
             service_id(snapshot, service_name),
             true,
-            Some(format!(
-                "unsupported desired_state policy '{}'",
-                policy
-            )),
+            Some(format!("unsupported desired_state policy '{}'", policy)),
         )),
     }
 }
@@ -361,11 +355,14 @@ impl Plugin for DesiredStatePlannerPlugin {
                 continue;
             }
 
-            if planned_action_exists(snapshot, &ds.name) || existing_open_remediation(snapshot, &ds.name) {
+            if planned_action_exists(snapshot, &ds.name)
+                || existing_open_remediation(snapshot, &ds.name)
+            {
                 continue;
             }
 
-            let status = service_status(snapshot, &ds.name).unwrap_or_else(|| "unknown".to_string());
+            let status =
+                service_status(snapshot, &ds.name).unwrap_or_else(|| "unknown".to_string());
             if status == "available" {
                 continue;
             }
@@ -380,8 +377,8 @@ impl Plugin for DesiredStatePlannerPlugin {
                 attempt_window_s,
             );
 
-            let seconds_since_last_attempt = last_attempt_at
-                .map(|ts| observed_at.signed_duration_since(ts).num_seconds());
+            let seconds_since_last_attempt =
+                last_attempt_at.map(|ts| observed_at.signed_duration_since(ts).num_seconds());
 
             if let Some(delta_s) = seconds_since_last_attempt {
                 if delta_s >= 0 && delta_s < cooldown_s {
@@ -415,7 +412,11 @@ impl Plugin for DesiredStatePlannerPlugin {
                     new_actions.push(action);
 
                     new_events.push(Event {
-                        id: mk_event_id(&cycle_id, &ds.name, "desired_state_action_suppressed_cooldown"),
+                        id: mk_event_id(
+                            &cycle_id,
+                            &ds.name,
+                            "desired_state_action_suppressed_cooldown",
+                        ),
                         kind: "desired_state_action_suppressed_cooldown".to_string(),
                         severity: "info".to_string(),
                         target: service_target_id.clone(),
@@ -473,7 +474,11 @@ impl Plugin for DesiredStatePlannerPlugin {
                 new_actions.push(action);
 
                 new_events.push(Event {
-                    id: mk_event_id(&cycle_id, &ds.name, "desired_state_action_suppressed_attempt_window"),
+                    id: mk_event_id(
+                        &cycle_id,
+                        &ds.name,
+                        "desired_state_action_suppressed_attempt_window",
+                    ),
                     kind: "desired_state_action_suppressed_attempt_window".to_string(),
                     severity: "warning".to_string(),
                     target: service_target_id.clone(),
@@ -528,8 +533,10 @@ impl Plugin for DesiredStatePlannerPlugin {
                 continue;
             };
 
-            let action_reason =
-                Some(format!("desired_state=running but observed status is {}", status));
+            let action_reason = Some(format!(
+                "desired_state=running but observed status is {}",
+                status
+            ));
             let action_status = if suppressed { "suppressed" } else { "pending" }.to_string();
             let action_message = suppression_reason.clone();
 

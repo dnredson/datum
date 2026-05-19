@@ -48,10 +48,8 @@ impl Plugin for ProcessLinuxPsPlugin {
         }
 
         let names = proc_cfg.names.clone().unwrap_or_default();
-        let allowset: HashSet<String> = names
-            .into_iter()
-            .map(|s| s.trim().to_lowercase())
-            .collect();
+        let allowset: HashSet<String> =
+            names.into_iter().map(|s| s.trim().to_lowercase()).collect();
 
         // allowlist-first default: if names present and mode missing -> allowlist
         let mode = match proc_cfg.mode.as_deref() {
