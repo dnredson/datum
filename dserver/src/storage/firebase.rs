@@ -5,7 +5,10 @@ use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
 
 use crate::core::{
-    action_results::ActionExecutionReport, installation_tasks::InstallationTask,
+    action_results::ActionExecutionReport,
+    installation_tasks::{
+        annotate_installation_task_policy, normalize_installation_task, InstallationTask,
+    },
     model::SnapshotEnvelope,
 };
 use crate::{config::AppConfig, core::capabilities::NodeCapabilities};
@@ -1238,6 +1241,9 @@ impl FirebaseClient {
         };
 
         task.status = new_status.to_string();
+        task = normalize_installation_task(project_id, node_id, task);
+        task.status = new_status.to_string();
+        annotate_installation_task_policy(&mut task);
         self.put_installation_task(project_id, node_id, &task)
             .await?;
         Ok(Some(task))

@@ -9,6 +9,11 @@ const STATUS_ACKNOWLEDGED: &str = "acknowledged";
 const STATUS_BLOCKED: &str = "blocked";
 const STATUS_CANCELLED: &str = "cancelled";
 const STATUS_COMPLETED: &str = "completed";
+const POLICY_VERSION: &str = "0.1.0";
+const POLICY_MANUAL_ONLY: &str = "manual_only";
+const POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION: &str = "candidate_for_assisted_execution";
+const POLICY_BLOCKED: &str = "blocked";
+const POLICY_UNKNOWN: &str = "unknown";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -44,6 +49,8 @@ pub struct InstallationTask {
     #[serde(default)]
     pub source_installation_item: Option<Value>,
     #[serde(default)]
+    pub installation_policy: Option<InstallationPolicyDecision>,
+    #[serde(default)]
     pub metadata: Option<Value>,
 }
 
@@ -54,6 +61,17 @@ pub struct InstallationTaskList {
     pub node_id: Option<String>,
     pub count: u64,
     pub tasks: Vec<InstallationTask>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallationPolicyDecision {
+    pub policy_version: String,
+    pub decision: String,
+    pub reason: String,
+    pub requires_operator: bool,
+    pub safe_to_auto_execute: bool,
+    #[serde(default)]
+    pub allowed_future_modes: Vec<String>,
 }
 
 fn is_valid_status(status: &str) -> bool {
@@ -140,6 +158,81 @@ fn task_id_for(project_id: &str, node_id: &str, installation_id: &str) -> String
     )
 }
 
+pub fn annotate_installation_task_policy(task: &mut InstallationTask) {
+    task.safe_to_auto_execute = false;
+
+    let terminal_status = matches!(task.status.trim(), STATUS_COMPLETED | STATUS_CANCELLED);
+    let policy = if terminal_status {
+        InstallationPolicyDecision {
+            policy_version: POLICY_VERSION.to_string(),
+            decision: POLICY_BLOCKED.to_string(),
+            reason: "terminal task status".to_string(),
+            requires_operator: task.requires_operator,
+            safe_to_auto_execute: false,
+            allowed_future_modes: Vec::new(),
+        }
+    } else {
+        match task
+            .required_step
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+        {
+            "add_local_mapping" => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_MANUAL_ONLY.to_string(),
+                reason: "local trusted mapping requires operator confirmation".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: Vec::new(),
+            },
+            "install_existing_artifact" => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION.to_string(),
+                reason: "artifact installation may be assisted in a future milestone, but is not executable yet".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: vec!["operator_approved".to_string()],
+            },
+            "enable_runtime" => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_MANUAL_ONLY.to_string(),
+                reason: "enabling local runtime requires operator/system administration".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: Vec::new(),
+            },
+            "investigate_failure" => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_MANUAL_ONLY.to_string(),
+                reason: "previous failure requires investigation".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: Vec::new(),
+            },
+            "define_installation_strategy" => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_MANUAL_ONLY.to_string(),
+                reason: "installation strategy is not defined".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: Vec::new(),
+            },
+            _ => InstallationPolicyDecision {
+                policy_version: POLICY_VERSION.to_string(),
+                decision: POLICY_UNKNOWN.to_string(),
+                reason: "unsupported required step".to_string(),
+                requires_operator: task.requires_operator,
+                safe_to_auto_execute: false,
+                allowed_future_modes: Vec::new(),
+            },
+        }
+    };
+
+    task.installation_policy = Some(policy);
+}
+
 pub fn normalize_installation_task(
     project_id: &str,
     node_id: &str,
@@ -195,6 +288,7 @@ pub fn normalize_installation_task(
     }
 
     task.safe_to_auto_execute = false;
+    annotate_installation_task_policy(&mut task);
     task
 }
 
@@ -350,6 +444,7 @@ pub fn derive_installation_tasks_from_plan(
                 created_at_utc: String::new(),
                 updated_at_utc: String::new(),
                 source_installation_item: Some(item),
+                installation_policy: None,
                 metadata: None,
             },
         );
@@ -363,8 +458,9 @@ pub fn derive_installation_tasks_from_plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_installation_tasks_from_plan, normalize_installation_task,
-        validate_installation_task, validate_installation_task_status_transition, InstallationTask,
+        annotate_installation_task_policy, derive_installation_tasks_from_plan,
+        normalize_installation_task, validate_installation_task,
+        validate_installation_task_status_transition, InstallationTask,
     };
     use serde_json::{json, Value};
 
@@ -413,6 +509,7 @@ mod tests {
                 created_at_utc: String::new(),
                 updated_at_utc: String::new(),
                 source_installation_item: Some(base_installation_item()),
+                installation_policy: None,
                 metadata: None,
             },
         )
@@ -548,5 +645,158 @@ mod tests {
         );
 
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn add_local_mapping_policy_is_manual_only() {
+        let task = base_task();
+        let policy = task.installation_policy.expect("policy should exist");
+
+        assert_eq!(policy.decision, "manual_only");
+        assert_eq!(
+            policy.reason,
+            "local trusted mapping requires operator confirmation"
+        );
+    }
+
+    #[test]
+    fn install_existing_artifact_policy_is_candidate_for_assisted_execution() {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "candidate_for_assisted_execution");
+        assert_eq!(
+            policy.reason,
+            "artifact installation may be assisted in a future milestone, but is not executable yet"
+        );
+        assert_eq!(policy.allowed_future_modes, vec!["operator_approved"]);
+    }
+
+    #[test]
+    fn enable_runtime_policy_is_manual_only() {
+        let mut task = base_task();
+        task.required_step = Some("enable_runtime".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        assert_eq!(
+            task.installation_policy
+                .expect("policy should exist")
+                .decision,
+            "manual_only"
+        );
+    }
+
+    #[test]
+    fn investigate_failure_policy_is_manual_only() {
+        let mut task = base_task();
+        task.required_step = Some("investigate_failure".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "manual_only");
+        assert_eq!(policy.reason, "previous failure requires investigation");
+    }
+
+    #[test]
+    fn define_installation_strategy_policy_is_manual_only() {
+        let mut task = base_task();
+        task.required_step = Some("define_installation_strategy".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "manual_only");
+        assert_eq!(policy.reason, "installation strategy is not defined");
+    }
+
+    #[test]
+    fn unknown_required_step_policy_is_unknown() {
+        let mut task = base_task();
+        task.required_step = Some("mystery".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "unknown");
+        assert_eq!(policy.reason, "unsupported required step");
+    }
+
+    #[test]
+    fn completed_task_policy_is_blocked() {
+        let mut task = base_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "blocked");
+        assert_eq!(policy.reason, "terminal task status");
+    }
+
+    #[test]
+    fn cancelled_task_policy_is_blocked() {
+        let mut task = base_task();
+        task.status = "cancelled".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "blocked");
+        assert_eq!(policy.reason, "terminal task status");
+    }
+
+    #[test]
+    fn safe_to_auto_execute_remains_false_for_all_policy_decisions() {
+        let mut task = base_task();
+        for required_step in [
+            "add_local_mapping",
+            "install_existing_artifact",
+            "enable_runtime",
+            "investigate_failure",
+            "define_installation_strategy",
+            "unknown",
+        ] {
+            task.required_step = Some(required_step.to_string());
+            task.safe_to_auto_execute = true;
+            annotate_installation_task_policy(&mut task);
+
+            assert!(!task.safe_to_auto_execute);
+            assert_eq!(
+                task.installation_policy
+                    .as_ref()
+                    .expect("policy should exist")
+                    .safe_to_auto_execute,
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn materialized_tasks_include_installation_policy() {
+        let tasks = derive_installation_tasks_from_plan(
+            "smart-city-campinas",
+            None,
+            &json!({ "items": [base_installation_item()] }),
+        );
+
+        assert!(tasks[0].installation_policy.is_some());
+    }
+
+    #[test]
+    fn old_task_without_policy_can_be_normalized_without_failing() {
+        let mut task = base_task();
+        task.installation_policy = None;
+
+        let normalized = normalize_installation_task("smart-city-campinas", "fog-01", task);
+        assert!(normalized.installation_policy.is_some());
+    }
+
+    #[test]
+    fn policy_is_recomputed_after_status_change() {
+        let mut task = base_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        let policy = task.installation_policy.expect("policy should exist");
+        assert_eq!(policy.decision, "blocked");
+        assert_eq!(policy.reason, "terminal task status");
     }
 }

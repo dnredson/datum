@@ -14,9 +14,9 @@ use crate::{
             empty_installation_plan,
         },
         installation_tasks::{
-            derive_installation_tasks_from_plan, normalize_installation_task,
-            validate_installation_task, validate_installation_task_status_transition,
-            InstallationTask, InstallationTaskList,
+            annotate_installation_task_policy, derive_installation_tasks_from_plan,
+            normalize_installation_task, validate_installation_task,
+            validate_installation_task_status_transition, InstallationTask, InstallationTaskList,
         },
     },
     AppState,
@@ -117,11 +117,29 @@ fn sort_tasks(tasks: &mut [InstallationTask]) {
     tasks.sort_by(|a, b| a.task_id.cmp(&b.task_id));
 }
 
+fn normalize_task_for_response(
+    project_id: &str,
+    fallback_node_id: Option<&str>,
+    task: InstallationTask,
+) -> InstallationTask {
+    let node_id = if task.node_id.trim().is_empty() {
+        fallback_node_id.unwrap_or("").to_string()
+    } else {
+        task.node_id.clone()
+    };
+
+    normalize_installation_task(project_id, &node_id, task)
+}
+
 fn task_list(
     project_id: String,
     node_id: Option<String>,
     mut tasks: Vec<InstallationTask>,
 ) -> InstallationTaskList {
+    tasks = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, node_id.as_deref(), task))
+        .collect();
     sort_tasks(&mut tasks);
     InstallationTaskList {
         project_id,
@@ -264,7 +282,11 @@ pub async fn get_installation_task(
         })?;
 
     match task {
-        Some(task) => Ok(JsonResponse(task)),
+        Some(task) => Ok(JsonResponse(normalize_task_for_response(
+            &project_id,
+            Some(&node_id),
+            task,
+        ))),
         None => Err((
             StatusCode::NOT_FOUND,
             JsonResponse(json!({
@@ -318,6 +340,7 @@ pub async fn patch_installation_task_status(
     let mut updated_task = normalize_installation_task(&project_id, &node_id, current_task);
     updated_task.status = payload.status.trim().to_string();
     updated_task.updated_at_utc = Utc::now().to_rfc3339();
+    annotate_installation_task_policy(&mut updated_task);
     merge_status_reason(&mut updated_task, payload.reason.as_deref());
 
     validate_installation_task(&updated_task).map_err(|err| {
