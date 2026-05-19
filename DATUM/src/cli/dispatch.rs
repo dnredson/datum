@@ -9,7 +9,7 @@ use crate::{
         client::publish_action_execution_report,
     },
     config::{Config, DispatchConfig, HttpConfig},
-    dispatch::executor::{execute_dispatch_dry_run, DispatchExecutionReport},
+    dispatch::executor::execute_dispatch_dry_run,
     dispatch::model::DispatchResponse,
     dispatch::validator::{validate_dispatch_action, DispatchActionValidation},
 };
@@ -46,20 +46,14 @@ pub fn run_dispatch_command(
     let dispatch: DispatchResponse =
         serde_json::from_str(&body).context("parse dispatch response JSON")?;
     let execute_requested = execute_flag || runtime_cfg.execute_default;
-    let report = execute_dispatch_dry_run(
-        &dispatch,
-        &cfg.agent.node_id,
-        execute_requested,
-        runtime_cfg.side_effects_enabled,
-        cfg,
-    );
+    let publish_report = execute_dispatch_dry_run(&dispatch, &cfg.agent.node_id, false, false, cfg);
 
-    print_dispatch(&dispatch, &cfg.agent.node_id, &report);
+    print_dispatch(&dispatch, &cfg.agent.node_id, execute_requested);
 
     if runtime_cfg.publish_results {
         let action_report = build_action_execution_report_from_dispatch(
             &dispatch,
-            &report,
+            &publish_report,
             &runtime_cfg.project_id,
             &cfg.agent.node_id,
         );
@@ -94,7 +88,6 @@ struct DispatchRuntimeConfig {
     timeout_s: u64,
     execute_default: bool,
     publish_results: bool,
-    side_effects_enabled: bool,
 }
 
 fn resolve_dispatch_runtime_config(
@@ -134,15 +127,10 @@ fn resolve_dispatch_runtime_config(
             .unwrap_or_else(|| http_cfg.timeout_s.unwrap_or(10)),
         execute_default: dispatch_cfg.execute.unwrap_or(false),
         publish_results,
-        side_effects_enabled: dispatch_cfg.allow_container_execution.unwrap_or(false),
     })
 }
 
-fn print_dispatch(
-    dispatch: &DispatchResponse,
-    local_node_id: &str,
-    report: &DispatchExecutionReport,
-) {
+fn print_dispatch(dispatch: &DispatchResponse, local_node_id: &str, execute_requested: bool) {
     let node_id = dispatch.node_id.as_deref().unwrap_or("<unknown>");
     let project_id = dispatch.project_id.as_deref().unwrap_or("<unknown>");
     let assigned_actions = dispatch
@@ -156,24 +144,29 @@ fn print_dispatch(
     println!("Assigned actions: {}", assigned_actions);
     println!();
 
-    if report.execute_requested && !report.side_effects_enabled {
-        println!(
-            "dispatch execution was requested, but side effects are disabled by configuration"
-        );
-        println!();
-    } else if report.execute_requested && report.side_effects_enabled {
-        println!("dispatch execution pipeline is enabled, but real container/WASM execution is not implemented in C7/30");
+    if execute_requested {
+        println!("dispatch execution is not implemented yet");
         println!();
     }
 
     if dispatch.actions.is_empty() {
         println!("No assigned actions.");
-        print_execution_report(report);
+        print_validation_report(&DispatchValidationSummary::default());
         return;
     }
 
-    for (action, result) in dispatch.actions.iter().zip(report.action_results.iter()) {
+    let mut summary = DispatchValidationSummary::default();
+
+    for action in &dispatch.actions {
         let validation = validate_dispatch_action(action, local_node_id);
+        summary.total_actions += 1;
+
+        match &validation {
+            DispatchActionValidation::Valid => summary.valid_actions += 1,
+            DispatchActionValidation::Skipped { .. } => summary.skipped_actions += 1,
+            DispatchActionValidation::Rejected { .. } => summary.rejected_actions += 1,
+        }
+
         println!(
             "Action: {}",
             action.action_id.as_deref().unwrap_or("<missing-action-id>")
@@ -196,7 +189,7 @@ fn print_dispatch(
         println!("  assignment: {}", assignment_label(action));
         println!("  validation: {}", validation_label(&validation));
 
-        match validation {
+        match &validation {
             DispatchActionValidation::Valid => {}
             DispatchActionValidation::Skipped { reason }
             | DispatchActionValidation::Rejected { reason } => {
@@ -204,13 +197,10 @@ fn print_dispatch(
             }
         }
 
-        println!("  execution: {}", result.execution_status);
-        println!("  result: {}", result.message);
-
         println!();
     }
 
-    print_execution_report(report);
+    print_validation_report(&summary);
 }
 
 fn validation_label(result: &DispatchActionValidation) -> &'static str {
@@ -231,16 +221,20 @@ fn assignment_label(action: &crate::dispatch::model::DispatchAction) -> &'static
     }
 }
 
-fn print_execution_report(report: &DispatchExecutionReport) {
-    println!("Execution report:");
-    println!("  total actions: {}", report.total_actions);
-    println!("  valid: {}", report.valid_actions);
-    println!("  skipped: {}", report.skipped_actions);
-    println!("  rejected: {}", report.rejected_actions);
-    println!(
-        "  side effects performed: {}",
-        report.side_effects_performed
-    );
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct DispatchValidationSummary {
+    total_actions: usize,
+    valid_actions: usize,
+    skipped_actions: usize,
+    rejected_actions: usize,
+}
+
+fn print_validation_report(summary: &DispatchValidationSummary) {
+    println!("Validation report:");
+    println!("  total actions: {}", summary.total_actions);
+    println!("  valid: {}", summary.valid_actions);
+    println!("  skipped: {}", summary.skipped_actions);
+    println!("  rejected: {}", summary.rejected_actions);
 }
 
 fn dispatch_url_from_dispatch_config(dispatch_cfg: &DispatchConfig, node_id: &str) -> Result<Url> {
@@ -363,7 +357,6 @@ mod tests {
         );
         assert!(!runtime.execute_default);
         assert!(!runtime.publish_results);
-        assert!(!runtime.side_effects_enabled);
     }
 
     #[test]
@@ -408,7 +401,6 @@ mod tests {
         assert_eq!(runtime.timeout_s, 12);
         assert!(runtime.execute_default);
         assert!(runtime.publish_results);
-        assert!(runtime.side_effects_enabled);
     }
 
     #[test]
