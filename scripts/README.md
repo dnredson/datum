@@ -63,6 +63,13 @@ What it validates:
 - client readiness viewer via `installation-tasks --readiness`
 - optional client single-task readiness viewer via `installation-tasks --task-id <task_id> --readiness`
 - `safe_to_auto_execute` remains false in readiness responses
+- optional detection of `ready_for_assisted_execution` tasks
+- optional client assisted execution request submission via `installation-tasks --request-assisted-execution`
+- optional server latest assisted execution request read-back for a ready task
+- optional server assisted execution request list for the node
+- optional client latest assisted execution request viewer via `installation-tasks --execution-request`
+- optional client assisted execution request list viewer via `installation-tasks --execution-requests`
+- `safe_to_auto_execute` remains false in assisted execution request responses
 
 What it does not do:
 - start `dserver`
@@ -80,4 +87,6 @@ Notes:
 - That status update is part of the installation task lifecycle contract only; it does not execute deployment or installation work.
 - Approval submission is metadata-only; it does not execute deployment or installation work.
 - Readiness is informational only; it does not execute deployment or installation work, even when readiness is `ready_for_assisted_execution`.
+- Assisted execution request submission is metadata-only; it does not execute deployment or installation work.
 - If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.
+- If no `ready_for_assisted_execution` task exists for the node, assisted execution request checks are skipped and the smoke test still succeeds.

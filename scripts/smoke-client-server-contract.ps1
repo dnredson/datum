@@ -420,6 +420,79 @@ function Assert-InstallationTaskReadinessListContract {
     }
 }
 
+function Assert-AssistedExecutionRequestContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$ExpectedTaskId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "request_id" $StepName
+    Assert-JsonHasProperty $Json "request_status" $StepName
+    Assert-JsonHasProperty $Json "execution_mode" $StepName
+    Assert-JsonHasProperty $Json "requested_at_utc" $StepName
+    Assert-JsonHasProperty $Json "safe_to_auto_execute" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.task_id -ne $ExpectedTaskId) {
+        throw "$StepName returned task_id '$($Json.task_id)', expected '$ExpectedTaskId'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.request_id)) {
+        throw "$StepName did not include a non-empty request_id."
+    }
+
+    if ($Json.request_status -ne "requested") {
+        throw "$StepName returned request_status '$($Json.request_status)', expected 'requested'."
+    }
+
+    if ($Json.execution_mode -ne "assisted_operator_approved") {
+        throw "$StepName returned execution_mode '$($Json.execution_mode)', expected 'assisted_operator_approved'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.requested_at_utc)) {
+        throw "$StepName did not include a non-empty requested_at_utc."
+    }
+
+    if ($Json.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned safe_to_auto_execute='$($Json.safe_to_auto_execute)', expected 'False'."
+    }
+}
+
+function Assert-AssistedExecutionRequestListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "requests" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.requests -isnot [System.Array] -and $Json.requests -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'requests' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -622,6 +695,12 @@ $serverSingleTaskReadinessReadPerformed = $false
 $clientSingleTaskReadinessViewerPerformed = $false
 $safeToAutoExecuteFalseValidated = $false
 $readinessReadyObserved = $false
+$readyTaskDetected = $false
+$assistedExecutionRequestSubmissionPerformed = $false
+$serverLatestAssistedExecutionRequestReadPerformed = $false
+$serverAssistedExecutionRequestListReadPerformed = $false
+$clientLatestAssistedExecutionRequestReadPerformed = $false
+$clientAssistedExecutionRequestListReadPerformed = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -941,6 +1020,139 @@ if (-not $SkipServerChecks) {
         $readinessReadyObserved = $true
         Write-Host "Readiness is informational only; no installation execution was performed."
     }
+
+    $readyTask = $allReadinessEntries `
+        | Where-Object {
+            $_.readiness -eq "ready_for_assisted_execution" -and
+            -not [string]::IsNullOrWhiteSpace([string]$_.task_id)
+        } `
+        | Select-Object -First 1
+
+    if ($null -eq $readyTask) {
+        Write-Host "No ready_for_assisted_execution task found; skipping assisted execution request checks."
+    }
+    else {
+        $readyTaskDetected = $true
+        $readyTaskId = [string]$readyTask.task_id
+        $encodedReadyTaskId = [System.Uri]::EscapeDataString($readyTaskId)
+
+        if ($readyTask.safe_to_auto_execute -ne $false) {
+            throw "Ready installation task readiness returned safe_to_auto_execute='$($readyTask.safe_to_auto_execute)', expected 'False'."
+        }
+        $safeToAutoExecuteFalseValidated = $true
+
+        Write-Step "Submit assisted execution request from DATUM"
+        $requestSubmitOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $readyTaskId,
+                "--request-assisted-execution",
+                "--requested-by",
+                "smoke-test",
+                "--reason",
+                "smoke test assisted execution request"
+            ) `
+            -StepName "DATUM assisted execution request submit"
+
+        if ($requestSubmitOutput -notmatch "Submitted assisted execution request" -or
+            $requestSubmitOutput -notmatch "request metadata was recorded on the server" -or
+            $requestSubmitOutput -notmatch "did not execute installation") {
+            throw "DATUM assisted execution request submit output did not confirm metadata-only submission."
+        }
+        $assistedExecutionRequestSubmissionPerformed = $true
+
+        Write-Step "Read latest assisted execution request from server"
+        $latestAssistedExecutionRequest = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedReadyTaskId/assisted-execution-request/latest" `
+            -Headers $headers `
+            -StepName "Latest assisted execution request"
+        Assert-HttpOk $latestAssistedExecutionRequest "Latest assisted execution request"
+        Assert-AssistedExecutionRequestContract `
+            -Json $latestAssistedExecutionRequest.Json `
+            -StepName "Latest assisted execution request" `
+            -ExpectedTaskId $readyTaskId
+        $serverLatestAssistedExecutionRequestReadPerformed = $true
+        $safeToAutoExecuteFalseValidated = $true
+
+        Write-Step "List assisted execution requests from server"
+        $assistedExecutionRequestList = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/assisted-execution-requests/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Assisted execution requests for node"
+        Assert-HttpOk $assistedExecutionRequestList "Assisted execution requests for node"
+        Assert-AssistedExecutionRequestListContract `
+            -Json $assistedExecutionRequestList.Json `
+            -StepName "Assisted execution requests for node"
+        $matchingAssistedExecutionRequest = @($assistedExecutionRequestList.Json.requests | Where-Object {
+            $_.task_id -eq $readyTaskId -and
+            $_.request_status -eq "requested" -and
+            $_.execution_mode -eq "assisted_operator_approved" -and
+            $_.safe_to_auto_execute -eq $false
+        } | Select-Object -First 1)
+        if ($matchingAssistedExecutionRequest.Count -eq 0) {
+            throw "Assisted execution requests for node did not include the submitted request for task '$readyTaskId'."
+        }
+        $serverAssistedExecutionRequestListReadPerformed = $true
+        $safeToAutoExecuteFalseValidated = $true
+
+        Write-Step "Read latest assisted execution request from DATUM"
+        $clientLatestAssistedExecutionRequestOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--task-id",
+                $readyTaskId,
+                "--execution-request"
+            ) `
+            -StepName "DATUM latest assisted execution request"
+
+        if ($clientLatestAssistedExecutionRequestOutput -notmatch [regex]::Escape("Latest assisted execution request for task $readyTaskId") -or
+            $clientLatestAssistedExecutionRequestOutput -notmatch "status:\s+requested" -or
+            $clientLatestAssistedExecutionRequestOutput -notmatch "safe to auto execute:\s+false") {
+            throw "DATUM latest assisted execution request output did not include the expected request details."
+        }
+        $clientLatestAssistedExecutionRequestReadPerformed = $true
+
+        Write-Step "List assisted execution requests from DATUM"
+        $clientAssistedExecutionRequestListOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--execution-requests"
+            ) `
+            -StepName "DATUM assisted execution request list"
+
+        if ($clientAssistedExecutionRequestListOutput -notmatch [regex]::Escape("Assisted execution requests for node $NodeId")) {
+            throw "DATUM assisted execution request list output did not include the node request list header."
+        }
+
+        if ($clientAssistedExecutionRequestListOutput -match "No assisted execution requests for this node\.") {
+            throw "DATUM assisted execution request list output reported no requests after request submission."
+        }
+
+        if ($clientAssistedExecutionRequestListOutput -notmatch [regex]::Escape("task_id: $readyTaskId")) {
+            throw "DATUM assisted execution request list output did not include the submitted request task id."
+        }
+        $clientAssistedExecutionRequestListReadPerformed = $true
+        Write-Host "Assisted execution request is metadata only; no installation execution was performed."
+    }
 }
 
 Write-Host ""
@@ -1044,9 +1256,46 @@ if ($safeToAutoExecuteFalseValidated) {
 else {
     Write-Host "- safe_to_auto_execute false validation (skipped: no readiness entries returned)"
 }
+if ($readyTaskDetected) {
+    Write-Host "- ready task detection"
+}
+else {
+    Write-Host "- ready task detection (skipped: no ready_for_assisted_execution task found)"
+}
+if ($assistedExecutionRequestSubmissionPerformed) {
+    Write-Host "- client assisted execution request submission"
+}
+else {
+    Write-Host "- client assisted execution request submission (skipped: no ready_for_assisted_execution task found)"
+}
+if ($serverLatestAssistedExecutionRequestReadPerformed) {
+    Write-Host "- server latest assisted execution request read-back"
+}
+else {
+    Write-Host "- server latest assisted execution request read-back (skipped: no ready_for_assisted_execution task found)"
+}
+if ($serverAssistedExecutionRequestListReadPerformed) {
+    Write-Host "- server assisted execution request list"
+}
+else {
+    Write-Host "- server assisted execution request list (skipped: no ready_for_assisted_execution task found)"
+}
+if ($clientLatestAssistedExecutionRequestReadPerformed) {
+    Write-Host "- client latest assisted execution request viewer"
+}
+else {
+    Write-Host "- client latest assisted execution request viewer (skipped: no ready_for_assisted_execution task found)"
+}
+if ($clientAssistedExecutionRequestListReadPerformed) {
+    Write-Host "- client assisted execution request list"
+}
+else {
+    Write-Host "- client assisted execution request list (skipped: no ready_for_assisted_execution task found)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
 Write-Host "No Docker/container/WASM/migration side effects were performed."
 Write-Host "Operator approval, when performed, recorded metadata only."
 Write-Host "Assisted readiness, when ready, was informational only."
+Write-Host "Assisted execution request, when performed, recorded metadata only."
