@@ -2,6 +2,7 @@ pub mod action_results;
 pub mod analysis;
 pub mod capabilities;
 pub mod dashboard;
+pub mod deployment_planning;
 pub mod dispatch;
 pub mod dmap;
 pub mod events;

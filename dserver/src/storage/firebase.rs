@@ -840,6 +840,29 @@ impl FirebaseClient {
         Ok(raw)
     }
 
+    pub async fn get_action_plan_latest_optional(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let url = self.doc_url(&self.collection_action_plan_latest, project_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_action_plan_latest_optional failed: {}", text));
+        }
+
+        let raw: serde_json::Value = serde_json::from_str(&text)?;
+        Ok(Some(raw))
+    }
+
     pub async fn put_node_capabilities(
         &self,
         project_id: &str,

@@ -2,6 +2,19 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
+pub fn empty_deployment_planning() -> Value {
+    json!({
+        "planner_version": "0.1.0",
+        "items": [],
+        "summary": {
+            "total_items": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0
+        }
+    })
+}
+
 pub fn derive_deployment_planning(action_plan: &Value) -> Value {
     let actions = action_plan
         .get("actions")
@@ -214,9 +227,83 @@ fn build_item(
     })
 }
 
+pub fn filter_deployment_planning_for_node(deployment_planning: &Value, node_id: &str) -> Value {
+    let items = deployment_planning
+        .get("items")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let planner_version = deployment_planning
+        .get("planner_version")
+        .cloned()
+        .unwrap_or_else(|| json!("0.1.0"));
+
+    let mut assigned_items = Vec::new();
+    let mut high = 0_u64;
+    let mut medium = 0_u64;
+    let mut low = 0_u64;
+
+    for mut item in items {
+        let assignment_reason = if item
+            .get("target_node")
+            .and_then(|value| value.as_str())
+            .map(|value| value == node_id)
+            .unwrap_or(false)
+        {
+            Some("target_node")
+        } else if item
+            .get("fallback_to")
+            .and_then(|value| value.as_str())
+            .map(|value| value == node_id)
+            .unwrap_or(false)
+        {
+            Some("fallback_node")
+        } else {
+            None
+        };
+
+        let Some(assignment_reason) = assignment_reason else {
+            continue;
+        };
+
+        if let Some(item_obj) = item.as_object_mut() {
+            item_obj.insert("assigned_node".to_string(), json!(node_id));
+            item_obj.insert("assignment_reason".to_string(), json!(assignment_reason));
+        }
+
+        match item
+            .get("priority")
+            .and_then(|value| value.as_str())
+            .unwrap_or("low")
+        {
+            "high" => high += 1,
+            "medium" => medium += 1,
+            _ => low += 1,
+        }
+
+        assigned_items.push(item);
+    }
+
+    json!({
+        "planner_version": planner_version,
+        "node_id": node_id,
+        "items": assigned_items,
+        "summary": {
+            "total_items": assigned_items.len(),
+            "assigned_items": assigned_items.len(),
+            "high": high,
+            "medium": medium,
+            "low": low
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{derive_deployment_planning, derive_deployment_planning_items_from_actions};
+    use super::{
+        derive_deployment_planning, derive_deployment_planning_items_from_actions,
+        empty_deployment_planning, filter_deployment_planning_for_node,
+    };
     use serde_json::{json, Value};
 
     fn base_action() -> Value {
@@ -372,6 +459,151 @@ mod tests {
         assert_eq!(
             items[0]["feedback"]["execution_status"].as_str(),
             Some("missing_local_mapping")
+        );
+    }
+
+    #[test]
+    fn item_with_target_node_matching_node_appears() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "target_node": "fog-01",
+                    "priority": "high"
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(filtered["items"].as_array().map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn item_with_fallback_to_matching_node_appears() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "fallback_to": "fog-01",
+                    "priority": "medium"
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(filtered["items"].as_array().map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn unrelated_item_is_filtered_out() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "target_node": "fog-02",
+                    "priority": "high"
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(filtered["items"].as_array().map(|v| v.len()), Some(0));
+    }
+
+    #[test]
+    fn assignment_reason_target_node_is_set_correctly() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "target_node": "fog-01",
+                    "priority": "high"
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(
+            filtered["items"][0]["assignment_reason"].as_str(),
+            Some("target_node")
+        );
+    }
+
+    #[test]
+    fn assignment_reason_fallback_node_is_set_correctly() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "fallback_to": "fog-01",
+                    "priority": "high"
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(
+            filtered["items"][0]["assignment_reason"].as_str(),
+            Some("fallback_node")
+        );
+    }
+
+    #[test]
+    fn empty_planning_returns_empty_items_and_zero_summary() {
+        let filtered = filter_deployment_planning_for_node(&empty_deployment_planning(), "fog-01");
+        assert_eq!(filtered["items"].as_array().map(|v| v.len()), Some(0));
+        assert_eq!(filtered["summary"]["total_items"].as_u64(), Some(0));
+        assert_eq!(filtered["summary"]["assigned_items"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn node_filtered_summary_counts_high_medium_low_correctly() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                { "planning_id": "p1", "target_node": "fog-01", "priority": "high" },
+                { "planning_id": "p2", "target_node": "fog-01", "priority": "medium" },
+                { "planning_id": "p3", "fallback_to": "fog-01", "priority": "low" },
+                { "planning_id": "p4", "target_node": "fog-02", "priority": "high" }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(filtered["summary"]["total_items"].as_u64(), Some(3));
+        assert_eq!(filtered["summary"]["assigned_items"].as_u64(), Some(3));
+        assert_eq!(filtered["summary"]["high"].as_u64(), Some(1));
+        assert_eq!(filtered["summary"]["medium"].as_u64(), Some(1));
+        assert_eq!(filtered["summary"]["low"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn original_item_fields_are_preserved() {
+        let planning = json!({
+            "planner_version": "0.1.0",
+            "items": [
+                {
+                    "planning_id": "p1",
+                    "target_node": "fog-01",
+                    "priority": "high",
+                    "artifact": "chirpstack/chirpstack:latest",
+                    "ai_context": { "module_id": "chirpstack-primary" }
+                }
+            ]
+        });
+
+        let filtered = filter_deployment_planning_for_node(&planning, "fog-01");
+        assert_eq!(
+            filtered["items"][0]["artifact"].as_str(),
+            Some("chirpstack/chirpstack:latest")
+        );
+        assert_eq!(
+            filtered["items"][0]["ai_context"]["module_id"].as_str(),
+            Some("chirpstack-primary")
         );
     }
 }
