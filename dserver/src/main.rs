@@ -22,9 +22,11 @@ use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
 use api::installation_plan::{get_installation_plan_for_node, get_latest_installation_plan};
 use api::installation_tasks::{
-    get_installation_task, list_installation_tasks, list_installation_tasks_for_node,
-    materialize_installation_tasks, materialize_installation_tasks_for_node,
-    patch_installation_task_status,
+    get_installation_task, get_latest_installation_task_approval,
+    list_installation_task_approvals_for_node, list_installation_tasks,
+    list_installation_tasks_for_node, materialize_installation_tasks,
+    materialize_installation_tasks_for_node, patch_installation_task_status,
+    post_installation_task_approval,
 };
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::topology::{get_topology, set_topology};
@@ -137,6 +139,18 @@ async fn main() {
         .route(
             "/api/v1/installation-tasks/for-node/:node_id/:task_id/status",
             patch(patch_installation_task_status),
+        )
+        .route(
+            "/api/v1/installation-tasks/for-node/:node_id/:task_id/approval",
+            post(post_installation_task_approval),
+        )
+        .route(
+            "/api/v1/installation-tasks/for-node/:node_id/:task_id/approval/latest",
+            get(get_latest_installation_task_approval),
+        )
+        .route(
+            "/api/v1/installation-task-approvals/for-node/:node_id",
+            get(list_installation_task_approvals_for_node),
         )
         .route("/api/v1/dispatch/latest", get(publish_latest_dispatch))
         .route(

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 const STATUS_PLANNED: &str = "planned";
 const STATUS_ACKNOWLEDGED: &str = "acknowledged";
@@ -14,6 +15,7 @@ const POLICY_MANUAL_ONLY: &str = "manual_only";
 const POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION: &str = "candidate_for_assisted_execution";
 const POLICY_BLOCKED: &str = "blocked";
 const POLICY_UNKNOWN: &str = "unknown";
+const APPROVAL_MODE_OPERATOR_APPROVED: &str = "operator_approved";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -61,6 +63,37 @@ pub struct InstallationTaskList {
     pub node_id: Option<String>,
     pub count: u64,
     pub tasks: Vec<InstallationTask>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallationTaskApproval {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub approval_id: String,
+    pub approved: bool,
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    pub approved_at_utc: String,
+    pub approval_mode: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
+    #[serde(default)]
+    pub installation_policy_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallationTaskApprovalList {
+    pub project_id: String,
+    pub node_id: String,
+    pub count: u64,
+    pub approvals: Vec<InstallationTaskApproval>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -358,6 +391,84 @@ pub fn validate_installation_task_status_transition(
     }
 }
 
+pub fn validate_installation_task_can_be_approved(task: &InstallationTask) -> Result<(), String> {
+    if task.task_id.trim().is_empty() {
+        return Err("task_id must not be empty".to_string());
+    }
+
+    if task.node_id.trim().is_empty() {
+        return Err("node_id must not be empty".to_string());
+    }
+
+    if matches!(task.status.trim(), STATUS_COMPLETED | STATUS_CANCELLED) {
+        return Err(format!(
+            "installation task cannot be approved in terminal status '{}'",
+            task.status
+        ));
+    }
+
+    if task.safe_to_auto_execute {
+        return Err("task.safe_to_auto_execute must remain false".to_string());
+    }
+
+    let policy = task
+        .installation_policy
+        .as_ref()
+        .ok_or_else(|| "installation_policy is required for approval".to_string())?;
+
+    if policy.decision != POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION {
+        return Err(format!(
+            "installation task approval requires installation_policy.decision='{}', got '{}'",
+            POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION, policy.decision
+        ));
+    }
+
+    if policy.safe_to_auto_execute {
+        return Err("installation_policy.safe_to_auto_execute must remain false".to_string());
+    }
+
+    if !policy
+        .allowed_future_modes
+        .iter()
+        .any(|mode| mode == APPROVAL_MODE_OPERATOR_APPROVED)
+    {
+        return Err(format!(
+            "installation task approval requires installation_policy.allowed_future_modes to include '{}'",
+            APPROVAL_MODE_OPERATOR_APPROVED
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn build_installation_task_approval(
+    project_id: &str,
+    node_id: &str,
+    task: &InstallationTask,
+    approved_by: Option<String>,
+    reason: Option<String>,
+    expires_at_utc: Option<String>,
+) -> InstallationTaskApproval {
+    InstallationTaskApproval {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.task_id.clone(),
+        approval_id: format!("approval:{}", Uuid::new_v4()),
+        approved: true,
+        approved_by,
+        approved_at_utc: Utc::now().to_rfc3339(),
+        approval_mode: APPROVAL_MODE_OPERATOR_APPROVED.to_string(),
+        reason,
+        expires_at_utc,
+        installation_policy_snapshot: task
+            .installation_policy
+            .as_ref()
+            .and_then(|policy| serde_json::to_value(policy).ok()),
+        task_snapshot: serde_json::to_value(task).ok(),
+        metadata: None,
+    }
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -458,8 +569,9 @@ pub fn derive_installation_tasks_from_plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        annotate_installation_task_policy, derive_installation_tasks_from_plan,
-        normalize_installation_task, validate_installation_task,
+        annotate_installation_task_policy, build_installation_task_approval,
+        derive_installation_tasks_from_plan, normalize_installation_task,
+        validate_installation_task, validate_installation_task_can_be_approved,
         validate_installation_task_status_transition, InstallationTask,
     };
     use serde_json::{json, Value};
@@ -798,5 +910,131 @@ mod tests {
         let policy = task.installation_policy.expect("policy should exist");
         assert_eq!(policy.decision, "blocked");
         assert_eq!(policy.reason, "terminal task status");
+    }
+
+    #[test]
+    fn candidate_with_operator_approved_can_be_approved() {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        assert!(validate_installation_task_can_be_approved(&task).is_ok());
+    }
+
+    #[test]
+    fn manual_only_task_cannot_be_approved() {
+        let task = base_task();
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn blocked_task_cannot_be_approved() {
+        let mut task = base_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn unknown_task_cannot_be_approved() {
+        let mut task = base_task();
+        task.required_step = Some("mystery".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn completed_task_cannot_be_approved() {
+        let mut task = base_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn cancelled_task_cannot_be_approved() {
+        let mut task = base_task();
+        task.status = "cancelled".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn missing_installation_policy_cannot_be_approved() {
+        let mut task = base_task();
+        task.installation_policy = None;
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn missing_operator_approved_mode_cannot_be_approved() {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+        task.installation_policy
+            .as_mut()
+            .expect("policy should exist")
+            .allowed_future_modes = vec!["future_other_mode".to_string()];
+
+        assert!(validate_installation_task_can_be_approved(&task).is_err());
+    }
+
+    #[test]
+    fn approval_builder_includes_task_and_policy_snapshots() {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            Some("approved for future assisted execution".to_string()),
+            None,
+        );
+
+        assert!(approval.task_snapshot.is_some());
+        assert!(approval.installation_policy_snapshot.is_some());
+        assert_eq!(approval.approval_mode, "operator_approved");
+        assert!(approval.approved);
+    }
+
+    #[test]
+    fn approval_keeps_task_and_policy_safe_to_auto_execute_false() {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            None,
+            None,
+            None,
+        );
+
+        assert!(!task.safe_to_auto_execute);
+        assert_eq!(
+            task.installation_policy
+                .as_ref()
+                .expect("policy should exist")
+                .safe_to_auto_execute,
+            false
+        );
+        assert_eq!(
+            approval
+                .installation_policy_snapshot
+                .as_ref()
+                .and_then(|value| value.get("safe_to_auto_execute"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
     }
 }

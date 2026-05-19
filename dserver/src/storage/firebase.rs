@@ -8,6 +8,7 @@ use crate::core::{
     action_results::ActionExecutionReport,
     installation_tasks::{
         annotate_installation_task_policy, normalize_installation_task, InstallationTask,
+        InstallationTaskApproval,
     },
     model::SnapshotEnvelope,
 };
@@ -33,6 +34,8 @@ pub struct FirebaseClient {
     pub collection_action_results: String,
     pub collection_action_results_latest: String,
     pub collection_installation_tasks: String,
+    pub collection_installation_task_approvals: String,
+    pub collection_installation_task_approvals_latest: String,
     pub _config: Arc<AppConfig>,
 }
 
@@ -121,6 +124,16 @@ impl FirebaseClient {
             .collection_installation_tasks
             .clone()
             .unwrap_or_else(|| "datum_installation_tasks".to_string());
+        let collection_installation_task_approvals = app_config
+            .firebase
+            .collection_installation_task_approvals
+            .clone()
+            .unwrap_or_else(|| "datum_installation_task_approvals".to_string());
+        let collection_installation_task_approvals_latest = app_config
+            .firebase
+            .collection_installation_task_approvals_latest
+            .clone()
+            .unwrap_or_else(|| "datum_installation_task_approvals_latest".to_string());
         Ok(Self {
             client: Client::new(),
             project_id,
@@ -139,6 +152,8 @@ impl FirebaseClient {
             collection_action_results,
             collection_action_results_latest,
             collection_installation_tasks,
+            collection_installation_task_approvals,
+            collection_installation_task_approvals_latest,
             _config: app_config,
         })
     }
@@ -1247,5 +1262,144 @@ impl FirebaseClient {
         self.put_installation_task(project_id, node_id, &task)
             .await?;
         Ok(Some(task))
+    }
+
+    pub async fn put_installation_task_approval(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        approval: &InstallationTaskApproval,
+    ) -> Result<()> {
+        let raw_doc_id = format!(
+            "project:{}:node:{}:task:{}:approval:{}",
+            project_id, node_id, task_id, approval.approval_id
+        );
+        let latest_doc_id = format!("project:{}:node:{}:task:{}", project_id, node_id, task_id);
+        let raw_url = self.doc_url(&self.collection_installation_task_approvals, &raw_doc_id);
+        let latest_url = self.doc_url(
+            &self.collection_installation_task_approvals_latest,
+            &latest_doc_id,
+        );
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "task_id": Self::firestore_string(task_id),
+                "approval_id": Self::firestore_string(&approval.approval_id),
+                "approved_at_utc": Self::firestore_string(&approval.approved_at_utc),
+                "payload": Self::firestore_json_string(approval)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_installation_task_approval raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_installation_task_approval latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_installation_task_approval(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+    ) -> Result<Option<InstallationTaskApproval>> {
+        let doc_id = format!("project:{}:node:{}:task:{}", project_id, node_id, task_id);
+        let url = self.doc_url(&self.collection_installation_task_approvals_latest, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "get_latest_installation_task_approval failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "installation task approval",
+        )?))
+    }
+
+    pub async fn list_installation_task_approvals_for_node(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Vec<InstallationTaskApproval>> {
+        let url = self.collection_url(&self.collection_installation_task_approvals_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_installation_task_approvals_for_node failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut approvals = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let doc_node_id = fields
+                .get("node_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id || doc_node_id != node_id {
+                continue;
+            }
+
+            approvals.push(Self::parse_payload_from_document(
+                doc,
+                "installation task approval",
+            )?);
+        }
+
+        Ok(approvals)
     }
 }

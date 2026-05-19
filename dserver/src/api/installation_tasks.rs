@@ -14,9 +14,11 @@ use crate::{
             empty_installation_plan,
         },
         installation_tasks::{
-            annotate_installation_task_policy, derive_installation_tasks_from_plan,
-            normalize_installation_task, validate_installation_task,
-            validate_installation_task_status_transition, InstallationTask, InstallationTaskList,
+            annotate_installation_task_policy, build_installation_task_approval,
+            derive_installation_tasks_from_plan, normalize_installation_task,
+            validate_installation_task, validate_installation_task_can_be_approved,
+            validate_installation_task_status_transition, InstallationTask,
+            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
         },
     },
     AppState,
@@ -29,6 +31,16 @@ pub struct InstallationTaskStatusPatch {
     pub status: String,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InstallationTaskApprovalRequest {
+    #[serde(default)]
+    pub approved_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -362,4 +374,122 @@ pub async fn patch_installation_task_status(
         })?;
 
     Ok(JsonResponse(updated_task))
+}
+
+pub async fn post_installation_task_approval(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<InstallationTaskApprovalRequest>,
+) -> Result<JsonResponse<InstallationTaskApproval>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let Some(task) = state
+        .firebase
+        .get_installation_task(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(&project_id, Some(&node_id), task);
+    validate_installation_task_can_be_approved(&normalized_task).map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({ "error": err })),
+        )
+    })?;
+
+    let approval = build_installation_task_approval(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        payload.approved_by,
+        payload.reason,
+        payload.expires_at_utc,
+    );
+
+    state
+        .firebase
+        .put_installation_task_approval(&project_id, &node_id, &task_id, &approval)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(approval))
+}
+
+pub async fn get_latest_installation_task_approval(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<InstallationTaskApproval>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let approval = state
+        .firebase
+        .get_latest_installation_task_approval(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    match approval {
+        Some(approval) => Ok(JsonResponse(approval)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task approval not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        )),
+    }
+}
+
+pub async fn list_installation_task_approvals_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<InstallationTaskApprovalList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let mut approvals = state
+        .firebase
+        .list_installation_task_approvals_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    approvals.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+
+    Ok(JsonResponse(InstallationTaskApprovalList {
+        project_id,
+        node_id,
+        count: approvals.len() as u64,
+        approvals,
+    }))
 }
