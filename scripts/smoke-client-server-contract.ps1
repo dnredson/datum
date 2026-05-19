@@ -169,6 +169,49 @@ function Assert-DispatchContract {
     Assert-JsonHasProperty $Json "summary" $StepName
 }
 
+function Assert-ActionResultNodeContract {
+    param($Json)
+
+    Assert-JsonHasProperty $Json "project_id" "Node latest action-results"
+    Assert-JsonHasProperty $Json "node_id" "Node latest action-results"
+    Assert-JsonHasProperty $Json "report_id" "Node latest action-results"
+    Assert-JsonHasProperty $Json "reported_at_utc" "Node latest action-results"
+    Assert-JsonHasProperty $Json "results" "Node latest action-results"
+    Assert-JsonHasProperty $Json "summary" "Node latest action-results"
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "Node latest action-results returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "Node latest action-results returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.report_id)) {
+        throw "Node latest action-results did not include a non-empty report_id."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.reported_at_utc)) {
+        throw "Node latest action-results did not include a non-empty reported_at_utc."
+    }
+}
+
+function Assert-ActionResultProjectContract {
+    param($Json)
+
+    Assert-JsonHasProperty $Json "project_id" "Project latest action-results"
+    Assert-JsonHasProperty $Json "count" "Project latest action-results"
+    Assert-JsonHasProperty $Json "reports" "Project latest action-results"
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "Project latest action-results returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.reports -isnot [System.Array] -and $Json.reports -isnot [System.Collections.IEnumerable]) {
+        throw "Project latest action-results did not return 'reports' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -260,6 +303,30 @@ Run-CommandOrFail `
     -Command @("cargo", "run", "--", "dispatch", "--config", $ResolvedClientConfig) `
     -StepName "DATUM dispatch consume" | Out-Null
 
+Write-Step "Publish action results from DATUM without execution"
+Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--", "dispatch", "--config", $ResolvedClientConfig, "--publish-results") `
+    -StepName "DATUM action result publish" | Out-Null
+
+if (-not $SkipServerChecks) {
+    Write-Step "Read action results from server"
+
+    $nodeActionResults = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/nodes/$NodeId/action-results/latest" `
+        -Headers $headers `
+        -StepName "Node latest action-results"
+    Assert-HttpOk $nodeActionResults "Node latest action-results"
+    Assert-ActionResultNodeContract $nodeActionResults.Json
+
+    $projectActionResults = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/action-results/latest" `
+        -Headers $headers `
+        -StepName "Project latest action-results"
+    Assert-HttpOk $projectActionResults "Project latest action-results"
+    Assert-ActionResultProjectContract $projectActionResults.Json
+}
+
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
 Write-Host ""
@@ -273,5 +340,8 @@ Write-Host "- action-plan capability metadata"
 Write-Host "- gated dispatch"
 Write-Host "- node-scoped dispatch"
 Write-Host "- client dispatch consumption"
+Write-Host "- action result publish"
+Write-Host "- node action result read-back"
+Write-Host "- project action result list"
 Write-Host ""
 Write-Host "No dispatch execution was performed."

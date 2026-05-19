@@ -35,6 +35,9 @@ What it validates:
 - gated dispatch
 - node-scoped dispatch
 - client dispatch consumption without execution
+- client action result publish via `dispatch --publish-results`
+- server node latest `action-results` read-back
+- server project latest `action-results` listing
 
 What it does not do:
 - start `dserver`
@@ -42,4 +45,7 @@ What it does not do:
 - execute Docker/container actions
 - execute WASM actions
 - execute migrations
+- perform Docker/container side effects
+- run WASM
+- perform migration
 - perform destructive operations
