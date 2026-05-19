@@ -26,6 +26,7 @@ url = "http://localhost:8080/api/v1/dispatch/for-node/{node_id}"
 project_id = "smart-city-campinas"
 timeout_s = 10
 execute = false
+publish_results = false
 allow_container_execution = false
 
 [collectors.process_windows]

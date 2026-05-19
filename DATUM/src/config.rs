@@ -116,6 +116,8 @@ pub struct DispatchConfig {
     #[serde(default)]
     pub execute: Option<bool>,
     #[serde(default)]
+    pub publish_results: Option<bool>,
+    #[serde(default)]
     pub allow_container_execution: Option<bool>,
     #[serde(default)]
     pub container_mappings: Vec<DispatchContainerMapping>,

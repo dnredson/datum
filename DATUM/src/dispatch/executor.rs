@@ -25,6 +25,7 @@ pub struct DispatchActionExecutionResult {
     pub validation_status: String,
     pub execution_status: String,
     pub message: String,
+    pub side_effects_performed: Option<bool>,
 }
 
 pub fn execute_dispatch_dry_run(
@@ -122,6 +123,7 @@ where
                         validation_status: "valid".to_string(),
                         execution_status,
                         message,
+                        side_effects_performed: Some(performed_side_effect),
                     }
                 }
                 DispatchActionValidation::Skipped { reason } => {
@@ -132,6 +134,7 @@ where
                         validation_status: "skipped".to_string(),
                         execution_status: "skipped".to_string(),
                         message: reason,
+                        side_effects_performed: None,
                     }
                 }
                 DispatchActionValidation::Rejected { reason } => {
@@ -142,6 +145,7 @@ where
                         validation_status: "rejected".to_string(),
                         execution_status: "rejected".to_string(),
                         message: reason,
+                        side_effects_performed: None,
                     }
                 }
             }
@@ -425,6 +429,7 @@ mod tests {
 
         assert_eq!(report.action_results[0].execution_status, "started");
         assert!(report.side_effects_performed);
+        assert_eq!(report.action_results[0].side_effects_performed, Some(true));
     }
 
     #[test]

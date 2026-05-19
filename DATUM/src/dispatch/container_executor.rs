@@ -319,6 +319,7 @@ mod tests {
                 project_id: None,
                 timeout_s: None,
                 execute: None,
+                publish_results: None,
                 allow_container_execution: Some(true),
                 container_mappings: Vec::new(),
             }),

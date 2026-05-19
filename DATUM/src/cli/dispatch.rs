@@ -4,14 +4,22 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::{blocking::Client, Url};
 
 use crate::{
+    action_results::{
+        builder::build_action_execution_report_from_dispatch,
+        client::publish_action_execution_report,
+    },
     config::{Config, DispatchConfig, HttpConfig},
     dispatch::executor::{execute_dispatch_dry_run, DispatchExecutionReport},
     dispatch::model::DispatchResponse,
     dispatch::validator::{validate_dispatch_action, DispatchActionValidation},
 };
 
-pub fn run_dispatch_command(cfg: &Config, execute_flag: bool) -> Result<()> {
-    let runtime_cfg = resolve_dispatch_runtime_config(cfg)?;
+pub fn run_dispatch_command(
+    cfg: &Config,
+    execute_flag: bool,
+    publish_results_flag: bool,
+) -> Result<()> {
+    let runtime_cfg = resolve_dispatch_runtime_config(cfg, publish_results_flag)?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(runtime_cfg.timeout_s))
@@ -48,19 +56,51 @@ pub fn run_dispatch_command(cfg: &Config, execute_flag: bool) -> Result<()> {
 
     print_dispatch(&dispatch, &cfg.agent.node_id, &report);
 
+    if runtime_cfg.publish_results {
+        let action_report = build_action_execution_report_from_dispatch(
+            &dispatch,
+            &report,
+            &runtime_cfg.project_id,
+            &cfg.agent.node_id,
+        );
+        let response = publish_action_execution_report(
+            &runtime_cfg.publish_base_url,
+            &runtime_cfg.project_id,
+            &cfg.agent.node_id,
+            &action_report,
+        )?;
+
+        println!();
+        println!("Action result publish: ok");
+        println!(
+            "  report_id: {}",
+            response
+                .get("report_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<server-defined>")
+        );
+    } else if publish_results_flag {
+        unreachable!("publish_results_flag implies runtime publish_results");
+    }
+
     Ok(())
 }
 
 #[derive(Debug, Clone)]
 struct DispatchRuntimeConfig {
     url: Url,
+    publish_base_url: String,
     project_id: String,
     timeout_s: u64,
     execute_default: bool,
+    publish_results: bool,
     side_effects_enabled: bool,
 }
 
-fn resolve_dispatch_runtime_config(cfg: &Config) -> Result<DispatchRuntimeConfig> {
+fn resolve_dispatch_runtime_config(
+    cfg: &Config,
+    publish_results_flag: bool,
+) -> Result<DispatchRuntimeConfig> {
     let dispatch_cfg = cfg.dispatch.clone().unwrap_or_default();
     let http_cfg = cfg
         .outputs
@@ -75,6 +115,8 @@ fn resolve_dispatch_runtime_config(cfg: &Config) -> Result<DispatchRuntimeConfig
         .project_id
         .clone()
         .unwrap_or_else(|| "default-project".to_string());
+    let publish_base_url = http_cfg.url.clone();
+    let publish_results = publish_results_flag || dispatch_cfg.publish_results.unwrap_or(false);
 
     let url = match dispatch_cfg.url.as_deref() {
         Some(url) if !url.trim().is_empty() => {
@@ -85,11 +127,13 @@ fn resolve_dispatch_runtime_config(cfg: &Config) -> Result<DispatchRuntimeConfig
 
     Ok(DispatchRuntimeConfig {
         url,
+        publish_base_url,
         project_id,
         timeout_s: dispatch_cfg
             .timeout_s
             .unwrap_or_else(|| http_cfg.timeout_s.unwrap_or(10)),
         execute_default: dispatch_cfg.execute.unwrap_or(false),
+        publish_results,
         side_effects_enabled: dispatch_cfg.allow_container_execution.unwrap_or(false),
     })
 }
@@ -308,8 +352,8 @@ mod tests {
 
     #[test]
     fn runtime_config_uses_output_http_defaults() {
-        let runtime =
-            resolve_dispatch_runtime_config(&base_config()).expect("runtime config should resolve");
+        let runtime = resolve_dispatch_runtime_config(&base_config(), false)
+            .expect("runtime config should resolve");
 
         assert_eq!(runtime.timeout_s, 10);
         assert_eq!(runtime.project_id, "smart-city-campinas");
@@ -318,6 +362,7 @@ mod tests {
             "http://localhost:8080/api/v1/dispatch/for-node/fog-01"
         );
         assert!(!runtime.execute_default);
+        assert!(!runtime.publish_results);
         assert!(!runtime.side_effects_enabled);
     }
 
@@ -329,6 +374,7 @@ mod tests {
             project_id: None,
             timeout_s: None,
             execute: None,
+            publish_results: None,
             allow_container_execution: None,
             container_mappings: Vec::new(),
         };
@@ -351,14 +397,25 @@ mod tests {
             project_id: Some("smart-city-campinas".to_string()),
             timeout_s: Some(12),
             execute: Some(true),
+            publish_results: Some(true),
             allow_container_execution: Some(true),
             container_mappings: Vec::new(),
         });
 
-        let runtime = resolve_dispatch_runtime_config(&cfg).expect("runtime config should resolve");
+        let runtime =
+            resolve_dispatch_runtime_config(&cfg, false).expect("runtime config should resolve");
 
         assert_eq!(runtime.timeout_s, 12);
         assert!(runtime.execute_default);
+        assert!(runtime.publish_results);
         assert!(runtime.side_effects_enabled);
+    }
+
+    #[test]
+    fn runtime_config_enables_publish_results_from_cli_flag() {
+        let runtime = resolve_dispatch_runtime_config(&base_config(), true)
+            .expect("runtime config should resolve");
+
+        assert!(runtime.publish_results);
     }
 }

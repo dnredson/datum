@@ -65,6 +65,8 @@ pub struct DispatchAction {
     #[serde(default)]
     pub ai_context: Option<Value>,
     #[serde(default)]
+    pub capability: Option<Value>,
+    #[serde(default)]
     pub migration_policy: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,

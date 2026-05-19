@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use std::time::Instant;
 
+mod action_results;
 mod capabilities;
 mod cli;
 mod config;
@@ -53,7 +54,9 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.hostname,
         ),
         Command::Once(args) => once_command(&args.config, args.out, args.node_id, args.hostname),
-        Command::Dispatch(args) => dispatch_command(&args.config, args.execute),
+        Command::Dispatch(args) => {
+            dispatch_command(&args.config, args.execute, args.publish_results)
+        }
         Command::Capabilities(args) => capabilities_command(&args.config, args.publish),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
@@ -127,6 +130,9 @@ struct DispatchArgs {
 
     #[arg(long, default_value_t = false)]
     execute: bool,
+
+    #[arg(long, default_value_t = false)]
+    publish_results: bool,
 }
 
 #[derive(Args, Debug)]
@@ -366,9 +372,9 @@ fn once_command(
     Ok(())
 }
 
-fn dispatch_command(config_path: &str, execute: bool) -> Result<()> {
+fn dispatch_command(config_path: &str, execute: bool, publish_results: bool) -> Result<()> {
     let cfg = config::load_config(config_path)?;
-    run_dispatch_command(&cfg, execute)
+    run_dispatch_command(&cfg, execute, publish_results)
 }
 
 fn capabilities_command(config_path: &str, publish: bool) -> Result<()> {
