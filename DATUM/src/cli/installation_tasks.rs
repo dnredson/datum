@@ -5,13 +5,14 @@ use crate::{
     installation_tasks::{
         client::{
             fetch_installation_task, fetch_installation_task_approvals_for_node,
+            fetch_installation_task_readiness, fetch_installation_task_readiness_for_node,
             fetch_installation_tasks_for_node, fetch_latest_installation_task_approval,
             materialize_installation_tasks_for_node, patch_installation_task_status,
             submit_installation_task_approval,
         },
         model::{
             InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-            InstallationTaskList,
+            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
 };
@@ -24,6 +25,7 @@ pub fn run_installation_tasks_command(
     project_id_override: Option<&str>,
     url_override: Option<&str>,
     task_id: Option<&str>,
+    readiness: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -41,6 +43,7 @@ pub fn run_installation_tasks_command(
     let base_url = resolve_base_url(cfg, url_override)?;
     validate_command_mode(
         task_id,
+        readiness,
         approvals,
         approval,
         approve,
@@ -49,6 +52,54 @@ pub fn run_installation_tasks_command(
         approved_by,
         expires_at_utc,
     )?;
+
+    if readiness {
+        if let Some(task_id) = task_id {
+            match fetch_installation_task_readiness(&base_url, &project_id, &node_id, task_id) {
+                Ok(response) => {
+                    if json_output {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&response).unwrap_or_else(|_| {
+                                "{\"error\":\"failed to render JSON\"}".to_string()
+                            })
+                        );
+                        return Ok(());
+                    }
+
+                    print!("{}", format_single_readiness(&response, task_id));
+                    return Ok(());
+                }
+                Err(error) if error.to_string().contains("status=404") => {
+                    if json_output {
+                        return Err(error);
+                    }
+
+                    println!("No readiness record found for task {}.", task_id);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let response =
+            fetch_installation_task_readiness_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_readiness_list(&response, &project_id, &node_id)
+        );
+        return Ok(());
+    }
 
     if approvals {
         let response =
@@ -186,6 +237,7 @@ pub fn run_installation_tasks_command(
 
 fn validate_command_mode(
     task_id: Option<&str>,
+    readiness: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -195,6 +247,8 @@ fn validate_command_mode(
     expires_at_utc: Option<&str>,
 ) -> Result<()> {
     let selected_modes = [
+        readiness && task_id.is_none(),
+        readiness && task_id.is_some(),
         approvals,
         approval,
         approve,
@@ -208,8 +262,24 @@ fn validate_command_mode(
 
     if selected_modes > 1 {
         return Err(anyhow!(
-            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --approval, --approvals, or --approve"
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --approval, --approvals, or --approve"
         ));
+    }
+
+    if readiness && status.is_some() {
+        return Err(anyhow!("--status cannot be combined with --readiness"));
+    }
+
+    if readiness && approve {
+        return Err(anyhow!("--approve cannot be combined with --readiness"));
+    }
+
+    if readiness && approval {
+        return Err(anyhow!("--approval cannot be combined with --readiness"));
+    }
+
+    if readiness && approvals {
+        return Err(anyhow!("--approvals cannot be combined with --readiness"));
     }
 
     if approvals && task_id.is_some() {
@@ -341,6 +411,68 @@ fn format_single_task(
     lines.join("\n")
 }
 
+fn format_readiness_list(
+    response: &InstallationTaskReadinessList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response.count.unwrap_or(response.readiness.len() as u64);
+
+    let mut lines = vec![
+        format!(
+            "Assisted installation readiness for node {}",
+            effective_node_id
+        ),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.readiness.is_empty() {
+        lines.push("No readiness decisions for this node.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Tasks: {}", count));
+    lines.push(String::new());
+
+    for (index, readiness) in response.readiness.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_readiness_block(readiness));
+    }
+
+    if response.readiness.iter().any(readiness_is_ready) {
+        lines.push(String::new());
+        lines.push(
+            "Note: readiness is informational only. This client command did not execute installation, and safe_to_auto_execute remains false."
+                .to_string(),
+        );
+    }
+
+    lines.join("\n")
+}
+
+fn format_single_readiness(
+    readiness: &InstallationTaskReadiness,
+    requested_task_id: &str,
+) -> String {
+    let task_id = readiness.task_id.as_deref().unwrap_or(requested_task_id);
+    let mut lines = vec![format!("Readiness for task {}", task_id)];
+    lines.extend(format_readiness_detail_lines(readiness));
+
+    if readiness_is_ready(readiness) {
+        lines.push(String::new());
+        lines.push(
+            "Note: readiness is informational only. This client command did not execute installation, and safe_to_auto_execute remains false."
+                .to_string(),
+        );
+    }
+
+    lines.join("\n")
+}
+
 fn format_task_block(task: &InstallationTask) -> Vec<String> {
     let status = task
         .status
@@ -446,6 +578,63 @@ fn format_status_update(task: &InstallationTask) -> String {
     }
 
     lines.join("\n")
+}
+
+fn format_readiness_block(readiness: &InstallationTaskReadiness) -> Vec<String> {
+    let label = readiness
+        .readiness
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_uppercase();
+    let mut lines = vec![format!("[{}]", label)];
+    lines.extend(format_readiness_detail_lines(readiness));
+    lines
+}
+
+fn format_readiness_detail_lines(readiness: &InstallationTaskReadiness) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(task_id) = readiness.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(readiness_value) = readiness.readiness.as_deref() {
+        lines.push(format!("  readiness: {}", readiness_value));
+    }
+
+    if let Some(task_status) = readiness.task_status.as_deref() {
+        lines.push(format!("  task status: {}", task_status));
+    }
+
+    if let Some(policy_decision) = readiness.policy_decision.as_deref() {
+        lines.push(format!("  policy: {}", policy_decision));
+    }
+
+    if let Some(approval_status) = readiness.approval_status.as_deref() {
+        lines.push(format!("  approval: {}", approval_status));
+    }
+
+    if let Some(approval_id) = readiness.approval_id.as_deref() {
+        lines.push(format!("  approval_id: {}", approval_id));
+    }
+
+    if let Some(approved_at_utc) = readiness.approved_at_utc.as_deref() {
+        lines.push(format!("  approved_at_utc: {}", approved_at_utc));
+    }
+
+    if let Some(expires_at_utc) = readiness.expires_at_utc.as_deref() {
+        lines.push(format!("  expires_at_utc: {}", expires_at_utc));
+    }
+
+    if let Some(safe_to_auto_execute) = readiness.safe_to_auto_execute {
+        lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
+    }
+
+    if let Some(reason) = readiness.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines
 }
 
 fn format_approval_list(
@@ -577,17 +766,23 @@ fn task_has_candidate_policy(task: &InstallationTask) -> bool {
         == Some("candidate_for_assisted_execution")
 }
 
+fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
+    readiness.readiness.as_deref() == Some("ready_for_assisted_execution")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        format_approval_list, format_latest_approval, format_status_update,
-        format_submitted_approval, format_task_list, validate_client_status, validate_command_mode,
+        format_approval_list, format_latest_approval, format_readiness_list,
+        format_single_readiness, format_status_update, format_submitted_approval, format_task_list,
+        validate_client_status, validate_command_mode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
         installation_tasks::model::{
             InstallationPolicy, InstallationTask, InstallationTaskApproval,
-            InstallationTaskApprovalList, InstallationTaskList,
+            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
+            InstallationTaskReadinessList,
         },
     };
 
@@ -860,9 +1055,82 @@ mod tests {
     }
 
     #[test]
+    fn readiness_formatting_includes_key_fields() {
+        let rendered = format_readiness_list(
+            &InstallationTaskReadinessList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                readiness: vec![InstallationTaskReadiness {
+                    task_id: Some("task-1".to_string()),
+                    readiness: Some("not_ready".to_string()),
+                    task_status: Some("planned".to_string()),
+                    policy_decision: Some("candidate_for_assisted_execution".to_string()),
+                    approval_status: Some("missing".to_string()),
+                    safe_to_auto_execute: Some(false),
+                    reason: Some("operator approval is required".to_string()),
+                    ..InstallationTaskReadiness::default()
+                }],
+                ..InstallationTaskReadinessList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("[NOT_READY]"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("task status: planned"));
+        assert!(rendered.contains("policy: candidate_for_assisted_execution"));
+        assert!(rendered.contains("approval: missing"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("reason: operator approval is required"));
+    }
+
+    #[test]
+    fn ready_readiness_includes_informational_only_note() {
+        let rendered = format_single_readiness(
+            &InstallationTaskReadiness {
+                task_id: Some("task-1".to_string()),
+                readiness: Some("ready_for_assisted_execution".to_string()),
+                task_status: Some("acknowledged".to_string()),
+                policy_decision: Some("candidate_for_assisted_execution".to_string()),
+                approval_status: Some("approved".to_string()),
+                safe_to_auto_execute: Some(false),
+                reason: Some(
+                    "task has candidate policy and operator approval metadata".to_string(),
+                ),
+                ..InstallationTaskReadiness::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("readiness: ready_for_assisted_execution"));
+        assert!(rendered.contains(
+            "Note: readiness is informational only. This client command did not execute installation, and safe_to_auto_execute remains false."
+        ));
+    }
+
+    #[test]
+    fn readiness_json_preserves_raw_response() {
+        let response = InstallationTaskReadiness {
+            task_id: Some("task-1".to_string()),
+            readiness: Some("ready_for_assisted_execution".to_string()),
+            safe_to_auto_execute: Some(false),
+            ..InstallationTaskReadiness::default()
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"task_id\": \"task-1\""));
+        assert!(rendered.contains("\"readiness\": \"ready_for_assisted_execution\""));
+        assert!(rendered.contains("\"safe_to_auto_execute\": false"));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_command_mode(
             Some("task-1"),
+            false,
             false,
             true,
             true,
@@ -881,6 +1149,7 @@ mod tests {
             Some("task-1"),
             false,
             false,
+            false,
             true,
             None,
             false,
@@ -889,5 +1158,22 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_readiness_with_approval_modes() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            true,
+            false,
+            true,
+            false,
+            None,
+            false,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
     }
 }

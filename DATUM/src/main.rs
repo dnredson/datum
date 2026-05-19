@@ -95,6 +95,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.project_id.as_deref(),
             args.url.as_deref(),
             args.task_id.as_deref(),
+            args.readiness,
             args.approvals,
             args.approval,
             args.approve,
@@ -249,6 +250,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     task_id: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    readiness: bool,
 
     #[arg(long, default_value_t = false)]
     approvals: bool,
@@ -544,6 +548,7 @@ fn installation_tasks_command(
     project_id: Option<&str>,
     url: Option<&str>,
     task_id: Option<&str>,
+    readiness: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -561,6 +566,7 @@ fn installation_tasks_command(
         project_id,
         url,
         task_id,
+        readiness,
         approvals,
         approval,
         approve,

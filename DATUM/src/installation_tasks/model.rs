@@ -132,6 +132,58 @@ pub struct InstallationTaskApprovalList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallationTaskReadiness {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub readiness: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub task_status: Option<String>,
+    #[serde(default)]
+    pub policy_decision: Option<String>,
+    #[serde(default)]
+    pub approval_status: Option<String>,
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub approved_at_utc: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
+    #[serde(default)]
+    pub evaluated_at_utc: Option<String>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub approval_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InstallationTaskReadinessList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub readiness: Vec<InstallationTaskReadiness>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -145,7 +197,7 @@ pub struct ApprovalRequest {
 mod tests {
     use super::{
         ApprovalRequest, InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-        InstallationTaskList,
+        InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
     };
 
     #[test]
@@ -356,6 +408,68 @@ mod tests {
         assert_eq!(
             value["expires_at_utc"].as_str(),
             Some("2026-06-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn parse_installation_task_readiness() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "readiness":"ready_for_assisted_execution",
+          "reason":"task has candidate policy and operator approval metadata",
+          "task_status":"acknowledged",
+          "policy_decision":"candidate_for_assisted_execution",
+          "approval_status":"approved",
+          "approval_id":"approval-1",
+          "approved_at_utc":"2026-05-19T13:00:00Z",
+          "safe_to_auto_execute":false,
+          "future_field":"ok"
+        }"#;
+
+        let parsed: InstallationTaskReadiness =
+            serde_json::from_str(raw).expect("readiness should parse");
+
+        assert_eq!(
+            parsed.readiness.as_deref(),
+            Some("ready_for_assisted_execution")
+        );
+        assert_eq!(parsed.approval_status.as_deref(), Some("approved"));
+        assert_eq!(parsed.safe_to_auto_execute, Some(false));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_installation_task_readiness_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "readiness":[
+            {
+              "task_id":"task-1",
+              "readiness":"not_ready",
+              "approval_status":"missing"
+            }
+          ]
+        }"#;
+
+        let parsed: InstallationTaskReadinessList =
+            serde_json::from_str(raw).expect("readiness list should parse");
+
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.readiness.len(), 1);
+        assert_eq!(parsed.readiness[0].task_id.as_deref(), Some("task-1"));
+        assert_eq!(
+            parsed.readiness[0].approval_status.as_deref(),
+            Some("missing")
         );
     }
 }

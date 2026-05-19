@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::installation_tasks::model::{
     ApprovalRequest, InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-    InstallationTaskList,
+    InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
 };
 
 pub fn materialize_installation_tasks_for_node(
@@ -142,6 +142,39 @@ pub fn fetch_installation_task_approvals_for_node(
     parse_approval_list_response(response, "fetch installation task approvals")
 }
 
+pub fn fetch_installation_task_readiness(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<InstallationTaskReadiness> {
+    let endpoint = installation_task_readiness_endpoint_url(base_url, node_id, task_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch installation task readiness from {}", endpoint))?;
+
+    parse_readiness_response(response, "fetch installation task readiness")
+}
+
+pub fn fetch_installation_task_readiness_for_node(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<InstallationTaskReadinessList> {
+    let endpoint = installation_task_readiness_list_endpoint_url(base_url, node_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch installation task readiness from {}", endpoint))?;
+
+    parse_readiness_list_response(response, "fetch installation task readiness")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -204,6 +237,34 @@ fn parse_approval_list_response(
     response: reqwest::blocking::Response,
     label: &str,
 ) -> Result<InstallationTaskApprovalList> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_readiness_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<InstallationTaskReadiness> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_readiness_list_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<InstallationTaskReadinessList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -333,6 +394,32 @@ pub fn installation_task_approvals_list_endpoint_url(base_url: &str, node_id: &s
     with_segments(base_url, &segments)
 }
 
+pub fn installation_task_readiness_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "readiness".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn installation_task_readiness_list_endpoint_url(base_url: &str, node_id: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-task-readiness".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Value {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => json!({
@@ -372,7 +459,8 @@ mod tests {
         approval_request_body, installation_task_approval_latest_endpoint_url,
         installation_task_approval_submit_endpoint_url,
         installation_task_approvals_list_endpoint_url, installation_task_get_endpoint_url,
-        installation_task_patch_endpoint_url, installation_tasks_list_endpoint_url,
+        installation_task_patch_endpoint_url, installation_task_readiness_endpoint_url,
+        installation_task_readiness_list_endpoint_url, installation_tasks_list_endpoint_url,
         installation_tasks_materialize_endpoint_url, patch_status_body, project_header,
     };
 
@@ -475,6 +563,35 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://localhost:8080/api/v1/installation-task-approvals/for-node/fog-01"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_single_readiness_is_correct() {
+        let url = installation_task_readiness_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "task-1",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/task-1/readiness"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_node_readiness_list_is_correct() {
+        let url = installation_task_readiness_list_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-task-readiness/for-node/fog-01"
         );
     }
 
