@@ -6,6 +6,7 @@ use axum::{
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::{
     core::{
@@ -15,10 +16,12 @@ use crate::{
         },
         installation_tasks::{
             annotate_installation_task_policy, build_installation_task_approval,
-            derive_installation_tasks_from_plan, normalize_installation_task,
-            validate_installation_task, validate_installation_task_can_be_approved,
+            derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+            normalize_installation_task, validate_installation_task,
+            validate_installation_task_can_be_approved,
             validate_installation_task_status_transition, InstallationTask,
             InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+            InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
     AppState,
@@ -158,6 +161,20 @@ fn task_list(
         node_id,
         count: tasks.len() as u64,
         tasks,
+    }
+}
+
+fn readiness_list(
+    project_id: String,
+    node_id: String,
+    mut readiness: Vec<InstallationTaskReadiness>,
+) -> InstallationTaskReadinessList {
+    readiness.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+    InstallationTaskReadinessList {
+        project_id,
+        node_id,
+        count: readiness.len() as u64,
+        readiness,
     }
 }
 
@@ -467,6 +484,55 @@ pub async fn get_latest_installation_task_approval(
     }
 }
 
+pub async fn get_installation_task_readiness(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<InstallationTaskReadiness>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let task = state
+        .firebase
+        .get_installation_task(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let Some(task) = task else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(&project_id, Some(&node_id), task);
+    let latest_approval = state
+        .firebase
+        .get_latest_installation_task_approval(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(evaluate_installation_task_readiness(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        latest_approval.as_ref(),
+    )))
+}
+
 pub async fn list_installation_task_approvals_for_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
@@ -492,4 +558,47 @@ pub async fn list_installation_task_approvals_for_node(
         count: approvals.len() as u64,
         approvals,
     }))
+}
+
+pub async fn list_installation_task_readiness_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<InstallationTaskReadinessList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let approvals = state
+        .firebase
+        .list_installation_task_approvals_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let approvals_by_task_id = approvals
+        .into_iter()
+        .map(|approval| (approval.task_id.clone(), approval))
+        .collect::<HashMap<_, _>>();
+
+    let readiness = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, Some(&node_id), task))
+        .map(|task| {
+            let approval = approvals_by_task_id.get(&task.task_id);
+            evaluate_installation_task_readiness(&project_id, &node_id, &task, approval)
+        })
+        .collect::<Vec<_>>();
+
+    Ok(JsonResponse(readiness_list(project_id, node_id, readiness)))
 }

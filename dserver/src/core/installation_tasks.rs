@@ -16,6 +16,15 @@ const POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION: &str = "candidate_for_assisted_ex
 const POLICY_BLOCKED: &str = "blocked";
 const POLICY_UNKNOWN: &str = "unknown";
 const APPROVAL_MODE_OPERATOR_APPROVED: &str = "operator_approved";
+const READINESS_READY: &str = "ready_for_assisted_execution";
+const READINESS_NOT_READY: &str = "not_ready";
+const READINESS_BLOCKED: &str = "blocked";
+const READINESS_UNKNOWN: &str = "unknown";
+const APPROVAL_STATUS_APPROVED: &str = "approved";
+const APPROVAL_STATUS_MISSING: &str = "missing";
+const APPROVAL_STATUS_EXPIRED: &str = "expired";
+const APPROVAL_STATUS_NOT_REQUIRED: &str = "not_required";
+const APPROVAL_STATUS_INVALID: &str = "invalid";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -94,6 +103,43 @@ pub struct InstallationTaskApprovalList {
     pub node_id: String,
     pub count: u64,
     pub approvals: Vec<InstallationTaskApproval>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallationTaskReadiness {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub readiness: String,
+    pub reason: String,
+    #[serde(default)]
+    pub task_status: Option<String>,
+    #[serde(default)]
+    pub policy_decision: Option<String>,
+    #[serde(default)]
+    pub approval_status: Option<String>,
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub approved_at_utc: Option<String>,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
+    pub safe_to_auto_execute: bool,
+    pub evaluated_at_utc: String,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub approval_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstallationTaskReadinessList {
+    pub project_id: String,
+    pub node_id: String,
+    pub count: u64,
+    pub readiness: Vec<InstallationTaskReadiness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -469,6 +515,146 @@ pub fn build_installation_task_approval(
     }
 }
 
+pub fn evaluate_installation_task_readiness(
+    project_id: &str,
+    node_id: &str,
+    task: &InstallationTask,
+    latest_approval: Option<&InstallationTaskApproval>,
+) -> InstallationTaskReadiness {
+    let mut readiness = InstallationTaskReadiness {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.task_id.clone(),
+        readiness: READINESS_UNKNOWN.to_string(),
+        reason: "readiness not evaluated".to_string(),
+        task_status: Some(task.status.clone()),
+        policy_decision: task
+            .installation_policy
+            .as_ref()
+            .map(|policy| policy.decision.clone()),
+        approval_status: None,
+        approval_id: latest_approval.map(|approval| approval.approval_id.clone()),
+        approved_at_utc: latest_approval.map(|approval| approval.approved_at_utc.clone()),
+        expires_at_utc: latest_approval.and_then(|approval| approval.expires_at_utc.clone()),
+        safe_to_auto_execute: false,
+        evaluated_at_utc: Utc::now().to_rfc3339(),
+        task_snapshot: serde_json::to_value(task).ok(),
+        approval_snapshot: latest_approval.and_then(|approval| serde_json::to_value(approval).ok()),
+        metadata: None,
+    };
+
+    let status = task.status.trim();
+    if matches!(status, STATUS_COMPLETED | STATUS_CANCELLED) {
+        readiness.readiness = READINESS_BLOCKED.to_string();
+        readiness.reason = "terminal task status".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_NOT_REQUIRED.to_string());
+        return readiness;
+    }
+
+    if !matches!(status, STATUS_PLANNED | STATUS_ACKNOWLEDGED) {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "task status is not eligible for assisted execution".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_NOT_REQUIRED.to_string());
+        return readiness;
+    }
+
+    let Some(policy) = task.installation_policy.as_ref() else {
+        readiness.readiness = READINESS_UNKNOWN.to_string();
+        readiness.reason = "installation policy missing".to_string();
+        return readiness;
+    };
+
+    if policy.safe_to_auto_execute {
+        readiness.readiness = READINESS_UNKNOWN.to_string();
+        readiness.reason = "installation policy safe_to_auto_execute must remain false".to_string();
+        return readiness;
+    }
+
+    if policy.decision != POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION {
+        readiness.readiness = if policy.decision == POLICY_BLOCKED {
+            READINESS_BLOCKED.to_string()
+        } else {
+            READINESS_NOT_READY.to_string()
+        };
+        readiness.reason = format!(
+            "task policy is not {}",
+            POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION
+        );
+        readiness.approval_status = Some(APPROVAL_STATUS_NOT_REQUIRED.to_string());
+        return readiness;
+    }
+
+    if !policy
+        .allowed_future_modes
+        .iter()
+        .any(|mode| mode == APPROVAL_MODE_OPERATOR_APPROVED)
+    {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "operator_approved mode is not allowed by policy".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_NOT_REQUIRED.to_string());
+        return readiness;
+    }
+
+    let Some(approval) = latest_approval else {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "operator approval is required".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_MISSING.to_string());
+        return readiness;
+    };
+
+    if approval.project_id != project_id
+        || approval.node_id != node_id
+        || approval.task_id != task.task_id
+    {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "latest approval metadata does not match task identity".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_INVALID.to_string());
+        return readiness;
+    }
+
+    if !approval.approved {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "latest approval is not approved".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_INVALID.to_string());
+        return readiness;
+    }
+
+    if approval.approval_mode.trim() != APPROVAL_MODE_OPERATOR_APPROVED {
+        readiness.readiness = READINESS_NOT_READY.to_string();
+        readiness.reason = "latest approval mode is not operator_approved".to_string();
+        readiness.approval_status = Some(APPROVAL_STATUS_INVALID.to_string());
+        return readiness;
+    }
+
+    if let Some(expires_at_utc) = approval
+        .expires_at_utc
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        match chrono::DateTime::parse_from_rfc3339(expires_at_utc) {
+            Ok(expiry) if expiry.with_timezone(&Utc) < Utc::now() => {
+                readiness.readiness = READINESS_NOT_READY.to_string();
+                readiness.reason = "operator approval has expired".to_string();
+                readiness.approval_status = Some(APPROVAL_STATUS_EXPIRED.to_string());
+                return readiness;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                readiness.readiness = READINESS_NOT_READY.to_string();
+                readiness.reason = "approval expiry timestamp is invalid".to_string();
+                readiness.approval_status = Some(APPROVAL_STATUS_INVALID.to_string());
+                return readiness;
+            }
+        }
+    }
+
+    readiness.readiness = READINESS_READY.to_string();
+    readiness.reason = "task has candidate policy and operator approval metadata".to_string();
+    readiness.approval_status = Some(APPROVAL_STATUS_APPROVED.to_string());
+    readiness
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -570,10 +756,12 @@ pub fn derive_installation_tasks_from_plan(
 mod tests {
     use super::{
         annotate_installation_task_policy, build_installation_task_approval,
-        derive_installation_tasks_from_plan, normalize_installation_task,
-        validate_installation_task, validate_installation_task_can_be_approved,
-        validate_installation_task_status_transition, InstallationTask,
+        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+        normalize_installation_task, validate_installation_task,
+        validate_installation_task_can_be_approved, validate_installation_task_status_transition,
+        InstallationTask,
     };
+    use chrono::{Duration, Utc};
     use serde_json::{json, Value};
 
     fn base_installation_item() -> Value {
@@ -625,6 +813,13 @@ mod tests {
                 metadata: None,
             },
         )
+    }
+
+    fn candidate_task() -> InstallationTask {
+        let mut task = base_task();
+        task.required_step = Some("install_existing_artifact".to_string());
+        annotate_installation_task_policy(&mut task);
+        task
     }
 
     #[test]
@@ -1036,5 +1231,177 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn candidate_task_with_valid_approval_is_ready() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            Some("approved".to_string()),
+            Some((Utc::now() + Duration::hours(1)).to_rfc3339()),
+        );
+
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert_eq!(readiness.readiness, "ready_for_assisted_execution");
+        assert_eq!(readiness.approval_status.as_deref(), Some("approved"));
+        assert_eq!(
+            readiness.approval_id.as_deref(),
+            Some(approval.approval_id.as_str())
+        );
+        assert!(!readiness.safe_to_auto_execute);
+        assert!(readiness.task_snapshot.is_some());
+        assert!(readiness.approval_snapshot.is_some());
+    }
+
+    #[test]
+    fn candidate_task_with_missing_approval_is_not_ready() {
+        let task = candidate_task();
+
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert_eq!(readiness.readiness, "not_ready");
+        assert_eq!(readiness.approval_status.as_deref(), Some("missing"));
+    }
+
+    #[test]
+    fn manual_only_task_with_approval_is_not_ready() {
+        let task = base_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &candidate_task(),
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert_eq!(readiness.readiness, "not_ready");
+        assert_eq!(readiness.approval_status.as_deref(), Some("not_required"));
+    }
+
+    #[test]
+    fn completed_task_is_blocked() {
+        let mut task = candidate_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert_eq!(readiness.readiness, "blocked");
+        assert_eq!(readiness.reason, "terminal task status");
+    }
+
+    #[test]
+    fn cancelled_task_is_blocked() {
+        let mut task = candidate_task();
+        task.status = "cancelled".to_string();
+        annotate_installation_task_policy(&mut task);
+
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert_eq!(readiness.readiness, "blocked");
+        assert_eq!(readiness.reason, "terminal task status");
+    }
+
+    #[test]
+    fn missing_policy_is_unknown() {
+        let mut task = candidate_task();
+        task.installation_policy = None;
+
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert_eq!(readiness.readiness, "unknown");
+        assert_eq!(readiness.reason, "installation policy missing");
+    }
+
+    #[test]
+    fn approval_with_wrong_task_id_is_invalid() {
+        let task = candidate_task();
+        let mut approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        approval.task_id = "task:other".to_string();
+
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert_eq!(readiness.readiness, "not_ready");
+        assert_eq!(readiness.approval_status.as_deref(), Some("invalid"));
+    }
+
+    #[test]
+    fn approval_false_is_invalid() {
+        let task = candidate_task();
+        let mut approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        approval.approved = false;
+
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert_eq!(readiness.readiness, "not_ready");
+        assert_eq!(readiness.approval_status.as_deref(), Some("invalid"));
+    }
+
+    #[test]
+    fn readiness_safe_to_auto_execute_remains_false_when_ready() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert!(!readiness.safe_to_auto_execute);
     }
 }
