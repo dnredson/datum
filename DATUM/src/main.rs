@@ -10,12 +10,14 @@ mod core;
 mod deployment_planning;
 mod dispatch;
 mod installation_plan;
+mod installation_tasks;
 mod outputs;
 
 use cli::capabilities::run_capabilities_command;
 use cli::deployment_planning::run_deployment_planning_command;
 use cli::dispatch::run_dispatch_command;
 use cli::installation_plan::run_installation_plan_command;
+use cli::installation_tasks::run_installation_tasks_command;
 use cli::show::show_command;
 use cli::top::top_command;
 use core::cycle::run_cycle;
@@ -38,7 +40,9 @@ fn main() -> Result<()> {
             | "deployment-planning"
             | "deploy-plan"
             | "installation-plan"
-            | "install-plan" => {
+            | "install-plan"
+            | "installation-tasks"
+            | "install-tasks" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -85,6 +89,17 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.json,
         ),
+        Command::InstallationTasks(args) => installation_tasks_command(
+            &args.config,
+            args.node_id.as_deref(),
+            args.project_id.as_deref(),
+            args.url.as_deref(),
+            args.task_id.as_deref(),
+            args.status.as_deref(),
+            args.reason.as_deref(),
+            args.materialize,
+            args.json,
+        ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -108,6 +123,8 @@ enum Command {
     DeploymentPlanning(DeploymentPlanningArgs),
     #[command(name = "installation-plan", alias = "install-plan")]
     InstallationPlan(InstallationPlanArgs),
+    #[command(name = "installation-tasks", alias = "install-tasks")]
+    InstallationTasks(InstallationTasksArgs),
     Top(TopArgs),
     Show(ShowArgs),
 }
@@ -206,6 +223,36 @@ struct InstallationPlanArgs {
 
     #[arg(long)]
     url: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct InstallationTasksArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    project_id: Option<String>,
+
+    #[arg(long)]
+    url: Option<String>,
+
+    #[arg(long)]
+    task_id: Option<String>,
+
+    #[arg(long)]
+    status: Option<String>,
+
+    #[arg(long)]
+    reason: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    materialize: bool,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -469,4 +516,29 @@ fn installation_plan_command(
 ) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     run_installation_plan_command(&cfg, node_id, project_id, url, json)
+}
+
+fn installation_tasks_command(
+    config_path: &str,
+    node_id: Option<&str>,
+    project_id: Option<&str>,
+    url: Option<&str>,
+    task_id: Option<&str>,
+    status: Option<&str>,
+    reason: Option<&str>,
+    materialize: bool,
+    json: bool,
+) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_installation_tasks_command(
+        &cfg,
+        node_id,
+        project_id,
+        url,
+        task_id,
+        status,
+        reason,
+        materialize,
+        json,
+    )
 }
