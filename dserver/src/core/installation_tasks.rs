@@ -27,6 +27,11 @@ const APPROVAL_STATUS_NOT_REQUIRED: &str = "not_required";
 const APPROVAL_STATUS_INVALID: &str = "invalid";
 const REQUEST_STATUS_REQUESTED: &str = "requested";
 const EXECUTION_MODE_ASSISTED_OPERATOR_APPROVED: &str = "assisted_operator_approved";
+const CLAIM_STATUS_CLAIMED: &str = "claimed";
+const CLAIM_STATUS_RELEASED: &str = "released";
+const CLAIM_STATUS_EXPIRED: &str = "expired";
+const CLAIM_STATUS_COMPLETED: &str = "completed";
+const CLAIM_STATUS_CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -175,6 +180,41 @@ pub struct AssistedExecutionRequestList {
     pub node_id: Option<String>,
     pub count: u64,
     pub requests: Vec<AssistedExecutionRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionClaim {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub request_id: String,
+    pub claim_id: String,
+    pub claim_status: String,
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    pub claimed_at_utc: String,
+    #[serde(default)]
+    pub lease_expires_at_utc: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    pub safe_to_auto_execute: bool,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionClaimList {
+    pub project_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    pub count: u64,
+    pub claims: Vec<AssistedExecutionClaim>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -796,6 +836,89 @@ pub fn build_assisted_execution_request(
     }
 }
 
+pub fn validate_assisted_execution_claim_allowed(
+    task: &InstallationTask,
+    request: &AssistedExecutionRequest,
+    latest_existing_claim: Option<&AssistedExecutionClaim>,
+) -> Result<(), String> {
+    if task.task_id.trim().is_empty() {
+        return Err("task_id must not be empty".to_string());
+    }
+
+    if task.node_id.trim().is_empty() {
+        return Err("node_id must not be empty".to_string());
+    }
+
+    if request.request_status != REQUEST_STATUS_REQUESTED {
+        return Err(format!(
+            "assisted execution claim requires request_status='{}', got '{}'",
+            REQUEST_STATUS_REQUESTED, request.request_status
+        ));
+    }
+
+    if request.safe_to_auto_execute {
+        return Err("request.safe_to_auto_execute must remain false".to_string());
+    }
+
+    if !matches!(task.status.trim(), STATUS_PLANNED | STATUS_ACKNOWLEDGED) {
+        return Err("task status is not eligible for assisted execution claim".to_string());
+    }
+
+    if task.safe_to_auto_execute {
+        return Err("task.safe_to_auto_execute must remain false".to_string());
+    }
+
+    if request.project_id != task.project_id
+        || request.node_id != task.node_id
+        || request.task_id != task.task_id
+    {
+        return Err("assisted execution request metadata does not match task identity".to_string());
+    }
+
+    if let Some(claim) = latest_existing_claim {
+        match claim.claim_status.as_str() {
+            CLAIM_STATUS_CLAIMED => {
+                return Err("assisted execution request is already claimed".to_string());
+            }
+            CLAIM_STATUS_COMPLETED => {
+                return Err("assisted execution request already completed".to_string());
+            }
+            CLAIM_STATUS_RELEASED | CLAIM_STATUS_CANCELLED | CLAIM_STATUS_EXPIRED => {}
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+pub fn build_assisted_execution_claim(
+    project_id: &str,
+    node_id: &str,
+    task: &InstallationTask,
+    request: &AssistedExecutionRequest,
+    claimed_by: Option<String>,
+    reason: Option<String>,
+    lease_expires_at_utc: Option<String>,
+) -> AssistedExecutionClaim {
+    AssistedExecutionClaim {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.task_id.clone(),
+        request_id: request.request_id.clone(),
+        claim_id: format!("claim:{}", Uuid::new_v4()),
+        claim_status: CLAIM_STATUS_CLAIMED.to_string(),
+        claimed_by,
+        claimed_at_utc: Utc::now().to_rfc3339(),
+        lease_expires_at_utc,
+        reason,
+        request_snapshot: serde_json::to_value(request).ok(),
+        readiness_snapshot: request.readiness_snapshot.clone(),
+        task_snapshot: serde_json::to_value(task).ok(),
+        safe_to_auto_execute: false,
+        metadata: None,
+    }
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -896,12 +1019,13 @@ pub fn derive_installation_tasks_from_plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        annotate_installation_task_policy, build_assisted_execution_request,
-        build_installation_task_approval, derive_installation_tasks_from_plan,
-        evaluate_installation_task_readiness, normalize_installation_task,
+        annotate_installation_task_policy, build_assisted_execution_claim,
+        build_assisted_execution_request, build_installation_task_approval,
+        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+        normalize_installation_task, validate_assisted_execution_claim_allowed,
         validate_assisted_execution_request_allowed, validate_installation_task,
         validate_installation_task_can_be_approved, validate_installation_task_status_transition,
-        InstallationTask,
+        AssistedExecutionClaim, AssistedExecutionRequest, InstallationTask,
     };
     use chrono::{Duration, Utc};
     use serde_json::{json, Value};
@@ -962,6 +1086,50 @@ mod tests {
         task.required_step = Some("install_existing_artifact".to_string());
         annotate_installation_task_policy(&mut task);
         task
+    }
+
+    fn requested_request() -> AssistedExecutionRequest {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        build_assisted_execution_request(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &readiness,
+            Some(&approval),
+            Some("operator".to_string()),
+            Some("request future assisted execution".to_string()),
+        )
+    }
+
+    fn existing_claim(claim_status: &str) -> AssistedExecutionClaim {
+        let task = candidate_task();
+        let request = requested_request();
+        let mut claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim for future assisted execution".to_string()),
+            None,
+        );
+        claim.claim_status = claim_status.to_string();
+        claim
     }
 
     #[test]
@@ -1676,5 +1844,145 @@ mod tests {
             evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
 
         assert!(validate_assisted_execution_request_allowed(&task, &readiness, None).is_err());
+    }
+
+    #[test]
+    fn requested_request_with_no_existing_claim_can_be_claimed() {
+        let task = candidate_task();
+        let request = requested_request();
+
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_ok());
+    }
+
+    #[test]
+    fn existing_claimed_claim_blocks_new_claim() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim("claimed");
+
+        let err = validate_assisted_execution_claim_allowed(&task, &request, Some(&claim))
+            .expect_err("claimed claim should block");
+        assert_eq!(err, "assisted execution request is already claimed");
+    }
+
+    #[test]
+    fn existing_released_cancelled_or_expired_claim_allows_new_claim() {
+        let task = candidate_task();
+        let request = requested_request();
+
+        for status in ["released", "cancelled", "expired"] {
+            let claim = existing_claim(status);
+            assert!(
+                validate_assisted_execution_claim_allowed(&task, &request, Some(&claim)).is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn existing_completed_claim_blocks_new_claim() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim("completed");
+
+        let err = validate_assisted_execution_claim_allowed(&task, &request, Some(&claim))
+            .expect_err("completed claim should block");
+        assert_eq!(err, "assisted execution request already completed");
+    }
+
+    #[test]
+    fn non_requested_request_cannot_be_claimed() {
+        let task = candidate_task();
+        let mut request = requested_request();
+        request.request_status = "cancelled".to_string();
+
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+    }
+
+    #[test]
+    fn request_safe_to_auto_execute_true_is_rejected_for_claim() {
+        let task = candidate_task();
+        let mut request = requested_request();
+        request.safe_to_auto_execute = true;
+
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+    }
+
+    #[test]
+    fn task_safe_to_auto_execute_true_is_rejected_for_claim() {
+        let mut task = candidate_task();
+        let request = requested_request();
+        task.safe_to_auto_execute = true;
+
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+    }
+
+    #[test]
+    fn mismatched_request_identity_is_rejected_for_claim() {
+        let task = candidate_task();
+
+        let mut request = requested_request();
+        request.project_id = "other-project".to_string();
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+
+        let mut request = requested_request();
+        request.node_id = "other-node".to_string();
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+
+        let mut request = requested_request();
+        request.task_id = "other-task".to_string();
+        assert!(validate_assisted_execution_claim_allowed(&task, &request, None).is_err());
+    }
+
+    #[test]
+    fn claim_safe_to_auto_execute_remains_false() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim".to_string()),
+            None,
+        );
+
+        assert!(!claim.safe_to_auto_execute);
+    }
+
+    #[test]
+    fn claim_starts_with_claim_status_claimed() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim".to_string()),
+            None,
+        );
+
+        assert_eq!(claim.claim_status, "claimed");
+    }
+
+    #[test]
+    fn claim_includes_request_and_task_snapshots() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = build_assisted_execution_claim(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &request,
+            Some("operator".to_string()),
+            Some("claim".to_string()),
+            None,
+        );
+
+        assert!(claim.request_snapshot.is_some());
+        assert!(claim.task_snapshot.is_some());
+        assert!(claim.readiness_snapshot.is_some());
     }
 }

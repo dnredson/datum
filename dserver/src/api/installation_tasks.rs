@@ -15,15 +15,16 @@ use crate::{
             empty_installation_plan,
         },
         installation_tasks::{
-            annotate_installation_task_policy, build_assisted_execution_request,
-            build_installation_task_approval, derive_installation_tasks_from_plan,
-            evaluate_installation_task_readiness, normalize_installation_task,
+            annotate_installation_task_policy, build_assisted_execution_claim,
+            build_assisted_execution_request, build_installation_task_approval,
+            derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+            normalize_installation_task, validate_assisted_execution_claim_allowed,
             validate_assisted_execution_request_allowed, validate_installation_task,
             validate_installation_task_can_be_approved,
-            validate_installation_task_status_transition, AssistedExecutionRequest,
-            AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
-            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-            InstallationTaskReadinessList,
+            validate_installation_task_status_transition, AssistedExecutionClaim,
+            AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
+            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
     AppState,
@@ -54,6 +55,16 @@ pub struct AssistedExecutionRequestBody {
     pub requested_by: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssistedExecutionClaimBody {
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub lease_expires_at_utc: Option<String>,
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -199,6 +210,24 @@ fn assisted_execution_request_list(
         node_id: Some(node_id),
         count: requests.len() as u64,
         requests,
+    }
+}
+
+fn assisted_execution_claim_list(
+    project_id: String,
+    node_id: String,
+    mut claims: Vec<AssistedExecutionClaim>,
+) -> AssistedExecutionClaimList {
+    claims.sort_by(|a, b| {
+        a.task_id
+            .cmp(&b.task_id)
+            .then_with(|| a.request_id.cmp(&b.request_id))
+    });
+    AssistedExecutionClaimList {
+        project_id,
+        node_id: Some(node_id),
+        count: claims.len() as u64,
+        claims,
     }
 }
 
@@ -671,6 +700,132 @@ pub async fn get_latest_assisted_execution_request(
     }
 }
 
+pub async fn post_assisted_execution_claim(
+    State(state): State<AppState>,
+    Path((node_id, task_id, request_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<AssistedExecutionClaimBody>,
+) -> Result<JsonResponse<AssistedExecutionClaim>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let Some(task) = state
+        .firebase
+        .get_installation_task(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let Some(request) = state
+        .firebase
+        .get_assisted_execution_request(&project_id, &node_id, &task_id, &request_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution request not found for project '{}' node '{}' task '{}' request '{}'",
+                    project_id, node_id, task_id, request_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(&project_id, Some(&node_id), task);
+    let latest_claim = state
+        .firebase
+        .get_latest_assisted_execution_claim(&project_id, &node_id, &task_id, &request_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    validate_assisted_execution_claim_allowed(&normalized_task, &request, latest_claim.as_ref())
+        .map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                JsonResponse(json!({ "error": err })),
+            )
+        })?;
+
+    let claim = build_assisted_execution_claim(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        &request,
+        payload.claimed_by,
+        payload.reason,
+        payload.lease_expires_at_utc,
+    );
+
+    state
+        .firebase
+        .put_assisted_execution_claim(&project_id, &node_id, &task_id, &request_id, &claim)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(claim))
+}
+
+pub async fn get_latest_assisted_execution_claim(
+    State(state): State<AppState>,
+    Path((node_id, task_id, request_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionClaim>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let claim = state
+        .firebase
+        .get_latest_assisted_execution_claim(&project_id, &node_id, &task_id, &request_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    match claim {
+        Some(claim) => Ok(JsonResponse(claim)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution claim not found for project '{}' node '{}' task '{}' request '{}'",
+                    project_id, node_id, task_id, request_id
+                )
+            })),
+        )),
+    }
+}
+
 pub async fn list_installation_task_approvals_for_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
@@ -760,5 +915,27 @@ pub async fn list_assisted_execution_requests_for_node(
 
     Ok(JsonResponse(assisted_execution_request_list(
         project_id, node_id, requests,
+    )))
+}
+
+pub async fn list_assisted_execution_claims_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionClaimList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let claims = state
+        .firebase
+        .list_assisted_execution_claims_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(assisted_execution_claim_list(
+        project_id, node_id, claims,
     )))
 }

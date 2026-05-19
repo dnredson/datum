@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 use crate::core::{
     action_results::ActionExecutionReport,
     installation_tasks::{
-        annotate_installation_task_policy, normalize_installation_task, AssistedExecutionRequest,
-        InstallationTask, InstallationTaskApproval,
+        annotate_installation_task_policy, normalize_installation_task, AssistedExecutionClaim,
+        AssistedExecutionRequest, InstallationTask, InstallationTaskApproval,
     },
     model::SnapshotEnvelope,
 };
@@ -38,6 +38,8 @@ pub struct FirebaseClient {
     pub collection_installation_task_approvals_latest: String,
     pub collection_assisted_execution_requests: String,
     pub collection_assisted_execution_requests_latest: String,
+    pub collection_assisted_execution_claims: String,
+    pub collection_assisted_execution_claims_latest: String,
     pub _config: Arc<AppConfig>,
 }
 
@@ -146,6 +148,16 @@ impl FirebaseClient {
             .collection_assisted_execution_requests_latest
             .clone()
             .unwrap_or_else(|| "datum_assisted_execution_requests_latest".to_string());
+        let collection_assisted_execution_claims = app_config
+            .firebase
+            .collection_assisted_execution_claims
+            .clone()
+            .unwrap_or_else(|| "datum_assisted_execution_claims".to_string());
+        let collection_assisted_execution_claims_latest = app_config
+            .firebase
+            .collection_assisted_execution_claims_latest
+            .clone()
+            .unwrap_or_else(|| "datum_assisted_execution_claims_latest".to_string());
         Ok(Self {
             client: Client::new(),
             project_id,
@@ -168,6 +180,8 @@ impl FirebaseClient {
             collection_installation_task_approvals_latest,
             collection_assisted_execution_requests,
             collection_assisted_execution_requests_latest,
+            collection_assisted_execution_claims,
+            collection_assisted_execution_claims_latest,
             _config: app_config,
         })
     }
@@ -1503,6 +1517,39 @@ impl FirebaseClient {
         )?))
     }
 
+    pub async fn get_assisted_execution_request(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+    ) -> Result<Option<AssistedExecutionRequest>> {
+        let doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}",
+            project_id, node_id, task_id, request_id
+        );
+        let url = self.doc_url(&self.collection_assisted_execution_requests, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_assisted_execution_request failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "assisted execution request",
+        )?))
+    }
+
     pub async fn list_assisted_execution_requests_for_node(
         &self,
         project_id: &str,
@@ -1554,5 +1601,154 @@ impl FirebaseClient {
         }
 
         Ok(requests)
+    }
+
+    pub async fn put_assisted_execution_claim(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+        claim: &AssistedExecutionClaim,
+    ) -> Result<()> {
+        let raw_doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}:claim:{}",
+            project_id, node_id, task_id, request_id, claim.claim_id
+        );
+        let latest_doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}",
+            project_id, node_id, task_id, request_id
+        );
+        let raw_url = self.doc_url(&self.collection_assisted_execution_claims, &raw_doc_id);
+        let latest_url = self.doc_url(
+            &self.collection_assisted_execution_claims_latest,
+            &latest_doc_id,
+        );
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "task_id": Self::firestore_string(task_id),
+                "request_id": Self::firestore_string(request_id),
+                "claim_id": Self::firestore_string(&claim.claim_id),
+                "claim_status": Self::firestore_string(&claim.claim_status),
+                "claimed_at_utc": Self::firestore_string(&claim.claimed_at_utc),
+                "payload": Self::firestore_json_string(claim)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_assisted_execution_claim raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_assisted_execution_claim latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_assisted_execution_claim(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        task_id: &str,
+        request_id: &str,
+    ) -> Result<Option<AssistedExecutionClaim>> {
+        let doc_id = format!(
+            "project:{}:node:{}:task:{}:request:{}",
+            project_id, node_id, task_id, request_id
+        );
+        let url = self.doc_url(&self.collection_assisted_execution_claims_latest, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "get_latest_assisted_execution_claim failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "assisted execution claim",
+        )?))
+    }
+
+    pub async fn list_assisted_execution_claims_for_node(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Vec<AssistedExecutionClaim>> {
+        let url = self.collection_url(&self.collection_assisted_execution_claims_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_assisted_execution_claims_for_node failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut claims = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let doc_node_id = fields
+                .get("node_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id || doc_node_id != node_id {
+                continue;
+            }
+
+            claims.push(Self::parse_payload_from_document(
+                doc,
+                "assisted execution claim",
+            )?);
+        }
+
+        Ok(claims)
     }
 }
