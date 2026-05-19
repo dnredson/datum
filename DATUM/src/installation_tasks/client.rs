@@ -9,7 +9,8 @@ use reqwest::{
 use serde_json::json;
 
 use crate::installation_tasks::model::{
-    ApprovalRequest, AssistedExecutionRequest, AssistedExecutionRequestBody,
+    ApprovalRequest, AssistedExecutionClaim, AssistedExecutionClaimBody,
+    AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestBody,
     AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
     InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
     InstallationTaskReadinessList,
@@ -236,6 +237,68 @@ pub fn fetch_assisted_execution_requests_for_node(
     parse_assisted_execution_request_list_response(response, "fetch assisted execution requests")
 }
 
+pub fn submit_assisted_execution_claim(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+    claimed_by: Option<&str>,
+    reason: Option<&str>,
+    lease_expires_at_utc: Option<&str>,
+) -> Result<AssistedExecutionClaim> {
+    let endpoint = installation_task_assisted_execution_claim_submit_endpoint_url(
+        base_url, node_id, task_id, request_id,
+    )?;
+    let client = build_client()?;
+    let body = assisted_execution_claim_body(claimed_by, reason, lease_expires_at_utc);
+    let response = client
+        .post(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .with_context(|| format!("submit assisted execution claim to {}", endpoint))?;
+
+    parse_assisted_execution_claim_response(response, "submit assisted execution claim")
+}
+
+pub fn fetch_latest_assisted_execution_claim(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+) -> Result<AssistedExecutionClaim> {
+    let endpoint = installation_task_assisted_execution_claim_latest_endpoint_url(
+        base_url, node_id, task_id, request_id,
+    )?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch latest assisted execution claim from {}", endpoint))?;
+
+    parse_assisted_execution_claim_response(response, "fetch latest assisted execution claim")
+}
+
+pub fn fetch_assisted_execution_claims_for_node(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<AssistedExecutionClaimList> {
+    let endpoint = assisted_execution_claims_list_endpoint_url(base_url, node_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch assisted execution claims from {}", endpoint))?;
+
+    parse_assisted_execution_claim_list_response(response, "fetch assisted execution claims")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -354,6 +417,34 @@ fn parse_assisted_execution_request_list_response(
     response: reqwest::blocking::Response,
     label: &str,
 ) -> Result<AssistedExecutionRequestList> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_assisted_execution_claim_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<AssistedExecutionClaim> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_assisted_execution_claim_list_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<AssistedExecutionClaimList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -552,6 +643,55 @@ pub fn assisted_execution_requests_list_endpoint_url(base_url: &str, node_id: &s
     with_segments(base_url, &segments)
 }
 
+pub fn installation_task_assisted_execution_claim_submit_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "assisted-execution-request".to_string(),
+        request_id.to_string(),
+        "claim".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn installation_task_assisted_execution_claim_latest_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "assisted-execution-request".to_string(),
+        request_id.to_string(),
+        "claim".to_string(),
+        "latest".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn assisted_execution_claims_list_endpoint_url(base_url: &str, node_id: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "assisted-execution-claims".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Value {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => json!({
@@ -601,14 +741,38 @@ pub fn assisted_execution_request_body(
     }
 }
 
+pub fn assisted_execution_claim_body(
+    claimed_by: Option<&str>,
+    reason: Option<&str>,
+    lease_expires_at_utc: Option<&str>,
+) -> AssistedExecutionClaimBody {
+    AssistedExecutionClaimBody {
+        claimed_by: claimed_by
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        reason: reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        lease_expires_at_utc: lease_expires_at_utc
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_request_body, assisted_execution_request_body,
+        approval_request_body, assisted_execution_claim_body,
+        assisted_execution_claims_list_endpoint_url, assisted_execution_request_body,
         assisted_execution_requests_list_endpoint_url,
         installation_task_approval_latest_endpoint_url,
         installation_task_approval_submit_endpoint_url,
         installation_task_approvals_list_endpoint_url,
+        installation_task_assisted_execution_claim_latest_endpoint_url,
+        installation_task_assisted_execution_claim_submit_endpoint_url,
         installation_task_assisted_execution_request_latest_endpoint_url,
         installation_task_assisted_execution_request_submit_endpoint_url,
         installation_task_get_endpoint_url, installation_task_patch_endpoint_url,
@@ -850,6 +1014,72 @@ mod tests {
         assert_eq!(
             value["reason"].as_str(),
             Some("request future assisted execution")
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_submit_assisted_execution_claim_is_correct() {
+        let url = installation_task_assisted_execution_claim_submit_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "project:smart city/task",
+            "request:with space",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/project:smart%20city%2Ftask/assisted-execution-request/request:with%20space/claim"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_latest_assisted_execution_claim_is_correct() {
+        let url = installation_task_assisted_execution_claim_latest_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "task-1",
+            "request-1",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/task-1/assisted-execution-request/request-1/claim/latest"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_list_assisted_execution_claims_is_correct() {
+        let url = assisted_execution_claims_list_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/assisted-execution-claims/for-node/fog-01"
+        );
+    }
+
+    #[test]
+    fn assisted_execution_claim_body_includes_optional_fields_when_provided() {
+        let body = assisted_execution_claim_body(
+            Some("operator"),
+            Some("claim metadata for future assisted execution"),
+            Some("2026-06-01T00:00:00Z"),
+        );
+        let value = serde_json::to_value(body).expect("body should serialize");
+
+        assert_eq!(value["claimed_by"].as_str(), Some("operator"));
+        assert_eq!(
+            value["reason"].as_str(),
+            Some("claim metadata for future assisted execution")
+        );
+        assert_eq!(
+            value["lease_expires_at_utc"].as_str(),
+            Some("2026-06-01T00:00:00Z")
         );
     }
 }

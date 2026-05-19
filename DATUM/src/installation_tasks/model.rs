@@ -232,6 +232,56 @@ pub struct AssistedExecutionRequestList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionClaim {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claim_status: Option<String>,
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub claimed_at_utc: Option<String>,
+    #[serde(default)]
+    pub lease_expires_at_utc: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionClaimList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub claims: Vec<AssistedExecutionClaim>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -249,10 +299,21 @@ pub struct AssistedExecutionRequestBody {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionClaimBody {
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub lease_expires_at_utc: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalRequest, AssistedExecutionRequest, AssistedExecutionRequestBody,
+        ApprovalRequest, AssistedExecutionClaim, AssistedExecutionClaimBody,
+        AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestBody,
         AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
         InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
         InstallationTaskReadinessList,
@@ -602,6 +663,83 @@ mod tests {
         assert_eq!(
             value["reason"].as_str(),
             Some("request future assisted execution")
+        );
+    }
+
+    #[test]
+    fn parse_assisted_execution_claim() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "request_id":"request-1",
+          "claim_id":"claim-1",
+          "claim_status":"claimed",
+          "claimed_by":"operator",
+          "claimed_at_utc":"2026-05-19T13:00:00Z",
+          "lease_expires_at_utc":"2026-05-20T13:00:00Z",
+          "reason":"claim metadata for future assisted execution",
+          "safe_to_auto_execute":false,
+          "future_field":"ok"
+        }"#;
+
+        let parsed: AssistedExecutionClaim =
+            serde_json::from_str(raw).expect("assisted execution claim should parse");
+
+        assert_eq!(parsed.claim_id.as_deref(), Some("claim-1"));
+        assert_eq!(parsed.claim_status.as_deref(), Some("claimed"));
+        assert_eq!(parsed.safe_to_auto_execute, Some(false));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_assisted_execution_claim_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "claims":[
+            {
+              "task_id":"task-1",
+              "request_id":"request-1",
+              "claim_id":"claim-1",
+              "claim_status":"claimed"
+            }
+          ]
+        }"#;
+
+        let parsed: AssistedExecutionClaimList =
+            serde_json::from_str(raw).expect("assisted execution claim list should parse");
+
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.claims.len(), 1);
+        assert_eq!(parsed.claims[0].claim_id.as_deref(), Some("claim-1"));
+    }
+
+    #[test]
+    fn assisted_execution_claim_body_serializes_optional_fields() {
+        let request = AssistedExecutionClaimBody {
+            claimed_by: Some("operator".to_string()),
+            reason: Some("claim metadata for future assisted execution".to_string()),
+            lease_expires_at_utc: Some("2026-06-01T00:00:00Z".to_string()),
+        };
+
+        let value = serde_json::to_value(request).expect("claim body should serialize");
+
+        assert_eq!(value["claimed_by"].as_str(), Some("operator"));
+        assert_eq!(
+            value["reason"].as_str(),
+            Some("claim metadata for future assisted execution")
+        );
+        assert_eq!(
+            value["lease_expires_at_utc"].as_str(),
+            Some("2026-06-01T00:00:00Z")
         );
     }
 }

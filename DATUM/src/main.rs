@@ -95,18 +95,24 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.project_id.as_deref(),
             args.url.as_deref(),
             args.task_id.as_deref(),
+            args.request_id.as_deref(),
             args.readiness,
             args.execution_requests,
             args.execution_request,
             args.request_assisted_execution,
+            args.execution_claims,
+            args.execution_claim,
+            args.claim_assisted_execution,
             args.approvals,
             args.approval,
             args.approve,
             args.approved_by.as_deref(),
             args.requested_by.as_deref(),
+            args.claimed_by.as_deref(),
             args.status.as_deref(),
             args.reason.as_deref(),
             args.expires_at_utc.as_deref(),
+            args.lease_expires_at_utc.as_deref(),
             args.materialize,
             args.json,
         ),
@@ -255,6 +261,9 @@ struct InstallationTasksArgs {
     #[arg(long)]
     task_id: Option<String>,
 
+    #[arg(long)]
+    request_id: Option<String>,
+
     #[arg(long, default_value_t = false)]
     readiness: bool,
 
@@ -266,6 +275,15 @@ struct InstallationTasksArgs {
 
     #[arg(long, default_value_t = false)]
     request_assisted_execution: bool,
+
+    #[arg(long, default_value_t = false)]
+    execution_claims: bool,
+
+    #[arg(long, default_value_t = false)]
+    execution_claim: bool,
+
+    #[arg(long, default_value_t = false)]
+    claim_assisted_execution: bool,
 
     #[arg(long, default_value_t = false)]
     approvals: bool,
@@ -283,6 +301,9 @@ struct InstallationTasksArgs {
     requested_by: Option<String>,
 
     #[arg(long)]
+    claimed_by: Option<String>,
+
+    #[arg(long)]
     status: Option<String>,
 
     #[arg(long)]
@@ -290,6 +311,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     expires_at_utc: Option<String>,
+
+    #[arg(long)]
+    lease_expires_at_utc: Option<String>,
 
     #[arg(long, default_value_t = false)]
     materialize: bool,
@@ -564,18 +588,24 @@ fn installation_tasks_command(
     project_id: Option<&str>,
     url: Option<&str>,
     task_id: Option<&str>,
+    request_id: Option<&str>,
     readiness: bool,
     execution_requests: bool,
     execution_request: bool,
     request_assisted_execution: bool,
+    execution_claims: bool,
+    execution_claim: bool,
+    claim_assisted_execution: bool,
     approvals: bool,
     approval: bool,
     approve: bool,
     approved_by: Option<&str>,
     requested_by: Option<&str>,
+    claimed_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
+    lease_expires_at_utc: Option<&str>,
     materialize: bool,
     json: bool,
 ) -> Result<()> {
@@ -586,18 +616,24 @@ fn installation_tasks_command(
         project_id,
         url,
         task_id,
+        request_id,
         readiness,
         execution_requests,
         execution_request,
         request_assisted_execution,
+        execution_claims,
+        execution_claim,
+        claim_assisted_execution,
         approvals,
         approval,
         approve,
         approved_by,
         requested_by,
+        claimed_by,
         status,
         reason,
         expires_at_utc,
+        lease_expires_at_utc,
         materialize,
         json,
     )
