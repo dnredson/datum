@@ -9,9 +9,9 @@ use crate::{
             fetch_installation_task_readiness, fetch_installation_task_readiness_for_node,
             fetch_installation_tasks_for_node, fetch_latest_assisted_execution_claim,
             fetch_latest_assisted_execution_request, fetch_latest_installation_task_approval,
-            materialize_installation_tasks_for_node, patch_installation_task_status,
-            submit_assisted_execution_claim, submit_assisted_execution_request,
-            submit_installation_task_approval,
+            materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
+            patch_installation_task_status, submit_assisted_execution_claim,
+            submit_assisted_execution_request, submit_installation_task_approval,
         },
         model::{
             AssistedExecutionClaim, AssistedExecutionClaimList, AssistedExecutionRequest,
@@ -22,7 +22,9 @@ use crate::{
     },
 };
 
-const ALLOWED_STATUSES: &[&str] = &["acknowledged", "blocked", "cancelled", "completed"];
+const ALLOWED_TASK_STATUSES: &[&str] = &["acknowledged", "blocked", "cancelled", "completed"];
+const ALLOWED_CLAIM_STATUSES: &[&str] =
+    &["claimed", "released", "expired", "completed", "cancelled"];
 
 pub fn run_installation_tasks_command(
     cfg: &Config,
@@ -38,6 +40,7 @@ pub fn run_installation_tasks_command(
     execution_claims: bool,
     execution_claim: bool,
     claim_assisted_execution: bool,
+    claim_status: Option<&str>,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -66,6 +69,7 @@ pub fn run_installation_tasks_command(
         execution_claims,
         execution_claim,
         claim_assisted_execution,
+        claim_status,
         approvals,
         approval,
         approve,
@@ -170,6 +174,35 @@ pub fn run_installation_tasks_command(
         }
 
         print!("{}", format_submitted_assisted_execution_claim(&response));
+        return Ok(());
+    }
+
+    if let Some(claim_status) = claim_status {
+        let task_id = task_id
+            .ok_or_else(|| anyhow!("--task-id is required when --claim-status is provided"))?;
+        let request_id = request_id
+            .ok_or_else(|| anyhow!("--request-id is required when --claim-status is provided"))?;
+        validate_client_claim_status(claim_status)?;
+        let response = patch_assisted_execution_claim_status(
+            &base_url,
+            &project_id,
+            &node_id,
+            task_id,
+            request_id,
+            claim_status,
+            reason,
+        )?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!("{}", format_updated_assisted_execution_claim(&response));
         return Ok(());
     }
 
@@ -444,6 +477,7 @@ fn validate_command_mode(
     execution_claims: bool,
     execution_claim: bool,
     claim_assisted_execution: bool,
+    claim_status: Option<&str>,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -464,6 +498,7 @@ fn validate_command_mode(
         execution_claims,
         execution_claim,
         claim_assisted_execution,
+        claim_status.is_some(),
         approvals,
         approval,
         approve,
@@ -475,6 +510,7 @@ fn validate_command_mode(
             && !request_assisted_execution
             && !execution_claim
             && !claim_assisted_execution
+            && claim_status.is_none()
             && !approval
             && !approve
             && status.is_none(),
@@ -485,7 +521,7 @@ fn validate_command_mode(
 
     if selected_modes > 1 {
         return Err(anyhow!(
-            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --approval, --approvals, or --approve"
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --approval, --approvals, or --approve"
         ));
     }
 
@@ -555,6 +591,18 @@ fn validate_command_mode(
         ));
     }
 
+    if claim_status.is_some() && task_id.is_none() {
+        return Err(anyhow!(
+            "--task-id is required when --claim-status is provided"
+        ));
+    }
+
+    if claim_status.is_some() && request_id.is_none() {
+        return Err(anyhow!(
+            "--request-id is required when --claim-status is provided"
+        ));
+    }
+
     if readiness && status.is_some() {
         return Err(anyhow!("--status cannot be combined with --readiness"));
     }
@@ -603,9 +651,21 @@ fn validate_command_mode(
         ));
     }
 
+    if claimed_by.is_some() && claim_status.is_some() {
+        return Err(anyhow!(
+            "--claimed-by cannot be combined with --claim-status"
+        ));
+    }
+
     if lease_expires_at_utc.is_some() && !claim_assisted_execution {
         return Err(anyhow!(
             "--lease-expires-at-utc can only be used with --claim-assisted-execution"
+        ));
+    }
+
+    if lease_expires_at_utc.is_some() && claim_status.is_some() {
+        return Err(anyhow!(
+            "--lease-expires-at-utc cannot be combined with --claim-status"
         ));
     }
 
@@ -638,13 +698,25 @@ fn resolve_base_url(cfg: &Config, url_override: Option<&str>) -> Result<String> 
 }
 
 pub fn validate_client_status(status: &str) -> Result<()> {
-    if ALLOWED_STATUSES.contains(&status) {
+    if ALLOWED_TASK_STATUSES.contains(&status) {
         Ok(())
     } else {
         Err(anyhow!(
             "invalid installation task status '{}'; allowed values: {}",
             status,
-            ALLOWED_STATUSES.join(", ")
+            ALLOWED_TASK_STATUSES.join(", ")
+        ))
+    }
+}
+
+pub fn validate_client_claim_status(status: &str) -> Result<()> {
+    if ALLOWED_CLAIM_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "invalid assisted execution claim status '{}'; allowed values: {}",
+            status,
+            ALLOWED_CLAIM_STATUSES.join(", ")
         ))
     }
 }
@@ -1164,6 +1236,46 @@ fn format_submitted_assisted_execution_claim(claim: &AssistedExecutionClaim) -> 
     lines.join("\n")
 }
 
+fn format_updated_assisted_execution_claim(claim: &AssistedExecutionClaim) -> String {
+    let mut lines = vec!["Updated assisted execution claim".to_string()];
+
+    if let Some(task_id) = claim.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(request_id) = claim.request_id.as_deref() {
+        lines.push(format!("  request_id: {}", request_id));
+    }
+
+    if let Some(claim_id) = claim.claim_id.as_deref() {
+        lines.push(format!("  claim_id: {}", claim_id));
+    }
+
+    if let Some(status) = claim.claim_status.as_deref() {
+        lines.push(format!("  status: {}", status));
+    }
+
+    if let Some(claimed_by) = claim.claimed_by.as_deref() {
+        lines.push(format!("  claimed_by: {}", claimed_by));
+    }
+
+    if let Some(safe_to_auto_execute) = claim.safe_to_auto_execute {
+        lines.push(format!("  safe to auto execute: {}", safe_to_auto_execute));
+    }
+
+    if let Some(reason) = claim.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: claim metadata was updated on the server. This client command did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
 fn format_approval_list(
     response: &InstallationTaskApprovalList,
     project_id: &str,
@@ -1384,8 +1496,9 @@ mod tests {
         format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
         format_readiness_list, format_single_readiness, format_status_update,
         format_submitted_approval, format_submitted_assisted_execution_claim,
-        format_submitted_assisted_execution_request, format_task_list, validate_client_status,
-        validate_command_mode,
+        format_submitted_assisted_execution_request, format_task_list,
+        format_updated_assisted_execution_claim, validate_client_claim_status,
+        validate_client_status, validate_command_mode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
@@ -1585,6 +1698,21 @@ mod tests {
     fn client_status_validation_rejects_arbitrary_values() {
         assert!(validate_client_status("planned").is_err());
         assert!(validate_client_status("explode").is_err());
+    }
+
+    #[test]
+    fn client_claim_status_validation_accepts_allowed_values() {
+        assert!(validate_client_claim_status("claimed").is_ok());
+        assert!(validate_client_claim_status("released").is_ok());
+        assert!(validate_client_claim_status("expired").is_ok());
+        assert!(validate_client_claim_status("completed").is_ok());
+        assert!(validate_client_claim_status("cancelled").is_ok());
+    }
+
+    #[test]
+    fn client_claim_status_validation_rejects_arbitrary_values() {
+        assert!(validate_client_claim_status("requested").is_err());
+        assert!(validate_client_claim_status("explode").is_err());
     }
 
     #[test]
@@ -1934,6 +2062,47 @@ mod tests {
     }
 
     #[test]
+    fn updated_claim_formatting_includes_key_fields() {
+        let rendered = format_updated_assisted_execution_claim(&AssistedExecutionClaim {
+            task_id: Some("task-1".to_string()),
+            request_id: Some("request-1".to_string()),
+            claim_id: Some("claim-1".to_string()),
+            claim_status: Some("released".to_string()),
+            claimed_by: Some("operator".to_string()),
+            safe_to_auto_execute: Some(false),
+            reason: Some("operator released claim".to_string()),
+            ..AssistedExecutionClaim::default()
+        });
+
+        assert!(rendered.contains("Updated assisted execution claim"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("request_id: request-1"));
+        assert!(rendered.contains("claim_id: claim-1"));
+        assert!(rendered.contains("status: released"));
+        assert!(rendered.contains("claimed_by: operator"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("reason: operator released claim"));
+    }
+
+    #[test]
+    fn successful_patch_output_includes_metadata_only_note() {
+        let rendered = format_updated_assisted_execution_claim(&AssistedExecutionClaim {
+            task_id: Some("task-1".to_string()),
+            request_id: Some("request-1".to_string()),
+            claim_id: Some("claim-1".to_string()),
+            claim_status: Some("released".to_string()),
+            claimed_by: Some("operator".to_string()),
+            safe_to_auto_execute: Some(false),
+            ..AssistedExecutionClaim::default()
+        });
+
+        assert!(rendered.contains("claim_id: claim-1"));
+        assert!(rendered.contains(
+            "Note: claim metadata was updated on the server. This client command did not execute installation."
+        ));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_command_mode(
             Some("task-1"),
@@ -1945,6 +2114,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             false,
             true,
             true,
@@ -1972,6 +2142,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             false,
             false,
             true,
@@ -1999,6 +2170,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             false,
             true,
             false,
@@ -2026,6 +2198,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             false,
             false,
             false,
@@ -2053,6 +2226,7 @@ mod tests {
             true,
             false,
             true,
+            None,
             false,
             false,
             false,
@@ -2063,6 +2237,34 @@ mod tests {
             Some("operator"),
             None,
             Some("2026-06-01T00:00:00Z"),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_claim_status_ambiguity() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            Some("request-1"),
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            Some("released"),
+            false,
+            false,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
 
         assert!(result.is_err());

@@ -103,6 +103,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.execution_claims,
             args.execution_claim,
             args.claim_assisted_execution,
+            args.claim_status.as_deref(),
             args.approvals,
             args.approval,
             args.approve,
@@ -284,6 +285,9 @@ struct InstallationTasksArgs {
 
     #[arg(long, default_value_t = false)]
     claim_assisted_execution: bool,
+
+    #[arg(long)]
+    claim_status: Option<String>,
 
     #[arg(long, default_value_t = false)]
     approvals: bool,
@@ -596,6 +600,7 @@ fn installation_tasks_command(
     execution_claims: bool,
     execution_claim: bool,
     claim_assisted_execution: bool,
+    claim_status: Option<&str>,
     approvals: bool,
     approval: bool,
     approve: bool,
@@ -624,6 +629,7 @@ fn installation_tasks_command(
         execution_claims,
         execution_claim,
         claim_assisted_execution,
+        claim_status,
         approvals,
         approval,
         approve,

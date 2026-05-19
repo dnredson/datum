@@ -309,14 +309,21 @@ pub struct AssistedExecutionClaimBody {
     pub lease_expires_at_utc: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionClaimStatusPatch {
+    pub status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ApprovalRequest, AssistedExecutionClaim, AssistedExecutionClaimBody,
-        AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestBody,
-        AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
-        InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-        InstallationTaskReadinessList,
+        AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch, AssistedExecutionRequest,
+        AssistedExecutionRequestBody, AssistedExecutionRequestList, InstallationTask,
+        InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+        InstallationTaskReadiness, InstallationTaskReadinessList,
     };
 
     #[test]
@@ -741,5 +748,18 @@ mod tests {
             value["lease_expires_at_utc"].as_str(),
             Some("2026-06-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn assisted_execution_claim_status_patch_serializes_fields() {
+        let patch = AssistedExecutionClaimStatusPatch {
+            status: "released".to_string(),
+            reason: Some("operator released claim".to_string()),
+        };
+
+        let value = serde_json::to_value(patch).expect("claim status patch should serialize");
+
+        assert_eq!(value["status"].as_str(), Some("released"));
+        assert_eq!(value["reason"].as_str(), Some("operator released claim"));
     }
 }

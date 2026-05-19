@@ -10,10 +10,10 @@ use serde_json::json;
 
 use crate::installation_tasks::model::{
     ApprovalRequest, AssistedExecutionClaim, AssistedExecutionClaimBody,
-    AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestBody,
-    AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
-    InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-    InstallationTaskReadinessList,
+    AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch, AssistedExecutionRequest,
+    AssistedExecutionRequestBody, AssistedExecutionRequestList, InstallationTask,
+    InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+    InstallationTaskReadiness, InstallationTaskReadinessList,
 };
 
 pub fn materialize_installation_tasks_for_node(
@@ -297,6 +297,31 @@ pub fn fetch_assisted_execution_claims_for_node(
         .with_context(|| format!("fetch assisted execution claims from {}", endpoint))?;
 
     parse_assisted_execution_claim_list_response(response, "fetch assisted execution claims")
+}
+
+pub fn patch_assisted_execution_claim_status(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<AssistedExecutionClaim> {
+    let endpoint = installation_task_assisted_execution_claim_status_endpoint_url(
+        base_url, node_id, task_id, request_id,
+    )?;
+    let client = build_client()?;
+    let body = assisted_execution_claim_status_patch_body(status, reason);
+    let response = client
+        .patch(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .with_context(|| format!("patch assisted execution claim status at {}", endpoint))?;
+
+    parse_assisted_execution_claim_response(response, "patch assisted execution claim status")
 }
 
 fn build_client() -> Result<Client> {
@@ -682,6 +707,26 @@ pub fn installation_task_assisted_execution_claim_latest_endpoint_url(
     with_segments(base_url, &segments)
 }
 
+pub fn installation_task_assisted_execution_claim_status_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+    request_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "assisted-execution-request".to_string(),
+        request_id.to_string(),
+        "claim".to_string(),
+        "status".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn assisted_execution_claims_list_endpoint_url(base_url: &str, node_id: &str) -> Result<Url> {
     let mut segments = base_api_segments(base_url)?;
     segments.extend([
@@ -762,16 +807,30 @@ pub fn assisted_execution_claim_body(
     }
 }
 
+pub fn assisted_execution_claim_status_patch_body(
+    status: &str,
+    reason: Option<&str>,
+) -> AssistedExecutionClaimStatusPatch {
+    AssistedExecutionClaimStatusPatch {
+        status: status.trim().to_string(),
+        reason: reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         approval_request_body, assisted_execution_claim_body,
-        assisted_execution_claims_list_endpoint_url, assisted_execution_request_body,
-        assisted_execution_requests_list_endpoint_url,
+        assisted_execution_claim_status_patch_body, assisted_execution_claims_list_endpoint_url,
+        assisted_execution_request_body, assisted_execution_requests_list_endpoint_url,
         installation_task_approval_latest_endpoint_url,
         installation_task_approval_submit_endpoint_url,
         installation_task_approvals_list_endpoint_url,
         installation_task_assisted_execution_claim_latest_endpoint_url,
+        installation_task_assisted_execution_claim_status_endpoint_url,
         installation_task_assisted_execution_claim_submit_endpoint_url,
         installation_task_assisted_execution_request_latest_endpoint_url,
         installation_task_assisted_execution_request_submit_endpoint_url,
@@ -1050,6 +1109,22 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_construction_for_patch_assisted_execution_claim_status_is_correct() {
+        let url = installation_task_assisted_execution_claim_status_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "project:smart city/task",
+            "request:with space",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/project:smart%20city%2Ftask/assisted-execution-request/request:with%20space/claim/status"
+        );
+    }
+
+    #[test]
     fn endpoint_construction_for_list_assisted_execution_claims_is_correct() {
         let url = assisted_execution_claims_list_endpoint_url(
             "http://localhost:8080/api/v1/snapshots",
@@ -1081,5 +1156,15 @@ mod tests {
             value["lease_expires_at_utc"].as_str(),
             Some("2026-06-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn assisted_execution_claim_status_patch_body_includes_status_and_reason() {
+        let body =
+            assisted_execution_claim_status_patch_body("released", Some("operator released claim"));
+        let value = serde_json::to_value(body).expect("body should serialize");
+
+        assert_eq!(value["status"].as_str(), Some("released"));
+        assert_eq!(value["reason"].as_str(), Some("operator released claim"));
     }
 }
