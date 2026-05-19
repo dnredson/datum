@@ -77,6 +77,10 @@ What it validates:
 - optional client latest assisted execution claim viewer via `installation-tasks --execution-claim`
 - optional client assisted execution claim list viewer via `installation-tasks --execution-claims`
 - `safe_to_auto_execute` remains false in assisted execution claim responses
+- optional client assisted claim status update via `installation-tasks --claim-status released`
+- optional server latest assisted claim read-back after status update
+- optional client latest assisted claim viewer after status update
+- `safe_to_auto_execute` remains false after assisted claim lifecycle updates
 
 What it does not do:
 - start `dserver`
@@ -96,7 +100,10 @@ Notes:
 - Readiness is informational only; it does not execute deployment or installation work, even when readiness is `ready_for_assisted_execution`.
 - Assisted execution request submission is metadata-only; it does not execute deployment or installation work.
 - Assisted execution claim submission is metadata-only; it does not execute deployment or installation work.
+- Assisted claim lifecycle updates are metadata-only; they do not execute deployment or installation work.
 - If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.
 - If no `ready_for_assisted_execution` task exists for the node, assisted execution request checks are skipped and the smoke test still succeeds.
 - If no requested assisted execution request exists for the node, assisted execution claim checks are skipped and the smoke test still succeeds.
 - If a requested assisted execution request is already claimed, the smoke test may validate the latest claim instead of failing.
+- If no claimed assisted execution claim exists for the node, assisted claim lifecycle update checks are skipped and the smoke test still succeeds.
+- Repeated smoke runs may encounter an already released claim and should not fail solely for that reason; the smoke test validates the latest claim instead of requiring a fresh update.

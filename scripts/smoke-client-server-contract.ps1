@@ -782,6 +782,10 @@ $serverLatestAssistedExecutionClaimReadPerformed = $false
 $serverAssistedExecutionClaimListReadPerformed = $false
 $clientLatestAssistedExecutionClaimReadPerformed = $false
 $clientAssistedExecutionClaimListReadPerformed = $false
+$assistedClaimLifecycleUpdatePerformed = $false
+$assistedClaimLifecycleAlreadyReleased = $false
+$serverLatestAssistedExecutionClaimLifecycleReadPerformed = $false
+$clientLatestAssistedExecutionClaimLifecycleReadPerformed = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
@@ -1416,6 +1420,102 @@ if (-not $SkipServerChecks) {
             throw "DATUM assisted execution claim list output did not include the selected claim task id."
         }
         $clientAssistedExecutionClaimListReadPerformed = $true
+
+        $claimStatusForLifecycle = $null
+        if ($latestAssistedExecutionClaim.Json.PSObject.Properties.Name.Contains("claim_status")) {
+            $claimStatusForLifecycle = [string]$latestAssistedExecutionClaim.Json.claim_status
+        }
+
+        if ($claimStatusForLifecycle -eq "claimed") {
+            Write-Step "Update assisted execution claim status from DATUM"
+            $claimLifecycleUpdateOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $selectedRequestTaskId,
+                    "--request-id",
+                    $selectedRequestId,
+                    "--claim-status",
+                    "released",
+                    "--reason",
+                    "smoke test released claim metadata"
+                ) `
+                -StepName "DATUM assisted execution claim lifecycle update"
+
+            if ($claimLifecycleUpdateOutput -notmatch "Updated assisted execution claim" -or
+                $claimLifecycleUpdateOutput -notmatch "claim metadata was updated on the server" -or
+                $claimLifecycleUpdateOutput -notmatch "did not execute installation") {
+                throw "DATUM assisted execution claim lifecycle update output did not confirm metadata-only update."
+            }
+            $assistedClaimLifecycleUpdatePerformed = $true
+
+            Write-Step "Read updated latest assisted execution claim from server"
+            $updatedLatestAssistedExecutionClaim = Invoke-JsonEndpoint `
+                -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$selectedRequestEncodedTaskId/assisted-execution-request/$selectedRequestEncodedRequestId/claim/latest" `
+                -Headers $headers `
+                -StepName "Updated latest assisted execution claim"
+            Assert-HttpOk $updatedLatestAssistedExecutionClaim "Updated latest assisted execution claim"
+            Assert-AssistedExecutionClaimContract `
+                -Json $updatedLatestAssistedExecutionClaim.Json `
+                -StepName "Updated latest assisted execution claim" `
+                -ExpectedTaskId $selectedRequestTaskId `
+                -ExpectedRequestId $selectedRequestId
+
+            if ($updatedLatestAssistedExecutionClaim.Json.claim_status -ne "released") {
+                throw "Updated latest assisted execution claim returned claim_status '$($updatedLatestAssistedExecutionClaim.Json.claim_status)', expected 'released'."
+            }
+
+            if ($updatedLatestAssistedExecutionClaim.Json.safe_to_auto_execute -ne $false) {
+                throw "Updated latest assisted execution claim returned safe_to_auto_execute='$($updatedLatestAssistedExecutionClaim.Json.safe_to_auto_execute)', expected 'False'."
+            }
+            $serverLatestAssistedExecutionClaimLifecycleReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+
+            Write-Step "Read updated latest assisted execution claim from DATUM"
+            $clientUpdatedLatestAssistedExecutionClaimOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $selectedRequestTaskId,
+                    "--request-id",
+                    $selectedRequestId,
+                    "--execution-claim"
+                ) `
+                -StepName "DATUM updated latest assisted execution claim"
+
+            if ($clientUpdatedLatestAssistedExecutionClaimOutput -notmatch "Latest assisted execution claim" -or
+                $clientUpdatedLatestAssistedExecutionClaimOutput -notmatch "status:\s+released" -or
+                $clientUpdatedLatestAssistedExecutionClaimOutput -notmatch "safe to auto execute:\s+false") {
+                throw "DATUM updated latest assisted execution claim output did not include the expected released claim details."
+            }
+            $clientLatestAssistedExecutionClaimLifecycleReadPerformed = $true
+            Write-Host "Assisted claim lifecycle update is metadata only; no installation execution was performed."
+        }
+        elseif ($claimStatusForLifecycle -eq "released") {
+            Write-Host "Assisted execution claim is already released; validating latest claim instead of updating lifecycle."
+            if ($latestAssistedExecutionClaim.Json.safe_to_auto_execute -ne $false) {
+                throw "Latest assisted execution claim returned safe_to_auto_execute='$($latestAssistedExecutionClaim.Json.safe_to_auto_execute)', expected 'False'."
+            }
+            $assistedClaimLifecycleAlreadyReleased = $true
+            $serverLatestAssistedExecutionClaimLifecycleReadPerformed = $true
+            $clientLatestAssistedExecutionClaimLifecycleReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+        }
+        else {
+            Write-Host "No claimed assisted execution claim found; skipping claim lifecycle update checks."
+        }
         Write-Host "Assisted execution claim is metadata only; no installation execution was performed."
     }
 }
@@ -1596,6 +1696,27 @@ if ($clientAssistedExecutionClaimListReadPerformed) {
 else {
     Write-Host "- client assisted execution claim list (skipped: no requested assisted execution request found)"
 }
+if ($assistedClaimLifecycleUpdatePerformed) {
+    Write-Host "- client assisted claim lifecycle update"
+}
+elseif ($assistedClaimLifecycleAlreadyReleased) {
+    Write-Host "- client assisted claim lifecycle update (already released; validated latest claim instead)"
+}
+else {
+    Write-Host "- client assisted claim lifecycle update (skipped: no claimed assisted execution claim found)"
+}
+if ($serverLatestAssistedExecutionClaimLifecycleReadPerformed) {
+    Write-Host "- server latest assisted claim status read-back"
+}
+else {
+    Write-Host "- server latest assisted claim status read-back (skipped: no claimed assisted execution claim found)"
+}
+if ($clientLatestAssistedExecutionClaimLifecycleReadPerformed) {
+    Write-Host "- client latest assisted claim status viewer"
+}
+else {
+    Write-Host "- client latest assisted claim status viewer (skipped: no claimed assisted execution claim found)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -1604,3 +1725,4 @@ Write-Host "Operator approval, when performed, recorded metadata only."
 Write-Host "Assisted readiness, when ready, was informational only."
 Write-Host "Assisted execution request, when performed, recorded metadata only."
 Write-Host "Assisted execution claim, when performed, recorded metadata only."
+Write-Host "Assisted claim lifecycle update, when performed, recorded metadata only."
