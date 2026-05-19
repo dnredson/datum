@@ -15,13 +15,15 @@ use crate::{
             empty_installation_plan,
         },
         installation_tasks::{
-            annotate_installation_task_policy, build_installation_task_approval,
-            derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
-            normalize_installation_task, validate_installation_task,
+            annotate_installation_task_policy, build_assisted_execution_request,
+            build_installation_task_approval, derive_installation_tasks_from_plan,
+            evaluate_installation_task_readiness, normalize_installation_task,
+            validate_assisted_execution_request_allowed, validate_installation_task,
             validate_installation_task_can_be_approved,
-            validate_installation_task_status_transition, InstallationTask,
-            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-            InstallationTaskReadiness, InstallationTaskReadinessList,
+            validate_installation_task_status_transition, AssistedExecutionRequest,
+            AssistedExecutionRequestList, InstallationTask, InstallationTaskApproval,
+            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
+            InstallationTaskReadinessList,
         },
     },
     AppState,
@@ -44,6 +46,14 @@ pub struct InstallationTaskApprovalRequest {
     pub reason: Option<String>,
     #[serde(default)]
     pub expires_at_utc: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssistedExecutionRequestBody {
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -175,6 +185,20 @@ fn readiness_list(
         node_id,
         count: readiness.len() as u64,
         readiness,
+    }
+}
+
+fn assisted_execution_request_list(
+    project_id: String,
+    node_id: String,
+    mut requests: Vec<AssistedExecutionRequest>,
+) -> AssistedExecutionRequestList {
+    requests.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+    AssistedExecutionRequestList {
+        project_id,
+        node_id: Some(node_id),
+        count: requests.len() as u64,
+        requests,
     }
 }
 
@@ -533,6 +557,120 @@ pub async fn get_installation_task_readiness(
     )))
 }
 
+pub async fn post_assisted_execution_request(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<AssistedExecutionRequestBody>,
+) -> Result<JsonResponse<AssistedExecutionRequest>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let Some(task) = state
+        .firebase
+        .get_installation_task(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(&project_id, Some(&node_id), task);
+    let latest_approval = state
+        .firebase
+        .get_latest_installation_task_approval(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let readiness = evaluate_installation_task_readiness(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        latest_approval.as_ref(),
+    );
+
+    validate_assisted_execution_request_allowed(
+        &normalized_task,
+        &readiness,
+        latest_approval.as_ref(),
+    )
+    .map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({ "error": err })),
+        )
+    })?;
+
+    let request = build_assisted_execution_request(
+        &project_id,
+        &node_id,
+        &normalized_task,
+        &readiness,
+        latest_approval.as_ref(),
+        payload.requested_by,
+        payload.reason,
+    );
+
+    state
+        .firebase
+        .put_assisted_execution_request(&project_id, &node_id, &task_id, &request)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(request))
+}
+
+pub async fn get_latest_assisted_execution_request(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionRequest>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let request = state
+        .firebase
+        .get_latest_assisted_execution_request(&project_id, &node_id, &task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    match request {
+        Some(request) => Ok(JsonResponse(request)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "assisted execution request not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        )),
+    }
+}
+
 pub async fn list_installation_task_approvals_for_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
@@ -601,4 +739,26 @@ pub async fn list_installation_task_readiness_for_node(
         .collect::<Vec<_>>();
 
     Ok(JsonResponse(readiness_list(project_id, node_id, readiness)))
+}
+
+pub async fn list_assisted_execution_requests_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionRequestList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let requests = state
+        .firebase
+        .list_assisted_execution_requests_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(assisted_execution_request_list(
+        project_id, node_id, requests,
+    )))
 }

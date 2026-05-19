@@ -25,6 +25,8 @@ const APPROVAL_STATUS_MISSING: &str = "missing";
 const APPROVAL_STATUS_EXPIRED: &str = "expired";
 const APPROVAL_STATUS_NOT_REQUIRED: &str = "not_required";
 const APPROVAL_STATUS_INVALID: &str = "invalid";
+const REQUEST_STATUS_REQUESTED: &str = "requested";
+const EXECUTION_MODE_ASSISTED_OPERATOR_APPROVED: &str = "assisted_operator_approved";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -140,6 +142,39 @@ pub struct InstallationTaskReadinessList {
     pub node_id: String,
     pub count: u64,
     pub readiness: Vec<InstallationTaskReadiness>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionRequest {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub request_id: String,
+    pub request_status: String,
+    #[serde(default)]
+    pub requested_by: Option<String>,
+    pub requested_at_utc: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub approval_snapshot: Option<Value>,
+    pub safe_to_auto_execute: bool,
+    pub execution_mode: String,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionRequestList {
+    pub project_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    pub count: u64,
+    pub requests: Vec<AssistedExecutionRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -655,6 +690,112 @@ pub fn evaluate_installation_task_readiness(
     readiness
 }
 
+pub fn validate_assisted_execution_request_allowed(
+    task: &InstallationTask,
+    readiness: &InstallationTaskReadiness,
+    latest_approval: Option<&InstallationTaskApproval>,
+) -> Result<(), String> {
+    if task.task_id.trim().is_empty() {
+        return Err("task_id must not be empty".to_string());
+    }
+
+    if task.node_id.trim().is_empty() {
+        return Err("node_id must not be empty".to_string());
+    }
+
+    if matches!(task.status.trim(), STATUS_COMPLETED | STATUS_CANCELLED) {
+        return Err(format!(
+            "assisted execution request is not allowed in terminal task status '{}'",
+            task.status
+        ));
+    }
+
+    if !matches!(task.status.trim(), STATUS_PLANNED | STATUS_ACKNOWLEDGED) {
+        return Err("task status is not eligible for assisted execution request".to_string());
+    }
+
+    if task.safe_to_auto_execute {
+        return Err("task.safe_to_auto_execute must remain false".to_string());
+    }
+
+    let policy = task.installation_policy.as_ref().ok_or_else(|| {
+        "installation_policy is required for assisted execution request".to_string()
+    })?;
+
+    if policy.decision != POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION {
+        return Err(format!(
+            "assisted execution request requires installation_policy.decision='{}', got '{}'",
+            POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION, policy.decision
+        ));
+    }
+
+    if policy.safe_to_auto_execute {
+        return Err("installation_policy.safe_to_auto_execute must remain false".to_string());
+    }
+
+    if readiness.readiness != READINESS_READY {
+        return Err(format!(
+            "assisted execution request requires readiness='{}', got '{}'",
+            READINESS_READY, readiness.readiness
+        ));
+    }
+
+    if readiness.safe_to_auto_execute {
+        return Err("readiness.safe_to_auto_execute must remain false".to_string());
+    }
+
+    let approval = latest_approval.ok_or_else(|| {
+        "latest approved operator approval is required for assisted execution request".to_string()
+    })?;
+
+    if !approval.approved {
+        return Err("latest approval must be approved".to_string());
+    }
+
+    if approval.project_id != task.project_id
+        || approval.node_id != task.node_id
+        || approval.task_id != task.task_id
+    {
+        return Err("latest approval metadata does not match task identity".to_string());
+    }
+
+    if approval.approval_mode != APPROVAL_MODE_OPERATOR_APPROVED {
+        return Err(format!(
+            "latest approval must use approval_mode='{}'",
+            APPROVAL_MODE_OPERATOR_APPROVED
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn build_assisted_execution_request(
+    project_id: &str,
+    node_id: &str,
+    task: &InstallationTask,
+    readiness: &InstallationTaskReadiness,
+    latest_approval: Option<&InstallationTaskApproval>,
+    requested_by: Option<String>,
+    reason: Option<String>,
+) -> AssistedExecutionRequest {
+    AssistedExecutionRequest {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id: task.task_id.clone(),
+        request_id: format!("request:{}", Uuid::new_v4()),
+        request_status: REQUEST_STATUS_REQUESTED.to_string(),
+        requested_by,
+        requested_at_utc: Utc::now().to_rfc3339(),
+        reason,
+        readiness_snapshot: serde_json::to_value(readiness).ok(),
+        task_snapshot: serde_json::to_value(task).ok(),
+        approval_snapshot: latest_approval.and_then(|approval| serde_json::to_value(approval).ok()),
+        safe_to_auto_execute: false,
+        execution_mode: EXECUTION_MODE_ASSISTED_OPERATOR_APPROVED.to_string(),
+        metadata: None,
+    }
+}
+
 pub fn derive_installation_tasks_from_plan(
     project_id: &str,
     node_id: Option<&str>,
@@ -755,9 +896,10 @@ pub fn derive_installation_tasks_from_plan(
 #[cfg(test)]
 mod tests {
     use super::{
-        annotate_installation_task_policy, build_installation_task_approval,
-        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
-        normalize_installation_task, validate_installation_task,
+        annotate_installation_task_policy, build_assisted_execution_request,
+        build_installation_task_approval, derive_installation_tasks_from_plan,
+        evaluate_installation_task_readiness, normalize_installation_task,
+        validate_assisted_execution_request_allowed, validate_installation_task,
         validate_installation_task_can_be_approved, validate_installation_task_status_transition,
         InstallationTask,
     };
@@ -1403,5 +1545,136 @@ mod tests {
         );
 
         assert!(!readiness.safe_to_auto_execute);
+    }
+
+    #[test]
+    fn ready_task_with_valid_approval_can_create_request() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert!(
+            validate_assisted_execution_request_allowed(&task, &readiness, Some(&approval)).is_ok()
+        );
+
+        let request = build_assisted_execution_request(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            &readiness,
+            Some(&approval),
+            Some("operator".to_string()),
+            Some("request future assisted execution".to_string()),
+        );
+
+        assert_eq!(request.request_status, "requested");
+        assert_eq!(request.execution_mode, "assisted_operator_approved");
+        assert!(!request.safe_to_auto_execute);
+        assert!(request.readiness_snapshot.is_some());
+        assert!(request.task_snapshot.is_some());
+        assert!(request.approval_snapshot.is_some());
+    }
+
+    #[test]
+    fn missing_approval_cannot_create_request() {
+        let task = candidate_task();
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert!(validate_assisted_execution_request_allowed(&task, &readiness, None).is_err());
+    }
+
+    #[test]
+    fn readiness_not_ready_cannot_create_request() {
+        let task = candidate_task();
+        let mut approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        approval.approved = false;
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert!(
+            validate_assisted_execution_request_allowed(&task, &readiness, Some(&approval))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn readiness_blocked_cannot_create_request() {
+        let mut task = candidate_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert!(validate_assisted_execution_request_allowed(&task, &readiness, None).is_err());
+    }
+
+    #[test]
+    fn manual_only_policy_cannot_create_request() {
+        let task = base_task();
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert!(validate_assisted_execution_request_allowed(&task, &readiness, None).is_err());
+    }
+
+    #[test]
+    fn completed_task_cannot_create_request() {
+        let mut task = candidate_task();
+        task.status = "completed".to_string();
+        annotate_installation_task_policy(&mut task);
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &candidate_task(),
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        assert!(
+            validate_assisted_execution_request_allowed(&task, &readiness, Some(&approval))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_task_cannot_create_request() {
+        let mut task = candidate_task();
+        task.status = "cancelled".to_string();
+        annotate_installation_task_policy(&mut task);
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        assert!(validate_assisted_execution_request_allowed(&task, &readiness, None).is_err());
     }
 }
