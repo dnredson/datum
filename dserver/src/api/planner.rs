@@ -11,6 +11,7 @@ use crate::{
         action_feedback::annotate_action_plan_with_latest_results,
         action_results::ActionExecutionReport,
         capabilities::NodeCapabilities,
+        deployment_plan::derive_deployment_planning,
         planner::{annotate_action_plan_with_capabilities, build_global_action_plan},
     },
     AppState,
@@ -145,6 +146,11 @@ pub async fn build_latest_action_plan(
                 );
             }
         }
+    }
+
+    let deployment_planning = derive_deployment_planning(&plan);
+    if let Some(plan_obj) = plan.as_object_mut() {
+        plan_obj.insert("deployment_planning".to_string(), deployment_planning);
     }
 
     state

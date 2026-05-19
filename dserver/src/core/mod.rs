@@ -2,6 +2,7 @@ pub mod action_feedback;
 pub mod action_results;
 pub mod analyzer;
 pub mod capabilities;
+pub mod deployment_plan;
 pub mod dispatch_policy;
 pub mod events;
 pub mod graph_builder;
