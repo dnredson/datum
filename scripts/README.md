@@ -38,14 +38,20 @@ What it validates:
 - client action result publish via `dispatch --publish-results`
 - server node latest `action-results` read-back
 - server project latest `action-results` listing
+- server global `deployment-planning/latest` endpoint
+- server node-scoped `deployment-planning/for-node/{node_id}` endpoint
+- client `deployment-planning` and `deploy-plan` viewer contract
+- server global `installation-plan/latest` endpoint
+- server node-scoped `installation-plan/for-node/{node_id}` endpoint
+- client `installation-plan` and `install-plan` viewer contract
 
 What it does not do:
 - start `dserver`
 - run `dispatch --execute`
-- execute Docker/container actions
-- execute WASM actions
-- execute migrations
 - perform Docker/container side effects
 - run WASM
 - perform migration
+- transfer artifacts
+- install anything
+- modify local mappings
 - perform destructive operations

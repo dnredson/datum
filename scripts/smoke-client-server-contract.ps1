@@ -212,6 +212,31 @@ function Assert-ActionResultProjectContract {
     }
 }
 
+function Assert-PlanningContract {
+    param(
+        $Json,
+        [string]$PlanningProperty,
+        [string]$StepName,
+        [switch]$RequireNodeId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    Assert-JsonHasProperty $Json $PlanningProperty $StepName
+    Assert-JsonHasProperty $Json "$PlanningProperty.items" $StepName
+    Assert-JsonHasProperty $Json "$PlanningProperty.summary" $StepName
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -325,7 +350,67 @@ if (-not $SkipServerChecks) {
         -StepName "Project latest action-results"
     Assert-HttpOk $projectActionResults "Project latest action-results"
     Assert-ActionResultProjectContract $projectActionResults.Json
+
+    Write-Step "Read deployment planning from server"
+
+    $globalDeploymentPlanning = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/deployment-planning/latest" `
+        -Headers $headers `
+        -StepName "Global deployment planning"
+    Assert-HttpOk $globalDeploymentPlanning "Global deployment planning"
+    Assert-PlanningContract `
+        -Json $globalDeploymentPlanning.Json `
+        -PlanningProperty "deployment_planning" `
+        -StepName "Global deployment planning"
+
+    $nodeDeploymentPlanning = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/deployment-planning/for-node/$NodeId" `
+        -Headers $headers `
+        -StepName "Node deployment planning"
+    Assert-HttpOk $nodeDeploymentPlanning "Node deployment planning"
+    Assert-PlanningContract `
+        -Json $nodeDeploymentPlanning.Json `
+        -PlanningProperty "deployment_planning" `
+        -StepName "Node deployment planning" `
+        -RequireNodeId
 }
+
+Write-Step "Read deployment planning from DATUM"
+Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--", "deployment-planning", "--config", $ResolvedClientConfig) `
+    -StepName "DATUM deployment planning viewer" | Out-Null
+
+if (-not $SkipServerChecks) {
+    Write-Step "Read installation plan from server"
+
+    $globalInstallationPlan = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/installation-plan/latest" `
+        -Headers $headers `
+        -StepName "Global installation plan"
+    Assert-HttpOk $globalInstallationPlan "Global installation plan"
+    Assert-PlanningContract `
+        -Json $globalInstallationPlan.Json `
+        -PlanningProperty "installation_plan" `
+        -StepName "Global installation plan"
+
+    $nodeInstallationPlan = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/installation-plan/for-node/$NodeId" `
+        -Headers $headers `
+        -StepName "Node installation plan"
+    Assert-HttpOk $nodeInstallationPlan "Node installation plan"
+    Assert-PlanningContract `
+        -Json $nodeInstallationPlan.Json `
+        -PlanningProperty "installation_plan" `
+        -StepName "Node installation plan" `
+        -RequireNodeId
+}
+
+Write-Step "Read installation plan from DATUM"
+Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--", "installation-plan", "--config", $ResolvedClientConfig) `
+    -StepName "DATUM installation plan viewer" | Out-Null
 
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
@@ -343,5 +428,12 @@ Write-Host "- client dispatch consumption"
 Write-Host "- action result publish"
 Write-Host "- node action result read-back"
 Write-Host "- project action result list"
+Write-Host "- deployment planning global endpoint"
+Write-Host "- deployment planning node-scoped endpoint"
+Write-Host "- client deployment planning viewer"
+Write-Host "- installation plan global endpoint"
+Write-Host "- installation plan node-scoped endpoint"
+Write-Host "- client installation plan viewer"
 Write-Host ""
 Write-Host "No dispatch execution was performed."
+Write-Host "No deployment or installation execution was performed."
