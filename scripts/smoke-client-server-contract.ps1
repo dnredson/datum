@@ -781,7 +781,8 @@ function Assert-AssistedExecutionStateSummaryContract {
     param(
         $Json,
         [string]$StepName,
-        [string]$ExpectedTaskId = $null
+        [string]$ExpectedTaskId = $null,
+        [switch]$RequireLocalMappingStatus
     )
 
     Assert-JsonHasProperty $Json "project_id" $StepName
@@ -823,6 +824,28 @@ function Assert-AssistedExecutionStateSummaryContract {
         $null -ne $Json.side_effects_performed -and
         $Json.side_effects_performed -ne $false) {
         throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False' when present."
+    }
+
+    if ($RequireLocalMappingStatus) {
+        Assert-JsonHasProperty $Json "local_mapping_status" $StepName
+
+        $allowedLocalMappingStatuses = @(
+            "already_mapped",
+            "missing_mapping",
+            "ambiguous",
+            "not_applicable",
+            "warning",
+            "unknown",
+            "no_report"
+        )
+
+        if ([string]::IsNullOrWhiteSpace([string]$Json.local_mapping_status)) {
+            throw "$StepName did not include a non-empty local_mapping_status."
+        }
+
+        if ($allowedLocalMappingStatuses -notcontains [string]$Json.local_mapping_status) {
+            throw "$StepName returned local_mapping_status '$($Json.local_mapping_status)', expected one of: $($allowedLocalMappingStatuses -join ', ')."
+        }
     }
 }
 
@@ -1089,6 +1112,10 @@ $clientLocalMappingPreflightPublishPerformed = $false
 $serverNodeLatestLocalMappingPreflightReportReadPerformed = $false
 $serverProjectLatestLocalMappingPreflightReportListReadPerformed = $false
 $clientSingleTaskLocalMappingPreflightPublishPerformed = $false
+$serverAssistedExecutionStateLocalMappingContextReadPerformed = $false
+$serverSingleTaskAssistedExecutionStateLocalMappingContextReadPerformed = $false
+$clientAssistedExecutionStateLocalMappingContextViewerPerformed = $false
+$clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed = $false
 $safeToAutoApplyFalseValidated = $false
 $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
 $sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $false
@@ -2320,6 +2347,154 @@ if (-not $SkipServerChecks) {
         }
         $serverProjectLatestLocalMappingPreflightReportListReadPerformed = $true
 
+        Write-Step "Read assisted execution state list with local mapping context from server"
+        $assistedExecutionStateListWithLocalMappingContext = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/assisted-execution-state/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Assisted execution state for node with local mapping context"
+        Assert-HttpOk $assistedExecutionStateListWithLocalMappingContext "Assisted execution state for node with local mapping context"
+        Assert-AssistedExecutionStateSummaryListContract `
+            -Json $assistedExecutionStateListWithLocalMappingContext.Json `
+            -StepName "Assisted execution state for node with local mapping context"
+        $firstAssistedExecutionStateSummaryWithLocalMappingContext = @(
+            $assistedExecutionStateListWithLocalMappingContext.Json.summaries | Select-Object -First 1
+        )
+        if ($firstAssistedExecutionStateSummaryWithLocalMappingContext.Count -gt 0) {
+            Assert-AssistedExecutionStateSummaryContract `
+                -Json $firstAssistedExecutionStateSummaryWithLocalMappingContext[0] `
+                -StepName "Assisted execution state for node with local mapping context" `
+                -RequireLocalMappingStatus
+            $safeToAutoExecuteFalseValidated = $true
+            $safeToAutoExecuteFalseValidatedForStateSummaries = $true
+            if ($firstAssistedExecutionStateSummaryWithLocalMappingContext[0].PSObject.Properties.Name.Contains("side_effects_performed") -and
+                $null -ne $firstAssistedExecutionStateSummaryWithLocalMappingContext[0].side_effects_performed) {
+                $sideEffectsPerformedFalseValidated = $true
+                $sideEffectsPerformedFalseValidatedForStateSummaries = $true
+            }
+        }
+        $serverAssistedExecutionStateLocalMappingContextReadPerformed = $true
+
+        Write-Step "Read assisted execution state with local mapping context from DATUM"
+        $clientAssistedExecutionStateLocalMappingContextOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--execution-state"
+            ) `
+            -StepName "DATUM assisted execution state viewer with local mapping context"
+
+        if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch [regex]::Escape("Assisted execution state for node $NodeId") -and
+            $clientAssistedExecutionStateLocalMappingContextOutput -notmatch "No assisted execution state summaries for this node\.") {
+            throw "DATUM assisted execution state viewer with local mapping context did not include state summary details or an empty-state message."
+        }
+
+        if ($firstAssistedExecutionStateSummaryWithLocalMappingContext.Count -gt 0) {
+            if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "local mapping:\s+(already_mapped|missing_mapping|ambiguous|not_applicable|warning|unknown|no_report)") {
+                throw "DATUM assisted execution state viewer with local mapping context did not include a local mapping status line."
+            }
+
+            if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "safe to auto execute:\s+false") {
+                throw "DATUM assisted execution state viewer with local mapping context did not include 'safe to auto execute: false'."
+            }
+
+            if ($clientAssistedExecutionStateLocalMappingContextOutput -match "side effects performed:") {
+                if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "side effects performed:\s+false") {
+                    throw "DATUM assisted execution state viewer with local mapping context did not include 'side effects performed: false' when side effects were shown."
+                }
+            }
+
+            if ($firstAssistedExecutionStateSummaryWithLocalMappingContext[0].PSObject.Properties.Name.Contains("local_mapping_reason") -and
+                -not [string]::IsNullOrWhiteSpace([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_reason)) {
+                $escapedLocalMappingReason = [regex]::Escape([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_reason)
+                if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "local mapping reason:\s+$escapedLocalMappingReason") {
+                    throw "DATUM assisted execution state viewer with local mapping context did not include the expected local mapping reason."
+                }
+            }
+
+            if ($firstAssistedExecutionStateSummaryWithLocalMappingContext[0].PSObject.Properties.Name.Contains("local_mapping_report_id") -and
+                -not [string]::IsNullOrWhiteSpace([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_report_id)) {
+                $escapedLocalMappingReportId = [regex]::Escape([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_report_id)
+                if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "local mapping report:\s+$escapedLocalMappingReportId") {
+                    throw "DATUM assisted execution state viewer with local mapping context did not include the expected local mapping report id."
+                }
+            }
+
+            if ($firstAssistedExecutionStateSummaryWithLocalMappingContext[0].PSObject.Properties.Name.Contains("local_mapping_reported_at_utc") -and
+                -not [string]::IsNullOrWhiteSpace([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_reported_at_utc)) {
+                $escapedLocalMappingReportedAt = [regex]::Escape([string]$firstAssistedExecutionStateSummaryWithLocalMappingContext[0].local_mapping_reported_at_utc)
+                if ($clientAssistedExecutionStateLocalMappingContextOutput -notmatch "local mapping reported at:\s+$escapedLocalMappingReportedAt") {
+                    throw "DATUM assisted execution state viewer with local mapping context did not include the expected local mapping reported-at value."
+                }
+            }
+        }
+        $clientAssistedExecutionStateLocalMappingContextViewerPerformed = $true
+
+        if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
+            Write-Host "No installation task available; skipping single-task local mapping state check."
+        }
+        else {
+            Write-Step "Read one assisted execution state summary with local mapping context from server"
+            $singleAssistedExecutionStateWithLocalMappingContext = Invoke-JsonEndpoint `
+                -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedTaskId/assisted-execution-state" `
+                -Headers $headers `
+                -StepName "Single assisted execution state with local mapping context"
+            Assert-HttpOk $singleAssistedExecutionStateWithLocalMappingContext "Single assisted execution state with local mapping context"
+            Assert-AssistedExecutionStateSummaryContract `
+                -Json $singleAssistedExecutionStateWithLocalMappingContext.Json `
+                -StepName "Single assisted execution state with local mapping context" `
+                -ExpectedTaskId $firstTaskId `
+                -RequireLocalMappingStatus
+            $serverSingleTaskAssistedExecutionStateLocalMappingContextReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+            $safeToAutoExecuteFalseValidatedForStateSummaries = $true
+            if ($singleAssistedExecutionStateWithLocalMappingContext.Json.PSObject.Properties.Name.Contains("side_effects_performed") -and
+                $null -ne $singleAssistedExecutionStateWithLocalMappingContext.Json.side_effects_performed) {
+                $sideEffectsPerformedFalseValidated = $true
+                $sideEffectsPerformedFalseValidatedForStateSummaries = $true
+            }
+
+            Write-Step "Read one assisted execution state summary with local mapping context from DATUM"
+            $clientSingleAssistedExecutionStateLocalMappingContextOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $firstTaskId,
+                    "--execution-state"
+                ) `
+                -StepName "DATUM single assisted execution state viewer with local mapping context"
+
+            if ($clientSingleAssistedExecutionStateLocalMappingContextOutput -notmatch [regex]::Escape("Assisted execution state for task $firstTaskId")) {
+                throw "DATUM single assisted execution state viewer with local mapping context did not include the expected task header."
+            }
+
+            if ($clientSingleAssistedExecutionStateLocalMappingContextOutput -notmatch "local mapping:\s+(already_mapped|missing_mapping|ambiguous|not_applicable|warning|unknown|no_report)") {
+                throw "DATUM single assisted execution state viewer with local mapping context did not include a local mapping status line."
+            }
+
+            if ($clientSingleAssistedExecutionStateLocalMappingContextOutput -notmatch "safe to auto execute:\s+false") {
+                throw "DATUM single assisted execution state viewer with local mapping context did not include 'safe to auto execute: false'."
+            }
+
+            if ($clientSingleAssistedExecutionStateLocalMappingContextOutput -match "side effects performed:") {
+                if ($clientSingleAssistedExecutionStateLocalMappingContextOutput -notmatch "side effects performed:\s+false") {
+                    throw "DATUM single assisted execution state viewer with local mapping context did not include 'side effects performed: false' when side effects were shown."
+                }
+            }
+
+            $clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed = $true
+        }
+
         if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
             Write-Host "No installation task available; skipping single-task local mapping preflight publish."
         }
@@ -2686,6 +2861,30 @@ if ($clientSingleTaskLocalMappingPreflightPublishPerformed) {
 else {
     Write-Host "- optional DATUM single-task local mapping preflight publish (skipped: no tasks materialized)"
 }
+if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
+    Write-Host "- server assisted execution state local mapping context check"
+}
+else {
+    Write-Host "- server assisted execution state local mapping context check (skipped: server checks disabled)"
+}
+if ($serverSingleTaskAssistedExecutionStateLocalMappingContextReadPerformed) {
+    Write-Host "- optional server single-task local mapping context check"
+}
+else {
+    Write-Host "- optional server single-task local mapping context check (skipped: no tasks materialized)"
+}
+if ($clientAssistedExecutionStateLocalMappingContextViewerPerformed) {
+    Write-Host "- DATUM execution-state local mapping context viewer"
+}
+else {
+    Write-Host "- DATUM execution-state local mapping context viewer (skipped: server checks disabled)"
+}
+if ($clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed) {
+    Write-Host "- optional DATUM single-task local mapping context viewer"
+}
+else {
+    Write-Host "- optional DATUM single-task local mapping context viewer (skipped: no tasks materialized)"
+}
 if ($safeToAutoApplyFalseValidated) {
     Write-Host "- safe_to_auto_apply false validation"
 }
@@ -2743,4 +2942,5 @@ Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run m
 Write-Host "Assisted execution state checks were read-only."
 Write-Host "Local mapping recommendations and preflight checks were advisory only."
 Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
+Write-Host "Local mapping context in assisted execution state was advisory only."
 Write-Host "No local config or mapping files were modified."

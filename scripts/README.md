@@ -92,6 +92,11 @@ What it validates:
 - optional server single-task assisted execution state when a task exists
 - client assisted execution state viewer via `installation-tasks --execution-state`
 - optional client single-task assisted execution state viewer via `installation-tasks --task-id <task_id> --execution-state`
+- server assisted execution state summaries enriched with local mapping context after local mapping preflight publish
+- optional server single-task assisted execution state local mapping context check
+- client `installation-tasks --execution-state` display of local mapping context
+- optional client single-task `installation-tasks --task-id <task_id> --execution-state` display of local mapping context
+- server node-wide and single-task state checks for `local_mapping_status`
 - `safe_to_auto_execute` remains false in assisted execution state summaries
 - `side_effects_performed` remains false in the current no-op/dry-run assisted execution state flow when present
 - server project-wide `local-mapping-recommendations` endpoint
@@ -135,10 +140,13 @@ Notes:
 - Local mapping recommendations are advisory only; they do not write config, modify mappings, or execute installation work.
 - Local mapping preflight is advisory only; it does not write config, modify mappings, or execute installation work.
 - Local mapping preflight publishing is advisory metadata only; it does not write config, modify mappings, or execute installation work.
+- Local mapping context in assisted execution state is advisory only; it does not grant execution permission or execute deployment or installation work.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping preflight results are valid and do not fail the smoke test.
 - Empty published local mapping preflight reports are valid and do not fail the smoke test.
 - Reports with `safe_to_auto_execute=true` or `side_effects_performed=true` should be rejected by the server.
+- `local_mapping_status=already_mapped` is still advisory only and does not imply execution permission.
+- `local_mapping_status=missing_mapping` or `local_mapping_status=ambiguous` requires operator/config review, not automatic remediation.
 - If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.
 - If no `ready_for_assisted_execution` task exists for the node, assisted execution request checks are skipped and the smoke test still succeeds.
 - If no requested assisted execution request exists for the node, assisted execution claim checks are skipped and the smoke test still succeeds.
