@@ -215,6 +215,7 @@ mod tests {
                 }],
                 ..DispatchConfig::default()
             }),
+            assisted_execution: None,
             collectors: None,
             services: None,
             service_registry: Some(ServiceRegistryConfig {

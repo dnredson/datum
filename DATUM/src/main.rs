@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use std::time::Instant;
 
 mod action_results;
+mod assisted_execution;
 mod capabilities;
 mod cli;
 mod config;

@@ -202,6 +202,7 @@ mod tests {
                 allow_container_execution: Some(true),
                 container_mappings: Vec::new(),
             }),
+            assisted_execution: None,
             collectors: None,
             services: None,
             service_registry: None,

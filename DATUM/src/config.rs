@@ -9,6 +9,8 @@ pub struct Config {
     pub outputs: OutputsConfig,
     #[serde(default)]
     pub dispatch: Option<DispatchConfig>,
+    #[serde(default)]
+    pub assisted_execution: Option<AssistedExecutionConfig>,
 
     #[serde(default)]
     pub collectors: Option<CollectorsConfig>,
@@ -27,6 +29,10 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn assisted_execution_config(&self) -> AssistedExecutionConfig {
+        self.assisted_execution.clone().unwrap_or_default()
+    }
+
     pub fn registry_services(&self) -> &[ServiceRegistryService] {
         match &self.service_registry {
             Some(sr) if sr.enabled => &sr.services,
@@ -102,6 +108,29 @@ pub struct HttpConfig {
     pub project_id: Option<String>,
     #[serde(default)]
     pub timeout_s: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AssistedExecutionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub allow_no_op_attempts: bool,
+    #[serde(default = "default_true")]
+    pub allow_dry_run_attempts: bool,
+    #[serde(default)]
+    pub allow_side_effects: bool,
+}
+
+impl Default for AssistedExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_no_op_attempts: true,
+            allow_dry_run_attempts: true,
+            allow_side_effects: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -280,4 +309,8 @@ pub fn load_config(path: &str) -> Result<Config> {
     let raw = fs::read_to_string(path).with_context(|| format!("read config file: {}", path))?;
     let cfg: Config = toml::from_str(&raw).context("parse TOML config")?;
     Ok(cfg)
+}
+
+fn default_true() -> bool {
+    true
 }

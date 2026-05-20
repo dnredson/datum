@@ -226,6 +226,7 @@ mod tests {
                 http: None,
             },
             dispatch: Some(DispatchConfig::default()),
+            assisted_execution: None,
             collectors: None,
             services: None,
             service_registry: None,

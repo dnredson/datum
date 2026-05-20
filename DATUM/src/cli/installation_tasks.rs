@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Result};
 
 use crate::{
+    assisted_execution::runner::{
+        run_assisted_execution_preflight, AssistedExecutionPreflightReport,
+    },
     config::Config,
     installation_tasks::{
         client::{
@@ -278,7 +281,14 @@ pub fn run_installation_tasks_command(
         let execution_mode = execution_mode.ok_or_else(|| {
             anyhow!("--execution-mode is required when --attempt-assisted-execution is provided")
         })?;
-        validate_client_attempt_execution_mode(execution_mode)?;
+        let (preflight, attempt_message) = prepare_assisted_execution_attempt_submission(
+            cfg,
+            task_id,
+            request_id,
+            claim_id,
+            execution_mode,
+            message,
+        )?;
         let response = submit_assisted_execution_attempt(
             &base_url,
             &project_id,
@@ -288,7 +298,7 @@ pub fn run_installation_tasks_command(
             claim_id,
             execution_mode,
             attempted_by,
-            message,
+            attempt_message.as_deref(),
         )?;
 
         if json_output {
@@ -300,7 +310,10 @@ pub fn run_installation_tasks_command(
             return Ok(());
         }
 
-        print!("{}", format_submitted_assisted_execution_attempt(&response));
+        print!(
+            "{}",
+            format_submitted_assisted_execution_attempt_with_preflight(&preflight, &response)
+        );
         return Ok(());
     }
 
@@ -978,6 +991,67 @@ pub fn validate_client_attempt_execution_mode(execution_mode: &str) -> Result<()
     }
 }
 
+fn prepare_assisted_execution_attempt_submission(
+    cfg: &Config,
+    task_id: &str,
+    request_id: &str,
+    claim_id: &str,
+    execution_mode: &str,
+    message: Option<&str>,
+) -> Result<(AssistedExecutionPreflightReport, Option<String>)> {
+    let preflight =
+        run_assisted_execution_preflight(cfg, task_id, request_id, claim_id, execution_mode);
+
+    if preflight.preflight_status == "failed" {
+        return Err(anyhow!(
+            "assisted execution preflight failed; attempt not submitted\n{}",
+            format_assisted_execution_preflight_report(&preflight)
+        ));
+    }
+
+    validate_client_attempt_execution_mode(&preflight.execution_mode)?;
+    let attempt_message = build_attempt_message_with_preflight(message, &preflight);
+    Ok((preflight, attempt_message))
+}
+
+fn build_attempt_message_with_preflight(
+    message: Option<&str>,
+    preflight: &AssistedExecutionPreflightReport,
+) -> Option<String> {
+    let trimmed = message.map(str::trim).filter(|value| !value.is_empty());
+    let summary = format!("preflight: {}", preflight.message);
+
+    match trimmed {
+        Some(message) => Some(format!("{message}\n\n{summary}")),
+        None => Some(summary),
+    }
+}
+
+fn format_assisted_execution_preflight_report(report: &AssistedExecutionPreflightReport) -> String {
+    let mut lines = vec!["Assisted execution preflight".to_string()];
+    lines.push(format!("  mode: {}", report.execution_mode));
+    lines.push(format!("  status: {}", report.preflight_status));
+    lines.push(format!(
+        "  safe to auto execute: {}",
+        report.safe_to_auto_execute
+    ));
+    lines.push(format!(
+        "  side effects performed: {}",
+        report.side_effects_performed
+    ));
+    lines.push(String::new());
+    lines.push("Checks:".to_string());
+
+    for check in &report.checks {
+        lines.push(format!(
+            "  [{}] {}: {}",
+            check.status, check.name, check.message
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn format_task_list(
     response: &InstallationTaskList,
     project_id: &str,
@@ -1635,11 +1709,23 @@ fn format_submitted_assisted_execution_attempt(attempt: &AssistedExecutionAttemp
 
     lines.push(String::new());
     lines.push(
-        "Note: attempt metadata was recorded on the server. This client command did not execute installation."
+        "Note: this client command performed preflight/no-op only, recorded attempt metadata on the server, and did not execute installation."
             .to_string(),
     );
 
     lines.join("\n")
+}
+
+fn format_submitted_assisted_execution_attempt_with_preflight(
+    preflight: &AssistedExecutionPreflightReport,
+    attempt: &AssistedExecutionAttempt,
+) -> String {
+    [
+        format_assisted_execution_preflight_report(preflight),
+        String::new(),
+        format_submitted_assisted_execution_attempt(attempt),
+    ]
+    .join("\n")
 }
 
 fn format_updated_assisted_execution_claim(claim: &AssistedExecutionClaim) -> String {
@@ -1952,19 +2038,26 @@ fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_approval_list, format_assisted_execution_attempt_list,
-        format_assisted_execution_claim_list, format_assisted_execution_request_list,
+        build_attempt_message_with_preflight, format_approval_list,
+        format_assisted_execution_attempt_list, format_assisted_execution_claim_list,
+        format_assisted_execution_preflight_report, format_assisted_execution_request_list,
         format_latest_approval, format_latest_assisted_execution_attempt,
         format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
         format_readiness_list, format_single_readiness, format_status_update,
         format_submitted_approval, format_submitted_assisted_execution_attempt,
+        format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
-        validate_client_attempt_execution_mode, validate_client_claim_status,
-        validate_client_status, validate_command_mode,
+        prepare_assisted_execution_attempt_submission, validate_client_attempt_execution_mode,
+        validate_client_claim_status, validate_client_status, validate_command_mode,
     };
     use crate::{
-        config::{AgentConfig, Config, DispatchConfig, HttpConfig, OutputsConfig},
+        assisted_execution::runner::{
+            AssistedExecutionPreflightCheck, AssistedExecutionPreflightReport,
+        },
+        config::{
+            AgentConfig, AssistedExecutionConfig, Config, DispatchConfig, HttpConfig, OutputsConfig,
+        },
         installation_tasks::model::{
             AssistedExecutionAttempt, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
@@ -2003,6 +2096,7 @@ mod tests {
                 allow_container_execution: Some(true),
                 container_mappings: Vec::new(),
             }),
+            assisted_execution: None,
             collectors: None,
             services: None,
             service_registry: None,
@@ -2678,7 +2772,129 @@ mod tests {
         assert!(rendered.contains("safe to auto execute: false"));
         assert!(rendered.contains("side effects performed: false"));
         assert!(rendered.contains(
-            "Note: attempt metadata was recorded on the server. This client command did not execute installation."
+            "Note: this client command performed preflight/no-op only, recorded attempt metadata on the server, and did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn attempt_preflight_formatting_includes_expected_fields() {
+        let rendered = format_assisted_execution_preflight_report(&AssistedExecutionPreflightReport {
+            task_id: "task-1".to_string(),
+            request_id: "request-1".to_string(),
+            claim_id: "claim-1".to_string(),
+            execution_mode: "no_op".to_string(),
+            local_node_id: "fog-01".to_string(),
+            preflight_status: "warning".to_string(),
+            checks: vec![
+                AssistedExecutionPreflightCheck {
+                    name: "execution_mode_allowed".to_string(),
+                    status: "passed".to_string(),
+                    message: "no_op is allowed".to_string(),
+                },
+                AssistedExecutionPreflightCheck {
+                    name: "assisted_execution_enabled_config_check".to_string(),
+                    status: "warning".to_string(),
+                    message: "assisted execution is not enabled; metadata-only preflight/no-op attempt only".to_string(),
+                },
+            ],
+            message: "preflight_status=warning checks=2 warnings=1 failures=0 local_node_id=fog-01 execution_mode=no_op safe_to_auto_execute=false side_effects_performed=false".to_string(),
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+        });
+
+        assert!(rendered.contains("Assisted execution preflight"));
+        assert!(rendered.contains("mode: no_op"));
+        assert!(rendered.contains("status: warning"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("side effects performed: false"));
+        assert!(rendered.contains("[passed] execution_mode_allowed: no_op is allowed"));
+        assert!(rendered.contains("[warning] assisted_execution_enabled_config_check"));
+    }
+
+    #[test]
+    fn attempt_message_appends_preflight_summary() {
+        let preflight = AssistedExecutionPreflightReport {
+            task_id: "task-1".to_string(),
+            request_id: "request-1".to_string(),
+            claim_id: "claim-1".to_string(),
+            execution_mode: "no_op".to_string(),
+            local_node_id: "fog-01".to_string(),
+            preflight_status: "passed".to_string(),
+            checks: vec![],
+            message: "preflight_status=passed checks=4 warnings=0 failures=0 local_node_id=fog-01 execution_mode=no_op safe_to_auto_execute=false side_effects_performed=false".to_string(),
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+        };
+
+        let combined = build_attempt_message_with_preflight(
+            Some("manual preflight no-op attempt"),
+            &preflight,
+        )
+        .expect("message should exist");
+
+        assert!(combined.contains("manual preflight no-op attempt"));
+        assert!(combined.contains("preflight: preflight_status=passed"));
+    }
+
+    #[test]
+    fn failed_preflight_prevents_attempt_submission() {
+        let mut cfg = base_config();
+        cfg.assisted_execution = Some(AssistedExecutionConfig {
+            enabled: true,
+            allow_no_op_attempts: false,
+            allow_dry_run_attempts: true,
+            allow_side_effects: false,
+        });
+
+        let err = prepare_assisted_execution_attempt_submission(
+            &cfg,
+            "task-1",
+            "request-1",
+            "claim-1",
+            "no_op",
+            Some("manual preflight no-op attempt"),
+        )
+        .expect_err("preflight should fail");
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("assisted execution preflight failed; attempt not submitted"));
+        assert!(rendered.contains("execution_mode_allowed"));
+    }
+
+    #[test]
+    fn successful_attempt_output_includes_preflight_and_no_execution_note() {
+        let preflight = AssistedExecutionPreflightReport {
+            task_id: "task-1".to_string(),
+            request_id: "request-1".to_string(),
+            claim_id: "claim-1".to_string(),
+            execution_mode: "no_op".to_string(),
+            local_node_id: "fog-01".to_string(),
+            preflight_status: "warning".to_string(),
+            checks: vec![],
+            message: "preflight_status=warning checks=4 warnings=1 failures=0 local_node_id=fog-01 execution_mode=no_op safe_to_auto_execute=false side_effects_performed=false".to_string(),
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+        };
+        let rendered = format_submitted_assisted_execution_attempt_with_preflight(
+            &preflight,
+            &AssistedExecutionAttempt {
+                task_id: Some("task-1".to_string()),
+                request_id: Some("request-1".to_string()),
+                claim_id: Some("claim-1".to_string()),
+                attempt_id: Some("attempt-1".to_string()),
+                attempt_status: Some("recorded".to_string()),
+                execution_mode: Some("no_op".to_string()),
+                execution_result: Some("no_op_recorded".to_string()),
+                safe_to_auto_execute: Some(false),
+                side_effects_performed: Some(false),
+                ..AssistedExecutionAttempt::default()
+            },
+        );
+
+        assert!(rendered.contains("Assisted execution preflight"));
+        assert!(rendered.contains("Submitted assisted execution attempt"));
+        assert!(rendered.contains(
+            "Note: this client command performed preflight/no-op only, recorded attempt metadata on the server, and did not execute installation."
         ));
     }
 

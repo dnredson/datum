@@ -29,6 +29,12 @@ execute = false
 publish_results = false
 allow_container_execution = false
 
+[assisted_execution]
+enabled = false
+allow_no_op_attempts = true
+allow_dry_run_attempts = true
+allow_side_effects = false
+
 [collectors.process_windows]
 enabled = true
 mode = "group_by_name"

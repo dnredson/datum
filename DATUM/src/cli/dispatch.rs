@@ -302,6 +302,7 @@ mod tests {
                 }),
             },
             dispatch: None,
+            assisted_execution: None,
             collectors: None,
             services: None,
             service_registry: None,
