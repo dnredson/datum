@@ -30,7 +30,8 @@ use api::installation_tasks::{
     list_assisted_execution_requests_for_node, list_assisted_execution_state_for_node,
     list_installation_task_approvals_for_node, list_installation_task_readiness_for_node,
     list_installation_tasks, list_installation_tasks_for_node,
-    list_latest_local_mapping_preflight_reports, list_local_mapping_recommendations,
+    list_latest_local_mapping_preflight_reports, list_local_mapping_patch_proposals,
+    list_local_mapping_patch_proposals_for_node, list_local_mapping_recommendations,
     list_local_mapping_recommendations_for_node, materialize_installation_tasks,
     materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
     patch_installation_task_status, post_assisted_execution_attempt, post_assisted_execution_claim,
@@ -144,6 +145,14 @@ async fn main() {
         .route(
             "/api/v1/local-mapping-recommendations/for-node/:node_id",
             get(list_local_mapping_recommendations_for_node),
+        )
+        .route(
+            "/api/v1/local-mapping-patch-proposals",
+            get(list_local_mapping_patch_proposals),
+        )
+        .route(
+            "/api/v1/local-mapping-patch-proposals/for-node/:node_id",
+            get(list_local_mapping_patch_proposals_for_node),
         )
         .route(
             "/api/v1/local-mapping-preflight/latest",

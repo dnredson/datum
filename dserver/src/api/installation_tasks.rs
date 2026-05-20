@@ -32,6 +32,10 @@ use crate::{
             InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
             InstallationTaskReadinessList,
         },
+        local_mapping_patch_proposals::{
+            derive_local_mapping_patch_proposals, LocalMappingPatchProposal,
+            LocalMappingPatchProposalList,
+        },
         local_mapping_preflight::{
             normalize_local_mapping_preflight_report, validate_local_mapping_preflight_report,
             LocalMappingPreflightReport, LocalMappingPreflightReportList,
@@ -313,6 +317,26 @@ fn local_mapping_preflight_report_list(
         node_id,
         count: reports.len() as u64,
         reports,
+    }
+}
+
+fn local_mapping_patch_proposal_list(
+    project_id: String,
+    node_id: Option<String>,
+    mut proposals: Vec<LocalMappingPatchProposal>,
+) -> LocalMappingPatchProposalList {
+    proposals.sort_by(|a, b| {
+        a.node_id
+            .cmp(&b.node_id)
+            .then_with(|| a.task_id.cmp(&b.task_id))
+            .then_with(|| a.recommendation_id.cmp(&b.recommendation_id))
+            .then_with(|| a.proposal_id.cmp(&b.proposal_id))
+    });
+    LocalMappingPatchProposalList {
+        project_id,
+        node_id,
+        count: proposals.len() as u64,
+        proposals,
     }
 }
 
@@ -626,6 +650,116 @@ pub async fn list_local_mapping_recommendations_for_node(
         project_id,
         Some(node_id),
         recommendations,
+    )))
+}
+
+pub async fn list_local_mapping_patch_proposals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingPatchProposalList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks(&project_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let latest_reports = state
+        .firebase
+        .list_latest_local_mapping_preflight_reports(&project_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let normalized_tasks = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, None, task))
+        .collect::<Vec<_>>();
+    let recommendations =
+        derive_local_mapping_recommendations_from_tasks(&project_id, None, &normalized_tasks);
+    let reports_by_node = latest_reports
+        .into_iter()
+        .map(|report| (report.node_id.clone(), report))
+        .collect::<HashMap<_, _>>();
+
+    let mut recommendations_by_node = HashMap::<String, Vec<LocalMappingRecommendation>>::new();
+    for recommendation in recommendations {
+        recommendations_by_node
+            .entry(recommendation.node_id.clone())
+            .or_default()
+            .push(recommendation);
+    }
+
+    let mut proposals = Vec::new();
+    for (node_id, node_recommendations) in recommendations_by_node {
+        proposals.extend(derive_local_mapping_patch_proposals(
+            &project_id,
+            &node_id,
+            &node_recommendations,
+            reports_by_node.get(&node_id),
+        ));
+    }
+
+    Ok(JsonResponse(local_mapping_patch_proposal_list(
+        project_id, None, proposals,
+    )))
+}
+
+pub async fn list_local_mapping_patch_proposals_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingPatchProposalList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let latest_report = state
+        .firebase
+        .get_latest_local_mapping_preflight_report(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let normalized_tasks = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, Some(&node_id), task))
+        .collect::<Vec<_>>();
+    let recommendations = derive_local_mapping_recommendations_from_tasks(
+        &project_id,
+        Some(&node_id),
+        &normalized_tasks,
+    );
+    let proposals = derive_local_mapping_patch_proposals(
+        &project_id,
+        &node_id,
+        &recommendations,
+        latest_report.as_ref(),
+    );
+
+    Ok(JsonResponse(local_mapping_patch_proposal_list(
+        project_id,
+        Some(node_id),
+        proposals,
     )))
 }
 
