@@ -88,6 +88,12 @@ What it validates:
 - optional client assisted execution attempt list viewer via `installation-tasks --execution-attempts`
 - `safe_to_auto_execute` remains false in assisted execution attempt responses
 - `side_effects_performed` remains false in assisted execution attempt responses
+- server assisted execution state list for node
+- optional server single-task assisted execution state when a task exists
+- client assisted execution state viewer via `installation-tasks --execution-state`
+- optional client single-task assisted execution state viewer via `installation-tasks --task-id <task_id> --execution-state`
+- `safe_to_auto_execute` remains false in assisted execution state summaries
+- `side_effects_performed` remains false in the current no-op/dry-run assisted execution state flow when present
 
 What it does not do:
 - start `dserver`
@@ -109,6 +115,7 @@ Notes:
 - Assisted execution claim submission is metadata-only; it does not execute deployment or installation work.
 - Assisted claim lifecycle updates are metadata-only; they do not execute deployment or installation work.
 - Assisted execution attempts are no-op/dry-run metadata only; they do not execute deployment or installation work.
+- Assisted execution state summaries are read-only; they do not execute deployment or installation work.
 - If no `candidate_for_assisted_execution` task exists for the node, operator approval checks are skipped and the smoke test still succeeds.
 - If no `ready_for_assisted_execution` task exists for the node, assisted execution request checks are skipped and the smoke test still succeeds.
 - If no requested assisted execution request exists for the node, assisted execution claim checks are skipped and the smoke test still succeeds.
@@ -117,3 +124,4 @@ Notes:
 - Repeated smoke runs may encounter an already released claim and should not fail solely for that reason; the smoke test validates the latest claim instead of requiring a fresh update.
 - If no claimed assisted execution claim exists for the node, assisted execution attempt checks are skipped and the smoke test still succeeds.
 - If a claim was already released by a repeated smoke run, assisted execution attempt checks are skipped because attempts require a claimed claim.
+- Repeated or partial smoke runs may legitimately have missing approval, request, claim, attempt, or state-summary detail for some tasks; the smoke test tolerates that as long as the read-only endpoints respond with clean JSON and the safety invariants remain false.

@@ -657,6 +657,79 @@ function Assert-AssistedExecutionAttemptListContract {
     }
 }
 
+function Assert-AssistedExecutionStateSummaryContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$ExpectedTaskId = $null
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "state" $StepName
+    Assert-JsonHasProperty $Json "reason" $StepName
+    Assert-JsonHasProperty $Json "safe_to_auto_execute" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedTaskId) -and $Json.task_id -ne $ExpectedTaskId) {
+        throw "$StepName returned task_id '$($Json.task_id)', expected '$ExpectedTaskId'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.task_id)) {
+        throw "$StepName did not include a non-empty task_id."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.state)) {
+        throw "$StepName did not include a non-empty state."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.reason)) {
+        throw "$StepName did not include a non-empty reason."
+    }
+
+    if ($Json.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned safe_to_auto_execute='$($Json.safe_to_auto_execute)', expected 'False'."
+    }
+
+    if ($Json.PSObject.Properties.Name.Contains("side_effects_performed") -and
+        $null -ne $Json.side_effects_performed -and
+        $Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False' when present."
+    }
+}
+
+function Assert-AssistedExecutionStateSummaryListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "summaries" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.summaries -isnot [System.Array] -and $Json.summaries -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'summaries' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -881,6 +954,12 @@ $serverLatestAssistedExecutionAttemptReadPerformed = $false
 $serverAssistedExecutionAttemptListReadPerformed = $false
 $clientLatestAssistedExecutionAttemptReadPerformed = $false
 $clientAssistedExecutionAttemptListReadPerformed = $false
+$serverAssistedExecutionStateListReadPerformed = $false
+$clientAssistedExecutionStateListReadPerformed = $false
+$serverSingleTaskAssistedExecutionStateReadPerformed = $false
+$clientSingleTaskAssistedExecutionStateReadPerformed = $false
+$safeToAutoExecuteFalseValidatedForStateSummaries = $false
+$sideEffectsPerformedFalseValidatedForStateSummaries = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
@@ -1776,6 +1855,105 @@ if (-not $SkipServerChecks) {
         }
 
         Write-Host "Assisted execution claim is metadata only; no installation execution was performed."
+
+        Write-Step "Read assisted execution state list from server"
+        $assistedExecutionStateList = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/assisted-execution-state/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Assisted execution state for node"
+        Assert-HttpOk $assistedExecutionStateList "Assisted execution state for node"
+        Assert-AssistedExecutionStateSummaryListContract `
+            -Json $assistedExecutionStateList.Json `
+            -StepName "Assisted execution state for node"
+        $firstAssistedExecutionStateSummary = @($assistedExecutionStateList.Json.summaries | Select-Object -First 1)
+        if ($firstAssistedExecutionStateSummary.Count -gt 0) {
+            Assert-AssistedExecutionStateSummaryContract `
+                -Json $firstAssistedExecutionStateSummary[0] `
+                -StepName "Assisted execution state for node"
+            $safeToAutoExecuteFalseValidated = $true
+            $safeToAutoExecuteFalseValidatedForStateSummaries = $true
+            if ($firstAssistedExecutionStateSummary[0].PSObject.Properties.Name.Contains("side_effects_performed") -and
+                $null -ne $firstAssistedExecutionStateSummary[0].side_effects_performed) {
+                $sideEffectsPerformedFalseValidated = $true
+                $sideEffectsPerformedFalseValidatedForStateSummaries = $true
+            }
+        }
+        $serverAssistedExecutionStateListReadPerformed = $true
+
+        Write-Step "Read assisted execution state from DATUM"
+        $clientAssistedExecutionStateListOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--execution-state"
+            ) `
+            -StepName "DATUM assisted execution state viewer"
+
+        if ($clientAssistedExecutionStateListOutput -notmatch [regex]::Escape("Assisted execution state for node $NodeId") -and
+            $clientAssistedExecutionStateListOutput -notmatch "No assisted execution state summaries for this node\.") {
+            throw "DATUM assisted execution state viewer output did not include state summary details or an empty-state message."
+        }
+        $clientAssistedExecutionStateListReadPerformed = $true
+
+        if ([string]::IsNullOrWhiteSpace([string]$encodedTaskId)) {
+            Write-Host "No installation task available; skipping single-task assisted execution state checks."
+        }
+        else {
+            Write-Step "Read one assisted execution state summary from server"
+            $singleAssistedExecutionState = Invoke-JsonEndpoint `
+                -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$encodedTaskId/assisted-execution-state" `
+                -Headers $headers `
+                -StepName "Single assisted execution state"
+            Assert-HttpOk $singleAssistedExecutionState "Single assisted execution state"
+            Assert-AssistedExecutionStateSummaryContract `
+                -Json $singleAssistedExecutionState.Json `
+                -StepName "Single assisted execution state" `
+                -ExpectedTaskId $selectedTask.task_id
+            $serverSingleTaskAssistedExecutionStateReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+            $safeToAutoExecuteFalseValidatedForStateSummaries = $true
+            if ($singleAssistedExecutionState.Json.PSObject.Properties.Name.Contains("side_effects_performed") -and
+                $null -ne $singleAssistedExecutionState.Json.side_effects_performed) {
+                $sideEffectsPerformedFalseValidated = $true
+                $sideEffectsPerformedFalseValidatedForStateSummaries = $true
+            }
+
+            Write-Step "Read one assisted execution state summary from DATUM"
+            $clientSingleAssistedExecutionStateOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $selectedTask.task_id,
+                    "--execution-state"
+                ) `
+                -StepName "DATUM single assisted execution state viewer"
+
+            if ($clientSingleAssistedExecutionStateOutput -notmatch [regex]::Escape("Assisted execution state for task $($selectedTask.task_id)")) {
+                throw "DATUM single assisted execution state viewer output did not include the expected task header."
+            }
+
+            if ($clientSingleAssistedExecutionStateOutput -notmatch "safe to auto execute:\s+false") {
+                throw "DATUM single assisted execution state viewer output did not include 'safe to auto execute: false'."
+            }
+
+            if ($clientSingleAssistedExecutionStateOutput -match "side effects performed:") {
+                if ($clientSingleAssistedExecutionStateOutput -notmatch "side effects performed:\s+false") {
+                    throw "DATUM single assisted execution state viewer output did not include 'side effects performed: false' when side effects were shown."
+                }
+            }
+            $clientSingleTaskAssistedExecutionStateReadPerformed = $true
+        }
     }
 }
 
@@ -2021,6 +2199,30 @@ elseif ($selectedClaimStatus -eq "released") {
 else {
     Write-Host "- client assisted execution attempt list (skipped: no claimed assisted execution claim found)"
 }
+if ($serverAssistedExecutionStateListReadPerformed) {
+    Write-Host "- server assisted execution state list"
+}
+else {
+    Write-Host "- server assisted execution state list (skipped: server checks disabled)"
+}
+if ($clientAssistedExecutionStateListReadPerformed) {
+    Write-Host "- client assisted execution state viewer"
+}
+else {
+    Write-Host "- client assisted execution state viewer (skipped: server checks disabled)"
+}
+if ($serverSingleTaskAssistedExecutionStateReadPerformed) {
+    Write-Host "- optional server single-task assisted execution state"
+}
+else {
+    Write-Host "- optional server single-task assisted execution state (skipped: no tasks materialized)"
+}
+if ($clientSingleTaskAssistedExecutionStateReadPerformed) {
+    Write-Host "- optional client single-task assisted execution state viewer"
+}
+else {
+    Write-Host "- optional client single-task assisted execution state viewer (skipped: no tasks materialized)"
+}
 if ($assistedExecutionAttemptSubmissionPerformed -or
     $serverLatestAssistedExecutionAttemptReadPerformed -or
     $serverAssistedExecutionAttemptListReadPerformed) {
@@ -2035,6 +2237,18 @@ if ($sideEffectsPerformedFalseValidated) {
 else {
     Write-Host "- side_effects_performed false validation for attempts (skipped: no assisted execution attempts validated)"
 }
+if ($safeToAutoExecuteFalseValidatedForStateSummaries) {
+    Write-Host "- safe_to_auto_execute false validation for state summaries"
+}
+else {
+    Write-Host "- safe_to_auto_execute false validation for state summaries (skipped: no assisted execution state summaries returned)"
+}
+if ($sideEffectsPerformedFalseValidatedForStateSummaries) {
+    Write-Host "- side_effects_performed false validation for state summaries"
+}
+else {
+    Write-Host "- side_effects_performed false validation for state summaries (skipped: no state summary exposed side_effects_performed)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -2045,3 +2259,4 @@ Write-Host "Assisted execution request, when performed, recorded metadata only."
 Write-Host "Assisted execution claim, when performed, recorded metadata only."
 Write-Host "Assisted claim lifecycle update, when performed, recorded metadata only."
 Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run metadata only."
+Write-Host "Assisted execution state checks were read-only."
