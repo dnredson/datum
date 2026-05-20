@@ -8,7 +8,8 @@ use crate::{
     installation_tasks::{
         client::{
             fetch_assisted_execution_attempts_for_node, fetch_assisted_execution_claims_for_node,
-            fetch_assisted_execution_requests_for_node, fetch_installation_task,
+            fetch_assisted_execution_requests_for_node, fetch_assisted_execution_state,
+            fetch_assisted_execution_state_for_node, fetch_installation_task,
             fetch_installation_task_approvals_for_node, fetch_installation_task_readiness,
             fetch_installation_task_readiness_for_node, fetch_installation_tasks_for_node,
             fetch_latest_assisted_execution_attempt, fetch_latest_assisted_execution_claim,
@@ -21,8 +22,9 @@ use crate::{
         model::{
             AssistedExecutionAttempt, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
-            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
-            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
+            AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationTask,
+            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
+            InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
 };
@@ -40,6 +42,7 @@ pub fn run_installation_tasks_command(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    execution_state: bool,
     readiness: bool,
     execution_requests: bool,
     execution_request: bool,
@@ -76,6 +79,7 @@ pub fn run_installation_tasks_command(
         task_id,
         request_id,
         claim_id,
+        execution_state,
         readiness,
         execution_requests,
         execution_request,
@@ -101,6 +105,56 @@ pub fn run_installation_tasks_command(
         expires_at_utc,
         lease_expires_at_utc,
     )?;
+
+    if execution_state {
+        if let Some(task_id) = task_id {
+            match fetch_assisted_execution_state(&base_url, &project_id, &node_id, task_id) {
+                Ok(response) => {
+                    if json_output {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&response).unwrap_or_else(|_| {
+                                "{\"error\":\"failed to render JSON\"}".to_string()
+                            })
+                        );
+                        return Ok(());
+                    }
+
+                    print!(
+                        "{}",
+                        format_single_assisted_execution_state(&response, task_id)
+                    );
+                    return Ok(());
+                }
+                Err(error) if error.to_string().contains("status=404") => {
+                    if json_output {
+                        return Err(error);
+                    }
+
+                    println!("No assisted execution state found for task {}.", task_id);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let response = fetch_assisted_execution_state_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_assisted_execution_state_list(&response, &project_id, &node_id)
+        );
+        return Ok(());
+    }
 
     if execution_claims {
         let response = fetch_assisted_execution_claims_for_node(&base_url, &project_id, &node_id)?;
@@ -611,6 +665,7 @@ fn validate_command_mode(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    execution_state: bool,
     readiness: bool,
     execution_requests: bool,
     execution_request: bool,
@@ -637,6 +692,8 @@ fn validate_command_mode(
     lease_expires_at_utc: Option<&str>,
 ) -> Result<()> {
     let selected_modes = [
+        execution_state && task_id.is_none(),
+        execution_state && task_id.is_some(),
         readiness && task_id.is_none(),
         readiness && task_id.is_some(),
         execution_requests,
@@ -655,6 +712,7 @@ fn validate_command_mode(
         status.is_some(),
         materialize,
         task_id.is_some()
+            && !execution_state
             && !readiness
             && !execution_request
             && !request_assisted_execution
@@ -674,6 +732,18 @@ fn validate_command_mode(
     if selected_modes > 1 {
         return Err(anyhow!(
             "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
+        ));
+    }
+
+    if execution_state && request_id.is_some() {
+        return Err(anyhow!(
+            "--request-id cannot be combined with --execution-state"
+        ));
+    }
+
+    if execution_state && claim_id.is_some() {
+        return Err(anyhow!(
+            "--claim-id cannot be combined with --execution-state"
         ));
     }
 
@@ -1443,6 +1513,38 @@ fn format_assisted_execution_attempt_list(
     lines.join("\n")
 }
 
+fn format_assisted_execution_state_list(
+    response: &AssistedExecutionStateSummaryList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response.count.unwrap_or(response.summaries.len() as u64);
+
+    let mut lines = vec![
+        format!("Assisted execution state for node {}", effective_node_id),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.summaries.is_empty() {
+        lines.push("No assisted execution state summaries for this node.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Summaries: {}", count));
+    lines.push(String::new());
+
+    for (index, summary) in response.summaries.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_assisted_execution_state_block(summary));
+    }
+
+    lines.join("\n")
+}
+
 fn format_latest_assisted_execution_request(
     request: &AssistedExecutionRequest,
     requested_task_id: &str,
@@ -1475,6 +1577,25 @@ fn format_latest_assisted_execution_request(
 
     if let Some(reason) = request.reason.as_deref() {
         lines.push(format!("  reason: {}", reason));
+    }
+
+    lines.join("\n")
+}
+
+fn format_single_assisted_execution_state(
+    summary: &AssistedExecutionStateSummary,
+    requested_task_id: &str,
+) -> String {
+    let task_id = summary.task_id.as_deref().unwrap_or(requested_task_id);
+    let mut lines = vec![format!("Assisted execution state for task {}", task_id)];
+    lines.extend(format_assisted_execution_state_detail_lines(summary));
+
+    if assisted_execution_state_has_attempt(summary) {
+        lines.push(String::new());
+        lines.push(
+            "Note: this state is informational. No installation execution is performed by this command."
+                .to_string(),
+        );
     }
 
     lines.join("\n")
@@ -1525,6 +1646,97 @@ fn format_latest_assisted_execution_claim(
     }
 
     lines.join("\n")
+}
+
+fn format_assisted_execution_state_block(summary: &AssistedExecutionStateSummary) -> Vec<String> {
+    let label = summary
+        .state
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_uppercase();
+    let mut lines = vec![format!("[{}]", label)];
+    lines.extend(format_assisted_execution_state_detail_lines(summary));
+
+    if assisted_execution_state_has_attempt(summary) {
+        lines.push(
+            "  Note: this state is informational. No installation execution is performed by this command."
+                .to_string(),
+        );
+    }
+
+    lines
+}
+
+fn format_assisted_execution_state_detail_lines(
+    summary: &AssistedExecutionStateSummary,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some(task_id) = summary.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+
+    if let Some(state) = summary.state.as_deref() {
+        lines.push(format!("  state: {}", state));
+    }
+
+    if let Some(task_status) = summary.task_status.as_deref() {
+        lines.push(format!("  task status: {}", task_status));
+    }
+
+    if let Some(policy_decision) = summary.policy_decision.as_deref() {
+        lines.push(format!("  policy: {}", policy_decision));
+    }
+
+    if let Some(approval_status) = summary.approval_status.as_deref() {
+        lines.push(format!("  approval: {}", approval_status));
+    }
+
+    if let Some(readiness) = summary.readiness.as_deref() {
+        lines.push(format!("  readiness: {}", readiness));
+    }
+
+    if let Some(request_status) = summary.request_status.as_deref() {
+        lines.push(format!("  request: {}", request_status));
+    }
+
+    if let Some(claim_status) = summary.claim_status.as_deref() {
+        lines.push(format!("  claim: {}", claim_status));
+    }
+
+    if let Some(latest_attempt_status) = summary.latest_attempt_status.as_deref() {
+        lines.push(format!("  latest attempt: {}", latest_attempt_status));
+    }
+
+    if let Some(latest_execution_mode) = summary.latest_execution_mode.as_deref() {
+        lines.push(format!("  latest mode: {}", latest_execution_mode));
+    }
+
+    if let Some(latest_execution_result) = summary.latest_execution_result.as_deref() {
+        lines.push(format!("  latest result: {}", latest_execution_result));
+    }
+
+    lines.push(format!(
+        "  safe to auto execute: {}",
+        summary.safe_to_auto_execute.unwrap_or(false)
+    ));
+    lines.push(format!(
+        "  side effects performed: {}",
+        summary.side_effects_performed.unwrap_or(false)
+    ));
+
+    if let Some(reason) = summary.reason.as_deref() {
+        lines.push(format!("  reason: {}", reason));
+    }
+
+    lines
+}
+
+fn assisted_execution_state_has_attempt(summary: &AssistedExecutionStateSummary) -> bool {
+    matches!(
+        summary.state.as_deref(),
+        Some("attempt_recorded_no_op") | Some("attempt_recorded_dry_run")
+    ) || summary.latest_attempt_status.is_some()
 }
 
 fn format_latest_assisted_execution_attempt(
@@ -2038,13 +2250,15 @@ fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_attempt_message_with_preflight, format_approval_list,
-        format_assisted_execution_attempt_list, format_assisted_execution_claim_list,
-        format_assisted_execution_preflight_report, format_assisted_execution_request_list,
+        assisted_execution_state_has_attempt, build_attempt_message_with_preflight,
+        format_approval_list, format_assisted_execution_attempt_list,
+        format_assisted_execution_claim_list, format_assisted_execution_preflight_report,
+        format_assisted_execution_request_list, format_assisted_execution_state_list,
         format_latest_approval, format_latest_assisted_execution_attempt,
         format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
-        format_readiness_list, format_single_readiness, format_status_update,
-        format_submitted_approval, format_submitted_assisted_execution_attempt,
+        format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
+        format_status_update, format_submitted_approval,
+        format_submitted_assisted_execution_attempt,
         format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
@@ -2061,9 +2275,9 @@ mod tests {
         installation_tasks::model::{
             AssistedExecutionAttempt, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
-            InstallationPolicy, InstallationTask, InstallationTaskApproval,
-            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-            InstallationTaskReadinessList,
+            AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationPolicy,
+            InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
+            InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     };
 
@@ -2927,11 +3141,124 @@ mod tests {
     }
 
     #[test]
+    fn assisted_execution_state_formatting_includes_key_fields() {
+        let rendered = format_assisted_execution_state_list(
+            &AssistedExecutionStateSummaryList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                summaries: vec![AssistedExecutionStateSummary {
+                    task_id: Some("task-1".to_string()),
+                    state: Some("awaiting_approval".to_string()),
+                    task_status: Some("planned".to_string()),
+                    policy_decision: Some("candidate_for_assisted_execution".to_string()),
+                    approval_status: Some("missing".to_string()),
+                    readiness: Some("not_ready".to_string()),
+                    request_status: Some("none".to_string()),
+                    claim_status: Some("none".to_string()),
+                    latest_execution_mode: Some("no_op".to_string()),
+                    latest_execution_result: Some("no_op_recorded".to_string()),
+                    safe_to_auto_execute: Some(false),
+                    side_effects_performed: Some(false),
+                    reason: Some("operator approval is required".to_string()),
+                    ..AssistedExecutionStateSummary::default()
+                }],
+                ..AssistedExecutionStateSummaryList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("Assisted execution state for node fog-01"));
+        assert!(rendered.contains("[AWAITING_APPROVAL]"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("task status: planned"));
+        assert!(rendered.contains("policy: candidate_for_assisted_execution"));
+        assert!(rendered.contains("approval: missing"));
+        assert!(rendered.contains("readiness: not_ready"));
+        assert!(rendered.contains("request: none"));
+        assert!(rendered.contains("claim: none"));
+        assert!(rendered.contains("latest mode: no_op"));
+        assert!(rendered.contains("latest result: no_op_recorded"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("side effects performed: false"));
+        assert!(rendered.contains("reason: operator approval is required"));
+    }
+
+    #[test]
+    fn single_assisted_execution_state_includes_no_execution_note_for_attempts() {
+        let rendered = format_single_assisted_execution_state(
+            &AssistedExecutionStateSummary {
+                task_id: Some("task-1".to_string()),
+                state: Some("attempt_recorded_no_op".to_string()),
+                task_status: Some("acknowledged".to_string()),
+                policy_decision: Some("candidate_for_assisted_execution".to_string()),
+                approval_status: Some("approved".to_string()),
+                readiness: Some("ready_for_assisted_execution".to_string()),
+                request_status: Some("requested".to_string()),
+                claim_status: Some("claimed".to_string()),
+                latest_attempt_status: Some("recorded".to_string()),
+                latest_execution_mode: Some("no_op".to_string()),
+                latest_execution_result: Some("no_op_recorded".to_string()),
+                safe_to_auto_execute: Some(false),
+                side_effects_performed: Some(false),
+                reason: Some("latest no-op attempt was recorded".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("Assisted execution state for task task-1"));
+        assert!(rendered.contains("state: attempt_recorded_no_op"));
+        assert!(rendered.contains("latest attempt: recorded"));
+        assert!(rendered.contains("latest mode: no_op"));
+        assert!(rendered.contains("latest result: no_op_recorded"));
+        assert!(rendered.contains(
+            "Note: this state is informational. No installation execution is performed by this command."
+        ));
+    }
+
+    #[test]
+    fn assisted_execution_state_flag_detects_attempt_states() {
+        assert!(assisted_execution_state_has_attempt(
+            &AssistedExecutionStateSummary {
+                state: Some("attempt_recorded_dry_run".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            }
+        ));
+        assert!(!assisted_execution_state_has_attempt(
+            &AssistedExecutionStateSummary {
+                state: Some("awaiting_request".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn assisted_execution_state_json_preserves_raw_response() {
+        let response = AssistedExecutionStateSummary {
+            task_id: Some("task-1".to_string()),
+            state: Some("attempt_recorded_no_op".to_string()),
+            safe_to_auto_execute: Some(false),
+            side_effects_performed: Some(false),
+            ..AssistedExecutionStateSummary::default()
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"task_id\": \"task-1\""));
+        assert!(rendered.contains("\"state\": \"attempt_recorded_no_op\""));
+        assert!(rendered.contains("\"safe_to_auto_execute\": false"));
+        assert!(rendered.contains("\"side_effects_performed\": false"));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_command_mode(
             Some("task-1"),
             None,
             None,
+            false,
             false,
             false,
             false,
@@ -2974,6 +3301,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
             false,
             false,
@@ -3002,6 +3330,7 @@ mod tests {
             Some("task-1"),
             None,
             None,
+            false,
             true,
             false,
             false,
@@ -3037,6 +3366,7 @@ mod tests {
             Some("task-1"),
             None,
             None,
+            false,
             false,
             false,
             true,
@@ -3076,6 +3406,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             true,
             false,
             true,
@@ -3107,6 +3438,7 @@ mod tests {
             Some("task-1"),
             Some("request-1"),
             None,
+            false,
             false,
             false,
             false,
@@ -3149,6 +3481,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             None,
             false,
             true,
@@ -3169,5 +3502,77 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_execution_state_ambiguity() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            None,
+            None,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_accepts_execution_state_for_single_task() {
+        let result = validate_command_mode(
+            Some("task-1"),
+            None,
+            None,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
     }
 }

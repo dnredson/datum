@@ -338,6 +338,74 @@ pub struct AssistedExecutionAttemptList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionStateSummary {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub task_status: Option<String>,
+    #[serde(default)]
+    pub policy_decision: Option<String>,
+    #[serde(default)]
+    pub approval_status: Option<String>,
+    #[serde(default)]
+    pub readiness: Option<String>,
+    #[serde(default)]
+    pub request_status: Option<String>,
+    #[serde(default)]
+    pub claim_status: Option<String>,
+    #[serde(default)]
+    pub latest_attempt_status: Option<String>,
+    #[serde(default)]
+    pub latest_execution_mode: Option<String>,
+    #[serde(default)]
+    pub latest_execution_result: Option<String>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
+    #[serde(default)]
+    pub side_effects_performed: Option<bool>,
+    #[serde(default)]
+    pub evaluated_at_utc: Option<String>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub approval_snapshot: Option<Value>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub claim_snapshot: Option<Value>,
+    #[serde(default)]
+    pub latest_attempt_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionStateSummaryList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub summaries: Vec<AssistedExecutionStateSummary>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -387,9 +455,10 @@ mod tests {
         ApprovalRequest, AssistedExecutionAttempt, AssistedExecutionAttemptBody,
         AssistedExecutionAttemptList, AssistedExecutionClaim, AssistedExecutionClaimBody,
         AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch, AssistedExecutionRequest,
-        AssistedExecutionRequestBody, AssistedExecutionRequestList, InstallationTask,
-        InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-        InstallationTaskReadiness, InstallationTaskReadinessList,
+        AssistedExecutionRequestBody, AssistedExecutionRequestList, AssistedExecutionStateSummary,
+        AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
+        InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
+        InstallationTaskReadinessList,
     };
 
     #[test]
@@ -905,5 +974,73 @@ mod tests {
         assert_eq!(value["execution_mode"].as_str(), Some("no_op"));
         assert_eq!(value["attempted_by"].as_str(), Some("operator"));
         assert_eq!(value["message"].as_str(), Some("recording no-op attempt"));
+    }
+
+    #[test]
+    fn parse_assisted_execution_state_summary() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "state":"attempt_recorded_no_op",
+          "reason":"latest no-op attempt was recorded",
+          "task_status":"acknowledged",
+          "policy_decision":"candidate_for_assisted_execution",
+          "approval_status":"approved",
+          "readiness":"ready_for_assisted_execution",
+          "request_status":"requested",
+          "claim_status":"claimed",
+          "latest_attempt_status":"recorded",
+          "latest_execution_mode":"no_op",
+          "latest_execution_result":"no_op_recorded",
+          "safe_to_auto_execute":false,
+          "side_effects_performed":false,
+          "evaluated_at_utc":"2026-05-20T12:00:00Z",
+          "future_field":"ok"
+        }"#;
+
+        let parsed: AssistedExecutionStateSummary =
+            serde_json::from_str(raw).expect("state summary should parse");
+
+        assert_eq!(parsed.task_id.as_deref(), Some("task-1"));
+        assert_eq!(parsed.state.as_deref(), Some("attempt_recorded_no_op"));
+        assert_eq!(parsed.latest_execution_mode.as_deref(), Some("no_op"));
+        assert_eq!(parsed.safe_to_auto_execute, Some(false));
+        assert_eq!(parsed.side_effects_performed, Some(false));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_assisted_execution_state_summary_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "summaries":[
+            {
+              "task_id":"task-1",
+              "state":"awaiting_approval",
+              "safe_to_auto_execute":false,
+              "side_effects_performed":false
+            }
+          ]
+        }"#;
+
+        let parsed: AssistedExecutionStateSummaryList =
+            serde_json::from_str(raw).expect("state summary list should parse");
+
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.summaries.len(), 1);
+        assert_eq!(parsed.summaries[0].task_id.as_deref(), Some("task-1"));
+        assert_eq!(
+            parsed.summaries[0].state.as_deref(),
+            Some("awaiting_approval")
+        );
     }
 }

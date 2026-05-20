@@ -12,9 +12,10 @@ use crate::installation_tasks::model::{
     ApprovalRequest, AssistedExecutionAttempt, AssistedExecutionAttemptBody,
     AssistedExecutionAttemptList, AssistedExecutionClaim, AssistedExecutionClaimBody,
     AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch, AssistedExecutionRequest,
-    AssistedExecutionRequestBody, AssistedExecutionRequestList, InstallationTask,
-    InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-    InstallationTaskReadiness, InstallationTaskReadinessList,
+    AssistedExecutionRequestBody, AssistedExecutionRequestList, AssistedExecutionStateSummary,
+    AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
+    InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
+    InstallationTaskReadinessList,
 };
 
 pub fn materialize_installation_tasks_for_node(
@@ -389,6 +390,40 @@ pub fn fetch_assisted_execution_attempts_for_node(
     parse_assisted_execution_attempt_list_response(response, "fetch assisted execution attempts")
 }
 
+pub fn fetch_assisted_execution_state(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<AssistedExecutionStateSummary> {
+    let endpoint =
+        installation_task_assisted_execution_state_endpoint_url(base_url, node_id, task_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch assisted execution state from {}", endpoint))?;
+
+    parse_assisted_execution_state_response(response, "fetch assisted execution state")
+}
+
+pub fn fetch_assisted_execution_state_for_node(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<AssistedExecutionStateSummaryList> {
+    let endpoint = assisted_execution_state_list_endpoint_url(base_url, node_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch assisted execution state from {}", endpoint))?;
+
+    parse_assisted_execution_state_list_response(response, "fetch assisted execution state")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -563,6 +598,34 @@ fn parse_assisted_execution_attempt_list_response(
     response: reqwest::blocking::Response,
     label: &str,
 ) -> Result<AssistedExecutionAttemptList> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_assisted_execution_state_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<AssistedExecutionStateSummary> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_assisted_execution_state_list_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<AssistedExecutionStateSummaryList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -885,6 +948,32 @@ pub fn assisted_execution_attempts_list_endpoint_url(base_url: &str, node_id: &s
     with_segments(base_url, &segments)
 }
 
+pub fn installation_task_assisted_execution_state_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "installation-tasks".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+        task_id.to_string(),
+        "assisted-execution-state".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn assisted_execution_state_list_endpoint_url(base_url: &str, node_id: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "assisted-execution-state".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Value {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => json!({
@@ -993,7 +1082,7 @@ mod tests {
         assisted_execution_attempts_list_endpoint_url, assisted_execution_claim_body,
         assisted_execution_claim_status_patch_body, assisted_execution_claims_list_endpoint_url,
         assisted_execution_request_body, assisted_execution_requests_list_endpoint_url,
-        installation_task_approval_latest_endpoint_url,
+        assisted_execution_state_list_endpoint_url, installation_task_approval_latest_endpoint_url,
         installation_task_approval_submit_endpoint_url,
         installation_task_approvals_list_endpoint_url,
         installation_task_assisted_execution_attempt_latest_endpoint_url,
@@ -1003,6 +1092,7 @@ mod tests {
         installation_task_assisted_execution_claim_submit_endpoint_url,
         installation_task_assisted_execution_request_latest_endpoint_url,
         installation_task_assisted_execution_request_submit_endpoint_url,
+        installation_task_assisted_execution_state_endpoint_url,
         installation_task_get_endpoint_url, installation_task_patch_endpoint_url,
         installation_task_readiness_endpoint_url, installation_task_readiness_list_endpoint_url,
         installation_tasks_list_endpoint_url, installation_tasks_materialize_endpoint_url,
@@ -1397,5 +1487,34 @@ mod tests {
         assert_eq!(value["execution_mode"].as_str(), Some("no_op"));
         assert_eq!(value["attempted_by"].as_str(), Some("operator"));
         assert_eq!(value["message"].as_str(), Some("recording no-op attempt"));
+    }
+
+    #[test]
+    fn endpoint_construction_for_single_assisted_execution_state_is_correct() {
+        let url = installation_task_assisted_execution_state_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+            "project:smart city/task",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/installation-tasks/for-node/fog-01/project:smart%20city%2Ftask/assisted-execution-state"
+        );
+    }
+
+    #[test]
+    fn endpoint_construction_for_node_assisted_execution_state_is_correct() {
+        let url = assisted_execution_state_list_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/assisted-execution-state/for-node/fog-01"
+        );
     }
 }

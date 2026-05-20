@@ -98,6 +98,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.task_id.as_deref(),
             args.request_id.as_deref(),
             args.claim_id.as_deref(),
+            args.execution_state,
             args.readiness,
             args.execution_requests,
             args.execution_request,
@@ -275,6 +276,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     claim_id: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    execution_state: bool,
 
     #[arg(long, default_value_t = false)]
     readiness: bool,
@@ -623,6 +627,7 @@ fn installation_tasks_command(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    execution_state: bool,
     readiness: bool,
     execution_requests: bool,
     execution_request: bool,
@@ -659,6 +664,7 @@ fn installation_tasks_command(
         task_id,
         request_id,
         claim_id,
+        execution_state,
         readiness,
         execution_requests,
         execution_request,
