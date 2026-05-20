@@ -14,6 +14,7 @@ mod installation_plan;
 mod installation_tasks;
 mod local_mapping;
 mod outputs;
+mod wasm_runtime;
 
 use cli::capabilities::run_capabilities_command;
 use cli::deployment_planning::run_deployment_planning_command;
@@ -22,6 +23,7 @@ use cli::installation_plan::run_installation_plan_command;
 use cli::installation_tasks::run_installation_tasks_command;
 use cli::show::show_command;
 use cli::top::top_command;
+use cli::wasm_runtime::run_wasm_test_command;
 use core::cycle::run_cycle;
 use outputs::file_json::FileJsonOutput;
 use outputs::http_json::HttpJsonOutput;
@@ -44,7 +46,8 @@ fn main() -> Result<()> {
             | "installation-plan"
             | "install-plan"
             | "installation-tasks"
-            | "install-tasks" => {
+            | "install-tasks"
+            | "wasm-test" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -134,6 +137,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.materialize,
             args.json,
         ),
+        Command::WasmTest(args) => wasm_test_command(&args.add, args.json),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -159,8 +163,19 @@ enum Command {
     InstallationPlan(InstallationPlanArgs),
     #[command(name = "installation-tasks", alias = "install-tasks")]
     InstallationTasks(InstallationTasksArgs),
+    #[command(name = "wasm-test")]
+    WasmTest(WasmTestArgs),
     Top(TopArgs),
     Show(ShowArgs),
+}
+
+#[derive(Args, Debug)]
+struct WasmTestArgs {
+    #[arg(long, num_args = 2, value_names = ["A", "B"])]
+    add: Vec<i32>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -736,4 +751,8 @@ fn installation_tasks_command(
         materialize,
         json,
     )
+}
+
+fn wasm_test_command(add_args: &[i32], json: bool) -> Result<()> {
+    run_wasm_test_command(add_args, json)
 }
