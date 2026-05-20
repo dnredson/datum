@@ -475,6 +475,114 @@ function Assert-LocalMappingRecommendationSafetyContract {
     }
 }
 
+function Assert-LocalMappingPatchProposalListContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [switch]$RequireNodeId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "proposals" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ($Json.proposals -isnot [System.Array] -and $Json.proposals -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'proposals' as an array."
+    }
+}
+
+function Assert-LocalMappingPatchProposalSafetyContract {
+    param(
+        $Proposal,
+        [string]$StepName,
+        [switch]$RequireNodeId,
+        [string[]]$AllowedProposalStatuses,
+        [string[]]$AllowedProposalKinds
+    )
+
+    Assert-JsonHasProperty $Proposal "project_id" $StepName
+    Assert-JsonHasProperty $Proposal "safe_to_auto_apply" $StepName
+    Assert-JsonHasProperty $Proposal "side_effects_performed" $StepName
+    Assert-JsonHasProperty $Proposal "requires_operator" $StepName
+
+    if ($Proposal.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Proposal.project_id)', expected '$ProjectId'."
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Proposal "node_id" $StepName
+        if ($Proposal.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Proposal.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ($Proposal.safe_to_auto_apply -ne $false) {
+        throw "$StepName returned safe_to_auto_apply='$($Proposal.safe_to_auto_apply)', expected 'False'."
+    }
+
+    if ($Proposal.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Proposal.side_effects_performed)', expected 'False'."
+    }
+
+    if ($Proposal.requires_operator -ne $true) {
+        throw "$StepName returned requires_operator='$($Proposal.requires_operator)', expected 'True'."
+    }
+
+    if ($Proposal.PSObject.Properties.Name.Contains("proposal_id") -and
+        [string]::IsNullOrWhiteSpace([string]$Proposal.proposal_id)) {
+        throw "$StepName exposed proposal_id but it was empty."
+    }
+
+    if ($Proposal.PSObject.Properties.Name.Contains("proposal_status") -and
+        [string]::IsNullOrWhiteSpace([string]$Proposal.proposal_status)) {
+        throw "$StepName exposed proposal_status but it was empty."
+    }
+
+    if ($AllowedProposalStatuses.Count -gt 0 -and
+        $Proposal.PSObject.Properties.Name.Contains("proposal_status") -and
+        -not [string]::IsNullOrWhiteSpace([string]$Proposal.proposal_status) -and
+        $AllowedProposalStatuses -notcontains [string]$Proposal.proposal_status) {
+        $allowedStatusesText = $AllowedProposalStatuses -join ", "
+        throw "$StepName returned proposal_status '$($Proposal.proposal_status)', expected one of: $allowedStatusesText."
+    }
+
+    if ($Proposal.PSObject.Properties.Name.Contains("proposal_kind") -and
+        [string]::IsNullOrWhiteSpace([string]$Proposal.proposal_kind)) {
+        throw "$StepName exposed proposal_kind but it was empty."
+    }
+
+    if ($AllowedProposalKinds.Count -gt 0 -and
+        $Proposal.PSObject.Properties.Name.Contains("proposal_kind") -and
+        -not [string]::IsNullOrWhiteSpace([string]$Proposal.proposal_kind) -and
+        $AllowedProposalKinds -notcontains [string]$Proposal.proposal_kind) {
+        $allowedKindsText = $AllowedProposalKinds -join ", "
+        throw "$StepName returned proposal_kind '$($Proposal.proposal_kind)', expected one of: $allowedKindsText."
+    }
+
+    if ($Proposal.PSObject.Properties.Name.Contains("proposed_config_section") -and
+        $null -ne $Proposal.proposed_config_section -and
+        [string]::IsNullOrWhiteSpace([string]$Proposal.proposed_config_section)) {
+        throw "$StepName exposed proposed_config_section but it was empty."
+    }
+
+    if ($Proposal.PSObject.Properties.Name.Contains("proposed_config_snippet") -and
+        $null -ne $Proposal.proposed_config_snippet -and
+        [string]::IsNullOrWhiteSpace([string]$Proposal.proposed_config_snippet)) {
+        throw "$StepName exposed proposed_config_snippet but it was empty."
+    }
+}
+
 function Assert-LocalMappingPreflightReportContract {
     param(
         $Json,
@@ -1116,7 +1224,11 @@ $serverAssistedExecutionStateLocalMappingContextReadPerformed = $false
 $serverSingleTaskAssistedExecutionStateLocalMappingContextReadPerformed = $false
 $clientAssistedExecutionStateLocalMappingContextViewerPerformed = $false
 $clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed = $false
+$serverProjectLocalMappingPatchProposalsReadPerformed = $false
+$serverNodeLocalMappingPatchProposalsReadPerformed = $false
+$clientLocalMappingPatchProposalViewerPerformed = $false
 $safeToAutoApplyFalseValidated = $false
+$requiresOperatorTrueValidated = $false
 $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
 $sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $false
 $selectedRequestTaskId = $null
@@ -2495,6 +2607,96 @@ if (-not $SkipServerChecks) {
             $clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed = $true
         }
 
+        Write-Step "Read project local mapping patch proposals from server"
+        $projectLocalMappingPatchProposals = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/local-mapping-patch-proposals" `
+            -Headers $headers `
+            -StepName "Project local mapping patch proposals"
+        Assert-HttpOk $projectLocalMappingPatchProposals "Project local mapping patch proposals"
+        Assert-LocalMappingPatchProposalListContract `
+            -Json $projectLocalMappingPatchProposals.Json `
+            -StepName "Project local mapping patch proposals"
+        $firstProjectLocalMappingPatchProposal = @(
+            $projectLocalMappingPatchProposals.Json.proposals | Select-Object -First 1
+        )
+        if ($firstProjectLocalMappingPatchProposal.Count -gt 0) {
+            Assert-LocalMappingPatchProposalSafetyContract `
+                -Proposal $firstProjectLocalMappingPatchProposal[0] `
+                -StepName "Project local mapping patch proposals"
+            $safeToAutoApplyFalseValidated = $true
+            $sideEffectsPerformedFalseValidated = $true
+            $requiresOperatorTrueValidated = $true
+        }
+        $serverProjectLocalMappingPatchProposalsReadPerformed = $true
+
+        Write-Step "Read node local mapping patch proposals from server"
+        $nodeLocalMappingPatchProposals = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/local-mapping-patch-proposals/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Node local mapping patch proposals"
+        Assert-HttpOk $nodeLocalMappingPatchProposals "Node local mapping patch proposals"
+        Assert-LocalMappingPatchProposalListContract `
+            -Json $nodeLocalMappingPatchProposals.Json `
+            -StepName "Node local mapping patch proposals" `
+            -RequireNodeId
+        $firstNodeLocalMappingPatchProposal = @(
+            $nodeLocalMappingPatchProposals.Json.proposals | Select-Object -First 1
+        )
+        if ($firstNodeLocalMappingPatchProposal.Count -gt 0) {
+            Assert-LocalMappingPatchProposalSafetyContract `
+                -Proposal $firstNodeLocalMappingPatchProposal[0] `
+                -StepName "Node local mapping patch proposals" `
+                -RequireNodeId `
+                -AllowedProposalStatuses @("proposed", "blocked", "ambiguous", "not_applicable") `
+                -AllowedProposalKinds @("add_container_mapping", "review_ambiguous_mapping", "no_change", "unknown")
+            $safeToAutoApplyFalseValidated = $true
+            $sideEffectsPerformedFalseValidated = $true
+            $requiresOperatorTrueValidated = $true
+        }
+        $serverNodeLocalMappingPatchProposalsReadPerformed = $true
+
+        Write-Step "Read local mapping patch proposals from DATUM"
+        $clientLocalMappingPatchProposalOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--local-mapping-patch-proposals"
+            ) `
+            -StepName "DATUM local mapping patch proposal viewer"
+
+        if ($clientLocalMappingPatchProposalOutput -notmatch [regex]::Escape("Local mapping patch proposals for node $NodeId") -and
+            $clientLocalMappingPatchProposalOutput -notmatch "No local mapping patch proposals for this node\.") {
+            throw "DATUM local mapping patch proposal viewer output did not include proposal details or an empty-state message."
+        }
+
+        if ($clientLocalMappingPatchProposalOutput -notmatch "Note: this proposal viewer is advisory only\. This command did not write config, did not apply mappings, and did not execute installation\.") {
+            throw "DATUM local mapping patch proposal viewer output did not include the advisory no-write/no-execution note."
+        }
+
+        if ($clientLocalMappingPatchProposalOutput -match "safe to auto apply:") {
+            if ($clientLocalMappingPatchProposalOutput -notmatch "safe to auto apply:\s+false") {
+                throw "DATUM local mapping patch proposal viewer output did not include 'safe to auto apply: false' when proposals were shown."
+            }
+
+            if ($clientLocalMappingPatchProposalOutput -notmatch "side effects performed:\s+false") {
+                throw "DATUM local mapping patch proposal viewer output did not include 'side effects performed: false' when proposals were shown."
+            }
+
+            if ($clientLocalMappingPatchProposalOutput -notmatch "requires operator:\s+true") {
+                throw "DATUM local mapping patch proposal viewer output did not include 'requires operator: true' when proposals were shown."
+            }
+
+            $safeToAutoApplyFalseValidated = $true
+            $sideEffectsPerformedFalseValidated = $true
+            $requiresOperatorTrueValidated = $true
+        }
+        $clientLocalMappingPatchProposalViewerPerformed = $true
+
         if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
             Write-Host "No installation task available; skipping single-task local mapping preflight publish."
         }
@@ -2825,6 +3027,24 @@ if ($clientLocalMappingRecommendationViewerPerformed) {
 else {
     Write-Host "- DATUM local mapping recommendation viewer (skipped: server checks disabled)"
 }
+if ($serverProjectLocalMappingPatchProposalsReadPerformed) {
+    Write-Host "- server project local mapping patch proposals"
+}
+else {
+    Write-Host "- server project local mapping patch proposals (skipped: server checks disabled)"
+}
+if ($serverNodeLocalMappingPatchProposalsReadPerformed) {
+    Write-Host "- server node local mapping patch proposals"
+}
+else {
+    Write-Host "- server node local mapping patch proposals (skipped: server checks disabled)"
+}
+if ($clientLocalMappingPatchProposalViewerPerformed) {
+    Write-Host "- DATUM local mapping patch proposal viewer"
+}
+else {
+    Write-Host "- DATUM local mapping patch proposal viewer (skipped: server checks disabled)"
+}
 if ($clientLocalMappingPreflightPerformed) {
     Write-Host "- DATUM local mapping preflight"
 }
@@ -2889,8 +3109,15 @@ if ($safeToAutoApplyFalseValidated) {
     Write-Host "- safe_to_auto_apply false validation"
 }
 else {
-    Write-Host "- safe_to_auto_apply false validation (skipped: no local mapping recommendations returned)"
+    Write-Host "- safe_to_auto_apply false validation (skipped: no local mapping recommendations or patch proposals returned)"
 }
+if ($requiresOperatorTrueValidated) {
+    Write-Host "- requires_operator true validation"
+}
+else {
+    Write-Host "- requires_operator true validation (skipped: no local mapping recommendations or patch proposals returned)"
+}
+Write-Host "- advisory-only proposed config snippet guarantee"
 if ($assistedExecutionAttemptSubmissionPerformed -or
     $serverLatestAssistedExecutionAttemptReadPerformed -or
     $serverAssistedExecutionAttemptListReadPerformed) {
@@ -2900,10 +3127,10 @@ else {
     Write-Host "- safe_to_auto_execute false validation for attempts (skipped: no assisted execution attempts validated)"
 }
 if ($sideEffectsPerformedFalseValidated) {
-    Write-Host "- side_effects_performed false validation for attempts"
+    Write-Host "- side_effects_performed false validation"
 }
 else {
-    Write-Host "- side_effects_performed false validation for attempts (skipped: no assisted execution attempts validated)"
+    Write-Host "- side_effects_performed false validation (skipped: no side_effects_performed response field was validated)"
 }
 if ($safeToAutoExecuteFalseValidatedForStateSummaries) {
     Write-Host "- safe_to_auto_execute false validation for state summaries"
@@ -2941,6 +3168,8 @@ Write-Host "Assisted claim lifecycle update, when performed, recorded metadata o
 Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run metadata only."
 Write-Host "Assisted execution state checks were read-only."
 Write-Host "Local mapping recommendations and preflight checks were advisory only."
+Write-Host "Local mapping patch proposals were advisory only."
 Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
 Write-Host "Local mapping context in assisted execution state was advisory only."
 Write-Host "No local config or mapping files were modified."
+Write-Host "No proposed config snippet was applied."

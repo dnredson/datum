@@ -102,6 +102,9 @@ What it validates:
 - server project-wide `local-mapping-recommendations` endpoint
 - server node-scoped `local-mapping-recommendations/for-node/{node_id}` endpoint
 - client local mapping recommendation viewer via `installation-tasks --local-mapping-recommendations`
+- server project-wide `local-mapping-patch-proposals` endpoint
+- server node-scoped `local-mapping-patch-proposals/for-node/{node_id}` endpoint
+- client local mapping patch proposal viewer via `installation-tasks --local-mapping-patch-proposals`
 - client local mapping preflight via `installation-tasks --local-mapping-preflight`
 - optional client single-task local mapping preflight via `installation-tasks --task-id <task_id> --local-mapping-preflight`
 - client local mapping preflight publish via `installation-tasks --local-mapping-preflight --publish-local-mapping-preflight`
@@ -109,6 +112,10 @@ What it validates:
 - server project latest `local-mapping-preflight/latest` endpoint
 - optional client single-task local mapping preflight publish via `installation-tasks --task-id <task_id> --local-mapping-preflight --publish-local-mapping-preflight`
 - `safe_to_auto_apply` remains false in local mapping recommendations when recommendations are present
+- `safe_to_auto_apply` remains false in local mapping patch proposals when proposals are present
+- `side_effects_performed` remains false in local mapping patch proposals when proposals are present
+- `requires_operator` remains true in local mapping patch proposals when proposals are present
+- `proposed_config_snippet` remains advisory only and is not applied
 - `safe_to_auto_execute` remains false in local mapping preflight output
 - `side_effects_performed` remains false in local mapping preflight output
 - `safe_to_auto_execute` remains false in published local mapping preflight reports
@@ -125,6 +132,7 @@ What it does not do:
 - install anything
 - write local config
 - modify local mappings
+- apply proposed config snippets
 - perform destructive operations
 
 Notes:
@@ -138,12 +146,15 @@ Notes:
 - Assisted execution attempts are no-op/dry-run metadata only; they do not execute deployment or installation work.
 - Assisted execution state summaries are read-only; they do not execute deployment or installation work.
 - Local mapping recommendations are advisory only; they do not write config, modify mappings, or execute installation work.
+- Local mapping patch proposals are operator-reviewed suggestions only; they do not write config, modify mappings, apply proposed config snippets, or execute installation work.
 - Local mapping preflight is advisory only; it does not write config, modify mappings, or execute installation work.
 - Local mapping preflight publishing is advisory metadata only; it does not write config, modify mappings, or execute installation work.
 - Local mapping context in assisted execution state is advisory only; it does not grant execution permission or execute deployment or installation work.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
+- Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty local mapping preflight results are valid and do not fail the smoke test.
 - Empty published local mapping preflight reports are valid and do not fail the smoke test.
+- Patch proposals with `safe_to_auto_apply=true`, `side_effects_performed=true`, or `requires_operator=false` should fail the smoke test.
 - Reports with `safe_to_auto_execute=true` or `side_effects_performed=true` should be rejected by the server.
 - `local_mapping_status=already_mapped` is still advisory only and does not imply execution permission.
 - `local_mapping_status=missing_mapping` or `local_mapping_status=ambiguous` requires operator/config review, not automatic remediation.
@@ -158,3 +169,4 @@ Notes:
 - If no installation task exists, optional single-task local mapping preflight checks are skipped and the smoke test still succeeds.
 - If no installation task exists, optional single-task local mapping preflight publish checks are skipped and the smoke test still succeeds.
 - Repeated or partial smoke runs may legitimately have missing approval, request, claim, attempt, state-summary, recommendation, preflight, or published-report detail for some tasks; the smoke test tolerates that as long as the read-only endpoints respond with clean JSON and the safety invariants remain false.
+- WebAssembly remains mandatory for the long-term project roadmap, but WASM execution is not part of this smoke milestone.
