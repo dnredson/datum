@@ -137,7 +137,17 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.materialize,
             args.json,
         ),
-        Command::WasmTest(args) => wasm_test_command(&args.add, args.json),
+        Command::WasmTest(args) => wasm_test_command(
+            &args.config,
+            args.node_id.as_deref(),
+            args.project_id.as_deref(),
+            args.url.as_deref(),
+            &args.add,
+            args.publish_report,
+            args.latest_report,
+            args.latest_reports,
+            args.json,
+        ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -171,8 +181,29 @@ enum Command {
 
 #[derive(Args, Debug)]
 struct WasmTestArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    project_id: Option<String>,
+
+    #[arg(long)]
+    url: Option<String>,
+
     #[arg(long, num_args = 2, value_names = ["A", "B"])]
     add: Vec<i32>,
+
+    #[arg(long, default_value_t = false)]
+    publish_report: bool,
+
+    #[arg(long, default_value_t = false)]
+    latest_report: bool,
+
+    #[arg(long, default_value_t = false)]
+    latest_reports: bool,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -753,6 +784,26 @@ fn installation_tasks_command(
     )
 }
 
-fn wasm_test_command(add_args: &[i32], json: bool) -> Result<()> {
-    run_wasm_test_command(add_args, json)
+fn wasm_test_command(
+    config_path: &str,
+    node_id: Option<&str>,
+    project_id: Option<&str>,
+    url: Option<&str>,
+    add_args: &[i32],
+    publish_report: bool,
+    latest_report: bool,
+    latest_reports: bool,
+    json: bool,
+) -> Result<()> {
+    run_wasm_test_command(
+        config_path,
+        node_id,
+        project_id,
+        url,
+        add_args,
+        publish_report,
+        latest_report,
+        latest_reports,
+        json,
+    )
 }

@@ -8,9 +8,15 @@ use crate::wasm_runtime::WasmRuntimeResult;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WasmRuntimeReport {
     #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub report_id: Option<String>,
     #[serde(default)]
     pub node_id: Option<String>,
+    #[serde(default)]
+    pub reported_at_utc: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
     pub module_name: String,
     pub function_name: String,
     pub execution_mode: String,
@@ -38,12 +44,27 @@ pub struct WasmRuntimeReport {
     pub metadata: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct WasmRuntimeReportList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub reports: Vec<WasmRuntimeReport>,
+}
+
 pub fn build_wasm_runtime_report_from_result(result: &WasmRuntimeResult) -> WasmRuntimeReport {
     let now = Utc::now().to_rfc3339();
 
     WasmRuntimeReport {
+        project_id: None,
         report_id: Some(format!("wasm-report-{}", Uuid::new_v4())),
         node_id: None,
+        reported_at_utc: Some(now.clone()),
+        source: Some("client".to_string()),
         module_name: result.module_name.clone(),
         function_name: result.function_name.clone(),
         execution_mode: "embedded_test".to_string(),
@@ -69,9 +90,46 @@ pub fn build_wasm_runtime_report_from_result(result: &WasmRuntimeResult) -> Wasm
     }
 }
 
+pub fn validate_local_wasm_runtime_report_publish_invariants(
+    report: &WasmRuntimeReport,
+) -> anyhow::Result<()> {
+    if report.safe_to_auto_execute {
+        return Err(anyhow::anyhow!("safe_to_auto_execute must be false"));
+    }
+    if report.side_effects_performed {
+        return Err(anyhow::anyhow!("side_effects_performed must be false"));
+    }
+    if report.filesystem_access {
+        return Err(anyhow::anyhow!("filesystem_access must be false"));
+    }
+    if report.network_access {
+        return Err(anyhow::anyhow!("network_access must be false"));
+    }
+    if report.host_command_access {
+        return Err(anyhow::anyhow!("host_command_access must be false"));
+    }
+    if report.docker_access {
+        return Err(anyhow::anyhow!("docker_access must be false"));
+    }
+    if report.artifact_access {
+        return Err(anyhow::anyhow!("artifact_access must be false"));
+    }
+    if report.installation_task_access {
+        return Err(anyhow::anyhow!("installation_task_access must be false"));
+    }
+    if report.assisted_execution_access {
+        return Err(anyhow::anyhow!("assisted_execution_access must be false"));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_wasm_runtime_report_from_result;
+    use super::{
+        build_wasm_runtime_report_from_result,
+        validate_local_wasm_runtime_report_publish_invariants,
+    };
     use crate::wasm_runtime::WasmRuntimeResult;
 
     fn sample_result() -> WasmRuntimeResult {
@@ -97,6 +155,7 @@ mod tests {
         assert_eq!(report.status, "executed");
         assert_eq!(report.result_i32, Some(5));
         assert_eq!(report.execution_mode, "embedded_test");
+        assert_eq!(report.source.as_deref(), Some("client"));
     }
 
     #[test]
@@ -126,5 +185,50 @@ mod tests {
         assert!(rendered.contains("\"installation_task_access\": false"));
         assert!(rendered.contains("\"assisted_execution_access\": false"));
         assert!(rendered.contains("\"published_to_server\": false"));
+    }
+
+    #[test]
+    fn local_publish_invariants_accept_safe_report() {
+        let report = build_wasm_runtime_report_from_result(&sample_result());
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_ok());
+    }
+
+    #[test]
+    fn local_publish_invariants_reject_host_or_side_effect_flags() {
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.safe_to_auto_execute = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.side_effects_performed = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.filesystem_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.network_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.host_command_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.docker_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.artifact_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.installation_task_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
+
+        let mut report = build_wasm_runtime_report_from_result(&sample_result());
+        report.assisted_execution_access = true;
+        assert!(validate_local_wasm_runtime_report_publish_invariants(&report).is_err());
     }
 }
