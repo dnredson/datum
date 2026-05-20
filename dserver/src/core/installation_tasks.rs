@@ -261,6 +261,59 @@ pub struct AssistedExecutionAttemptList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionStateSummary {
+    pub project_id: String,
+    pub node_id: String,
+    pub task_id: String,
+    pub state: String,
+    pub reason: String,
+    #[serde(default)]
+    pub task_status: Option<String>,
+    #[serde(default)]
+    pub policy_decision: Option<String>,
+    #[serde(default)]
+    pub approval_status: Option<String>,
+    #[serde(default)]
+    pub readiness: Option<String>,
+    #[serde(default)]
+    pub request_status: Option<String>,
+    #[serde(default)]
+    pub claim_status: Option<String>,
+    #[serde(default)]
+    pub latest_attempt_status: Option<String>,
+    #[serde(default)]
+    pub latest_execution_mode: Option<String>,
+    #[serde(default)]
+    pub latest_execution_result: Option<String>,
+    pub safe_to_auto_execute: bool,
+    pub side_effects_performed: bool,
+    pub evaluated_at_utc: String,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub approval_snapshot: Option<Value>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub claim_snapshot: Option<Value>,
+    #[serde(default)]
+    pub latest_attempt_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AssistedExecutionStateSummaryList {
+    pub project_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    pub count: u64,
+    pub summaries: Vec<AssistedExecutionStateSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AssistedExecutionClaimStatusPatch {
     pub status: String,
     #[serde(default)]
@@ -285,6 +338,10 @@ pub struct InstallationPolicyDecision {
     pub safe_to_auto_execute: bool,
     #[serde(default)]
     pub allowed_future_modes: Vec<String>,
+}
+
+fn json_snapshot<T: Serialize>(value: Option<&T>) -> Option<Value> {
+    value.and_then(|value| serde_json::to_value(value).ok())
 }
 
 fn is_valid_status(status: &str) -> bool {
@@ -807,6 +864,207 @@ pub fn evaluate_installation_task_readiness(
     readiness
 }
 
+pub fn derive_assisted_execution_state_summary(
+    project_id: &str,
+    node_id: &str,
+    task: Option<&InstallationTask>,
+    approval: Option<&InstallationTaskApproval>,
+    readiness: Option<&InstallationTaskReadiness>,
+    request: Option<&AssistedExecutionRequest>,
+    claim: Option<&AssistedExecutionClaim>,
+    latest_attempt: Option<&AssistedExecutionAttempt>,
+) -> AssistedExecutionStateSummary {
+    let evaluated_at_utc = Utc::now().to_rfc3339();
+    let task_id = task
+        .map(|task| task.task_id.clone())
+        .or_else(|| request.map(|request| request.task_id.clone()))
+        .or_else(|| claim.map(|claim| claim.task_id.clone()))
+        .or_else(|| latest_attempt.map(|attempt| attempt.task_id.clone()))
+        .unwrap_or_default();
+    let task_status = task.map(|task| task.status.clone());
+    let policy_decision = task
+        .and_then(|task| task.installation_policy.as_ref())
+        .map(|policy| policy.decision.clone());
+    let approval_status = readiness
+        .and_then(|readiness| readiness.approval_status.clone())
+        .or_else(|| {
+            approval.map(|approval| {
+                if approval.approved {
+                    APPROVAL_STATUS_APPROVED.to_string()
+                } else {
+                    APPROVAL_STATUS_INVALID.to_string()
+                }
+            })
+        });
+    let readiness_status = readiness.map(|readiness| readiness.readiness.clone());
+    let request_status = request.map(|request| request.request_status.clone());
+    let claim_status = claim.map(|claim| claim.claim_status.clone());
+    let latest_attempt_status = latest_attempt.map(|attempt| attempt.attempt_status.clone());
+    let latest_execution_mode = latest_attempt.map(|attempt| attempt.execution_mode.clone());
+    let latest_execution_result = latest_attempt.map(|attempt| attempt.execution_result.clone());
+    let side_effects_performed = latest_attempt
+        .map(|attempt| attempt.side_effects_performed)
+        .unwrap_or(false);
+    let metadata = latest_attempt
+        .and_then(|attempt| attempt.metadata.clone())
+        .or_else(|| claim.and_then(|claim| claim.metadata.clone()))
+        .or_else(|| request.and_then(|request| request.metadata.clone()))
+        .or_else(|| readiness.and_then(|readiness| readiness.metadata.clone()))
+        .or_else(|| approval.and_then(|approval| approval.metadata.clone()))
+        .or_else(|| task.and_then(|task| task.metadata.clone()));
+
+    let (state, reason) = if task.is_none() {
+        (
+            "task_missing".to_string(),
+            "installation task is missing".to_string(),
+        )
+    } else if let Some(attempt) = latest_attempt {
+        match attempt.execution_mode.as_str() {
+            ATTEMPT_EXECUTION_MODE_NO_OP => (
+                "attempt_recorded_no_op".to_string(),
+                "latest assisted execution attempt recorded in no_op mode".to_string(),
+            ),
+            ATTEMPT_EXECUTION_MODE_DRY_RUN => (
+                "attempt_recorded_dry_run".to_string(),
+                "latest assisted execution attempt recorded in dry_run mode".to_string(),
+            ),
+            _ => (
+                "unknown".to_string(),
+                format!(
+                    "latest assisted execution attempt recorded with unknown mode '{}'",
+                    attempt.execution_mode
+                ),
+            ),
+        }
+    } else if let Some(claim) = claim {
+        match claim.claim_status.as_str() {
+            CLAIM_STATUS_CLAIMED => (
+                "claimed".to_string(),
+                "assisted execution claim is active".to_string(),
+            ),
+            CLAIM_STATUS_RELEASED => (
+                "claim_released".to_string(),
+                "assisted execution claim was released".to_string(),
+            ),
+            CLAIM_STATUS_COMPLETED | CLAIM_STATUS_CANCELLED | CLAIM_STATUS_EXPIRED => (
+                "claim_terminal".to_string(),
+                format!(
+                    "assisted execution claim is in terminal status '{}'",
+                    claim.claim_status
+                ),
+            ),
+            _ => (
+                "unknown".to_string(),
+                format!(
+                    "assisted execution claim has unknown status '{}'",
+                    claim.claim_status
+                ),
+            ),
+        }
+    } else if request.is_some() {
+        (
+            "awaiting_claim".to_string(),
+            "assisted execution request is recorded and awaiting claim".to_string(),
+        )
+    } else if let Some(task) = task {
+        if matches!(
+            task.status.trim(),
+            STATUS_COMPLETED | STATUS_CANCELLED | STATUS_BLOCKED
+        ) {
+            (
+                "blocked".to_string(),
+                format!("task status '{}' is not eligible", task.status),
+            )
+        } else {
+            match task
+                .installation_policy
+                .as_ref()
+                .map(|policy| policy.decision.as_str())
+            {
+                Some(POLICY_MANUAL_ONLY) => (
+                    "policy_manual_only".to_string(),
+                    "installation policy requires manual handling".to_string(),
+                ),
+                Some(POLICY_UNKNOWN) | Some(POLICY_BLOCKED) | None => (
+                    "policy_unknown".to_string(),
+                    "installation policy is missing, blocked, or not eligible for assisted execution"
+                        .to_string(),
+                ),
+                Some(POLICY_CANDIDATE_FOR_ASSISTED_EXECUTION) => {
+                    if let Some(readiness) = readiness {
+                        if readiness.readiness == READINESS_READY {
+                            (
+                                "awaiting_request".to_string(),
+                                "task is ready for assisted execution and awaiting request"
+                                    .to_string(),
+                            )
+                        } else if readiness.approval_status.as_deref()
+                            == Some(APPROVAL_STATUS_MISSING)
+                        {
+                            (
+                                "awaiting_approval".to_string(),
+                                "candidate task is awaiting operator approval".to_string(),
+                            )
+                        } else {
+                            (
+                                "awaiting_readiness".to_string(),
+                                format!("task readiness is '{}'", readiness.readiness),
+                            )
+                        }
+                    } else if approval.is_some() {
+                        (
+                            "awaiting_readiness".to_string(),
+                            "operator approval exists but readiness has not been evaluated"
+                                .to_string(),
+                        )
+                    } else {
+                        (
+                            "awaiting_approval".to_string(),
+                            "candidate task is awaiting operator approval".to_string(),
+                        )
+                    }
+                }
+                Some(other) => (
+                    "unknown".to_string(),
+                    format!("installation policy decision '{}' is not recognized", other),
+                ),
+            }
+        }
+    } else {
+        (
+            "unknown".to_string(),
+            "assisted execution state is unknown".to_string(),
+        )
+    };
+
+    AssistedExecutionStateSummary {
+        project_id: project_id.to_string(),
+        node_id: node_id.to_string(),
+        task_id,
+        state,
+        reason,
+        task_status,
+        policy_decision,
+        approval_status,
+        readiness: readiness_status,
+        request_status,
+        claim_status,
+        latest_attempt_status,
+        latest_execution_mode,
+        latest_execution_result,
+        safe_to_auto_execute: false,
+        side_effects_performed,
+        evaluated_at_utc,
+        task_snapshot: json_snapshot(task),
+        approval_snapshot: json_snapshot(approval),
+        readiness_snapshot: json_snapshot(readiness),
+        request_snapshot: json_snapshot(request),
+        claim_snapshot: json_snapshot(claim),
+        latest_attempt_snapshot: json_snapshot(latest_attempt),
+        metadata,
+    }
+}
+
 pub fn validate_assisted_execution_request_allowed(
     task: &InstallationTask,
     readiness: &InstallationTaskReadiness,
@@ -1257,9 +1515,9 @@ mod tests {
         annotate_installation_task_policy, apply_assisted_execution_claim_status_patch,
         build_assisted_execution_attempt, build_assisted_execution_claim,
         build_assisted_execution_request, build_installation_task_approval,
-        derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
-        normalize_installation_task, validate_assisted_execution_attempt_allowed,
-        validate_assisted_execution_claim_allowed,
+        derive_assisted_execution_state_summary, derive_installation_tasks_from_plan,
+        evaluate_installation_task_readiness, normalize_installation_task,
+        validate_assisted_execution_attempt_allowed, validate_assisted_execution_claim_allowed,
         validate_assisted_execution_claim_status_transition,
         validate_assisted_execution_request_allowed, validate_installation_task,
         validate_installation_task_can_be_approved, validate_installation_task_status_transition,
@@ -2528,5 +2786,360 @@ mod tests {
 
         assert_eq!(no_op.execution_result, "no_op_recorded");
         assert_eq!(dry_run.execution_result, "dry_run_recorded");
+    }
+
+    #[test]
+    fn state_summary_without_approval_is_awaiting_approval() {
+        let task = candidate_task();
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            Some(&readiness),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "awaiting_approval");
+    }
+
+    #[test]
+    fn state_summary_manual_only_policy_is_policy_manual_only() {
+        let task = base_task();
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            Some(&readiness),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "policy_manual_only");
+    }
+
+    #[test]
+    fn state_summary_missing_policy_is_policy_unknown() {
+        let mut task = candidate_task();
+        task.installation_policy = None;
+        let readiness =
+            evaluate_installation_task_readiness("smart-city-campinas", "fog-01", &task, None);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            Some(&readiness),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "policy_unknown");
+    }
+
+    #[test]
+    fn state_summary_approved_but_not_ready_is_awaiting_readiness() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let mut approval = approval;
+        approval.approved = false;
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            Some(&approval),
+            Some(&readiness),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "awaiting_readiness");
+    }
+
+    #[test]
+    fn state_summary_ready_but_no_request_is_awaiting_request() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            Some(&approval),
+            Some(&readiness),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "awaiting_request");
+    }
+
+    #[test]
+    fn state_summary_request_without_claim_is_awaiting_claim() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+        let request = requested_request();
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            Some(&approval),
+            Some(&readiness),
+            Some(&request),
+            None,
+            None,
+        );
+
+        assert_eq!(summary.state, "awaiting_claim");
+    }
+
+    #[test]
+    fn state_summary_claimed_without_attempt_is_claimed() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            Some(&approval),
+            Some(&readiness),
+            Some(&request),
+            Some(&claim),
+            None,
+        );
+
+        assert_eq!(summary.state, "claimed");
+    }
+
+    #[test]
+    fn state_summary_released_claim_is_claim_released() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "released");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            Some(&request),
+            Some(&claim),
+            None,
+        );
+
+        assert_eq!(summary.state, "claim_released");
+    }
+
+    #[test]
+    fn state_summary_terminal_claims_are_claim_terminal() {
+        let task = candidate_task();
+        let request = requested_request();
+
+        for status in ["completed", "cancelled", "expired"] {
+            let claim = existing_claim_for_request(&task, &request, status);
+            let summary = derive_assisted_execution_state_summary(
+                "smart-city-campinas",
+                "fog-01",
+                Some(&task),
+                None,
+                None,
+                Some(&request),
+                Some(&claim),
+                None,
+            );
+
+            assert_eq!(summary.state, "claim_terminal");
+        }
+    }
+
+    #[test]
+    fn state_summary_latest_no_op_attempt_is_attempt_recorded_no_op() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+        let attempt = recorded_attempt("no_op");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            Some(&request),
+            Some(&claim),
+            Some(&attempt),
+        );
+
+        assert_eq!(summary.state, "attempt_recorded_no_op");
+    }
+
+    #[test]
+    fn state_summary_latest_dry_run_attempt_is_attempt_recorded_dry_run() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+        let attempt = recorded_attempt("dry_run");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            Some(&request),
+            Some(&claim),
+            Some(&attempt),
+        );
+
+        assert_eq!(summary.state, "attempt_recorded_dry_run");
+    }
+
+    #[test]
+    fn state_summary_safe_to_auto_execute_remains_false() {
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&candidate_task()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(!summary.safe_to_auto_execute);
+    }
+
+    #[test]
+    fn state_summary_side_effects_performed_remains_false_when_attempt_false() {
+        let task = candidate_task();
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+        let attempt = recorded_attempt("no_op");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            Some(&request),
+            Some(&claim),
+            Some(&attempt),
+        );
+
+        assert!(!summary.side_effects_performed);
+    }
+
+    #[test]
+    fn state_summary_preserves_snapshots() {
+        let task = candidate_task();
+        let approval = build_installation_task_approval(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some("operator".to_string()),
+            None,
+            None,
+        );
+        let readiness = evaluate_installation_task_readiness(
+            "smart-city-campinas",
+            "fog-01",
+            &task,
+            Some(&approval),
+        );
+        let request = requested_request();
+        let claim = existing_claim_for_request(&task, &request, "claimed");
+        let attempt = recorded_attempt("no_op");
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            Some(&approval),
+            Some(&readiness),
+            Some(&request),
+            Some(&claim),
+            Some(&attempt),
+        );
+
+        assert!(summary.task_snapshot.is_some());
+        assert!(summary.approval_snapshot.is_some());
+        assert!(summary.readiness_snapshot.is_some());
+        assert!(summary.request_snapshot.is_some());
+        assert!(summary.claim_snapshot.is_some());
+        assert!(summary.latest_attempt_snapshot.is_some());
     }
 }

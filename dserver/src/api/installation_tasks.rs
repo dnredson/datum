@@ -17,18 +17,20 @@ use crate::{
         installation_tasks::{
             annotate_installation_task_policy, build_assisted_execution_attempt,
             build_assisted_execution_claim, build_assisted_execution_request,
-            build_installation_task_approval, derive_installation_tasks_from_plan,
-            evaluate_installation_task_readiness, normalize_installation_task,
-            validate_assisted_execution_attempt_allowed, validate_assisted_execution_claim_allowed,
+            build_installation_task_approval, derive_assisted_execution_state_summary,
+            derive_installation_tasks_from_plan, evaluate_installation_task_readiness,
+            normalize_installation_task, validate_assisted_execution_attempt_allowed,
+            validate_assisted_execution_claim_allowed,
             validate_assisted_execution_claim_status_transition,
             validate_assisted_execution_request_allowed, validate_installation_task,
             validate_installation_task_can_be_approved,
             validate_installation_task_status_transition, AssistedExecutionAttempt,
             AssistedExecutionAttemptBody, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch,
-            AssistedExecutionRequest, AssistedExecutionRequestList, InstallationTask,
-            InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-            InstallationTaskReadiness, InstallationTaskReadinessList,
+            AssistedExecutionRequest, AssistedExecutionRequestList, AssistedExecutionStateSummary,
+            AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
+            InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
+            InstallationTaskReadinessList,
         },
     },
     AppState,
@@ -259,6 +261,120 @@ fn assisted_execution_attempt_list(
         count: attempts.len() as u64,
         attempts,
     }
+}
+
+fn assisted_execution_state_summary_list(
+    project_id: String,
+    node_id: String,
+    mut summaries: Vec<AssistedExecutionStateSummary>,
+) -> AssistedExecutionStateSummaryList {
+    summaries.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+    AssistedExecutionStateSummaryList {
+        project_id,
+        node_id: Some(node_id),
+        count: summaries.len() as u64,
+        summaries,
+    }
+}
+
+async fn load_assisted_execution_state_summary_for_task(
+    state: &AppState,
+    project_id: &str,
+    node_id: &str,
+    task_id: &str,
+) -> Result<AssistedExecutionStateSummary, ApiError> {
+    let Some(task) = state
+        .firebase
+        .get_installation_task(project_id, node_id, task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "installation task not found for project '{}' node '{}' task '{}'",
+                    project_id, node_id, task_id
+                )
+            })),
+        ));
+    };
+
+    let normalized_task = normalize_task_for_response(project_id, Some(node_id), task);
+    let latest_approval = state
+        .firebase
+        .get_latest_installation_task_approval(project_id, node_id, task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let readiness = evaluate_installation_task_readiness(
+        project_id,
+        node_id,
+        &normalized_task,
+        latest_approval.as_ref(),
+    );
+    let latest_request = state
+        .firebase
+        .get_latest_assisted_execution_request(project_id, node_id, task_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let latest_claim = match latest_request.as_ref() {
+        Some(request) => state
+            .firebase
+            .get_latest_assisted_execution_claim(project_id, node_id, task_id, &request.request_id)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({ "error": e.to_string() })),
+                )
+            })?,
+        None => None,
+    };
+    let latest_attempt = match (latest_request.as_ref(), latest_claim.as_ref()) {
+        (Some(request), Some(claim)) => state
+            .firebase
+            .get_latest_assisted_execution_attempt(
+                project_id,
+                node_id,
+                task_id,
+                &request.request_id,
+                &claim.claim_id,
+            )
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({ "error": e.to_string() })),
+                )
+            })?,
+        _ => None,
+    };
+
+    Ok(derive_assisted_execution_state_summary(
+        project_id,
+        node_id,
+        Some(&normalized_task),
+        latest_approval.as_ref(),
+        Some(&readiness),
+        latest_request.as_ref(),
+        latest_claim.as_ref(),
+        latest_attempt.as_ref(),
+    ))
 }
 
 fn merge_status_reason(task: &mut InstallationTask, reason: Option<&str>) {
@@ -1090,6 +1206,19 @@ pub async fn get_latest_assisted_execution_attempt(
     }
 }
 
+pub async fn get_installation_task_assisted_execution_state(
+    State(state): State<AppState>,
+    Path((node_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionStateSummary>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let summary =
+        load_assisted_execution_state_summary_for_task(&state, &project_id, &node_id, &task_id)
+            .await?;
+
+    Ok(JsonResponse(summary))
+}
+
 pub async fn list_assisted_execution_attempts_for_node(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
@@ -1109,6 +1238,127 @@ pub async fn list_assisted_execution_attempts_for_node(
 
     Ok(JsonResponse(assisted_execution_attempt_list(
         project_id, node_id, attempts,
+    )))
+}
+
+pub async fn list_assisted_execution_state_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<AssistedExecutionStateSummaryList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let approvals = state
+        .firebase
+        .list_installation_task_approvals_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let requests = state
+        .firebase
+        .list_assisted_execution_requests_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let claims = state
+        .firebase
+        .list_assisted_execution_claims_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+    let attempts = state
+        .firebase
+        .list_assisted_execution_attempts_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let approvals_by_task_id = approvals
+        .into_iter()
+        .map(|approval| (approval.task_id.clone(), approval))
+        .collect::<HashMap<_, _>>();
+    let requests_by_task_id = requests
+        .into_iter()
+        .map(|request| (request.task_id.clone(), request))
+        .collect::<HashMap<_, _>>();
+    let claims_by_identity = claims
+        .into_iter()
+        .map(|claim| ((claim.task_id.clone(), claim.request_id.clone()), claim))
+        .collect::<HashMap<_, _>>();
+    let attempts_by_identity = attempts
+        .into_iter()
+        .map(|attempt| {
+            (
+                (
+                    attempt.task_id.clone(),
+                    attempt.request_id.clone(),
+                    attempt.claim_id.clone(),
+                ),
+                attempt,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let summaries = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, Some(&node_id), task))
+        .map(|task| {
+            let approval = approvals_by_task_id.get(&task.task_id);
+            let readiness =
+                evaluate_installation_task_readiness(&project_id, &node_id, &task, approval);
+            let request = requests_by_task_id.get(&task.task_id);
+            let claim = request.and_then(|request| {
+                claims_by_identity.get(&(task.task_id.clone(), request.request_id.clone()))
+            });
+            let latest_attempt = match (request, claim) {
+                (Some(request), Some(claim)) => attempts_by_identity.get(&(
+                    task.task_id.clone(),
+                    request.request_id.clone(),
+                    claim.claim_id.clone(),
+                )),
+                _ => None,
+            };
+
+            derive_assisted_execution_state_summary(
+                &project_id,
+                &node_id,
+                Some(&task),
+                approval,
+                Some(&readiness),
+                request,
+                claim,
+                latest_attempt,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    Ok(JsonResponse(assisted_execution_state_summary_list(
+        project_id, node_id, summaries,
     )))
 }
 

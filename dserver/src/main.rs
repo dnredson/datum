@@ -22,12 +22,14 @@ use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
 use api::installation_plan::{get_installation_plan_for_node, get_latest_installation_plan};
 use api::installation_tasks::{
-    get_installation_task, get_installation_task_readiness, get_latest_assisted_execution_attempt,
+    get_installation_task, get_installation_task_assisted_execution_state,
+    get_installation_task_readiness, get_latest_assisted_execution_attempt,
     get_latest_assisted_execution_claim, get_latest_assisted_execution_request,
     get_latest_installation_task_approval, list_assisted_execution_attempts_for_node,
     list_assisted_execution_claims_for_node, list_assisted_execution_requests_for_node,
-    list_installation_task_approvals_for_node, list_installation_task_readiness_for_node,
-    list_installation_tasks, list_installation_tasks_for_node, materialize_installation_tasks,
+    list_assisted_execution_state_for_node, list_installation_task_approvals_for_node,
+    list_installation_task_readiness_for_node, list_installation_tasks,
+    list_installation_tasks_for_node, materialize_installation_tasks,
     materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
     patch_installation_task_status, post_assisted_execution_attempt, post_assisted_execution_claim,
     post_assisted_execution_request, post_installation_task_approval,
@@ -157,6 +159,10 @@ async fn main() {
             get(get_installation_task_readiness),
         )
         .route(
+            "/api/v1/installation-tasks/for-node/:node_id/:task_id/assisted-execution-state",
+            get(get_installation_task_assisted_execution_state),
+        )
+        .route(
             "/api/v1/installation-tasks/for-node/:node_id/:task_id/assisted-execution-request",
             post(post_assisted_execution_request),
         )
@@ -203,6 +209,10 @@ async fn main() {
         .route(
             "/api/v1/assisted-execution-attempts/for-node/:node_id",
             get(list_assisted_execution_attempts_for_node),
+        )
+        .route(
+            "/api/v1/assisted-execution-state/for-node/:node_id",
+            get(list_assisted_execution_state_for_node),
         )
         .route("/api/v1/dispatch/latest", get(publish_latest_dispatch))
         .route(
