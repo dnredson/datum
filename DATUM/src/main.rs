@@ -116,6 +116,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.requested_by.as_deref(),
             args.claimed_by.as_deref(),
             args.attempted_by.as_deref(),
+            args.message.as_deref(),
             args.status.as_deref(),
             args.reason.as_deref(),
             args.expires_at_utc.as_deref(),
@@ -330,6 +331,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     attempted_by: Option<String>,
+
+    #[arg(long)]
+    message: Option<String>,
 
     #[arg(long)]
     status: Option<String>,
@@ -637,6 +641,7 @@ fn installation_tasks_command(
     requested_by: Option<&str>,
     claimed_by: Option<&str>,
     attempted_by: Option<&str>,
+    message: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
@@ -672,6 +677,7 @@ fn installation_tasks_command(
         requested_by,
         claimed_by,
         attempted_by,
+        message,
         status,
         reason,
         expires_at_utc,

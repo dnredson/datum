@@ -567,6 +567,96 @@ function Assert-AssistedExecutionClaimListContract {
     }
 }
 
+function Assert-AssistedExecutionAttemptContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$ExpectedTaskId,
+        [string]$ExpectedRequestId,
+        [string]$ExpectedClaimId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "task_id" $StepName
+    Assert-JsonHasProperty $Json "request_id" $StepName
+    Assert-JsonHasProperty $Json "claim_id" $StepName
+    Assert-JsonHasProperty $Json "attempt_id" $StepName
+    Assert-JsonHasProperty $Json "attempt_status" $StepName
+    Assert-JsonHasProperty $Json "execution_mode" $StepName
+    Assert-JsonHasProperty $Json "execution_result" $StepName
+    Assert-JsonHasProperty $Json "safe_to_auto_execute" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.task_id -ne $ExpectedTaskId) {
+        throw "$StepName returned task_id '$($Json.task_id)', expected '$ExpectedTaskId'."
+    }
+
+    if ($Json.request_id -ne $ExpectedRequestId) {
+        throw "$StepName returned request_id '$($Json.request_id)', expected '$ExpectedRequestId'."
+    }
+
+    if ($Json.claim_id -ne $ExpectedClaimId) {
+        throw "$StepName returned claim_id '$($Json.claim_id)', expected '$ExpectedClaimId'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.attempt_id)) {
+        throw "$StepName did not include a non-empty attempt_id."
+    }
+
+    if ($Json.attempt_status -ne "recorded") {
+        throw "$StepName returned attempt_status '$($Json.attempt_status)', expected 'recorded'."
+    }
+
+    if ($Json.execution_mode -ne "no_op") {
+        throw "$StepName returned execution_mode '$($Json.execution_mode)', expected 'no_op'."
+    }
+
+    if ($Json.execution_result -ne "no_op_recorded") {
+        throw "$StepName returned execution_result '$($Json.execution_result)', expected 'no_op_recorded'."
+    }
+
+    if ($Json.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned safe_to_auto_execute='$($Json.safe_to_auto_execute)', expected 'False'."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+}
+
+function Assert-AssistedExecutionAttemptListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "node_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "attempts" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.node_id -ne $NodeId) {
+        throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+    }
+
+    if ($Json.attempts -isnot [System.Array] -and $Json.attempts -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'attempts' as an array."
+    }
+}
+
 Write-Step "Resolve paths"
 Write-Host "PD root: $PdRoot"
 Write-Host "DATUM dir: $DatumDir"
@@ -786,10 +876,19 @@ $assistedClaimLifecycleUpdatePerformed = $false
 $assistedClaimLifecycleAlreadyReleased = $false
 $serverLatestAssistedExecutionClaimLifecycleReadPerformed = $false
 $clientLatestAssistedExecutionClaimLifecycleReadPerformed = $false
+$assistedExecutionAttemptSubmissionPerformed = $false
+$serverLatestAssistedExecutionAttemptReadPerformed = $false
+$serverAssistedExecutionAttemptListReadPerformed = $false
+$clientLatestAssistedExecutionAttemptReadPerformed = $false
+$clientAssistedExecutionAttemptListReadPerformed = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
 $selectedRequestEncodedRequestId = $null
+$selectedClaimId = $null
+$selectedClaimEncodedId = $null
+$selectedClaimStatus = $null
+$sideEffectsPerformedFalseValidated = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -1347,6 +1446,10 @@ if (-not $SkipServerChecks) {
             -ExpectedRequestId $selectedRequestId
         $serverLatestAssistedExecutionClaimReadPerformed = $true
         $safeToAutoExecuteFalseValidated = $true
+        $selectedClaimId = [string]$latestAssistedExecutionClaim.Json.claim_id
+        if (-not [string]::IsNullOrWhiteSpace([string]$selectedClaimId)) {
+            $selectedClaimEncodedId = [System.Uri]::EscapeDataString($selectedClaimId)
+        }
 
         Write-Step "List assisted execution claims from server"
         $assistedExecutionClaimList = Invoke-JsonEndpoint `
@@ -1368,6 +1471,12 @@ if (-not $SkipServerChecks) {
         }
         $serverAssistedExecutionClaimListReadPerformed = $true
         $safeToAutoExecuteFalseValidated = $true
+        if ([string]::IsNullOrWhiteSpace([string]$selectedClaimId)) {
+            $selectedClaimId = [string]$matchingAssistedExecutionClaim[0].claim_id
+            if (-not [string]::IsNullOrWhiteSpace([string]$selectedClaimId)) {
+                $selectedClaimEncodedId = [System.Uri]::EscapeDataString($selectedClaimId)
+            }
+        }
 
         Write-Step "Read latest assisted execution claim from DATUM"
         $clientLatestAssistedExecutionClaimOutput = Run-CommandOrFail `
@@ -1425,6 +1534,7 @@ if (-not $SkipServerChecks) {
         if ($latestAssistedExecutionClaim.Json.PSObject.Properties.Name.Contains("claim_status")) {
             $claimStatusForLifecycle = [string]$latestAssistedExecutionClaim.Json.claim_status
         }
+        $selectedClaimStatus = $claimStatusForLifecycle
 
         if ($claimStatusForLifecycle -eq "claimed") {
             Write-Step "Update assisted execution claim status from DATUM"
@@ -1476,6 +1586,11 @@ if (-not $SkipServerChecks) {
             }
             $serverLatestAssistedExecutionClaimLifecycleReadPerformed = $true
             $safeToAutoExecuteFalseValidated = $true
+            $selectedClaimStatus = [string]$updatedLatestAssistedExecutionClaim.Json.claim_status
+            $selectedClaimId = [string]$updatedLatestAssistedExecutionClaim.Json.claim_id
+            if (-not [string]::IsNullOrWhiteSpace([string]$selectedClaimId)) {
+                $selectedClaimEncodedId = [System.Uri]::EscapeDataString($selectedClaimId)
+            }
 
             Write-Step "Read updated latest assisted execution claim from DATUM"
             $clientUpdatedLatestAssistedExecutionClaimOutput = Run-CommandOrFail `
@@ -1512,10 +1627,154 @@ if (-not $SkipServerChecks) {
             $serverLatestAssistedExecutionClaimLifecycleReadPerformed = $true
             $clientLatestAssistedExecutionClaimLifecycleReadPerformed = $true
             $safeToAutoExecuteFalseValidated = $true
+            $selectedClaimStatus = "released"
         }
         else {
             Write-Host "No claimed assisted execution claim found; skipping claim lifecycle update checks."
         }
+
+        if ([string]::IsNullOrWhiteSpace([string]$selectedClaimId)) {
+            Write-Host "No claimed assisted execution claim found; skipping assisted execution attempt checks."
+        }
+        elseif ($selectedClaimStatus -eq "released") {
+            Write-Host "Latest claim is released; skipping assisted execution attempt checks because attempts require a claimed claim."
+        }
+        elseif ($selectedClaimStatus -ne "claimed") {
+            Write-Host "No claimed assisted execution claim found; skipping assisted execution attempt checks."
+        }
+        else {
+            Write-Step "Submit no-op assisted execution attempt from DATUM"
+            $attemptSubmitOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $selectedRequestTaskId,
+                    "--request-id",
+                    $selectedRequestId,
+                    "--claim-id",
+                    $selectedClaimId,
+                    "--attempt-assisted-execution",
+                    "--execution-mode",
+                    "no_op",
+                    "--attempted-by",
+                    "smoke-test",
+                    "--message",
+                    "smoke test no-op assisted execution attempt"
+                ) `
+                -StepName "DATUM assisted execution attempt submit"
+
+            if ($attemptSubmitOutput -notmatch "Submitted assisted execution attempt" -or
+                $attemptSubmitOutput -notmatch "attempt metadata was recorded on the server" -or
+                $attemptSubmitOutput -notmatch "did not execute installation") {
+                throw "DATUM assisted execution attempt submit output did not confirm metadata-only submission."
+            }
+            $assistedExecutionAttemptSubmissionPerformed = $true
+
+            Write-Step "Read latest assisted execution attempt from server"
+            $latestAssistedExecutionAttempt = Invoke-JsonEndpoint `
+                -Url "$ServerUrl/api/v1/installation-tasks/for-node/$NodeId/$selectedRequestEncodedTaskId/assisted-execution-request/$selectedRequestEncodedRequestId/claim/$selectedClaimEncodedId/attempt/latest" `
+                -Headers $headers `
+                -StepName "Latest assisted execution attempt"
+            Assert-HttpOk $latestAssistedExecutionAttempt "Latest assisted execution attempt"
+            Assert-AssistedExecutionAttemptContract `
+                -Json $latestAssistedExecutionAttempt.Json `
+                -StepName "Latest assisted execution attempt" `
+                -ExpectedTaskId $selectedRequestTaskId `
+                -ExpectedRequestId $selectedRequestId `
+                -ExpectedClaimId $selectedClaimId
+            $serverLatestAssistedExecutionAttemptReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+            $sideEffectsPerformedFalseValidated = $true
+
+            Write-Step "List assisted execution attempts from server"
+            $assistedExecutionAttemptList = Invoke-JsonEndpoint `
+                -Url "$ServerUrl/api/v1/assisted-execution-attempts/for-node/$NodeId" `
+                -Headers $headers `
+                -StepName "Assisted execution attempts for node"
+            Assert-HttpOk $assistedExecutionAttemptList "Assisted execution attempts for node"
+            Assert-AssistedExecutionAttemptListContract `
+                -Json $assistedExecutionAttemptList.Json `
+                -StepName "Assisted execution attempts for node"
+            $matchingAssistedExecutionAttempt = @($assistedExecutionAttemptList.Json.attempts | Where-Object {
+                $_.task_id -eq $selectedRequestTaskId -and
+                $_.request_id -eq $selectedRequestId -and
+                $_.claim_id -eq $selectedClaimId -and
+                $_.attempt_status -eq "recorded" -and
+                $_.execution_mode -eq "no_op" -and
+                $_.execution_result -eq "no_op_recorded" -and
+                $_.safe_to_auto_execute -eq $false -and
+                $_.side_effects_performed -eq $false
+            } | Select-Object -First 1)
+            if ($matchingAssistedExecutionAttempt.Count -eq 0) {
+                throw "Assisted execution attempts for node did not include the expected latest attempt for task '$selectedRequestTaskId' request '$selectedRequestId' claim '$selectedClaimId'."
+            }
+            $serverAssistedExecutionAttemptListReadPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+            $sideEffectsPerformedFalseValidated = $true
+
+            Write-Step "Read latest assisted execution attempt from DATUM"
+            $clientLatestAssistedExecutionAttemptOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $selectedRequestTaskId,
+                    "--request-id",
+                    $selectedRequestId,
+                    "--claim-id",
+                    $selectedClaimId,
+                    "--execution-attempt"
+                ) `
+                -StepName "DATUM latest assisted execution attempt"
+
+            if ($clientLatestAssistedExecutionAttemptOutput -notmatch "Latest assisted execution attempt" -or
+                $clientLatestAssistedExecutionAttemptOutput -notmatch "safe to auto execute:\s+false" -or
+                $clientLatestAssistedExecutionAttemptOutput -notmatch "side effects performed:\s+false") {
+                throw "DATUM latest assisted execution attempt output did not include the expected attempt details."
+            }
+            $clientLatestAssistedExecutionAttemptReadPerformed = $true
+
+            Write-Step "List assisted execution attempts from DATUM"
+            $clientAssistedExecutionAttemptListOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--execution-attempts"
+                ) `
+                -StepName "DATUM assisted execution attempt list"
+
+            if ($clientAssistedExecutionAttemptListOutput -notmatch [regex]::Escape("Assisted execution attempts for node $NodeId") -and
+                $clientAssistedExecutionAttemptListOutput -notmatch "No assisted execution attempts for this node\.") {
+                throw "DATUM assisted execution attempt list output did not include attempt details or an empty-state message."
+            }
+
+            if ($clientAssistedExecutionAttemptListOutput -match "No assisted execution attempts for this node\.") {
+                throw "DATUM assisted execution attempt list output reported no attempts after attempt submission."
+            }
+
+            if ($clientAssistedExecutionAttemptListOutput -notmatch [regex]::Escape("task_id: $selectedRequestTaskId")) {
+                throw "DATUM assisted execution attempt list output did not include the selected attempt task id."
+            }
+            $clientAssistedExecutionAttemptListReadPerformed = $true
+            Write-Host "Assisted execution attempt is metadata only; no installation execution was performed."
+        }
+
         Write-Host "Assisted execution claim is metadata only; no installation execution was performed."
     }
 }
@@ -1717,6 +1976,65 @@ if ($clientLatestAssistedExecutionClaimLifecycleReadPerformed) {
 else {
     Write-Host "- client latest assisted claim status viewer (skipped: no claimed assisted execution claim found)"
 }
+if ($assistedExecutionAttemptSubmissionPerformed) {
+    Write-Host "- client assisted execution attempt submission"
+}
+elseif ($selectedClaimStatus -eq "released") {
+    Write-Host "- client assisted execution attempt submission (skipped: latest claim is released)"
+}
+else {
+    Write-Host "- client assisted execution attempt submission (skipped: no claimed assisted execution claim found)"
+}
+if ($serverLatestAssistedExecutionAttemptReadPerformed) {
+    Write-Host "- server latest assisted execution attempt read-back"
+}
+elseif ($selectedClaimStatus -eq "released") {
+    Write-Host "- server latest assisted execution attempt read-back (skipped: latest claim is released)"
+}
+else {
+    Write-Host "- server latest assisted execution attempt read-back (skipped: no claimed assisted execution claim found)"
+}
+if ($serverAssistedExecutionAttemptListReadPerformed) {
+    Write-Host "- server assisted execution attempt list"
+}
+elseif ($selectedClaimStatus -eq "released") {
+    Write-Host "- server assisted execution attempt list (skipped: latest claim is released)"
+}
+else {
+    Write-Host "- server assisted execution attempt list (skipped: no claimed assisted execution claim found)"
+}
+if ($clientLatestAssistedExecutionAttemptReadPerformed) {
+    Write-Host "- client latest assisted execution attempt viewer"
+}
+elseif ($selectedClaimStatus -eq "released") {
+    Write-Host "- client latest assisted execution attempt viewer (skipped: latest claim is released)"
+}
+else {
+    Write-Host "- client latest assisted execution attempt viewer (skipped: no claimed assisted execution claim found)"
+}
+if ($clientAssistedExecutionAttemptListReadPerformed) {
+    Write-Host "- client assisted execution attempt list"
+}
+elseif ($selectedClaimStatus -eq "released") {
+    Write-Host "- client assisted execution attempt list (skipped: latest claim is released)"
+}
+else {
+    Write-Host "- client assisted execution attempt list (skipped: no claimed assisted execution claim found)"
+}
+if ($assistedExecutionAttemptSubmissionPerformed -or
+    $serverLatestAssistedExecutionAttemptReadPerformed -or
+    $serverAssistedExecutionAttemptListReadPerformed) {
+    Write-Host "- safe_to_auto_execute false validation for attempts"
+}
+else {
+    Write-Host "- safe_to_auto_execute false validation for attempts (skipped: no assisted execution attempts validated)"
+}
+if ($sideEffectsPerformedFalseValidated) {
+    Write-Host "- side_effects_performed false validation for attempts"
+}
+else {
+    Write-Host "- side_effects_performed false validation for attempts (skipped: no assisted execution attempts validated)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -1726,3 +2044,4 @@ Write-Host "Assisted readiness, when ready, was informational only."
 Write-Host "Assisted execution request, when performed, recorded metadata only."
 Write-Host "Assisted execution claim, when performed, recorded metadata only."
 Write-Host "Assisted claim lifecycle update, when performed, recorded metadata only."
+Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run metadata only."

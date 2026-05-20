@@ -56,6 +56,7 @@ pub fn run_installation_tasks_command(
     requested_by: Option<&str>,
     claimed_by: Option<&str>,
     attempted_by: Option<&str>,
+    message: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
@@ -93,6 +94,7 @@ pub fn run_installation_tasks_command(
         requested_by,
         claimed_by,
         attempted_by,
+        message,
         expires_at_utc,
         lease_expires_at_utc,
     )?;
@@ -286,7 +288,7 @@ pub fn run_installation_tasks_command(
             claim_id,
             execution_mode,
             attempted_by,
-            reason,
+            message,
         )?;
 
         if json_output {
@@ -617,6 +619,7 @@ fn validate_command_mode(
     requested_by: Option<&str>,
     claimed_by: Option<&str>,
     attempted_by: Option<&str>,
+    message: Option<&str>,
     expires_at_utc: Option<&str>,
     lease_expires_at_utc: Option<&str>,
 ) -> Result<()> {
@@ -896,6 +899,12 @@ fn validate_command_mode(
     if attempted_by.is_some() && !attempt_assisted_execution {
         return Err(anyhow!(
             "--attempted-by can only be used with --attempt-assisted-execution"
+        ));
+    }
+
+    if message.is_some() && !attempt_assisted_execution {
+        return Err(anyhow!(
+            "--message can only be used with --attempt-assisted-execution"
         ));
     }
 
@@ -2730,6 +2739,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(result.is_err());
@@ -2759,6 +2769,7 @@ mod tests {
             None,
             false,
             Some("operator"),
+            None,
             None,
             None,
             None,
@@ -2792,6 +2803,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             None,
             None,
             None,
@@ -2832,6 +2844,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(result.is_err());
@@ -2866,6 +2879,7 @@ mod tests {
             None,
             None,
             Some("2026-06-01T00:00:00Z"),
+            None,
         );
 
         assert!(result.is_err());
@@ -2894,6 +2908,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             None,
             None,
             None,
@@ -2932,6 +2947,7 @@ mod tests {
             None,
             None,
             Some("operator"),
+            None,
             None,
             None,
         );
