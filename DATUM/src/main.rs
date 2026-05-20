@@ -96,6 +96,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.task_id.as_deref(),
             args.request_id.as_deref(),
+            args.claim_id.as_deref(),
             args.readiness,
             args.execution_requests,
             args.execution_request,
@@ -104,12 +105,17 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.execution_claim,
             args.claim_assisted_execution,
             args.claim_status.as_deref(),
+            args.execution_attempts,
+            args.execution_attempt,
+            args.attempt_assisted_execution,
+            args.execution_mode.as_deref(),
             args.approvals,
             args.approval,
             args.approve,
             args.approved_by.as_deref(),
             args.requested_by.as_deref(),
             args.claimed_by.as_deref(),
+            args.attempted_by.as_deref(),
             args.status.as_deref(),
             args.reason.as_deref(),
             args.expires_at_utc.as_deref(),
@@ -265,6 +271,9 @@ struct InstallationTasksArgs {
     #[arg(long)]
     request_id: Option<String>,
 
+    #[arg(long)]
+    claim_id: Option<String>,
+
     #[arg(long, default_value_t = false)]
     readiness: bool,
 
@@ -290,6 +299,18 @@ struct InstallationTasksArgs {
     claim_status: Option<String>,
 
     #[arg(long, default_value_t = false)]
+    execution_attempts: bool,
+
+    #[arg(long, default_value_t = false)]
+    execution_attempt: bool,
+
+    #[arg(long, default_value_t = false)]
+    attempt_assisted_execution: bool,
+
+    #[arg(long)]
+    execution_mode: Option<String>,
+
+    #[arg(long, default_value_t = false)]
     approvals: bool,
 
     #[arg(long, default_value_t = false)]
@@ -306,6 +327,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     claimed_by: Option<String>,
+
+    #[arg(long)]
+    attempted_by: Option<String>,
 
     #[arg(long)]
     status: Option<String>,
@@ -593,6 +617,7 @@ fn installation_tasks_command(
     url: Option<&str>,
     task_id: Option<&str>,
     request_id: Option<&str>,
+    claim_id: Option<&str>,
     readiness: bool,
     execution_requests: bool,
     execution_request: bool,
@@ -601,12 +626,17 @@ fn installation_tasks_command(
     execution_claim: bool,
     claim_assisted_execution: bool,
     claim_status: Option<&str>,
+    execution_attempts: bool,
+    execution_attempt: bool,
+    attempt_assisted_execution: bool,
+    execution_mode: Option<&str>,
     approvals: bool,
     approval: bool,
     approve: bool,
     approved_by: Option<&str>,
     requested_by: Option<&str>,
     claimed_by: Option<&str>,
+    attempted_by: Option<&str>,
     status: Option<&str>,
     reason: Option<&str>,
     expires_at_utc: Option<&str>,
@@ -622,6 +652,7 @@ fn installation_tasks_command(
         url,
         task_id,
         request_id,
+        claim_id,
         readiness,
         execution_requests,
         execution_request,
@@ -630,12 +661,17 @@ fn installation_tasks_command(
         execution_claim,
         claim_assisted_execution,
         claim_status,
+        execution_attempts,
+        execution_attempt,
+        attempt_assisted_execution,
+        execution_mode,
         approvals,
         approval,
         approve,
         approved_by,
         requested_by,
         claimed_by,
+        attempted_by,
         status,
         reason,
         expires_at_utc,

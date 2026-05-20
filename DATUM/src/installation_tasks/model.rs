@@ -282,6 +282,62 @@ pub struct AssistedExecutionClaimList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionAttempt {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+    #[serde(default)]
+    pub attempt_status: Option<String>,
+    #[serde(default)]
+    pub attempted_by: Option<String>,
+    #[serde(default)]
+    pub attempted_at_utc: Option<String>,
+    #[serde(default)]
+    pub execution_mode: Option<String>,
+    #[serde(default)]
+    pub execution_result: Option<String>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
+    #[serde(default)]
+    pub side_effects_performed: Option<bool>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub claim_snapshot: Option<Value>,
+    #[serde(default)]
+    pub request_snapshot: Option<Value>,
+    #[serde(default)]
+    pub task_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionAttemptList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub attempts: Vec<AssistedExecutionAttempt>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -316,10 +372,20 @@ pub struct AssistedExecutionClaimStatusPatch {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssistedExecutionAttemptBody {
+    pub execution_mode: String,
+    #[serde(default)]
+    pub attempted_by: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalRequest, AssistedExecutionClaim, AssistedExecutionClaimBody,
+        ApprovalRequest, AssistedExecutionAttempt, AssistedExecutionAttemptBody,
+        AssistedExecutionAttemptList, AssistedExecutionClaim, AssistedExecutionClaimBody,
         AssistedExecutionClaimList, AssistedExecutionClaimStatusPatch, AssistedExecutionRequest,
         AssistedExecutionRequestBody, AssistedExecutionRequestList, InstallationTask,
         InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
@@ -761,5 +827,83 @@ mod tests {
 
         assert_eq!(value["status"].as_str(), Some("released"));
         assert_eq!(value["reason"].as_str(), Some("operator released claim"));
+    }
+
+    #[test]
+    fn parse_assisted_execution_attempt() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "task_id":"task-1",
+          "request_id":"request-1",
+          "claim_id":"claim-1",
+          "attempt_id":"attempt-1",
+          "attempt_status":"recorded",
+          "attempted_by":"operator",
+          "attempted_at_utc":"2026-05-19T13:00:00Z",
+          "execution_mode":"no_op",
+          "execution_result":"no_op_recorded",
+          "safe_to_auto_execute":false,
+          "side_effects_performed":false,
+          "message":"recording no-op attempt",
+          "future_field":"ok"
+        }"#;
+
+        let parsed: AssistedExecutionAttempt =
+            serde_json::from_str(raw).expect("assisted execution attempt should parse");
+
+        assert_eq!(parsed.attempt_id.as_deref(), Some("attempt-1"));
+        assert_eq!(parsed.attempt_status.as_deref(), Some("recorded"));
+        assert_eq!(parsed.execution_mode.as_deref(), Some("no_op"));
+        assert_eq!(parsed.execution_result.as_deref(), Some("no_op_recorded"));
+        assert_eq!(parsed.safe_to_auto_execute, Some(false));
+        assert_eq!(parsed.side_effects_performed, Some(false));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_assisted_execution_attempt_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "attempts":[
+            {
+              "task_id":"task-1",
+              "request_id":"request-1",
+              "claim_id":"claim-1",
+              "attempt_id":"attempt-1",
+              "attempt_status":"recorded"
+            }
+          ]
+        }"#;
+
+        let parsed: AssistedExecutionAttemptList =
+            serde_json::from_str(raw).expect("assisted execution attempt list should parse");
+
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.attempts.len(), 1);
+        assert_eq!(parsed.attempts[0].attempt_id.as_deref(), Some("attempt-1"));
+    }
+
+    #[test]
+    fn assisted_execution_attempt_body_serializes_fields() {
+        let body = AssistedExecutionAttemptBody {
+            execution_mode: "no_op".to_string(),
+            attempted_by: Some("operator".to_string()),
+            message: Some("recording no-op attempt".to_string()),
+        };
+
+        let value = serde_json::to_value(body).expect("attempt body should serialize");
+
+        assert_eq!(value["execution_mode"].as_str(), Some("no_op"));
+        assert_eq!(value["attempted_by"].as_str(), Some("operator"));
+        assert_eq!(value["message"].as_str(), Some("recording no-op attempt"));
     }
 }
