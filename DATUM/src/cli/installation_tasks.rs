@@ -1,4 +1,5 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use std::path::Path;
 
 use crate::{
     assisted_execution::runner::{
@@ -31,8 +32,13 @@ use crate::{
             LocalMappingRecommendationList,
         },
     },
-    local_mapping::preflight::{
-        run_local_mapping_preflight, LocalMappingPreflightItem, LocalMappingPreflightReport,
+    local_mapping::{
+        patch_file::{
+            generate_local_mapping_patch_file_content, write_local_mapping_patch_proposal_file,
+        },
+        preflight::{
+            run_local_mapping_preflight, LocalMappingPreflightItem, LocalMappingPreflightReport,
+        },
     },
 };
 
@@ -53,6 +59,8 @@ pub fn run_installation_tasks_command(
     publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
     local_mapping_patch_proposals: bool,
+    write_local_mapping_patch: Option<&str>,
+    overwrite_local_mapping_patch: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -94,6 +102,8 @@ pub fn run_installation_tasks_command(
         publish_local_mapping_preflight,
         local_mapping_recommendations,
         local_mapping_patch_proposals,
+        write_local_mapping_patch,
+        overwrite_local_mapping_patch,
         execution_state,
         readiness,
         execution_requests,
@@ -232,6 +242,51 @@ pub fn run_installation_tasks_command(
     if local_mapping_patch_proposals {
         let response =
             fetch_local_mapping_patch_proposals_for_node(&base_url, &project_id, &node_id)?;
+        let rendered = format_local_mapping_patch_proposal_list(&response, &project_id, &node_id);
+
+        if let Some(output_path) = write_local_mapping_patch {
+            let output_path = Path::new(output_path);
+            let content = generate_local_mapping_patch_file_content(
+                &response.proposals,
+                &node_id,
+                &project_id,
+            );
+            write_local_mapping_patch_proposal_file(
+                output_path,
+                &content,
+                overwrite_local_mapping_patch,
+            )
+            .with_context(|| {
+                format!(
+                    "write local mapping patch proposal file to {}",
+                    output_path.display()
+                )
+            })?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "proposals": response.proposals,
+                        "output_path": output_path.display().to_string(),
+                        "wrote_file": true,
+                        "applied": false,
+                        "advisory": true
+                    }))
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            println!("{}", rendered);
+            println!();
+            println!("Wrote local mapping patch proposal file");
+            println!("  path: {}", output_path.display());
+            println!("  advisory: true");
+            println!("  applied: false");
+            println!("  safe to auto apply: false");
+            return Ok(());
+        }
 
         if json_output {
             println!(
@@ -242,10 +297,7 @@ pub fn run_installation_tasks_command(
             return Ok(());
         }
 
-        print!(
-            "{}",
-            format_local_mapping_patch_proposal_list(&response, &project_id, &node_id)
-        );
+        print!("{}", rendered);
         return Ok(());
     }
 
@@ -812,6 +864,8 @@ fn validate_command_mode(
     publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
     local_mapping_patch_proposals: bool,
+    write_local_mapping_patch: Option<&str>,
+    overwrite_local_mapping_patch: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -958,6 +1012,18 @@ fn validate_command_mode(
     if local_mapping_patch_proposals && materialize {
         return Err(anyhow!(
             "--local-mapping-patch-proposals cannot be combined with --materialize"
+        ));
+    }
+
+    if write_local_mapping_patch.is_some() && !local_mapping_patch_proposals {
+        return Err(anyhow!(
+            "--write-local-mapping-patch requires --local-mapping-patch-proposals"
+        ));
+    }
+
+    if overwrite_local_mapping_patch && write_local_mapping_patch.is_none() {
+        return Err(anyhow!(
+            "--overwrite-local-mapping-patch requires --write-local-mapping-patch"
         ));
     }
 
@@ -2934,6 +3000,8 @@ mod tests {
         local_mapping_preflight: bool,
         local_mapping_recommendations: bool,
         local_mapping_patch_proposals: bool,
+        write_local_mapping_patch: Option<&'a str>,
+        overwrite_local_mapping_patch: bool,
         execution_state: bool,
         readiness: bool,
         execution_requests: bool,
@@ -2970,6 +3038,8 @@ mod tests {
             false,
             case.local_mapping_recommendations,
             case.local_mapping_patch_proposals,
+            case.write_local_mapping_patch,
+            case.overwrite_local_mapping_patch,
             case.execution_state,
             case.readiness,
             case.execution_requests,
@@ -4534,9 +4604,9 @@ mod tests {
     #[test]
     fn cli_mode_validation_rejects_publish_local_mapping_preflight_without_preflight() {
         let result = validate_command_mode(
-            None, None, None, false, true, false, false, false, false, false, false, false, false,
-            false, false, None, false, false, false, None, false, false, false, None, false, None,
-            None, None, None, None, None, None,
+            None, None, None, false, true, false, false, None, false, false, false, false, false,
+            false, false, false, false, None, false, false, false, None, false, false, false, None,
+            false, None, None, None, None, None, None, None,
         );
 
         assert!(result.is_err());
@@ -4568,6 +4638,26 @@ mod tests {
         let result = validate_mode_case(ModeCase {
             task_id: Some("task-1"),
             local_mapping_patch_proposals: true,
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_write_local_mapping_patch_without_patch_proposals_mode() {
+        let result = validate_mode_case(ModeCase {
+            write_local_mapping_patch: Some("generated/local-mapping-proposal.toml"),
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_overwrite_local_mapping_patch_without_write_mode() {
+        let result = validate_mode_case(ModeCase {
+            overwrite_local_mapping_patch: true,
             ..ModeCase::default()
         });
 

@@ -103,6 +103,8 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.publish_local_mapping_preflight,
             args.local_mapping_recommendations,
             args.local_mapping_patch_proposals,
+            args.write_local_mapping_patch.as_deref(),
+            args.overwrite_local_mapping_patch,
             args.execution_state,
             args.readiness,
             args.execution_requests,
@@ -293,6 +295,12 @@ struct InstallationTasksArgs {
 
     #[arg(long, default_value_t = false)]
     local_mapping_patch_proposals: bool,
+
+    #[arg(long)]
+    write_local_mapping_patch: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    overwrite_local_mapping_patch: bool,
 
     #[arg(long, default_value_t = false)]
     execution_state: bool,
@@ -648,6 +656,8 @@ fn installation_tasks_command(
     publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
     local_mapping_patch_proposals: bool,
+    write_local_mapping_patch: Option<&str>,
+    overwrite_local_mapping_patch: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -689,6 +699,8 @@ fn installation_tasks_command(
         publish_local_mapping_preflight,
         local_mapping_recommendations,
         local_mapping_patch_proposals,
+        write_local_mapping_patch,
+        overwrite_local_mapping_patch,
         execution_state,
         readiness,
         execution_requests,
