@@ -55,6 +55,19 @@ function Run-CommandOrFail {
     return $output
 }
 
+function Get-FileFingerprint {
+    param([string]$Path)
+
+    try {
+        $hash = Get-FileHash -Path $Path -Algorithm SHA256
+        return "sha256:$($hash.Hash)"
+    }
+    catch {
+        $content = Get-Content -LiteralPath $Path -Raw
+        return "content:$content"
+    }
+}
+
 function Invoke-JsonEndpoint {
     param(
         [string]$Url,
@@ -1227,6 +1240,10 @@ $clientSingleTaskAssistedExecutionStateLocalMappingContextViewerPerformed = $fal
 $serverProjectLocalMappingPatchProposalsReadPerformed = $false
 $serverNodeLocalMappingPatchProposalsReadPerformed = $false
 $clientLocalMappingPatchProposalViewerPerformed = $false
+$clientLocalMappingPatchProposalFileGenerationPerformed = $false
+$generatedLocalMappingPatchProposalFileValidated = $false
+$clientConfigUnchangedAfterPatchProposalGenerationValidated = $false
+$advisoryOnlyLocalMappingPatchProposalFileValidated = $false
 $safeToAutoApplyFalseValidated = $false
 $requiresOperatorTrueValidated = $false
 $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
@@ -2697,6 +2714,93 @@ if (-not $SkipServerChecks) {
         }
         $clientLocalMappingPatchProposalViewerPerformed = $true
 
+        Write-Step "Generate local mapping patch proposal file from DATUM"
+        $smokeOutputDir = Join-Path $ScriptRoot ".smoke-output"
+        $smokeOutputProposalPath = Join-Path $smokeOutputDir "local-mapping-proposal.toml"
+        $smokeOutputProposalRelativePath = "scripts/.smoke-output/local-mapping-proposal.toml"
+        $clientConfigFingerprintBeforePatchProposalGeneration = Get-FileFingerprint -Path $ResolvedClientConfig
+        $clientLocalMappingPatchProposalFileOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--local-mapping-patch-proposals",
+                "--write-local-mapping-patch",
+                $smokeOutputProposalPath,
+                "--overwrite-local-mapping-patch"
+            ) `
+            -StepName "DATUM local mapping patch proposal file generation"
+
+        if ($clientLocalMappingPatchProposalFileOutput -notmatch "Wrote local mapping patch proposal file") {
+            throw "DATUM local mapping patch proposal file generation output did not indicate that a proposal file was written."
+        }
+
+        if ($clientLocalMappingPatchProposalFileOutput -notmatch "advisory:\s+true") {
+            throw "DATUM local mapping patch proposal file generation output did not include 'advisory: true'."
+        }
+
+        if ($clientLocalMappingPatchProposalFileOutput -notmatch "applied:\s+false") {
+            throw "DATUM local mapping patch proposal file generation output did not include 'applied: false'."
+        }
+
+        if ($clientLocalMappingPatchProposalFileOutput -notmatch "safe to auto apply:\s+false") {
+            throw "DATUM local mapping patch proposal file generation output did not include 'safe to auto apply: false'."
+        }
+
+        if (-not (Test-Path -LiteralPath $smokeOutputProposalPath)) {
+            throw "DATUM local mapping patch proposal file generation did not create the expected proposal file at $smokeOutputProposalPath."
+        }
+
+        $proposalFileContent = Get-Content -LiteralPath $smokeOutputProposalPath -Raw
+        if ([string]::IsNullOrWhiteSpace($proposalFileContent)) {
+            throw "DATUM local mapping patch proposal file generation created an empty proposal file."
+        }
+
+        foreach ($requiredProposalFileMarker in @(
+            "advisory",
+            "operator review",
+            "not applied automatically",
+            "config.toml only after validation"
+        )) {
+            if ($proposalFileContent -notmatch [regex]::Escape($requiredProposalFileMarker)) {
+                throw "DATUM local mapping patch proposal file did not include required advisory wording '$requiredProposalFileMarker'."
+            }
+        }
+
+        if ($proposalFileContent -notmatch [regex]::Escape("dispatch.container_mappings") -and
+            $proposalFileContent -notmatch [regex]::Escape("No local mapping patch proposals") -and
+            $proposalFileContent -notmatch [regex]::Escape("No proposed config snippet was available")) {
+            throw "DATUM local mapping patch proposal file did not include a config snippet section or a safe empty-proposal message."
+        }
+
+        $clientConfigFingerprintAfterPatchProposalGeneration = Get-FileFingerprint -Path $ResolvedClientConfig
+        if ($clientConfigFingerprintBeforePatchProposalGeneration -ne $clientConfigFingerprintAfterPatchProposalGeneration) {
+            throw "Client config changed during patch proposal generation, which is not allowed."
+        }
+
+        $generatedFileGitStatus = Run-CommandOrFail `
+            -WorkingDirectory $PdRoot `
+            -Command @("git", "status", "--short", "--", $smokeOutputProposalRelativePath) `
+            -StepName "Git status for generated local mapping patch proposal file"
+        if (-not [string]::IsNullOrWhiteSpace($generatedFileGitStatus)) {
+            Write-Warning "Generated local mapping patch proposal file appears in git status; do not stage or commit $smokeOutputProposalRelativePath."
+        }
+
+        Remove-Item -LiteralPath $smokeOutputProposalPath -Force
+        if ((Test-Path -LiteralPath $smokeOutputDir) -and
+            -not (Get-ChildItem -LiteralPath $smokeOutputDir -Force | Select-Object -First 1)) {
+            Remove-Item -LiteralPath $smokeOutputDir -Force
+        }
+
+        $clientLocalMappingPatchProposalFileGenerationPerformed = $true
+        $generatedLocalMappingPatchProposalFileValidated = $true
+        $clientConfigUnchangedAfterPatchProposalGenerationValidated = $true
+        $advisoryOnlyLocalMappingPatchProposalFileValidated = $true
+
         if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
             Write-Host "No installation task available; skipping single-task local mapping preflight publish."
         }
@@ -3045,6 +3149,30 @@ if ($clientLocalMappingPatchProposalViewerPerformed) {
 else {
     Write-Host "- DATUM local mapping patch proposal viewer (skipped: server checks disabled)"
 }
+if ($clientLocalMappingPatchProposalFileGenerationPerformed) {
+    Write-Host "- DATUM local mapping patch proposal file generation"
+}
+else {
+    Write-Host "- DATUM local mapping patch proposal file generation (skipped: server checks disabled)"
+}
+if ($generatedLocalMappingPatchProposalFileValidated) {
+    Write-Host "- generated proposal file existence/content validation"
+}
+else {
+    Write-Host "- generated proposal file existence/content validation (skipped: server checks disabled)"
+}
+if ($clientConfigUnchangedAfterPatchProposalGenerationValidated) {
+    Write-Host "- active config unchanged validation"
+}
+else {
+    Write-Host "- active config unchanged validation (skipped: server checks disabled)"
+}
+if ($advisoryOnlyLocalMappingPatchProposalFileValidated) {
+    Write-Host "- advisory-only/no-auto-apply validation"
+}
+else {
+    Write-Host "- advisory-only/no-auto-apply validation (skipped: server checks disabled)"
+}
 if ($clientLocalMappingPreflightPerformed) {
     Write-Host "- DATUM local mapping preflight"
 }
@@ -3169,6 +3297,7 @@ Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run m
 Write-Host "Assisted execution state checks were read-only."
 Write-Host "Local mapping recommendations and preflight checks were advisory only."
 Write-Host "Local mapping patch proposals were advisory only."
+Write-Host "Local mapping patch proposal file generation wrote only a separate operator-review file."
 Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
 Write-Host "Local mapping context in assisted execution state was advisory only."
 Write-Host "No local config or mapping files were modified."
