@@ -1717,6 +1717,18 @@ fn format_assisted_execution_state_list(
         lines.extend(format_assisted_execution_state_block(summary));
     }
 
+    if response
+        .summaries
+        .iter()
+        .any(assisted_execution_state_has_local_mapping_advisory_note)
+    {
+        lines.push(String::new());
+        lines.push(
+            "Note: local mapping context is advisory only. This command did not write config and did not execute installation."
+                .to_string(),
+        );
+    }
+
     lines.join("\n")
 }
 
@@ -1988,6 +2000,14 @@ fn format_single_assisted_execution_state(
         );
     }
 
+    if assisted_execution_state_has_local_mapping_advisory_note(summary) {
+        lines.push(String::new());
+        lines.push(
+            "Note: local mapping context is advisory only. This command did not write config and did not execute installation."
+                .to_string(),
+        );
+    }
+
     lines.join("\n")
 }
 
@@ -2141,6 +2161,28 @@ fn format_assisted_execution_state_detail_lines(
         lines.push(format!("  latest result: {}", latest_execution_result));
     }
 
+    if let Some(local_mapping_status) = summary.local_mapping_status.as_deref() {
+        lines.push(format!("  local mapping: {}", local_mapping_status));
+    }
+
+    if let Some(local_mapping_reason) = summary.local_mapping_reason.as_deref() {
+        lines.push(format!("  local mapping reason: {}", local_mapping_reason));
+    }
+
+    if let Some(local_mapping_report_id) = summary.local_mapping_report_id.as_deref() {
+        lines.push(format!(
+            "  local mapping report: {}",
+            local_mapping_report_id
+        ));
+    }
+
+    if let Some(local_mapping_reported_at_utc) = summary.local_mapping_reported_at_utc.as_deref() {
+        lines.push(format!(
+            "  local mapping reported at: {}",
+            local_mapping_reported_at_utc
+        ));
+    }
+
     lines.push(format!(
         "  safe to auto execute: {}",
         summary.safe_to_auto_execute.unwrap_or(false)
@@ -2162,6 +2204,15 @@ fn assisted_execution_state_has_attempt(summary: &AssistedExecutionStateSummary)
         summary.state.as_deref(),
         Some("attempt_recorded_no_op") | Some("attempt_recorded_dry_run")
     ) || summary.latest_attempt_status.is_some()
+}
+
+fn assisted_execution_state_has_local_mapping_advisory_note(
+    summary: &AssistedExecutionStateSummary,
+) -> bool {
+    matches!(
+        summary.local_mapping_status.as_deref(),
+        Some("missing_mapping") | Some("ambiguous")
+    )
 }
 
 fn format_latest_assisted_execution_attempt(
@@ -2676,6 +2727,7 @@ fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
 mod tests {
     use super::{
         assert_local_mapping_preflight_publish_invariants, assisted_execution_state_has_attempt,
+        assisted_execution_state_has_local_mapping_advisory_note,
         build_attempt_message_with_preflight, format_approval_list,
         format_assisted_execution_attempt_list, format_assisted_execution_claim_list,
         format_assisted_execution_preflight_report, format_assisted_execution_request_list,
@@ -3687,6 +3739,39 @@ mod tests {
     }
 
     #[test]
+    fn assisted_execution_state_formatting_includes_local_mapping_fields() {
+        let rendered = format_assisted_execution_state_list(
+            &AssistedExecutionStateSummaryList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                summaries: vec![AssistedExecutionStateSummary {
+                    task_id: Some("task-1".to_string()),
+                    state: Some("awaiting_request".to_string()),
+                    local_mapping_status: Some("missing_mapping".to_string()),
+                    local_mapping_reason: Some(
+                        "no trusted local mapping found in DATUM config".to_string(),
+                    ),
+                    local_mapping_report_id: Some("report-1".to_string()),
+                    local_mapping_reported_at_utc: Some("2026-05-20T12:00:00Z".to_string()),
+                    safe_to_auto_execute: Some(false),
+                    side_effects_performed: Some(false),
+                    ..AssistedExecutionStateSummary::default()
+                }],
+                ..AssistedExecutionStateSummaryList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("local mapping: missing_mapping"));
+        assert!(rendered
+            .contains("local mapping reason: no trusted local mapping found in DATUM config"));
+        assert!(rendered.contains("local mapping report: report-1"));
+        assert!(rendered.contains("local mapping reported at: 2026-05-20T12:00:00Z"));
+    }
+
+    #[test]
     fn single_assisted_execution_state_includes_no_execution_note_for_attempts() {
         let rendered = format_single_assisted_execution_state(
             &AssistedExecutionStateSummary {
@@ -3720,6 +3805,73 @@ mod tests {
     }
 
     #[test]
+    fn single_assisted_execution_state_missing_mapping_includes_advisory_note() {
+        let rendered = format_single_assisted_execution_state(
+            &AssistedExecutionStateSummary {
+                task_id: Some("task-1".to_string()),
+                state: Some("awaiting_request".to_string()),
+                local_mapping_status: Some("missing_mapping".to_string()),
+                local_mapping_reason: Some(
+                    "no trusted local mapping found in DATUM config".to_string(),
+                ),
+                safe_to_auto_execute: Some(false),
+                side_effects_performed: Some(false),
+                ..AssistedExecutionStateSummary::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("local mapping: missing_mapping"));
+        assert!(rendered.contains(
+            "Note: local mapping context is advisory only. This command did not write config and did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn single_assisted_execution_state_ambiguous_includes_advisory_note() {
+        let rendered = format_single_assisted_execution_state(
+            &AssistedExecutionStateSummary {
+                task_id: Some("task-1".to_string()),
+                state: Some("awaiting_request".to_string()),
+                local_mapping_status: Some("ambiguous".to_string()),
+                local_mapping_reason: Some("multiple local mapping candidates".to_string()),
+                safe_to_auto_execute: Some(false),
+                side_effects_performed: Some(false),
+                ..AssistedExecutionStateSummary::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("local mapping: ambiguous"));
+        assert!(rendered.contains(
+            "Note: local mapping context is advisory only. This command did not write config and did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn single_assisted_execution_state_already_mapped_does_not_imply_execution_permission() {
+        let rendered = format_single_assisted_execution_state(
+            &AssistedExecutionStateSummary {
+                task_id: Some("task-1".to_string()),
+                state: Some("awaiting_request".to_string()),
+                local_mapping_status: Some("already_mapped".to_string()),
+                local_mapping_reason: Some("trusted mapping found".to_string()),
+                safe_to_auto_execute: Some(false),
+                side_effects_performed: Some(false),
+                ..AssistedExecutionStateSummary::default()
+            },
+            "task-1",
+        );
+
+        assert!(rendered.contains("local mapping: already_mapped"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(!rendered.contains("execution is allowed"));
+        assert!(!rendered.contains(
+            "Note: local mapping context is advisory only. This command did not write config and did not execute installation."
+        ));
+    }
+
+    #[test]
     fn assisted_execution_state_flag_detects_attempt_states() {
         assert!(assisted_execution_state_has_attempt(
             &AssistedExecutionStateSummary {
@@ -3736,10 +3888,40 @@ mod tests {
     }
 
     #[test]
+    fn assisted_execution_state_advisory_flag_detects_missing_or_ambiguous() {
+        assert!(assisted_execution_state_has_local_mapping_advisory_note(
+            &AssistedExecutionStateSummary {
+                local_mapping_status: Some("missing_mapping".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            }
+        ));
+        assert!(assisted_execution_state_has_local_mapping_advisory_note(
+            &AssistedExecutionStateSummary {
+                local_mapping_status: Some("ambiguous".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            }
+        ));
+        assert!(!assisted_execution_state_has_local_mapping_advisory_note(
+            &AssistedExecutionStateSummary {
+                local_mapping_status: Some("already_mapped".to_string()),
+                ..AssistedExecutionStateSummary::default()
+            }
+        ));
+    }
+
+    #[test]
     fn assisted_execution_state_json_preserves_raw_response() {
         let response = AssistedExecutionStateSummary {
             task_id: Some("task-1".to_string()),
             state: Some("attempt_recorded_no_op".to_string()),
+            local_mapping_status: Some("unknown".to_string()),
+            local_mapping_reason: Some(
+                "no matching local mapping preflight item for task".to_string(),
+            ),
+            local_mapping_report_id: Some("report-1".to_string()),
+            local_mapping_reported_at_utc: Some("2026-05-20T12:00:00Z".to_string()),
+            local_mapping_item_snapshot: Some(serde_json::json!({"task_id":"task-1"})),
+            local_mapping_preflight_snapshot: Some(serde_json::json!({"report_id":"report-1"})),
             safe_to_auto_execute: Some(false),
             side_effects_performed: Some(false),
             ..AssistedExecutionStateSummary::default()
@@ -3749,6 +3931,14 @@ mod tests {
 
         assert!(rendered.contains("\"task_id\": \"task-1\""));
         assert!(rendered.contains("\"state\": \"attempt_recorded_no_op\""));
+        assert!(rendered.contains("\"local_mapping_status\": \"unknown\""));
+        assert!(rendered.contains(
+            "\"local_mapping_reason\": \"no matching local mapping preflight item for task\""
+        ));
+        assert!(rendered.contains("\"local_mapping_report_id\": \"report-1\""));
+        assert!(rendered.contains("\"local_mapping_reported_at_utc\": \"2026-05-20T12:00:00Z\""));
+        assert!(rendered.contains("\"local_mapping_item_snapshot\""));
+        assert!(rendered.contains("\"local_mapping_preflight_snapshot\""));
         assert!(rendered.contains("\"safe_to_auto_execute\": false"));
         assert!(rendered.contains("\"side_effects_performed\": false"));
     }
@@ -4155,6 +4345,35 @@ mod tests {
             .find("\n    if local_mapping_recommendations {")
             .map(|offset| start + offset)
             .expect("recommendation branch should follow preflight branch");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task CLI must not contain forbidden pattern: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_state_viewer_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("installation_tasks.rs");
+        let start = source
+            .find("if execution_state {")
+            .expect("execution_state branch should exist");
+        let end = source[start..]
+            .find("\n    if execution_claims {")
+            .map(|offset| start + offset)
+            .expect("execution_claims branch should follow execution_state branch");
         let implementation = &source[start..end];
 
         for forbidden in [

@@ -368,6 +368,18 @@ pub struct AssistedExecutionStateSummary {
     #[serde(default)]
     pub latest_execution_result: Option<String>,
     #[serde(default)]
+    pub local_mapping_status: Option<String>,
+    #[serde(default)]
+    pub local_mapping_reason: Option<String>,
+    #[serde(default)]
+    pub local_mapping_report_id: Option<String>,
+    #[serde(default)]
+    pub local_mapping_reported_at_utc: Option<String>,
+    #[serde(default)]
+    pub local_mapping_item_snapshot: Option<Value>,
+    #[serde(default)]
+    pub local_mapping_preflight_snapshot: Option<Value>,
+    #[serde(default)]
     pub safe_to_auto_execute: Option<bool>,
     #[serde(default)]
     pub side_effects_performed: Option<bool>,
@@ -1078,6 +1090,75 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("ok")
         );
+    }
+
+    #[test]
+    fn parse_assisted_execution_state_summary_with_local_mapping_fields() {
+        let raw = r#"{
+          "task_id":"task-1",
+          "state":"awaiting_request",
+          "local_mapping_status":"missing_mapping",
+          "local_mapping_reason":"no trusted local mapping found in DATUM config",
+          "local_mapping_report_id":"report-1",
+          "local_mapping_reported_at_utc":"2026-05-20T12:00:00Z",
+          "local_mapping_item_snapshot":{"task_id":"task-1"},
+          "local_mapping_preflight_snapshot":{"report_id":"report-1"},
+          "safe_to_auto_execute":false,
+          "side_effects_performed":false
+        }"#;
+
+        let parsed: AssistedExecutionStateSummary =
+            serde_json::from_str(raw).expect("state summary should parse");
+
+        assert_eq!(
+            parsed.local_mapping_status.as_deref(),
+            Some("missing_mapping")
+        );
+        assert_eq!(
+            parsed.local_mapping_reason.as_deref(),
+            Some("no trusted local mapping found in DATUM config")
+        );
+        assert_eq!(parsed.local_mapping_report_id.as_deref(), Some("report-1"));
+        assert_eq!(
+            parsed.local_mapping_reported_at_utc.as_deref(),
+            Some("2026-05-20T12:00:00Z")
+        );
+        assert_eq!(
+            parsed
+                .local_mapping_item_snapshot
+                .as_ref()
+                .and_then(|value| value.get("task_id"))
+                .and_then(|value| value.as_str()),
+            Some("task-1")
+        );
+        assert_eq!(
+            parsed
+                .local_mapping_preflight_snapshot
+                .as_ref()
+                .and_then(|value| value.get("report_id"))
+                .and_then(|value| value.as_str()),
+            Some("report-1")
+        );
+    }
+
+    #[test]
+    fn parse_assisted_execution_state_summary_without_local_mapping_fields() {
+        let raw = r#"{
+          "task_id":"task-1",
+          "state":"awaiting_request",
+          "safe_to_auto_execute":false,
+          "side_effects_performed":false
+        }"#;
+
+        let parsed: AssistedExecutionStateSummary =
+            serde_json::from_str(raw).expect("state summary should parse");
+
+        assert!(parsed.local_mapping_status.is_none());
+        assert!(parsed.local_mapping_reason.is_none());
+        assert!(parsed.local_mapping_report_id.is_none());
+        assert!(parsed.local_mapping_reported_at_utc.is_none());
+        assert!(parsed.local_mapping_item_snapshot.is_none());
+        assert!(parsed.local_mapping_preflight_snapshot.is_none());
     }
 
     #[test]
