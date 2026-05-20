@@ -28,14 +28,15 @@ use crate::{
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationTask,
             InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
             InstallationTaskReadiness, InstallationTaskReadinessList, LocalMappingPatchProposal,
-            LocalMappingPatchProposalList, LocalMappingRecommendation,
-            LocalMappingRecommendationList,
+            LocalMappingPatchProposalList, LocalMappingPatchRevalidationReport,
+            LocalMappingRecommendation, LocalMappingRecommendationList,
         },
     },
     local_mapping::{
         patch_file::{
             generate_local_mapping_patch_file_content, write_local_mapping_patch_proposal_file,
         },
+        patch_revalidator::revalidate_local_mapping_patch_file,
         preflight::{
             run_local_mapping_preflight, LocalMappingPreflightItem, LocalMappingPreflightReport,
         },
@@ -49,6 +50,7 @@ const ALLOWED_ATTEMPT_EXECUTION_MODES: &[&str] = &["no_op", "dry_run"];
 
 pub fn run_installation_tasks_command(
     cfg: &Config,
+    config_path: &str,
     node_id_override: Option<&str>,
     project_id_override: Option<&str>,
     url_override: Option<&str>,
@@ -61,6 +63,7 @@ pub fn run_installation_tasks_command(
     local_mapping_patch_proposals: bool,
     write_local_mapping_patch: Option<&str>,
     overwrite_local_mapping_patch: bool,
+    revalidate_local_mapping_patch: Option<&str>,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -104,6 +107,7 @@ pub fn run_installation_tasks_command(
         local_mapping_patch_proposals,
         write_local_mapping_patch,
         overwrite_local_mapping_patch,
+        revalidate_local_mapping_patch,
         execution_state,
         readiness,
         execution_requests,
@@ -130,6 +134,29 @@ pub fn run_installation_tasks_command(
         expires_at_utc,
         lease_expires_at_utc,
     )?;
+
+    if let Some(proposal_path) = revalidate_local_mapping_patch {
+        let report = revalidate_local_mapping_patch_file(
+            cfg,
+            Path::new(config_path),
+            Path::new(proposal_path),
+        )?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_local_mapping_patch_revalidation_report(&report)
+        );
+        return Ok(());
+    }
 
     if local_mapping_preflight {
         if let Some(task_id) = task_id {
@@ -866,6 +893,7 @@ fn validate_command_mode(
     local_mapping_patch_proposals: bool,
     write_local_mapping_patch: Option<&str>,
     overwrite_local_mapping_patch: bool,
+    revalidate_local_mapping_patch: Option<&str>,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -897,6 +925,7 @@ fn validate_command_mode(
         local_mapping_preflight && task_id.is_some(),
         local_mapping_recommendations,
         local_mapping_patch_proposals,
+        revalidate_local_mapping_patch.is_some(),
         execution_state && task_id.is_none(),
         execution_state && task_id.is_some(),
         readiness && task_id.is_none(),
@@ -920,6 +949,7 @@ fn validate_command_mode(
             && !local_mapping_preflight
             && !local_mapping_recommendations
             && !local_mapping_patch_proposals
+            && revalidate_local_mapping_patch.is_none()
             && !execution_state
             && !readiness
             && !execution_request
@@ -1024,6 +1054,54 @@ fn validate_command_mode(
     if overwrite_local_mapping_patch && write_local_mapping_patch.is_none() {
         return Err(anyhow!(
             "--overwrite-local-mapping-patch requires --write-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && local_mapping_patch_proposals {
+        return Err(anyhow!(
+            "--revalidate-local-mapping-patch cannot be combined with --local-mapping-patch-proposals"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && write_local_mapping_patch.is_some() {
+        return Err(anyhow!(
+            "--revalidate-local-mapping-patch cannot be combined with --write-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && overwrite_local_mapping_patch {
+        return Err(anyhow!(
+            "--revalidate-local-mapping-patch cannot be combined with --overwrite-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && publish_local_mapping_preflight {
+        return Err(anyhow!(
+            "--revalidate-local-mapping-patch cannot be combined with --publish-local-mapping-preflight"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && task_id.is_some() {
+        return Err(anyhow!(
+            "--task-id cannot be combined with --revalidate-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && request_id.is_some() {
+        return Err(anyhow!(
+            "--request-id cannot be combined with --revalidate-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && claim_id.is_some() {
+        return Err(anyhow!(
+            "--claim-id cannot be combined with --revalidate-local-mapping-patch"
+        ));
+    }
+
+    if revalidate_local_mapping_patch.is_some() && materialize {
+        return Err(anyhow!(
+            "--revalidate-local-mapping-patch cannot be combined with --materialize"
         ));
     }
 
@@ -2174,6 +2252,67 @@ fn format_local_mapping_patch_proposal(proposal: &LocalMappingPatchProposal) -> 
     lines
 }
 
+fn format_local_mapping_patch_revalidation_report(
+    report: &LocalMappingPatchRevalidationReport,
+) -> String {
+    let mut lines = vec![
+        "Local mapping patch revalidation".to_string(),
+        format!("Config: {}", report.config_path),
+        format!("Proposal: {}", report.proposal_path),
+        format!("Status: {}", report.status),
+        format!("Items: {}", report.summary.total_items),
+        format!(
+            "Valid new: {} | Already present: {} | Conflicts: {} | Incomplete: {} | Ignored: {} | Warnings: {}",
+            report.summary.valid_new_mappings,
+            report.summary.already_present,
+            report.summary.conflicts,
+            report.summary.incomplete,
+            report.summary.ignored,
+            report.summary.warnings
+        ),
+        format!("Safe to auto apply: {}", report.safe_to_auto_apply),
+        format!(
+            "Side effects performed: {}",
+            report.side_effects_performed
+        ),
+        format!("Applied: {}", report.applied),
+    ];
+
+    if report.items.is_empty() {
+        lines.push(String::new());
+        lines.push("No mapping entries were found in the proposal file.".to_string());
+    } else {
+        for item in &report.items {
+            lines.push(String::new());
+            lines.push(format!(
+                "[{}] {}",
+                item.status.to_ascii_uppercase(),
+                item.mapping_key
+                    .as_deref()
+                    .unwrap_or("(unknown mapping key)")
+            ));
+            if let Some(proposed) = item.proposed_container_name.as_deref() {
+                lines.push(format!("  proposed container: {}", proposed));
+            }
+            if let Some(current) = item.current_container_name.as_deref() {
+                lines.push(format!("  current container: {}", current));
+            }
+            lines.push(format!("  reason: {}", item.reason));
+            if let Some(source_line) = item.source_line.as_deref() {
+                lines.push(format!("  source line: {}", source_line));
+            }
+        }
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: this command did not modify config.toml, did not apply mappings, and did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n") + "\n"
+}
+
 fn format_latest_assisted_execution_request(
     request: &AssistedExecutionRequest,
     requested_task_id: &str,
@@ -2961,10 +3100,11 @@ mod tests {
         format_assisted_execution_state_list, format_latest_approval,
         format_latest_assisted_execution_attempt, format_latest_assisted_execution_claim,
         format_latest_assisted_execution_request, format_local_mapping_patch_proposal_list,
-        format_local_mapping_preflight_report, format_local_mapping_recommendation_list,
-        format_published_local_mapping_preflight_report, format_readiness_list,
-        format_single_assisted_execution_state, format_single_readiness, format_status_update,
-        format_submitted_approval, format_submitted_assisted_execution_attempt,
+        format_local_mapping_patch_revalidation_report, format_local_mapping_preflight_report,
+        format_local_mapping_recommendation_list, format_published_local_mapping_preflight_report,
+        format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
+        format_status_update, format_submitted_approval,
+        format_submitted_assisted_execution_attempt,
         format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
@@ -2984,7 +3124,9 @@ mod tests {
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationPolicy,
             InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
             InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
-            LocalMappingPatchProposal, LocalMappingPatchProposalList, LocalMappingRecommendation,
+            LocalMappingPatchProposal, LocalMappingPatchProposalList,
+            LocalMappingPatchRevalidationItem, LocalMappingPatchRevalidationReport,
+            LocalMappingPatchRevalidationSummary, LocalMappingRecommendation,
             LocalMappingRecommendationList,
         },
         local_mapping::preflight::{
@@ -3002,6 +3144,7 @@ mod tests {
         local_mapping_patch_proposals: bool,
         write_local_mapping_patch: Option<&'a str>,
         overwrite_local_mapping_patch: bool,
+        revalidate_local_mapping_patch: Option<&'a str>,
         execution_state: bool,
         readiness: bool,
         execution_requests: bool,
@@ -3040,6 +3183,7 @@ mod tests {
             case.local_mapping_patch_proposals,
             case.write_local_mapping_patch,
             case.overwrite_local_mapping_patch,
+            case.revalidate_local_mapping_patch,
             case.execution_state,
             case.readiness,
             case.execution_requests,
@@ -4472,6 +4616,48 @@ mod tests {
     }
 
     #[test]
+    fn local_mapping_patch_revalidation_formatting_includes_expected_fields() {
+        let rendered = format_local_mapping_patch_revalidation_report(
+            &LocalMappingPatchRevalidationReport {
+                proposal_path: "generated/local-mapping-proposal.toml".to_string(),
+                config_path: "config.toml".to_string(),
+                status: "warning".to_string(),
+                items: vec![LocalMappingPatchRevalidationItem {
+                    mapping_key: Some("chirpstack-primary".to_string()),
+                    proposed_container_name: Some("REVIEW_AND_SET_CONTAINER_NAME".to_string()),
+                    current_container_name: None,
+                    status: "incomplete".to_string(),
+                    reason: "operator must replace REVIEW_AND_SET_CONTAINER_NAME before any manual config update".to_string(),
+                    source_line: Some("\"chirpstack-primary\" = \"REVIEW_AND_SET_CONTAINER_NAME\"".to_string()),
+                }],
+                summary: LocalMappingPatchRevalidationSummary {
+                    total_items: 1,
+                    incomplete: 1,
+                    ..LocalMappingPatchRevalidationSummary::default()
+                },
+                safe_to_auto_apply: false,
+                side_effects_performed: false,
+                applied: false,
+                ..LocalMappingPatchRevalidationReport::default()
+            },
+        );
+
+        assert!(rendered.contains("Local mapping patch revalidation"));
+        assert!(rendered.contains("Config: config.toml"));
+        assert!(rendered.contains("Proposal: generated/local-mapping-proposal.toml"));
+        assert!(rendered.contains("Status: warning"));
+        assert!(rendered.contains("Items: 1"));
+        assert!(rendered.contains("Safe to auto apply: false"));
+        assert!(rendered.contains("Side effects performed: false"));
+        assert!(rendered.contains("Applied: false"));
+        assert!(rendered.contains("[INCOMPLETE] chirpstack-primary"));
+        assert!(rendered.contains("proposed container: REVIEW_AND_SET_CONTAINER_NAME"));
+        assert!(rendered.contains(
+            "Note: this command did not modify config.toml, did not apply mappings, and did not execute installation."
+        ));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_mode_case(ModeCase {
             task_id: Some("task-1"),
@@ -4604,9 +4790,9 @@ mod tests {
     #[test]
     fn cli_mode_validation_rejects_publish_local_mapping_preflight_without_preflight() {
         let result = validate_command_mode(
-            None, None, None, false, true, false, false, None, false, false, false, false, false,
-            false, false, false, false, None, false, false, false, None, false, false, false, None,
-            false, None, None, None, None, None, None, None,
+            None, None, None, false, true, false, false, None, false, None, false, false, false,
+            false, false, false, false, false, None, false, false, false, None, false, false,
+            false, None, false, None, None, None, None, None, None, None,
         );
 
         assert!(result.is_err());
@@ -4665,6 +4851,27 @@ mod tests {
     }
 
     #[test]
+    fn cli_mode_validation_rejects_combining_write_and_revalidate_local_mapping_patch() {
+        let result = validate_mode_case(ModeCase {
+            write_local_mapping_patch: Some("generated/local-mapping-proposal.toml"),
+            revalidate_local_mapping_patch: Some("generated/local-mapping-proposal.toml"),
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_accepts_revalidate_local_mapping_patch_without_server_mode() {
+        let result = validate_mode_case(ModeCase {
+            revalidate_local_mapping_patch: Some("generated/local-mapping-proposal.toml"),
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn local_mapping_recommendation_viewer_source_guard_has_no_docker_shell_or_config_writes() {
         let source = include_str!("installation_tasks.rs");
         let start = source
@@ -4703,6 +4910,35 @@ mod tests {
             .find("\n    if execution_state {")
             .map(|offset| start + offset)
             .expect("execution_state branch should follow patch proposal branch");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task CLI must not contain forbidden pattern: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mapping_patch_revalidation_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("installation_tasks.rs");
+        let start = source
+            .find("if let Some(proposal_path) = revalidate_local_mapping_patch {")
+            .expect("local mapping patch revalidation branch should exist");
+        let end = source[start..]
+            .find("\n    if local_mapping_preflight {")
+            .map(|offset| start + offset)
+            .expect("local mapping preflight branch should follow revalidation branch");
         let implementation = &source[start..end];
 
         for forbidden in [

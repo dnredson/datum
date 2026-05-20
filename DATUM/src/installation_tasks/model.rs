@@ -552,6 +552,59 @@ pub struct LocalMappingPatchProposalList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingPatchRevalidationReport {
+    pub proposal_path: String,
+    pub config_path: String,
+    pub status: String,
+    #[serde(default)]
+    pub checked_at_utc: Option<String>,
+    #[serde(default)]
+    pub items: Vec<LocalMappingPatchRevalidationItem>,
+    #[serde(default)]
+    pub summary: LocalMappingPatchRevalidationSummary,
+    #[serde(default)]
+    pub safe_to_auto_apply: bool,
+    #[serde(default)]
+    pub side_effects_performed: bool,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingPatchRevalidationItem {
+    #[serde(default)]
+    pub mapping_key: Option<String>,
+    #[serde(default)]
+    pub proposed_container_name: Option<String>,
+    #[serde(default)]
+    pub current_container_name: Option<String>,
+    pub status: String,
+    pub reason: String,
+    #[serde(default)]
+    pub source_line: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingPatchRevalidationSummary {
+    #[serde(default)]
+    pub total_items: u64,
+    #[serde(default)]
+    pub valid_new_mappings: u64,
+    #[serde(default)]
+    pub already_present: u64,
+    #[serde(default)]
+    pub conflicts: u64,
+    #[serde(default)]
+    pub incomplete: u64,
+    #[serde(default)]
+    pub ignored: u64,
+    #[serde(default)]
+    pub warnings: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,

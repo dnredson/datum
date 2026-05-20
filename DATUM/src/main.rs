@@ -105,6 +105,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.local_mapping_patch_proposals,
             args.write_local_mapping_patch.as_deref(),
             args.overwrite_local_mapping_patch,
+            args.revalidate_local_mapping_patch.as_deref(),
             args.execution_state,
             args.readiness,
             args.execution_requests,
@@ -301,6 +302,9 @@ struct InstallationTasksArgs {
 
     #[arg(long, default_value_t = false)]
     overwrite_local_mapping_patch: bool,
+
+    #[arg(long)]
+    revalidate_local_mapping_patch: Option<String>,
 
     #[arg(long, default_value_t = false)]
     execution_state: bool,
@@ -658,6 +662,7 @@ fn installation_tasks_command(
     local_mapping_patch_proposals: bool,
     write_local_mapping_patch: Option<&str>,
     overwrite_local_mapping_patch: bool,
+    revalidate_local_mapping_patch: Option<&str>,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -689,6 +694,7 @@ fn installation_tasks_command(
     let cfg = config::load_config(config_path)?;
     run_installation_tasks_command(
         &cfg,
+        config_path,
         node_id,
         project_id,
         url,
@@ -701,6 +707,7 @@ fn installation_tasks_command(
         local_mapping_patch_proposals,
         write_local_mapping_patch,
         overwrite_local_mapping_patch,
+        revalidate_local_mapping_patch,
         execution_state,
         readiness,
         execution_requests,
