@@ -420,6 +420,61 @@ function Assert-InstallationTaskReadinessListContract {
     }
 }
 
+function Assert-LocalMappingRecommendationListContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [switch]$RequireNodeId
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "recommendations" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ($Json.recommendations -isnot [System.Array] -and $Json.recommendations -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'recommendations' as an array."
+    }
+}
+
+function Assert-LocalMappingRecommendationSafetyContract {
+    param(
+        $Recommendation,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Recommendation "safe_to_auto_apply" $StepName
+    Assert-JsonHasProperty $Recommendation "requires_operator" $StepName
+
+    if ($Recommendation.safe_to_auto_apply -ne $false) {
+        throw "$StepName returned safe_to_auto_apply='$($Recommendation.safe_to_auto_apply)', expected 'False'."
+    }
+
+    if ($Recommendation.requires_operator -ne $true) {
+        throw "$StepName returned requires_operator='$($Recommendation.requires_operator)', expected 'True'."
+    }
+
+    if ($Recommendation.PSObject.Properties.Name.Contains("recommendation_id") -and
+        [string]::IsNullOrWhiteSpace([string]$Recommendation.recommendation_id)) {
+        throw "$StepName exposed recommendation_id but it was empty."
+    }
+
+    if ($Recommendation.PSObject.Properties.Name.Contains("recommendation_status") -and
+        [string]::IsNullOrWhiteSpace([string]$Recommendation.recommendation_status)) {
+        throw "$StepName exposed recommendation_status but it was empty."
+    }
+}
+
 function Assert-AssistedExecutionRequestContract {
     param(
         $Json,
@@ -960,6 +1015,14 @@ $serverSingleTaskAssistedExecutionStateReadPerformed = $false
 $clientSingleTaskAssistedExecutionStateReadPerformed = $false
 $safeToAutoExecuteFalseValidatedForStateSummaries = $false
 $sideEffectsPerformedFalseValidatedForStateSummaries = $false
+$serverProjectLocalMappingRecommendationsReadPerformed = $false
+$serverNodeLocalMappingRecommendationsReadPerformed = $false
+$clientLocalMappingRecommendationViewerPerformed = $false
+$clientLocalMappingPreflightPerformed = $false
+$clientSingleTaskLocalMappingPreflightPerformed = $false
+$safeToAutoApplyFalseValidated = $false
+$safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
+$sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
@@ -1954,6 +2017,164 @@ if (-not $SkipServerChecks) {
             }
             $clientSingleTaskAssistedExecutionStateReadPerformed = $true
         }
+
+        Write-Step "Read project local mapping recommendations from server"
+        $projectLocalMappingRecommendations = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/local-mapping-recommendations" `
+            -Headers $headers `
+            -StepName "Project local mapping recommendations"
+        Assert-HttpOk $projectLocalMappingRecommendations "Project local mapping recommendations"
+        Assert-LocalMappingRecommendationListContract `
+            -Json $projectLocalMappingRecommendations.Json `
+            -StepName "Project local mapping recommendations"
+        $firstProjectLocalMappingRecommendation = @(
+            $projectLocalMappingRecommendations.Json.recommendations | Select-Object -First 1
+        )
+        if ($firstProjectLocalMappingRecommendation.Count -gt 0) {
+            Assert-LocalMappingRecommendationSafetyContract `
+                -Recommendation $firstProjectLocalMappingRecommendation[0] `
+                -StepName "Project local mapping recommendations"
+            $safeToAutoApplyFalseValidated = $true
+        }
+        $serverProjectLocalMappingRecommendationsReadPerformed = $true
+
+        Write-Step "Read node local mapping recommendations from server"
+        $nodeLocalMappingRecommendations = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/local-mapping-recommendations/for-node/$NodeId" `
+            -Headers $headers `
+            -StepName "Node local mapping recommendations"
+        Assert-HttpOk $nodeLocalMappingRecommendations "Node local mapping recommendations"
+        Assert-LocalMappingRecommendationListContract `
+            -Json $nodeLocalMappingRecommendations.Json `
+            -StepName "Node local mapping recommendations" `
+            -RequireNodeId
+        $firstNodeLocalMappingRecommendation = @(
+            $nodeLocalMappingRecommendations.Json.recommendations | Select-Object -First 1
+        )
+        if ($firstNodeLocalMappingRecommendation.Count -gt 0) {
+            Assert-LocalMappingRecommendationSafetyContract `
+                -Recommendation $firstNodeLocalMappingRecommendation[0] `
+                -StepName "Node local mapping recommendations"
+            $safeToAutoApplyFalseValidated = $true
+        }
+        $serverNodeLocalMappingRecommendationsReadPerformed = $true
+
+        Write-Step "Read local mapping recommendations from DATUM"
+        $clientLocalMappingRecommendationOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--local-mapping-recommendations"
+            ) `
+            -StepName "DATUM local mapping recommendation viewer"
+
+        if ($clientLocalMappingRecommendationOutput -notmatch [regex]::Escape("Local mapping recommendations for node $NodeId") -and
+            $clientLocalMappingRecommendationOutput -notmatch "No local mapping recommendations for this node\.") {
+            throw "DATUM local mapping recommendation viewer output did not include recommendation details or an empty-state message."
+        }
+
+        if ($clientLocalMappingRecommendationOutput -notmatch "Local mapping recommendations are advisory only\. This command did not write config and did not execute installation\.") {
+            throw "DATUM local mapping recommendation viewer output did not include the advisory no-write/no-execution note."
+        }
+
+        if ($clientLocalMappingRecommendationOutput -match "safe to auto apply:") {
+            if ($clientLocalMappingRecommendationOutput -notmatch "safe to auto apply:\s+false") {
+                throw "DATUM local mapping recommendation viewer output did not include 'safe to auto apply: false' when recommendations were shown."
+            }
+            if ($clientLocalMappingRecommendationOutput -notmatch "requires operator:\s+true") {
+                throw "DATUM local mapping recommendation viewer output did not include 'requires operator: true' when recommendations were shown."
+            }
+            $safeToAutoApplyFalseValidated = $true
+        }
+        $clientLocalMappingRecommendationViewerPerformed = $true
+
+        Write-Step "Run local mapping preflight from DATUM"
+        $clientLocalMappingPreflightOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--local-mapping-preflight"
+            ) `
+            -StepName "DATUM local mapping preflight"
+
+        if ($clientLocalMappingPreflightOutput -notmatch [regex]::Escape("Local mapping preflight for node $NodeId") -and
+            $clientLocalMappingPreflightOutput -notmatch "No installation tasks require local mapping preflight\.") {
+            throw "DATUM local mapping preflight output did not include preflight details or an empty-state message."
+        }
+
+        if ($clientLocalMappingPreflightOutput -notmatch "Note: this preflight is advisory only\. No local config was written and no installation was executed\.") {
+            throw "DATUM local mapping preflight output did not include the advisory no-write/no-execution note."
+        }
+
+        if ($clientLocalMappingPreflightOutput -notmatch "Safe to auto execute:\s+false") {
+            throw "DATUM local mapping preflight output did not include 'Safe to auto execute: false'."
+        }
+
+        if ($clientLocalMappingPreflightOutput -notmatch "Side effects performed:\s+false") {
+            throw "DATUM local mapping preflight output did not include 'Side effects performed: false'."
+        }
+        $clientLocalMappingPreflightPerformed = $true
+        $safeToAutoExecuteFalseValidated = $true
+        $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $true
+        $sideEffectsPerformedFalseValidated = $true
+        $sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $true
+
+        if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
+            Write-Host "No installation task available; skipping single-task local mapping preflight."
+        }
+        else {
+            Write-Step "Run single-task local mapping preflight from DATUM"
+            $clientSingleTaskLocalMappingPreflightOutput = Run-CommandOrFail `
+                -WorkingDirectory $DatumDir `
+                -Command @(
+                    "cargo",
+                    "run",
+                    "--",
+                    "installation-tasks",
+                    "--config",
+                    $ResolvedClientConfig,
+                    "--task-id",
+                    $firstTaskId,
+                    "--local-mapping-preflight"
+                ) `
+                -StepName "DATUM single-task local mapping preflight"
+
+            if ($clientSingleTaskLocalMappingPreflightOutput -notmatch [regex]::Escape("Local mapping preflight for node $NodeId")) {
+                throw "DATUM single-task local mapping preflight output did not include the expected preflight header."
+            }
+
+            if ($clientSingleTaskLocalMappingPreflightOutput -notmatch [regex]::Escape("task_id: $firstTaskId")) {
+                throw "DATUM single-task local mapping preflight output did not include the requested task id."
+            }
+
+            if ($clientSingleTaskLocalMappingPreflightOutput -notmatch "Note: this preflight is advisory only\. No local config was written and no installation was executed\.") {
+                throw "DATUM single-task local mapping preflight output did not include the advisory no-write/no-execution note."
+            }
+
+            if ($clientSingleTaskLocalMappingPreflightOutput -notmatch "Safe to auto execute:\s+false") {
+                throw "DATUM single-task local mapping preflight output did not include 'Safe to auto execute: false'."
+            }
+
+            if ($clientSingleTaskLocalMappingPreflightOutput -notmatch "Side effects performed:\s+false") {
+                throw "DATUM single-task local mapping preflight output did not include 'Side effects performed: false'."
+            }
+
+            $clientSingleTaskLocalMappingPreflightPerformed = $true
+            $safeToAutoExecuteFalseValidated = $true
+            $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $true
+            $sideEffectsPerformedFalseValidated = $true
+            $sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $true
+        }
     }
 }
 
@@ -2223,6 +2444,42 @@ if ($clientSingleTaskAssistedExecutionStateReadPerformed) {
 else {
     Write-Host "- optional client single-task assisted execution state viewer (skipped: no tasks materialized)"
 }
+if ($serverProjectLocalMappingRecommendationsReadPerformed) {
+    Write-Host "- server project local mapping recommendations"
+}
+else {
+    Write-Host "- server project local mapping recommendations (skipped: server checks disabled)"
+}
+if ($serverNodeLocalMappingRecommendationsReadPerformed) {
+    Write-Host "- server node local mapping recommendations"
+}
+else {
+    Write-Host "- server node local mapping recommendations (skipped: server checks disabled)"
+}
+if ($clientLocalMappingRecommendationViewerPerformed) {
+    Write-Host "- DATUM local mapping recommendation viewer"
+}
+else {
+    Write-Host "- DATUM local mapping recommendation viewer (skipped: server checks disabled)"
+}
+if ($clientLocalMappingPreflightPerformed) {
+    Write-Host "- DATUM local mapping preflight"
+}
+else {
+    Write-Host "- DATUM local mapping preflight (skipped: server checks disabled)"
+}
+if ($clientSingleTaskLocalMappingPreflightPerformed) {
+    Write-Host "- optional DATUM single-task local mapping preflight"
+}
+else {
+    Write-Host "- optional DATUM single-task local mapping preflight (skipped: no tasks materialized)"
+}
+if ($safeToAutoApplyFalseValidated) {
+    Write-Host "- safe_to_auto_apply false validation"
+}
+else {
+    Write-Host "- safe_to_auto_apply false validation (skipped: no local mapping recommendations returned)"
+}
 if ($assistedExecutionAttemptSubmissionPerformed -or
     $serverLatestAssistedExecutionAttemptReadPerformed -or
     $serverAssistedExecutionAttemptListReadPerformed) {
@@ -2249,6 +2506,18 @@ if ($sideEffectsPerformedFalseValidatedForStateSummaries) {
 else {
     Write-Host "- side_effects_performed false validation for state summaries (skipped: no state summary exposed side_effects_performed)"
 }
+if ($safeToAutoExecuteFalseValidatedForLocalMappingPreflight) {
+    Write-Host "- safe_to_auto_execute false validation for local mapping preflight"
+}
+else {
+    Write-Host "- safe_to_auto_execute false validation for local mapping preflight (skipped: no local mapping preflight was run)"
+}
+if ($sideEffectsPerformedFalseValidatedForLocalMappingPreflight) {
+    Write-Host "- side_effects_performed false validation for local mapping preflight"
+}
+else {
+    Write-Host "- side_effects_performed false validation for local mapping preflight (skipped: no local mapping preflight was run)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -2260,3 +2529,5 @@ Write-Host "Assisted execution claim, when performed, recorded metadata only."
 Write-Host "Assisted claim lifecycle update, when performed, recorded metadata only."
 Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run metadata only."
 Write-Host "Assisted execution state checks were read-only."
+Write-Host "Local mapping recommendations and preflight checks were advisory only."
+Write-Host "No local config or mapping files were modified."
