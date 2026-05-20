@@ -10,15 +10,23 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalMappingPreflightReport {
-    pub node_id: String,
-    pub status: String,
     #[serde(default)]
-    pub checked_at_utc: Option<String>,
+    pub project_id: Option<String>,
+    pub node_id: String,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub reported_at_utc: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub status: String,
     #[serde(default)]
     pub items: Vec<LocalMappingPreflightItem>,
     pub summary: LocalMappingPreflightSummary,
     pub safe_to_auto_execute: bool,
     pub side_effects_performed: bool,
+    #[serde(default)]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -81,13 +89,17 @@ pub fn run_local_mapping_preflight(
     let status = derive_report_status(&summary);
 
     LocalMappingPreflightReport {
+        project_id: None,
         node_id: node_id.to_string(),
+        report_id: None,
+        reported_at_utc: None,
+        source: Some("client".to_string()),
         status,
-        checked_at_utc: None,
         items,
         summary,
         safe_to_auto_execute: false,
         side_effects_performed: false,
+        metadata: None,
     }
 }
 
@@ -624,6 +636,18 @@ mod tests {
         assert_eq!(report.summary.not_applicable, 1);
         assert_eq!(report.summary.warnings, 1);
         assert_invariants(&report);
+    }
+
+    #[test]
+    fn report_serialization_includes_status_items_and_summary() {
+        let report = run_local_mapping_preflight(&base_config(), "fog-01", &[mapping_task()]);
+        let value = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(value["status"].as_str(), Some("warning"));
+        assert!(value["items"].is_array());
+        assert!(value["summary"].is_object());
+        assert_eq!(value["safe_to_auto_execute"].as_bool(), Some(false));
+        assert_eq!(value["side_effects_performed"].as_bool(), Some(false));
     }
 
     #[test]

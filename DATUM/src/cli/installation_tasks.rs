@@ -16,8 +16,9 @@ use crate::{
             fetch_latest_assisted_execution_request, fetch_latest_installation_task_approval,
             fetch_local_mapping_recommendations_for_node, materialize_installation_tasks_for_node,
             patch_assisted_execution_claim_status, patch_installation_task_status,
-            submit_assisted_execution_attempt, submit_assisted_execution_claim,
-            submit_assisted_execution_request, submit_installation_task_approval,
+            publish_local_mapping_preflight_report, submit_assisted_execution_attempt,
+            submit_assisted_execution_claim, submit_assisted_execution_request,
+            submit_installation_task_approval,
         },
         model::{
             AssistedExecutionAttempt, AssistedExecutionAttemptList, AssistedExecutionClaim,
@@ -47,6 +48,7 @@ pub fn run_installation_tasks_command(
     request_id: Option<&str>,
     claim_id: Option<&str>,
     local_mapping_preflight: bool,
+    publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
     execution_state: bool,
     readiness: bool,
@@ -86,6 +88,7 @@ pub fn run_installation_tasks_command(
         request_id,
         claim_id,
         local_mapping_preflight,
+        publish_local_mapping_preflight,
         local_mapping_recommendations,
         execution_state,
         readiness,
@@ -119,6 +122,35 @@ pub fn run_installation_tasks_command(
             let task = fetch_installation_task(&base_url, &project_id, &node_id, task_id)?;
             let response = run_local_mapping_preflight(cfg, &node_id, &[task]);
 
+            if publish_local_mapping_preflight {
+                assert_local_mapping_preflight_publish_invariants(&response)?;
+                let server_report = publish_local_mapping_preflight_report(
+                    &base_url,
+                    &project_id,
+                    &node_id,
+                    &response,
+                )?;
+
+                if json_output {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "local_report": response,
+                            "server_report": server_report
+                        }))
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                    );
+                    return Ok(());
+                }
+
+                print!(
+                    "{}{}",
+                    format_local_mapping_preflight_report(&response),
+                    format_published_local_mapping_preflight_report(&server_report)
+                );
+                return Ok(());
+            }
+
             if json_output {
                 println!(
                     "{}",
@@ -134,6 +166,31 @@ pub fn run_installation_tasks_command(
 
         let response = fetch_installation_tasks_for_node(&base_url, &project_id, &node_id)?;
         let report = run_local_mapping_preflight(cfg, &node_id, &response.tasks);
+
+        if publish_local_mapping_preflight {
+            assert_local_mapping_preflight_publish_invariants(&report)?;
+            let server_report =
+                publish_local_mapping_preflight_report(&base_url, &project_id, &node_id, &report)?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "local_report": report,
+                        "server_report": server_report
+                    }))
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!(
+                "{}{}",
+                format_local_mapping_preflight_report(&report),
+                format_published_local_mapping_preflight_report(&server_report)
+            );
+            return Ok(());
+        }
 
         if json_output {
             println!(
@@ -728,6 +785,7 @@ fn validate_command_mode(
     request_id: Option<&str>,
     claim_id: Option<&str>,
     local_mapping_preflight: bool,
+    publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
     execution_state: bool,
     readiness: bool,
@@ -819,6 +877,12 @@ fn validate_command_mode(
     if local_mapping_preflight && claim_id.is_some() {
         return Err(anyhow!(
             "--claim-id cannot be combined with --local-mapping-preflight"
+        ));
+    }
+
+    if publish_local_mapping_preflight && !local_mapping_preflight {
+        return Err(anyhow!(
+            "--publish-local-mapping-preflight requires --local-mapping-preflight"
         ));
     }
 
@@ -1714,6 +1778,54 @@ fn format_local_mapping_preflight_report(report: &LocalMappingPreflightReport) -
     lines.join("\n")
 }
 
+fn format_published_local_mapping_preflight_report(report: &LocalMappingPreflightReport) -> String {
+    let mut lines = vec![
+        String::new(),
+        "Published local mapping preflight report".to_string(),
+    ];
+
+    if let Some(report_id) = report.report_id.as_deref() {
+        lines.push(format!("  report_id: {}", report_id));
+    }
+    if let Some(reported_at_utc) = report.reported_at_utc.as_deref() {
+        lines.push(format!("  reported_at_utc: {}", reported_at_utc));
+    }
+    lines.push(format!("  status: {}", report.status));
+    lines.push(format!(
+        "  safe to auto execute: {}",
+        report.safe_to_auto_execute
+    ));
+    lines.push(format!(
+        "  side effects performed: {}",
+        report.side_effects_performed
+    ));
+    lines.push(String::new());
+    lines.push(
+        "Note: this command did not write local config and did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn assert_local_mapping_preflight_publish_invariants(
+    report: &LocalMappingPreflightReport,
+) -> Result<()> {
+    if report.safe_to_auto_execute {
+        return Err(anyhow!(
+            "local mapping preflight publish rejected because safe_to_auto_execute must remain false"
+        ));
+    }
+
+    if report.side_effects_performed {
+        return Err(anyhow!(
+            "local mapping preflight publish rejected because side_effects_performed must remain false"
+        ));
+    }
+
+    Ok(())
+}
+
 fn format_local_mapping_recommendation_list(
     response: &LocalMappingRecommendationList,
     project_id: &str,
@@ -2563,13 +2675,14 @@ fn readiness_is_ready(readiness: &InstallationTaskReadiness) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        assisted_execution_state_has_attempt, build_attempt_message_with_preflight,
-        format_approval_list, format_assisted_execution_attempt_list,
-        format_assisted_execution_claim_list, format_assisted_execution_preflight_report,
-        format_assisted_execution_request_list, format_assisted_execution_state_list,
-        format_latest_approval, format_latest_assisted_execution_attempt,
-        format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
-        format_local_mapping_preflight_report, format_local_mapping_recommendation_list,
+        assert_local_mapping_preflight_publish_invariants, assisted_execution_state_has_attempt,
+        build_attempt_message_with_preflight, format_approval_list,
+        format_assisted_execution_attempt_list, format_assisted_execution_claim_list,
+        format_assisted_execution_preflight_report, format_assisted_execution_request_list,
+        format_assisted_execution_state_list, format_latest_approval,
+        format_latest_assisted_execution_attempt, format_latest_assisted_execution_claim,
+        format_latest_assisted_execution_request, format_local_mapping_preflight_report,
+        format_local_mapping_recommendation_list, format_published_local_mapping_preflight_report,
         format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
         format_status_update, format_submitted_approval,
         format_submitted_assisted_execution_attempt,
@@ -2639,6 +2752,7 @@ mod tests {
             case.request_id,
             case.claim_id,
             case.local_mapping_preflight,
+            false,
             case.local_mapping_recommendations,
             case.execution_state,
             case.readiness,
@@ -3644,7 +3758,6 @@ mod tests {
         let rendered = format_local_mapping_preflight_report(&LocalMappingPreflightReport {
             node_id: "fog-01".to_string(),
             status: "warning".to_string(),
-            checked_at_utc: None,
             items: vec![LocalMappingPreflightItem {
                 task_id: Some("task-1".to_string()),
                 module_id: Some("lorawan-bridge".to_string()),
@@ -3667,6 +3780,7 @@ mod tests {
             },
             safe_to_auto_execute: false,
             side_effects_performed: false,
+            ..LocalMappingPreflightReport::default()
         });
 
         assert!(rendered.contains("Local mapping preflight for node fog-01"));
@@ -3688,11 +3802,11 @@ mod tests {
         let response = LocalMappingPreflightReport {
             node_id: "fog-01".to_string(),
             status: "warning".to_string(),
-            checked_at_utc: None,
             items: vec![],
             summary: LocalMappingPreflightSummary::default(),
             safe_to_auto_execute: false,
             side_effects_performed: false,
+            ..LocalMappingPreflightReport::default()
         };
 
         let rendered = serde_json::to_string_pretty(&response).expect("json should render");
@@ -3701,6 +3815,55 @@ mod tests {
         assert!(rendered.contains("\"status\": \"warning\""));
         assert!(rendered.contains("\"safe_to_auto_execute\": false"));
         assert!(rendered.contains("\"side_effects_performed\": false"));
+    }
+
+    #[test]
+    fn local_mapping_preflight_publish_invariant_rejects_safe_to_auto_execute_true() {
+        let result =
+            assert_local_mapping_preflight_publish_invariants(&LocalMappingPreflightReport {
+                node_id: "fog-01".to_string(),
+                status: "warning".to_string(),
+                safe_to_auto_execute: true,
+                side_effects_performed: false,
+                ..LocalMappingPreflightReport::default()
+            });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_mapping_preflight_publish_invariant_rejects_side_effects_performed_true() {
+        let result =
+            assert_local_mapping_preflight_publish_invariants(&LocalMappingPreflightReport {
+                node_id: "fog-01".to_string(),
+                status: "warning".to_string(),
+                safe_to_auto_execute: false,
+                side_effects_performed: true,
+                ..LocalMappingPreflightReport::default()
+            });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn publish_output_includes_report_id_status_and_safety_fields() {
+        let rendered =
+            format_published_local_mapping_preflight_report(&LocalMappingPreflightReport {
+                node_id: "fog-01".to_string(),
+                report_id: Some("report-1".to_string()),
+                reported_at_utc: Some("2026-05-20T12:00:00Z".to_string()),
+                status: "warning".to_string(),
+                safe_to_auto_execute: false,
+                side_effects_performed: false,
+                ..LocalMappingPreflightReport::default()
+            });
+
+        assert!(rendered.contains("Published local mapping preflight report"));
+        assert!(rendered.contains("report_id: report-1"));
+        assert!(rendered.contains("reported_at_utc: 2026-05-20T12:00:00Z"));
+        assert!(rendered.contains("status: warning"));
+        assert!(rendered.contains("safe to auto execute: false"));
+        assert!(rendered.contains("side effects performed: false"));
     }
 
     #[test]
@@ -3922,6 +4085,27 @@ mod tests {
     }
 
     #[test]
+    fn cli_mode_validation_rejects_publish_local_mapping_preflight_without_preflight() {
+        let result = validate_command_mode(
+            None, None, None, false, true, false, false, false, false, false, false, false, false,
+            false, None, false, false, false, None, false, false, false, None, false, None, None,
+            None, None, None, None, None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_mapping_preflight_alone_does_not_require_publish_mode() {
+        let result = validate_mode_case(ModeCase {
+            local_mapping_preflight: true,
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_local_mapping_recommendations_with_task_id() {
         let result = validate_mode_case(ModeCase {
             task_id: Some("task-1"),
@@ -3942,6 +4126,35 @@ mod tests {
             .find("\n    if execution_state {")
             .map(|offset| start + offset)
             .expect("execution_state branch should follow recommendation branch");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task CLI must not contain forbidden pattern: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mapping_preflight_publisher_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("installation_tasks.rs");
+        let start = source
+            .find("if local_mapping_preflight {")
+            .expect("local mapping preflight branch should exist");
+        let end = source[start..]
+            .find("\n    if local_mapping_recommendations {")
+            .map(|offset| start + offset)
+            .expect("recommendation branch should follow preflight branch");
         let implementation = &source[start..end];
 
         for forbidden in [
