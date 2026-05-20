@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::core::local_mapping_preflight::{
+    LocalMappingPreflightItem, LocalMappingPreflightReport,
+};
+
 const STATUS_PLANNED: &str = "planned";
 const STATUS_ACKNOWLEDGED: &str = "acknowledged";
 const STATUS_BLOCKED: &str = "blocked";
@@ -38,6 +42,13 @@ const ATTEMPT_EXECUTION_MODE_DRY_RUN: &str = "dry_run";
 const ATTEMPT_EXECUTION_RESULT_NO_OP_RECORDED: &str = "no_op_recorded";
 const ATTEMPT_EXECUTION_RESULT_DRY_RUN_RECORDED: &str = "dry_run_recorded";
 const ATTEMPT_EXECUTION_RESULT_REJECTED_INVALID_REQUEST: &str = "rejected_invalid_request";
+const LOCAL_MAPPING_STATUS_ALREADY_MAPPED: &str = "already_mapped";
+const LOCAL_MAPPING_STATUS_MISSING_MAPPING: &str = "missing_mapping";
+const LOCAL_MAPPING_STATUS_AMBIGUOUS: &str = "ambiguous";
+const LOCAL_MAPPING_STATUS_NOT_APPLICABLE: &str = "not_applicable";
+const LOCAL_MAPPING_STATUS_WARNING: &str = "warning";
+const LOCAL_MAPPING_STATUS_UNKNOWN: &str = "unknown";
+const LOCAL_MAPPING_STATUS_NO_REPORT: &str = "no_report";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallationTask {
@@ -285,6 +296,18 @@ pub struct AssistedExecutionStateSummary {
     pub latest_execution_mode: Option<String>,
     #[serde(default)]
     pub latest_execution_result: Option<String>,
+    #[serde(default)]
+    pub local_mapping_status: Option<String>,
+    #[serde(default)]
+    pub local_mapping_reason: Option<String>,
+    #[serde(default)]
+    pub local_mapping_report_id: Option<String>,
+    #[serde(default)]
+    pub local_mapping_reported_at_utc: Option<String>,
+    #[serde(default)]
+    pub local_mapping_item_snapshot: Option<Value>,
+    #[serde(default)]
+    pub local_mapping_preflight_snapshot: Option<Value>,
     pub safe_to_auto_execute: bool,
     pub side_effects_performed: bool,
     pub evaluated_at_utc: String,
@@ -340,8 +363,42 @@ pub struct InstallationPolicyDecision {
     pub allowed_future_modes: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalMappingState {
+    pub status: String,
+    pub reason: String,
+    pub report_id: Option<String>,
+    pub reported_at_utc: Option<String>,
+    pub item_snapshot: Option<Value>,
+    pub preflight_snapshot: Option<Value>,
+}
+
 fn json_snapshot<T: Serialize>(value: Option<&T>) -> Option<Value> {
     value.and_then(|value| serde_json::to_value(value).ok())
+}
+
+fn trimmed_non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn option_matches(value: Option<&str>, expected: &str) -> bool {
+    value.and_then(trimmed_non_empty) == Some(expected)
+}
+
+fn normalize_local_mapping_status(status: &str) -> String {
+    match status.trim() {
+        LOCAL_MAPPING_STATUS_ALREADY_MAPPED => LOCAL_MAPPING_STATUS_ALREADY_MAPPED.to_string(),
+        LOCAL_MAPPING_STATUS_MISSING_MAPPING => LOCAL_MAPPING_STATUS_MISSING_MAPPING.to_string(),
+        LOCAL_MAPPING_STATUS_AMBIGUOUS => LOCAL_MAPPING_STATUS_AMBIGUOUS.to_string(),
+        LOCAL_MAPPING_STATUS_NOT_APPLICABLE => LOCAL_MAPPING_STATUS_NOT_APPLICABLE.to_string(),
+        LOCAL_MAPPING_STATUS_WARNING => LOCAL_MAPPING_STATUS_WARNING.to_string(),
+        _ => LOCAL_MAPPING_STATUS_UNKNOWN.to_string(),
+    }
 }
 
 fn is_valid_status(status: &str) -> bool {
@@ -873,6 +930,7 @@ pub fn derive_assisted_execution_state_summary(
     request: Option<&AssistedExecutionRequest>,
     claim: Option<&AssistedExecutionClaim>,
     latest_attempt: Option<&AssistedExecutionAttempt>,
+    latest_local_mapping_preflight: Option<&LocalMappingPreflightReport>,
 ) -> AssistedExecutionStateSummary {
     let evaluated_at_utc = Utc::now().to_rfc3339();
     let task_id = task
@@ -902,6 +960,8 @@ pub fn derive_assisted_execution_state_summary(
     let latest_attempt_status = latest_attempt.map(|attempt| attempt.attempt_status.clone());
     let latest_execution_mode = latest_attempt.map(|attempt| attempt.execution_mode.clone());
     let latest_execution_result = latest_attempt.map(|attempt| attempt.execution_result.clone());
+    let local_mapping_state =
+        task.map(|task| derive_local_mapping_status_for_task(task, latest_local_mapping_preflight));
     let side_effects_performed = latest_attempt
         .map(|attempt| attempt.side_effects_performed)
         .unwrap_or(false);
@@ -1052,6 +1112,24 @@ pub fn derive_assisted_execution_state_summary(
         latest_attempt_status,
         latest_execution_mode,
         latest_execution_result,
+        local_mapping_status: local_mapping_state
+            .as_ref()
+            .map(|state| state.status.clone()),
+        local_mapping_reason: local_mapping_state
+            .as_ref()
+            .map(|state| state.reason.clone()),
+        local_mapping_report_id: local_mapping_state
+            .as_ref()
+            .and_then(|state| state.report_id.clone()),
+        local_mapping_reported_at_utc: local_mapping_state
+            .as_ref()
+            .and_then(|state| state.reported_at_utc.clone()),
+        local_mapping_item_snapshot: local_mapping_state
+            .as_ref()
+            .and_then(|state| state.item_snapshot.clone()),
+        local_mapping_preflight_snapshot: local_mapping_state
+            .as_ref()
+            .and_then(|state| state.preflight_snapshot.clone()),
         safe_to_auto_execute: false,
         side_effects_performed,
         evaluated_at_utc,
@@ -1062,6 +1140,106 @@ pub fn derive_assisted_execution_state_summary(
         claim_snapshot: json_snapshot(claim),
         latest_attempt_snapshot: json_snapshot(latest_attempt),
         metadata,
+    }
+}
+
+pub fn find_local_mapping_preflight_item_for_task<'a>(
+    report: &'a LocalMappingPreflightReport,
+    task: &InstallationTask,
+) -> Option<&'a LocalMappingPreflightItem> {
+    let task_id = trimmed_non_empty(&task.task_id);
+    let installation_id = trimmed_non_empty(&task.installation_id);
+    let action_id = task.action_id.as_deref().and_then(trimmed_non_empty);
+    let module_id = task.module_id.as_deref().and_then(trimmed_non_empty);
+    let artifact = task.artifact.as_deref().and_then(trimmed_non_empty);
+
+    if let Some(task_id) = task_id {
+        if let Some(item) = report
+            .items
+            .iter()
+            .find(|item| option_matches(item.task_id.as_deref(), task_id))
+        {
+            return Some(item);
+        }
+    }
+
+    if let Some(installation_id) = installation_id {
+        if let Some(item) = report
+            .items
+            .iter()
+            .find(|item| option_matches(item.installation_id.as_deref(), installation_id))
+        {
+            return Some(item);
+        }
+    }
+
+    if let Some(action_id) = action_id {
+        if let Some(item) = report
+            .items
+            .iter()
+            .find(|item| option_matches(item.action_id.as_deref(), action_id))
+        {
+            return Some(item);
+        }
+    }
+
+    if let Some(module_id) = module_id {
+        if let Some(item) = report
+            .items
+            .iter()
+            .find(|item| option_matches(item.module_id.as_deref(), module_id))
+        {
+            return Some(item);
+        }
+    }
+
+    artifact.and_then(|artifact| {
+        report
+            .items
+            .iter()
+            .find(|item| option_matches(item.artifact.as_deref(), artifact))
+    })
+}
+
+pub fn derive_local_mapping_status_for_task(
+    task: &InstallationTask,
+    latest_report: Option<&LocalMappingPreflightReport>,
+) -> LocalMappingState {
+    let Some(report) = latest_report else {
+        return LocalMappingState {
+            status: LOCAL_MAPPING_STATUS_NO_REPORT.to_string(),
+            reason: "no local mapping preflight report available".to_string(),
+            report_id: None,
+            reported_at_utc: None,
+            item_snapshot: None,
+            preflight_snapshot: None,
+        };
+    };
+
+    let preflight_snapshot = serde_json::to_value(report).ok();
+    let report_id = Some(report.report_id.clone());
+    let reported_at_utc = Some(report.reported_at_utc.clone());
+
+    let Some(item) = find_local_mapping_preflight_item_for_task(report, task) else {
+        return LocalMappingState {
+            status: LOCAL_MAPPING_STATUS_UNKNOWN.to_string(),
+            reason: "no matching local mapping preflight item for task".to_string(),
+            report_id,
+            reported_at_utc,
+            item_snapshot: None,
+            preflight_snapshot,
+        };
+    };
+
+    LocalMappingState {
+        status: normalize_local_mapping_status(&item.status),
+        reason: trimmed_non_empty(&item.reason)
+            .unwrap_or("local mapping preflight item did not include a reason")
+            .to_string(),
+        report_id,
+        reported_at_utc,
+        item_snapshot: serde_json::to_value(item).ok(),
+        preflight_snapshot,
     }
 }
 
@@ -1516,7 +1694,8 @@ mod tests {
         build_assisted_execution_attempt, build_assisted_execution_claim,
         build_assisted_execution_request, build_installation_task_approval,
         derive_assisted_execution_state_summary, derive_installation_tasks_from_plan,
-        evaluate_installation_task_readiness, normalize_installation_task,
+        derive_local_mapping_status_for_task, evaluate_installation_task_readiness,
+        find_local_mapping_preflight_item_for_task, normalize_installation_task,
         validate_assisted_execution_attempt_allowed, validate_assisted_execution_claim_allowed,
         validate_assisted_execution_claim_status_transition,
         validate_assisted_execution_request_allowed, validate_installation_task,
@@ -1526,6 +1705,10 @@ mod tests {
     };
     use chrono::{Duration, Utc};
     use serde_json::{json, Value};
+
+    use crate::core::local_mapping_preflight::{
+        LocalMappingPreflightItem, LocalMappingPreflightReport, LocalMappingPreflightSummary,
+    };
 
     fn base_installation_item() -> Value {
         json!({
@@ -1652,6 +1835,44 @@ mod tests {
             Some("operator".to_string()),
             Some("recording metadata-only attempt".to_string()),
         )
+    }
+
+    fn local_mapping_item(status: &str) -> LocalMappingPreflightItem {
+        LocalMappingPreflightItem {
+            task_id: Some(candidate_task().task_id),
+            installation_id: Some("installation:planning:1:prepare_local_mapping".to_string()),
+            planning_id: Some("planning:1".to_string()),
+            action_id: Some("gap:1".to_string()),
+            module_id: Some("chirpstack-primary".to_string()),
+            runtime: Some("container".to_string()),
+            artifact: Some("chirpstack/chirpstack:latest".to_string()),
+            required_step: Some("install_existing_artifact".to_string()),
+            installation_action: Some("prepare_local_mapping".to_string()),
+            target_node: Some("fog-01".to_string()),
+            status: status.to_string(),
+            reason: format!("reason for {status}"),
+            current_mapping_source: None,
+            current_container_name: None,
+            suggested_mapping_key: Some("chirpstack-primary".to_string()),
+            suggested_artifact: Some("chirpstack/chirpstack:latest".to_string()),
+            source_task: Some(json!({ "source": "task" })),
+        }
+    }
+
+    fn local_mapping_report(items: Vec<LocalMappingPreflightItem>) -> LocalMappingPreflightReport {
+        LocalMappingPreflightReport {
+            project_id: "smart-city-campinas".to_string(),
+            node_id: "fog-01".to_string(),
+            report_id: "report-1".to_string(),
+            reported_at_utc: "2026-05-20T12:00:00Z".to_string(),
+            source: Some("client".to_string()),
+            status: "warning".to_string(),
+            items,
+            summary: LocalMappingPreflightSummary::default(),
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+            metadata: Some(json!({ "advisory_only": true })),
+        }
     }
 
     #[test]
@@ -2789,6 +3010,128 @@ mod tests {
     }
 
     #[test]
+    fn local_mapping_state_without_report_is_no_report() {
+        let task = candidate_task();
+        let state = derive_local_mapping_status_for_task(&task, None);
+
+        assert_eq!(state.status, "no_report");
+        assert_eq!(state.reason, "no local mapping preflight report available");
+    }
+
+    #[test]
+    fn local_mapping_state_without_matching_item_is_unknown() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![LocalMappingPreflightItem {
+            task_id: Some("other-task".to_string()),
+            status: "warning".to_string(),
+            reason: "different task".to_string(),
+            ..LocalMappingPreflightItem::default()
+        }]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(state.status, "unknown");
+        assert_eq!(
+            state.reason,
+            "no matching local mapping preflight item for task"
+        );
+        assert_eq!(state.report_id.as_deref(), Some("report-1"));
+        assert!(state.preflight_snapshot.is_some());
+    }
+
+    #[test]
+    fn local_mapping_task_id_match_uses_item_status() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![local_mapping_item("missing_mapping")]);
+
+        let item = find_local_mapping_preflight_item_for_task(&report, &task)
+            .expect("expected task_id match");
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(item.status, "missing_mapping");
+        assert_eq!(state.status, "missing_mapping");
+    }
+
+    #[test]
+    fn local_mapping_installation_id_match_uses_item_status() {
+        let mut task = candidate_task();
+        task.task_id = "different-task".to_string();
+        let mut item = local_mapping_item("already_mapped");
+        item.task_id = Some("another-task".to_string());
+        let report = local_mapping_report(vec![item]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(state.status, "already_mapped");
+    }
+
+    #[test]
+    fn local_mapping_action_id_match_uses_item_status() {
+        let mut task = candidate_task();
+        task.task_id = "different-task".to_string();
+        task.installation_id = "different-installation".to_string();
+        let mut item = local_mapping_item("ambiguous");
+        item.task_id = Some("another-task".to_string());
+        item.installation_id = Some("another-installation".to_string());
+        let report = local_mapping_report(vec![item]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(state.status, "ambiguous");
+    }
+
+    #[test]
+    fn local_mapping_module_id_match_uses_item_status() {
+        let mut task = candidate_task();
+        task.task_id = "different-task".to_string();
+        task.installation_id = "different-installation".to_string();
+        task.action_id = Some("other-action".to_string());
+        let mut item = local_mapping_item("warning");
+        item.task_id = Some("another-task".to_string());
+        item.installation_id = Some("another-installation".to_string());
+        item.action_id = Some("another-action".to_string());
+        let report = local_mapping_report(vec![item]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(state.status, "warning");
+    }
+
+    #[test]
+    fn local_mapping_artifact_match_uses_item_status() {
+        let mut task = candidate_task();
+        task.task_id = "different-task".to_string();
+        task.installation_id = "different-installation".to_string();
+        task.action_id = Some("other-action".to_string());
+        task.module_id = Some("other-module".to_string());
+        let mut item = local_mapping_item("not_applicable");
+        item.task_id = Some("another-task".to_string());
+        item.installation_id = Some("another-installation".to_string());
+        item.action_id = Some("another-action".to_string());
+        item.module_id = Some("another-module".to_string());
+        let report = local_mapping_report(vec![item]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(state.status, "not_applicable");
+    }
+
+    #[test]
+    fn local_mapping_item_snapshot_is_preserved() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![local_mapping_item("missing_mapping")]);
+
+        let state = derive_local_mapping_status_for_task(&task, Some(&report));
+
+        assert_eq!(
+            state.reported_at_utc.as_deref(),
+            Some("2026-05-20T12:00:00Z")
+        );
+        assert!(state.item_snapshot.is_some());
+        assert!(state.preflight_snapshot.is_some());
+    }
+
+    #[test]
     fn state_summary_without_approval_is_awaiting_approval() {
         let task = candidate_task();
         let readiness =
@@ -2800,6 +3143,7 @@ mod tests {
             Some(&task),
             None,
             Some(&readiness),
+            None,
             None,
             None,
             None,
@@ -2823,6 +3167,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(summary.state, "policy_manual_only");
@@ -2841,6 +3186,7 @@ mod tests {
             Some(&task),
             None,
             Some(&readiness),
+            None,
             None,
             None,
             None,
@@ -2878,6 +3224,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(summary.state, "awaiting_readiness");
@@ -2907,6 +3254,7 @@ mod tests {
             Some(&task),
             Some(&approval),
             Some(&readiness),
+            None,
             None,
             None,
             None,
@@ -2943,6 +3291,7 @@ mod tests {
             Some(&request),
             None,
             None,
+            None,
         );
 
         assert_eq!(summary.state, "awaiting_claim");
@@ -2977,6 +3326,7 @@ mod tests {
             Some(&request),
             Some(&claim),
             None,
+            None,
         );
 
         assert_eq!(summary.state, "claimed");
@@ -2996,6 +3346,7 @@ mod tests {
             None,
             Some(&request),
             Some(&claim),
+            None,
             None,
         );
 
@@ -3017,6 +3368,7 @@ mod tests {
                 None,
                 Some(&request),
                 Some(&claim),
+                None,
                 None,
             );
 
@@ -3040,6 +3392,7 @@ mod tests {
             Some(&request),
             Some(&claim),
             Some(&attempt),
+            None,
         );
 
         assert_eq!(summary.state, "attempt_recorded_no_op");
@@ -3061,9 +3414,82 @@ mod tests {
             Some(&request),
             Some(&claim),
             Some(&attempt),
+            None,
         );
 
         assert_eq!(summary.state, "attempt_recorded_dry_run");
+    }
+
+    #[test]
+    fn state_summary_includes_missing_mapping_local_mapping_status() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![local_mapping_item("missing_mapping")]);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&report),
+        );
+
+        assert_eq!(
+            summary.local_mapping_status.as_deref(),
+            Some("missing_mapping")
+        );
+        assert_eq!(
+            summary.local_mapping_reason.as_deref(),
+            Some("reason for missing_mapping")
+        );
+    }
+
+    #[test]
+    fn state_summary_includes_already_mapped_local_mapping_status() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![local_mapping_item("already_mapped")]);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&report),
+        );
+
+        assert_eq!(
+            summary.local_mapping_status.as_deref(),
+            Some("already_mapped")
+        );
+    }
+
+    #[test]
+    fn state_summary_includes_ambiguous_local_mapping_status() {
+        let task = candidate_task();
+        let report = local_mapping_report(vec![local_mapping_item("ambiguous")]);
+
+        let summary = derive_assisted_execution_state_summary(
+            "smart-city-campinas",
+            "fog-01",
+            Some(&task),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&report),
+        );
+
+        assert_eq!(summary.local_mapping_status.as_deref(), Some("ambiguous"));
+        assert!(summary.local_mapping_item_snapshot.is_some());
+        assert!(summary.local_mapping_preflight_snapshot.is_some());
     }
 
     #[test]
@@ -3072,6 +3498,7 @@ mod tests {
             "smart-city-campinas",
             "fog-01",
             Some(&candidate_task()),
+            None,
             None,
             None,
             None,
@@ -3098,6 +3525,7 @@ mod tests {
             Some(&request),
             Some(&claim),
             Some(&attempt),
+            None,
         );
 
         assert!(!summary.side_effects_performed);
@@ -3133,6 +3561,7 @@ mod tests {
             Some(&request),
             Some(&claim),
             Some(&attempt),
+            None,
         );
 
         assert!(summary.task_snapshot.is_some());

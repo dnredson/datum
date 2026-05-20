@@ -316,6 +316,19 @@ fn local_mapping_preflight_report_list(
     }
 }
 
+fn apply_local_mapping_fetch_error(
+    summary: &mut AssistedExecutionStateSummary,
+    error: impl Into<String>,
+) {
+    let error = error.into();
+    summary.local_mapping_status = Some("unknown".to_string());
+    summary.local_mapping_reason = Some(error.clone());
+    summary.local_mapping_report_id = None;
+    summary.local_mapping_reported_at_utc = None;
+    summary.local_mapping_item_snapshot = None;
+    summary.local_mapping_preflight_snapshot = Some(json!({ "error": error }));
+}
+
 async fn load_assisted_execution_state_summary_for_task(
     state: &AppState,
     project_id: &str,
@@ -403,8 +416,22 @@ async fn load_assisted_execution_state_summary_for_task(
             })?,
         _ => None,
     };
+    let (latest_local_mapping_preflight, local_mapping_fetch_error) = match state
+        .firebase
+        .get_latest_local_mapping_preflight_report(project_id, node_id)
+        .await
+    {
+        Ok(report) => (report, None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "failed to load local mapping preflight report: {}",
+                error
+            )),
+        ),
+    };
 
-    Ok(derive_assisted_execution_state_summary(
+    let mut summary = derive_assisted_execution_state_summary(
         project_id,
         node_id,
         Some(&normalized_task),
@@ -413,7 +440,14 @@ async fn load_assisted_execution_state_summary_for_task(
         latest_request.as_ref(),
         latest_claim.as_ref(),
         latest_attempt.as_ref(),
-    ))
+        latest_local_mapping_preflight.as_ref(),
+    );
+
+    if let Some(error) = local_mapping_fetch_error {
+        apply_local_mapping_fetch_error(&mut summary, error);
+    }
+
+    Ok(summary)
 }
 
 fn merge_status_reason(task: &mut InstallationTask, reason: Option<&str>) {
@@ -1482,6 +1516,20 @@ pub async fn list_assisted_execution_state_for_node(
                 JsonResponse(json!({ "error": e.to_string() })),
             )
         })?;
+    let (latest_local_mapping_preflight, local_mapping_fetch_error) = match state
+        .firebase
+        .get_latest_local_mapping_preflight_report(&project_id, &node_id)
+        .await
+    {
+        Ok(report) => (report, None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "failed to load local mapping preflight report: {}",
+                error
+            )),
+        ),
+    };
 
     let approvals_by_task_id = approvals
         .into_iter()
@@ -1509,7 +1557,7 @@ pub async fn list_assisted_execution_state_for_node(
         })
         .collect::<HashMap<_, _>>();
 
-    let summaries = tasks
+    let mut summaries = tasks
         .into_iter()
         .map(|task| normalize_task_for_response(&project_id, Some(&node_id), task))
         .map(|task| {
@@ -1538,9 +1586,16 @@ pub async fn list_assisted_execution_state_for_node(
                 request,
                 claim,
                 latest_attempt,
+                latest_local_mapping_preflight.as_ref(),
             )
         })
         .collect::<Vec<_>>();
+
+    if let Some(error) = local_mapping_fetch_error {
+        for summary in &mut summaries {
+            apply_local_mapping_fetch_error(summary, error.clone());
+        }
+    }
 
     Ok(JsonResponse(assisted_execution_state_summary_list(
         project_id, node_id, summaries,
