@@ -1243,7 +1243,12 @@ $clientLocalMappingPatchProposalViewerPerformed = $false
 $clientLocalMappingPatchProposalFileGenerationPerformed = $false
 $generatedLocalMappingPatchProposalFileValidated = $false
 $clientConfigUnchangedAfterPatchProposalGenerationValidated = $false
+$clientLocalMappingPatchRevalidationPerformed = $false
+$generatedLocalMappingPatchProposalFileRevalidated = $false
+$clientConfigUnchangedAfterPatchRevalidationValidated = $false
 $advisoryOnlyLocalMappingPatchProposalFileValidated = $false
+$appliedFalseValidated = $false
+$generatedSmokeArtifactCleanupPerformed = $false
 $safeToAutoApplyFalseValidated = $false
 $requiresOperatorTrueValidated = $false
 $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
@@ -2790,16 +2795,61 @@ if (-not $SkipServerChecks) {
             Write-Warning "Generated local mapping patch proposal file appears in git status; do not stage or commit $smokeOutputProposalRelativePath."
         }
 
+        $clientLocalMappingPatchProposalFileGenerationPerformed = $true
+        $generatedLocalMappingPatchProposalFileValidated = $true
+        $clientConfigUnchangedAfterPatchProposalGenerationValidated = $true
+        $advisoryOnlyLocalMappingPatchProposalFileValidated = $true
+
+        Write-Step "Revalidate local mapping patch proposal file from DATUM"
+        $clientConfigFingerprintBeforePatchRevalidation = Get-FileFingerprint -Path $ResolvedClientConfig
+        $clientLocalMappingPatchRevalidationOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--",
+                "installation-tasks",
+                "--config",
+                $ResolvedClientConfig,
+                "--revalidate-local-mapping-patch",
+                $smokeOutputProposalPath
+            ) `
+            -StepName "DATUM local mapping patch revalidation"
+
+        if ($clientLocalMappingPatchRevalidationOutput -notmatch "Local mapping patch revalidation") {
+            throw "DATUM local mapping patch revalidation output did not include the revalidation heading."
+        }
+
+        if ($clientLocalMappingPatchRevalidationOutput -notmatch "Safe to auto apply:\s+false") {
+            throw "DATUM local mapping patch revalidation output did not include 'Safe to auto apply: false'."
+        }
+
+        if ($clientLocalMappingPatchRevalidationOutput -notmatch "Side effects performed:\s+false") {
+            throw "DATUM local mapping patch revalidation output did not include 'Side effects performed: false'."
+        }
+
+        if ($clientLocalMappingPatchRevalidationOutput -notmatch "Applied:\s+false") {
+            throw "DATUM local mapping patch revalidation output did not include 'Applied: false'."
+        }
+
+        $clientConfigFingerprintAfterPatchRevalidation = Get-FileFingerprint -Path $ResolvedClientConfig
+        if ($clientConfigFingerprintBeforePatchRevalidation -ne $clientConfigFingerprintAfterPatchRevalidation) {
+            throw "Client config changed during patch proposal revalidation, which is not allowed."
+        }
+
         Remove-Item -LiteralPath $smokeOutputProposalPath -Force
         if ((Test-Path -LiteralPath $smokeOutputDir) -and
             -not (Get-ChildItem -LiteralPath $smokeOutputDir -Force | Select-Object -First 1)) {
             Remove-Item -LiteralPath $smokeOutputDir -Force
         }
 
-        $clientLocalMappingPatchProposalFileGenerationPerformed = $true
-        $generatedLocalMappingPatchProposalFileValidated = $true
-        $clientConfigUnchangedAfterPatchProposalGenerationValidated = $true
-        $advisoryOnlyLocalMappingPatchProposalFileValidated = $true
+        $clientLocalMappingPatchRevalidationPerformed = $true
+        $generatedLocalMappingPatchProposalFileRevalidated = $true
+        $clientConfigUnchangedAfterPatchRevalidationValidated = $true
+        $appliedFalseValidated = $true
+        $generatedSmokeArtifactCleanupPerformed = $true
+        $safeToAutoApplyFalseValidated = $true
+        $sideEffectsPerformedFalseValidated = $true
 
         if ([string]::IsNullOrWhiteSpace([string]$firstTaskId)) {
             Write-Host "No installation task available; skipping single-task local mapping preflight publish."
@@ -3161,17 +3211,47 @@ if ($generatedLocalMappingPatchProposalFileValidated) {
 else {
     Write-Host "- generated proposal file existence/content validation (skipped: server checks disabled)"
 }
-if ($clientConfigUnchangedAfterPatchProposalGenerationValidated) {
-    Write-Host "- active config unchanged validation"
+if ($clientLocalMappingPatchRevalidationPerformed) {
+    Write-Host "- DATUM local mapping patch revalidation"
 }
 else {
-    Write-Host "- active config unchanged validation (skipped: server checks disabled)"
+    Write-Host "- DATUM local mapping patch revalidation (skipped: server checks disabled)"
+}
+if ($generatedLocalMappingPatchProposalFileRevalidated) {
+    Write-Host "- generated proposal file revalidated"
+}
+else {
+    Write-Host "- generated proposal file revalidated (skipped: server checks disabled)"
+}
+if ($clientConfigUnchangedAfterPatchProposalGenerationValidated) {
+    Write-Host "- active config unchanged after proposal file generation"
+}
+else {
+    Write-Host "- active config unchanged after proposal file generation (skipped: server checks disabled)"
+}
+if ($clientConfigUnchangedAfterPatchRevalidationValidated) {
+    Write-Host "- active config unchanged after revalidation"
+}
+else {
+    Write-Host "- active config unchanged after revalidation (skipped: server checks disabled)"
 }
 if ($advisoryOnlyLocalMappingPatchProposalFileValidated) {
     Write-Host "- advisory-only/no-auto-apply validation"
 }
 else {
     Write-Host "- advisory-only/no-auto-apply validation (skipped: server checks disabled)"
+}
+if ($appliedFalseValidated) {
+    Write-Host "- applied false validation"
+}
+else {
+    Write-Host "- applied false validation (skipped: patch revalidation not performed)"
+}
+if ($generatedSmokeArtifactCleanupPerformed) {
+    Write-Host "- generated smoke artifact cleanup"
+}
+else {
+    Write-Host "- generated smoke artifact cleanup (skipped: server checks disabled)"
 }
 if ($clientLocalMappingPreflightPerformed) {
     Write-Host "- DATUM local mapping preflight"
@@ -3298,6 +3378,7 @@ Write-Host "Assisted execution state checks were read-only."
 Write-Host "Local mapping recommendations and preflight checks were advisory only."
 Write-Host "Local mapping patch proposals were advisory only."
 Write-Host "Local mapping patch proposal file generation wrote only a separate operator-review file."
+Write-Host "Local mapping patch revalidation was read-only and did not apply changes."
 Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
 Write-Host "Local mapping context in assisted execution state was advisory only."
 Write-Host "No local config or mapping files were modified."

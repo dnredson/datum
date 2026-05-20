@@ -106,9 +106,16 @@ What it validates:
 - server node-scoped `local-mapping-patch-proposals/for-node/{node_id}` endpoint
 - client local mapping patch proposal viewer via `installation-tasks --local-mapping-patch-proposals`
 - client local mapping patch proposal file generation via `installation-tasks --local-mapping-patch-proposals --write-local-mapping-patch <path>`
+- client local mapping patch proposal revalidation via `installation-tasks --revalidate-local-mapping-patch <proposal_path>`
 - generated proposal file exists and is advisory only
 - generated proposal file is not applied
 - active client config hash/content remains unchanged after proposal file generation
+- generated proposal file is revalidated against active config
+- active client config hash/content remains unchanged after revalidation
+- `safe_to_auto_apply` remains false in local mapping patch revalidation output
+- `side_effects_performed` remains false in local mapping patch revalidation output
+- `applied` remains false in local mapping patch revalidation output
+- generated smoke artifact is cleaned up
 - generated proposal files must not be committed
 - proposed_config_snippet remains operator-review only
 - client local mapping preflight via `installation-tasks --local-mapping-preflight`
@@ -155,12 +162,14 @@ Notes:
 - Local mapping recommendations are advisory only; they do not write config, modify mappings, or execute installation work.
 - Local mapping patch proposals are operator-reviewed suggestions only; they do not write config, modify mappings, apply proposed config snippets, or execute installation work.
 - Local mapping patch proposal file generation is explicit-only; it writes a separate operator-review file and must not change active config or active mappings.
+- Local mapping patch revalidation is read-only; it revalidates a generated proposal file against active config and must not apply changes.
 - Local mapping preflight is advisory only; it does not write config, modify mappings, or execute installation work.
 - Local mapping preflight publishing is advisory metadata only; it does not write config, modify mappings, or execute installation work.
 - Local mapping context in assisted execution state is advisory only; it does not grant execution permission or execute deployment or installation work.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty proposal files are valid when there are no server proposals, as long as advisory wording is present and active config is unchanged.
+- Empty proposal/revalidation reports are valid and do not fail the smoke test, as long as safety fields remain false and active config is unchanged.
 - Empty local mapping preflight results are valid and do not fail the smoke test.
 - Empty published local mapping preflight reports are valid and do not fail the smoke test.
 - Patch proposals with `safe_to_auto_apply=true`, `side_effects_performed=true`, or `requires_operator=false` should fail the smoke test.
