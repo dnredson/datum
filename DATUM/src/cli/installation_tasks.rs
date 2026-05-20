@@ -14,6 +14,7 @@ use crate::{
             fetch_installation_task_readiness_for_node, fetch_installation_tasks_for_node,
             fetch_latest_assisted_execution_attempt, fetch_latest_assisted_execution_claim,
             fetch_latest_assisted_execution_request, fetch_latest_installation_task_approval,
+            fetch_local_mapping_patch_proposals_for_node,
             fetch_local_mapping_recommendations_for_node, materialize_installation_tasks_for_node,
             patch_assisted_execution_claim_status, patch_installation_task_status,
             publish_local_mapping_preflight_report, submit_assisted_execution_attempt,
@@ -25,7 +26,8 @@ use crate::{
             AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationTask,
             InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-            InstallationTaskReadiness, InstallationTaskReadinessList, LocalMappingRecommendation,
+            InstallationTaskReadiness, InstallationTaskReadinessList, LocalMappingPatchProposal,
+            LocalMappingPatchProposalList, LocalMappingRecommendation,
             LocalMappingRecommendationList,
         },
     },
@@ -50,6 +52,7 @@ pub fn run_installation_tasks_command(
     local_mapping_preflight: bool,
     publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
+    local_mapping_patch_proposals: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -90,6 +93,7 @@ pub fn run_installation_tasks_command(
         local_mapping_preflight,
         publish_local_mapping_preflight,
         local_mapping_recommendations,
+        local_mapping_patch_proposals,
         execution_state,
         readiness,
         execution_requests,
@@ -221,6 +225,26 @@ pub fn run_installation_tasks_command(
         print!(
             "{}",
             format_local_mapping_recommendation_list(&response, &project_id, &node_id)
+        );
+        return Ok(());
+    }
+
+    if local_mapping_patch_proposals {
+        let response =
+            fetch_local_mapping_patch_proposals_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_local_mapping_patch_proposal_list(&response, &project_id, &node_id)
         );
         return Ok(());
     }
@@ -787,6 +811,7 @@ fn validate_command_mode(
     local_mapping_preflight: bool,
     publish_local_mapping_preflight: bool,
     local_mapping_recommendations: bool,
+    local_mapping_patch_proposals: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -817,6 +842,7 @@ fn validate_command_mode(
         local_mapping_preflight && task_id.is_none(),
         local_mapping_preflight && task_id.is_some(),
         local_mapping_recommendations,
+        local_mapping_patch_proposals,
         execution_state && task_id.is_none(),
         execution_state && task_id.is_some(),
         readiness && task_id.is_none(),
@@ -839,6 +865,7 @@ fn validate_command_mode(
         task_id.is_some()
             && !local_mapping_preflight
             && !local_mapping_recommendations
+            && !local_mapping_patch_proposals
             && !execution_state
             && !readiness
             && !execution_request
@@ -858,7 +885,7 @@ fn validate_command_mode(
 
     if selected_modes > 1 {
         return Err(anyhow!(
-            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --local-mapping-preflight, --local-mapping-recommendations, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --local-mapping-preflight, --local-mapping-recommendations, --local-mapping-patch-proposals, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
         ));
     }
 
@@ -907,6 +934,30 @@ fn validate_command_mode(
     if local_mapping_recommendations && materialize {
         return Err(anyhow!(
             "--local-mapping-recommendations cannot be combined with --materialize"
+        ));
+    }
+
+    if local_mapping_patch_proposals && task_id.is_some() {
+        return Err(anyhow!(
+            "--task-id cannot be combined with --local-mapping-patch-proposals"
+        ));
+    }
+
+    if local_mapping_patch_proposals && request_id.is_some() {
+        return Err(anyhow!(
+            "--request-id cannot be combined with --local-mapping-patch-proposals"
+        ));
+    }
+
+    if local_mapping_patch_proposals && claim_id.is_some() {
+        return Err(anyhow!(
+            "--claim-id cannot be combined with --local-mapping-patch-proposals"
+        ));
+    }
+
+    if local_mapping_patch_proposals && materialize {
+        return Err(anyhow!(
+            "--local-mapping-patch-proposals cannot be combined with --materialize"
         ));
     }
 
@@ -1947,6 +1998,116 @@ fn format_local_mapping_recommendation(recommendation: &LocalMappingRecommendati
     lines
 }
 
+fn format_local_mapping_patch_proposal_list(
+    response: &LocalMappingPatchProposalList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response.count.unwrap_or(response.proposals.len() as u64);
+
+    let mut lines = vec![
+        format!(
+            "Local mapping patch proposals for node {}",
+            effective_node_id
+        ),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.proposals.is_empty() {
+        lines.push("No local mapping patch proposals for this node.".to_string());
+        lines.push(String::new());
+        lines.push(
+            "Note: this proposal viewer is advisory only. This command did not write config, did not apply mappings, and did not execute installation."
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Proposals: {}", count));
+    lines.push(String::new());
+
+    for (index, proposal) in response.proposals.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_local_mapping_patch_proposal(proposal));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: this proposal viewer is advisory only. This command did not write config, did not apply mappings, and did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn format_local_mapping_patch_proposal(proposal: &LocalMappingPatchProposal) -> Vec<String> {
+    let status = proposal
+        .proposal_status
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_uppercase();
+    let kind = proposal.proposal_kind.as_deref().unwrap_or("unknown");
+    let mut lines = vec![format!("[{}] {}", status, kind)];
+
+    if let Some(proposal_id) = proposal.proposal_id.as_deref() {
+        lines.push(format!("  proposal_id: {}", proposal_id));
+    }
+    if let Some(task_id) = proposal.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+    if let Some(module_id) = proposal.module_id.as_deref() {
+        lines.push(format!("  module: {}", module_id));
+    }
+    if let Some(runtime) = proposal.runtime.as_deref() {
+        lines.push(format!("  runtime: {}", runtime));
+    }
+    if let Some(artifact) = proposal.artifact.as_deref() {
+        lines.push(format!("  artifact: {}", artifact));
+    }
+    if let Some(mapping_key) = proposal.suggested_mapping_key.as_deref() {
+        lines.push(format!("  suggested mapping key: {}", mapping_key));
+    }
+    if let Some(container_name) = proposal.suggested_container_name.as_deref() {
+        lines.push(format!("  suggested container name: {}", container_name));
+    } else if proposal.proposed_config_snippet.is_some() {
+        lines.push("  suggested container name: REVIEW_AND_SET_CONTAINER_NAME".to_string());
+    }
+    if let Some(config_section) = proposal.proposed_config_section.as_deref() {
+        lines.push(format!("  config section: {}", config_section));
+    }
+
+    lines.push(format!(
+        "  safe to auto apply: {}",
+        proposal.safe_to_auto_apply.unwrap_or(false)
+    ));
+    lines.push(format!(
+        "  side effects performed: {}",
+        proposal.side_effects_performed.unwrap_or(false)
+    ));
+    lines.push(format!(
+        "  requires operator: {}",
+        proposal.requires_operator.unwrap_or(true)
+    ));
+    lines.push(format!(
+        "  reason: {}",
+        proposal.reason.as_deref().unwrap_or("unknown")
+    ));
+
+    if let Some(snippet) = proposal.proposed_config_snippet.as_deref() {
+        lines.push(String::new());
+        lines.push("Suggested config snippet:".to_string());
+        for line in snippet.lines() {
+            lines.push(format!("  {}", line));
+        }
+    }
+
+    lines
+}
+
 fn format_latest_assisted_execution_request(
     request: &AssistedExecutionRequest,
     requested_task_id: &str,
@@ -2733,11 +2894,11 @@ mod tests {
         format_assisted_execution_preflight_report, format_assisted_execution_request_list,
         format_assisted_execution_state_list, format_latest_approval,
         format_latest_assisted_execution_attempt, format_latest_assisted_execution_claim,
-        format_latest_assisted_execution_request, format_local_mapping_preflight_report,
-        format_local_mapping_recommendation_list, format_published_local_mapping_preflight_report,
-        format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
-        format_status_update, format_submitted_approval,
-        format_submitted_assisted_execution_attempt,
+        format_latest_assisted_execution_request, format_local_mapping_patch_proposal_list,
+        format_local_mapping_preflight_report, format_local_mapping_recommendation_list,
+        format_published_local_mapping_preflight_report, format_readiness_list,
+        format_single_assisted_execution_state, format_single_readiness, format_status_update,
+        format_submitted_approval, format_submitted_assisted_execution_attempt,
         format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
@@ -2757,7 +2918,8 @@ mod tests {
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationPolicy,
             InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
             InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
-            LocalMappingRecommendation, LocalMappingRecommendationList,
+            LocalMappingPatchProposal, LocalMappingPatchProposalList, LocalMappingRecommendation,
+            LocalMappingRecommendationList,
         },
         local_mapping::preflight::{
             LocalMappingPreflightItem, LocalMappingPreflightReport, LocalMappingPreflightSummary,
@@ -2771,6 +2933,7 @@ mod tests {
         claim_id: Option<&'a str>,
         local_mapping_preflight: bool,
         local_mapping_recommendations: bool,
+        local_mapping_patch_proposals: bool,
         execution_state: bool,
         readiness: bool,
         execution_requests: bool,
@@ -2806,6 +2969,7 @@ mod tests {
             case.local_mapping_preflight,
             false,
             case.local_mapping_recommendations,
+            case.local_mapping_patch_proposals,
             case.execution_state,
             case.readiness,
             case.execution_requests,
@@ -4145,6 +4309,99 @@ mod tests {
     }
 
     #[test]
+    fn local_mapping_patch_proposal_formatting_includes_expected_fields() {
+        let rendered = format_local_mapping_patch_proposal_list(
+            &LocalMappingPatchProposalList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                proposals: vec![LocalMappingPatchProposal {
+                    proposal_id: Some("proposal-1".to_string()),
+                    proposal_status: Some("proposed".to_string()),
+                    proposal_kind: Some("add_container_mapping".to_string()),
+                    task_id: Some("task-1".to_string()),
+                    module_id: Some("chirpstack-primary".to_string()),
+                    runtime: Some("container".to_string()),
+                    artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                    suggested_mapping_key: Some("chirpstack-primary".to_string()),
+                    proposed_config_section: Some("dispatch.container_mappings".to_string()),
+                    proposed_config_snippet: Some("[dispatch.container_mappings]\n\"chirpstack-primary\" = \"REVIEW_AND_SET_CONTAINER_NAME\"".to_string()),
+                    safe_to_auto_apply: Some(false),
+                    side_effects_performed: Some(false),
+                    requires_operator: Some(true),
+                    reason: Some("trusted local mapping is required before assisted execution can proceed".to_string()),
+                    ..LocalMappingPatchProposal::default()
+                }],
+                ..LocalMappingPatchProposalList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("Local mapping patch proposals for node fog-01"));
+        assert!(rendered.contains("Proposals: 1"));
+        assert!(rendered.contains("[PROPOSED] add_container_mapping"));
+        assert!(rendered.contains("proposal_id: proposal-1"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("module: chirpstack-primary"));
+        assert!(rendered.contains("artifact: chirpstack/chirpstack:latest"));
+        assert!(rendered.contains("suggested mapping key: chirpstack-primary"));
+        assert!(rendered.contains("config section: dispatch.container_mappings"));
+        assert!(rendered.contains("safe to auto apply: false"));
+        assert!(rendered.contains("side effects performed: false"));
+        assert!(rendered.contains("requires operator: true"));
+        assert!(rendered.contains("Suggested config snippet:"));
+        assert!(rendered.contains("REVIEW_AND_SET_CONTAINER_NAME"));
+    }
+
+    #[test]
+    fn empty_local_mapping_patch_proposal_list_formats_clearly() {
+        let rendered = format_local_mapping_patch_proposal_list(
+            &LocalMappingPatchProposalList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(0),
+                proposals: vec![],
+                ..LocalMappingPatchProposalList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("No local mapping patch proposals for this node."));
+        assert!(rendered.contains(
+            "Note: this proposal viewer is advisory only. This command did not write config, did not apply mappings, and did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn local_mapping_patch_proposal_json_preserves_raw_response() {
+        let response = LocalMappingPatchProposalList {
+            project_id: Some("smart-city-campinas".to_string()),
+            node_id: Some("fog-01".to_string()),
+            count: Some(1),
+            proposals: vec![LocalMappingPatchProposal {
+                proposal_id: Some("proposal-1".to_string()),
+                proposed_config_snippet: Some(
+                    "[dispatch.container_mappings]\n\"chirpstack-primary\" = \"REVIEW_AND_SET_CONTAINER_NAME\""
+                        .to_string(),
+                ),
+                recommendation_snapshot: Some(serde_json::json!({"recommendation_id":"rec-1"})),
+                preflight_item_snapshot: Some(serde_json::json!({"task_id":"task-1"})),
+                ..LocalMappingPatchProposal::default()
+            }],
+            ..LocalMappingPatchProposalList::default()
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"proposal_id\": \"proposal-1\""));
+        assert!(rendered.contains("\"proposed_config_snippet\""));
+        assert!(rendered.contains("\"recommendation_snapshot\""));
+        assert!(rendered.contains("\"preflight_item_snapshot\""));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_mode_case(ModeCase {
             task_id: Some("task-1"),
@@ -4278,8 +4535,8 @@ mod tests {
     fn cli_mode_validation_rejects_publish_local_mapping_preflight_without_preflight() {
         let result = validate_command_mode(
             None, None, None, false, true, false, false, false, false, false, false, false, false,
-            false, None, false, false, false, None, false, false, false, None, false, None, None,
-            None, None, None, None, None,
+            false, false, None, false, false, false, None, false, false, false, None, false, None,
+            None, None, None, None, None, None,
         );
 
         assert!(result.is_err());
@@ -4307,15 +4564,55 @@ mod tests {
     }
 
     #[test]
+    fn cli_mode_validation_rejects_local_mapping_patch_proposals_with_task_id() {
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            local_mapping_patch_proposals: true,
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn local_mapping_recommendation_viewer_source_guard_has_no_docker_shell_or_config_writes() {
         let source = include_str!("installation_tasks.rs");
         let start = source
             .find("if local_mapping_recommendations {")
             .expect("local mapping recommendation branch should exist");
         let end = source[start..]
+            .find("\n    if local_mapping_patch_proposals {")
+            .map(|offset| start + offset)
+            .expect("patch proposal branch should follow recommendation branch");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task CLI must not contain forbidden pattern: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mapping_patch_proposal_viewer_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("installation_tasks.rs");
+        let start = source
+            .find("if local_mapping_patch_proposals {")
+            .expect("local mapping patch proposal branch should exist");
+        let end = source[start..]
             .find("\n    if execution_state {")
             .map(|offset| start + offset)
-            .expect("execution_state branch should follow recommendation branch");
+            .expect("execution_state branch should follow patch proposal branch");
         let implementation = &source[start..end];
 
         for forbidden in [

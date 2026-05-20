@@ -15,7 +15,7 @@ use crate::installation_tasks::model::{
     AssistedExecutionRequestBody, AssistedExecutionRequestList, AssistedExecutionStateSummary,
     AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
     InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-    InstallationTaskReadinessList, LocalMappingRecommendationList,
+    InstallationTaskReadinessList, LocalMappingPatchProposalList, LocalMappingRecommendationList,
 };
 use crate::local_mapping::preflight::LocalMappingPreflightReport;
 
@@ -444,6 +444,25 @@ pub fn fetch_local_mapping_recommendations_for_node(
     )
 }
 
+pub fn fetch_local_mapping_patch_proposals_for_node(
+    base_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<LocalMappingPatchProposalList> {
+    let endpoint = local_mapping_patch_proposals_list_endpoint_url(base_url, node_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch local mapping patch proposals from {}", endpoint))?;
+
+    parse_local_mapping_patch_proposal_list_response(
+        response,
+        "fetch local mapping patch proposals",
+    )
+}
+
 pub fn publish_local_mapping_preflight_report(
     base_url: &str,
     project_id: &str,
@@ -696,6 +715,20 @@ fn parse_local_mapping_preflight_report_response(
     response: reqwest::blocking::Response,
     label: &str,
 ) -> Result<LocalMappingPreflightReport> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_local_mapping_patch_proposal_list_response(
+    response: reqwest::blocking::Response,
+    label: &str,
+) -> Result<LocalMappingPatchProposalList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -1067,6 +1100,19 @@ pub fn local_mapping_preflight_publish_endpoint_url(base_url: &str, node_id: &st
     with_segments(base_url, &segments)
 }
 
+pub fn local_mapping_patch_proposals_list_endpoint_url(
+    base_url: &str,
+    node_id: &str,
+) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "local-mapping-patch-proposals".to_string(),
+        "for-node".to_string(),
+        node_id.to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 pub fn patch_status_body(status: &str, reason: Option<&str>) -> serde_json::Value {
     match reason.map(str::trim).filter(|value| !value.is_empty()) {
         Some(reason) => json!({
@@ -1189,6 +1235,7 @@ mod tests {
         installation_task_get_endpoint_url, installation_task_patch_endpoint_url,
         installation_task_readiness_endpoint_url, installation_task_readiness_list_endpoint_url,
         installation_tasks_list_endpoint_url, installation_tasks_materialize_endpoint_url,
+        local_mapping_patch_proposals_list_endpoint_url,
         local_mapping_preflight_publish_endpoint_url,
         local_mapping_recommendations_list_endpoint_url, patch_status_body, project_header,
     };
@@ -1641,6 +1688,20 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_construction_for_node_local_mapping_patch_proposals_is_correct() {
+        let url = local_mapping_patch_proposals_list_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+            "fog-01",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/local-mapping-patch-proposals/for-node/fog-01"
+        );
+    }
+
+    #[test]
     fn local_mapping_recommendation_client_source_guard_has_no_docker_shell_or_config_writes() {
         let source = include_str!("client.rs");
         let start = source
@@ -1679,6 +1740,35 @@ mod tests {
             .find("fn build_client()")
             .map(|offset| start + offset)
             .expect("build_client should follow preflight publish function");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task client must not contain forbidden pattern: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mapping_patch_proposal_client_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("client.rs");
+        let start = source
+            .find("pub fn fetch_local_mapping_patch_proposals_for_node")
+            .expect("patch proposal fetch function should exist");
+        let end = source[start..]
+            .find("fn build_client()")
+            .map(|offset| start + offset)
+            .expect("build_client should follow patch proposal fetch function");
         let implementation = &source[start..end];
 
         for forbidden in [

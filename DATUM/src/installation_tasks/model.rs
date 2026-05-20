@@ -482,6 +482,76 @@ pub struct LocalMappingRecommendationList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingPatchProposal {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub proposal_id: Option<String>,
+    #[serde(default)]
+    pub created_at_utc: Option<String>,
+    #[serde(default)]
+    pub proposal_status: Option<String>,
+    #[serde(default)]
+    pub proposal_kind: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub recommendation_id: Option<String>,
+    #[serde(default)]
+    pub report_id: Option<String>,
+    #[serde(default)]
+    pub module_id: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub artifact: Option<String>,
+    #[serde(default)]
+    pub suggested_mapping_key: Option<String>,
+    #[serde(default)]
+    pub suggested_container_name: Option<String>,
+    #[serde(default)]
+    pub suggested_artifact: Option<String>,
+    #[serde(default)]
+    pub proposed_config_section: Option<String>,
+    #[serde(default)]
+    pub proposed_config_snippet: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub requires_operator: Option<bool>,
+    #[serde(default)]
+    pub safe_to_auto_apply: Option<bool>,
+    #[serde(default)]
+    pub side_effects_performed: Option<bool>,
+    #[serde(default)]
+    pub recommendation_snapshot: Option<Value>,
+    #[serde(default)]
+    pub preflight_item_snapshot: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingPatchProposalList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub proposals: Vec<LocalMappingPatchProposal>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -534,7 +604,8 @@ mod tests {
         AssistedExecutionRequestBody, AssistedExecutionRequestList, AssistedExecutionStateSummary,
         AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
         InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-        InstallationTaskReadinessList, LocalMappingRecommendation, LocalMappingRecommendationList,
+        InstallationTaskReadinessList, LocalMappingPatchProposal, LocalMappingPatchProposalList,
+        LocalMappingRecommendation, LocalMappingRecommendationList,
     };
 
     #[test]
@@ -1249,6 +1320,88 @@ mod tests {
         assert_eq!(parsed.recommendations.len(), 1);
         assert_eq!(
             parsed.recommendations[0].recommendation_status.as_deref(),
+            Some("proposed")
+        );
+    }
+
+    #[test]
+    fn parse_local_mapping_patch_proposal() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "proposal_id":"proposal-1",
+          "proposal_status":"proposed",
+          "proposal_kind":"add_container_mapping",
+          "task_id":"task-1",
+          "module_id":"chirpstack-primary",
+          "artifact":"chirpstack/chirpstack:latest",
+          "suggested_mapping_key":"chirpstack-primary",
+          "proposed_config_section":"dispatch.container_mappings",
+          "proposed_config_snippet":"[dispatch.container_mappings]\n\"chirpstack-primary\" = \"REVIEW_AND_SET_CONTAINER_NAME\"",
+          "safe_to_auto_apply":false,
+          "side_effects_performed":false,
+          "requires_operator":true,
+          "recommendation_snapshot":{"recommendation_id":"rec-1"},
+          "preflight_item_snapshot":{"task_id":"task-1"},
+          "future_field":"ok"
+        }"#;
+
+        let parsed: LocalMappingPatchProposal =
+            serde_json::from_str(raw).expect("patch proposal should parse");
+
+        assert_eq!(parsed.node_id.as_deref(), Some("fog-01"));
+        assert_eq!(
+            parsed.proposal_kind.as_deref(),
+            Some("add_container_mapping")
+        );
+        assert_eq!(
+            parsed.proposed_config_section.as_deref(),
+            Some("dispatch.container_mappings")
+        );
+        assert_eq!(parsed.safe_to_auto_apply, Some(false));
+        assert_eq!(parsed.side_effects_performed, Some(false));
+        assert_eq!(parsed.requires_operator, Some(true));
+        assert_eq!(
+            parsed
+                .recommendation_snapshot
+                .as_ref()
+                .and_then(|value| value.get("recommendation_id"))
+                .and_then(|value| value.as_str()),
+            Some("rec-1")
+        );
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_local_mapping_patch_proposal_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "proposals":[
+            {
+              "proposal_id":"proposal-1",
+              "proposal_status":"proposed",
+              "proposal_kind":"add_container_mapping"
+            }
+          ]
+        }"#;
+
+        let parsed: LocalMappingPatchProposalList =
+            serde_json::from_str(raw).expect("patch proposal list should parse");
+
+        assert_eq!(parsed.project_id.as_deref(), Some("smart-city-campinas"));
+        assert_eq!(parsed.node_id.as_deref(), Some("fog-01"));
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.proposals.len(), 1);
+        assert_eq!(
+            parsed.proposals[0].proposal_status.as_deref(),
             Some("proposed")
         );
     }
