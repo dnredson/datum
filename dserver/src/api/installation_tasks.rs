@@ -32,6 +32,10 @@ use crate::{
             InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
             InstallationTaskReadinessList,
         },
+        local_mapping_recommendations::{
+            derive_local_mapping_recommendations_from_tasks, LocalMappingRecommendation,
+            LocalMappingRecommendationList,
+        },
     },
     AppState,
 };
@@ -277,6 +281,19 @@ fn assisted_execution_state_summary_list(
     }
 }
 
+fn local_mapping_recommendation_list(
+    project_id: String,
+    node_id: Option<String>,
+    recommendations: Vec<LocalMappingRecommendation>,
+) -> LocalMappingRecommendationList {
+    LocalMappingRecommendationList {
+        project_id,
+        node_id,
+        count: recommendations.len() as u64,
+        recommendations,
+    }
+}
+
 async fn load_assisted_execution_state_summary_for_task(
     state: &AppState,
     project_id: &str,
@@ -490,6 +507,70 @@ pub async fn list_installation_tasks_for_node(
         })?;
 
     Ok(JsonResponse(task_list(project_id, Some(node_id), tasks)))
+}
+
+pub async fn list_local_mapping_recommendations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingRecommendationList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks(&project_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let normalized_tasks = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, None, task))
+        .collect::<Vec<_>>();
+    let recommendations =
+        derive_local_mapping_recommendations_from_tasks(&project_id, None, &normalized_tasks);
+
+    Ok(JsonResponse(local_mapping_recommendation_list(
+        project_id,
+        None,
+        recommendations,
+    )))
+}
+
+pub async fn list_local_mapping_recommendations_for_node(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingRecommendationList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let tasks = state
+        .firebase
+        .list_installation_tasks_for_node(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    let normalized_tasks = tasks
+        .into_iter()
+        .map(|task| normalize_task_for_response(&project_id, Some(&node_id), task))
+        .collect::<Vec<_>>();
+    let recommendations = derive_local_mapping_recommendations_from_tasks(
+        &project_id,
+        Some(&node_id),
+        &normalized_tasks,
+    );
+
+    Ok(JsonResponse(local_mapping_recommendation_list(
+        project_id,
+        Some(node_id),
+        recommendations,
+    )))
 }
 
 pub async fn get_installation_task(

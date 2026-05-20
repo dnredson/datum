@@ -29,7 +29,8 @@ use api::installation_tasks::{
     list_assisted_execution_claims_for_node, list_assisted_execution_requests_for_node,
     list_assisted_execution_state_for_node, list_installation_task_approvals_for_node,
     list_installation_task_readiness_for_node, list_installation_tasks,
-    list_installation_tasks_for_node, materialize_installation_tasks,
+    list_installation_tasks_for_node, list_local_mapping_recommendations,
+    list_local_mapping_recommendations_for_node, materialize_installation_tasks,
     materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
     patch_installation_task_status, post_assisted_execution_attempt, post_assisted_execution_claim,
     post_assisted_execution_request, post_installation_task_approval,
@@ -134,6 +135,14 @@ async fn main() {
             post(materialize_installation_tasks_for_node),
         )
         .route("/api/v1/installation-tasks", get(list_installation_tasks))
+        .route(
+            "/api/v1/local-mapping-recommendations",
+            get(list_local_mapping_recommendations),
+        )
+        .route(
+            "/api/v1/local-mapping-recommendations/for-node/:node_id",
+            get(list_local_mapping_recommendations_for_node),
+        )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",
             get(list_installation_tasks_for_node),
