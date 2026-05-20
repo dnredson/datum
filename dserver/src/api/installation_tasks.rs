@@ -32,6 +32,10 @@ use crate::{
             InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
             InstallationTaskReadinessList,
         },
+        local_mapping_preflight::{
+            normalize_local_mapping_preflight_report, validate_local_mapping_preflight_report,
+            LocalMappingPreflightReport, LocalMappingPreflightReportList,
+        },
         local_mapping_recommendations::{
             derive_local_mapping_recommendations_from_tasks, LocalMappingRecommendation,
             LocalMappingRecommendationList,
@@ -291,6 +295,24 @@ fn local_mapping_recommendation_list(
         node_id,
         count: recommendations.len() as u64,
         recommendations,
+    }
+}
+
+fn local_mapping_preflight_report_list(
+    project_id: String,
+    node_id: Option<String>,
+    mut reports: Vec<LocalMappingPreflightReport>,
+) -> LocalMappingPreflightReportList {
+    reports.sort_by(|a, b| {
+        a.node_id
+            .cmp(&b.node_id)
+            .then_with(|| a.reported_at_utc.cmp(&b.reported_at_utc))
+    });
+    LocalMappingPreflightReportList {
+        project_id,
+        node_id,
+        count: reports.len() as u64,
+        reports,
     }
 }
 
@@ -570,6 +592,88 @@ pub async fn list_local_mapping_recommendations_for_node(
         project_id,
         Some(node_id),
         recommendations,
+    )))
+}
+
+pub async fn post_local_mapping_preflight_report(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<LocalMappingPreflightReport>,
+) -> Result<JsonResponse<LocalMappingPreflightReport>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let normalized = normalize_local_mapping_preflight_report(&project_id, &node_id, payload);
+
+    validate_local_mapping_preflight_report(&normalized).map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({ "error": err })),
+        )
+    })?;
+
+    state
+        .firebase
+        .put_local_mapping_preflight_report(&project_id, &node_id, &normalized)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(normalized))
+}
+
+pub async fn get_latest_local_mapping_preflight_report(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingPreflightReport>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let report = state
+        .firebase
+        .get_latest_local_mapping_preflight_report(&project_id, &node_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    match report {
+        Some(report) => Ok(JsonResponse(report)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({
+                "error": format!(
+                    "local mapping preflight report not found for project '{}' node '{}'",
+                    project_id, node_id
+                )
+            })),
+        )),
+    }
+}
+
+pub async fn list_latest_local_mapping_preflight_reports(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<LocalMappingPreflightReportList>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let reports = state
+        .firebase
+        .list_latest_local_mapping_preflight_reports(&project_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok(JsonResponse(local_mapping_preflight_report_list(
+        project_id, None, reports,
     )))
 }
 

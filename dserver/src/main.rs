@@ -25,15 +25,17 @@ use api::installation_tasks::{
     get_installation_task, get_installation_task_assisted_execution_state,
     get_installation_task_readiness, get_latest_assisted_execution_attempt,
     get_latest_assisted_execution_claim, get_latest_assisted_execution_request,
-    get_latest_installation_task_approval, list_assisted_execution_attempts_for_node,
-    list_assisted_execution_claims_for_node, list_assisted_execution_requests_for_node,
-    list_assisted_execution_state_for_node, list_installation_task_approvals_for_node,
-    list_installation_task_readiness_for_node, list_installation_tasks,
-    list_installation_tasks_for_node, list_local_mapping_recommendations,
+    get_latest_installation_task_approval, get_latest_local_mapping_preflight_report,
+    list_assisted_execution_attempts_for_node, list_assisted_execution_claims_for_node,
+    list_assisted_execution_requests_for_node, list_assisted_execution_state_for_node,
+    list_installation_task_approvals_for_node, list_installation_task_readiness_for_node,
+    list_installation_tasks, list_installation_tasks_for_node,
+    list_latest_local_mapping_preflight_reports, list_local_mapping_recommendations,
     list_local_mapping_recommendations_for_node, materialize_installation_tasks,
     materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
     patch_installation_task_status, post_assisted_execution_attempt, post_assisted_execution_claim,
     post_assisted_execution_request, post_installation_task_approval,
+    post_local_mapping_preflight_report,
 };
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::topology::{get_topology, set_topology};
@@ -142,6 +144,18 @@ async fn main() {
         .route(
             "/api/v1/local-mapping-recommendations/for-node/:node_id",
             get(list_local_mapping_recommendations_for_node),
+        )
+        .route(
+            "/api/v1/local-mapping-preflight/latest",
+            get(list_latest_local_mapping_preflight_reports),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/local-mapping-preflight",
+            post(post_local_mapping_preflight_report),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/local-mapping-preflight/latest",
+            get(get_latest_local_mapping_preflight_report),
         )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",

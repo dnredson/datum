@@ -11,6 +11,7 @@ use crate::core::{
         normalize_installation_task, AssistedExecutionAttempt, AssistedExecutionClaim,
         AssistedExecutionRequest, InstallationTask, InstallationTaskApproval,
     },
+    local_mapping_preflight::LocalMappingPreflightReport,
     model::SnapshotEnvelope,
 };
 use crate::{config::AppConfig, core::capabilities::NodeCapabilities};
@@ -34,6 +35,8 @@ pub struct FirebaseClient {
     pub collection_node_capabilities: String,
     pub collection_action_results: String,
     pub collection_action_results_latest: String,
+    pub collection_local_mapping_preflight_reports: String,
+    pub collection_local_mapping_preflight_reports_latest: String,
     pub collection_installation_tasks: String,
     pub collection_installation_task_approvals: String,
     pub collection_installation_task_approvals_latest: String,
@@ -126,6 +129,16 @@ impl FirebaseClient {
             .collection_action_results_latest
             .clone()
             .unwrap_or_else(|| "datum_action_results_latest".to_string());
+        let collection_local_mapping_preflight_reports = app_config
+            .firebase
+            .collection_local_mapping_preflight_reports
+            .clone()
+            .unwrap_or_else(|| "datum_local_mapping_preflight_reports".to_string());
+        let collection_local_mapping_preflight_reports_latest = app_config
+            .firebase
+            .collection_local_mapping_preflight_reports_latest
+            .clone()
+            .unwrap_or_else(|| "datum_local_mapping_preflight_reports_latest".to_string());
         let collection_installation_tasks = app_config
             .firebase
             .collection_installation_tasks
@@ -188,6 +201,8 @@ impl FirebaseClient {
             collection_node_capabilities,
             collection_action_results,
             collection_action_results_latest,
+            collection_local_mapping_preflight_reports,
+            collection_local_mapping_preflight_reports_latest,
             collection_installation_tasks,
             collection_installation_task_approvals,
             collection_installation_task_approvals_latest,
@@ -1164,6 +1179,143 @@ impl FirebaseClient {
             reports.push(Self::parse_payload_from_document(
                 doc,
                 "action execution report",
+            )?);
+        }
+
+        Ok(reports)
+    }
+
+    pub async fn put_local_mapping_preflight_report(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        report: &LocalMappingPreflightReport,
+    ) -> Result<()> {
+        let raw_doc_id = format!(
+            "project:{}:node:{}:report:{}",
+            project_id, node_id, report.report_id
+        );
+        let latest_doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let raw_url = self.doc_url(
+            &self.collection_local_mapping_preflight_reports,
+            &raw_doc_id,
+        );
+        let latest_url = self.doc_url(
+            &self.collection_local_mapping_preflight_reports_latest,
+            &latest_doc_id,
+        );
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "report_id": Self::firestore_string(&report.report_id),
+                "reported_at_utc": Self::firestore_string(&report.reported_at_utc),
+                "status": Self::firestore_string(&report.status),
+                "payload": Self::firestore_json_string(report)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_local_mapping_preflight_report raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_local_mapping_preflight_report latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_local_mapping_preflight_report(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Option<LocalMappingPreflightReport>> {
+        let doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let url = self.doc_url(
+            &self.collection_local_mapping_preflight_reports_latest,
+            &doc_id,
+        );
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "get_latest_local_mapping_preflight_report failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "local mapping preflight report",
+        )?))
+    }
+
+    pub async fn list_latest_local_mapping_preflight_reports(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<LocalMappingPreflightReport>> {
+        let url = self.collection_url(&self.collection_local_mapping_preflight_reports_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_latest_local_mapping_preflight_reports failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut reports = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id {
+                continue;
+            }
+
+            reports.push(Self::parse_payload_from_document(
+                doc,
+                "local mapping preflight report",
             )?);
         }
 
