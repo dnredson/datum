@@ -27,6 +27,9 @@ use crate::{
             InstallationTaskReadiness, InstallationTaskReadinessList,
         },
     },
+    local_mapping::preflight::{
+        run_local_mapping_preflight, LocalMappingPreflightItem, LocalMappingPreflightReport,
+    },
 };
 
 const ALLOWED_TASK_STATUSES: &[&str] = &["acknowledged", "blocked", "cancelled", "completed"];
@@ -42,6 +45,7 @@ pub fn run_installation_tasks_command(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    local_mapping_preflight: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -79,6 +83,7 @@ pub fn run_installation_tasks_command(
         task_id,
         request_id,
         claim_id,
+        local_mapping_preflight,
         execution_state,
         readiness,
         execution_requests,
@@ -105,6 +110,40 @@ pub fn run_installation_tasks_command(
         expires_at_utc,
         lease_expires_at_utc,
     )?;
+
+    if local_mapping_preflight {
+        if let Some(task_id) = task_id {
+            let task = fetch_installation_task(&base_url, &project_id, &node_id, task_id)?;
+            let response = run_local_mapping_preflight(cfg, &node_id, &[task]);
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!("{}", format_local_mapping_preflight_report(&response));
+            return Ok(());
+        }
+
+        let response = fetch_installation_tasks_for_node(&base_url, &project_id, &node_id)?;
+        let report = run_local_mapping_preflight(cfg, &node_id, &response.tasks);
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!("{}", format_local_mapping_preflight_report(&report));
+        return Ok(());
+    }
 
     if execution_state {
         if let Some(task_id) = task_id {
@@ -665,6 +704,7 @@ fn validate_command_mode(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    local_mapping_preflight: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -692,6 +732,8 @@ fn validate_command_mode(
     lease_expires_at_utc: Option<&str>,
 ) -> Result<()> {
     let selected_modes = [
+        local_mapping_preflight && task_id.is_none(),
+        local_mapping_preflight && task_id.is_some(),
         execution_state && task_id.is_none(),
         execution_state && task_id.is_some(),
         readiness && task_id.is_none(),
@@ -712,6 +754,7 @@ fn validate_command_mode(
         status.is_some(),
         materialize,
         task_id.is_some()
+            && !local_mapping_preflight
             && !execution_state
             && !readiness
             && !execution_request
@@ -732,6 +775,24 @@ fn validate_command_mode(
     if selected_modes > 1 {
         return Err(anyhow!(
             "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
+        ));
+    }
+
+    if local_mapping_preflight && materialize {
+        return Err(anyhow!(
+            "--local-mapping-preflight cannot be combined with --materialize; run --materialize first if needed"
+        ));
+    }
+
+    if local_mapping_preflight && request_id.is_some() {
+        return Err(anyhow!(
+            "--request-id cannot be combined with --local-mapping-preflight"
+        ));
+    }
+
+    if local_mapping_preflight && claim_id.is_some() {
+        return Err(anyhow!(
+            "--claim-id cannot be combined with --local-mapping-preflight"
         ));
     }
 
@@ -1545,6 +1606,64 @@ fn format_assisted_execution_state_list(
     lines.join("\n")
 }
 
+fn format_local_mapping_preflight_report(report: &LocalMappingPreflightReport) -> String {
+    let mut lines = vec![
+        format!("Local mapping preflight for node {}", report.node_id),
+        format!("Status: {}", report.status),
+    ];
+
+    if report.status == "empty" {
+        lines.push("No installation tasks require local mapping preflight.".to_string());
+        lines.push(format!(
+            "Safe to auto execute: {}",
+            report.safe_to_auto_execute
+        ));
+        lines.push(format!(
+            "Side effects performed: {}",
+            report.side_effects_performed
+        ));
+        lines.push(String::new());
+        lines.push(
+            "Note: this preflight is advisory only. No local config was written and no installation was executed."
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Items: {}", report.summary.applicable_items));
+    lines.push(format!(
+        "Already mapped: {} | Missing: {} | Ambiguous: {} | Not applicable: {}",
+        report.summary.already_mapped,
+        report.summary.missing_mapping,
+        report.summary.ambiguous,
+        report.summary.not_applicable
+    ));
+    lines.push(format!(
+        "Safe to auto execute: {}",
+        report.safe_to_auto_execute
+    ));
+    lines.push(format!(
+        "Side effects performed: {}",
+        report.side_effects_performed
+    ));
+
+    for item in report
+        .items
+        .iter()
+        .filter(|item| item.status != "not_applicable")
+    {
+        lines.push(String::new());
+        lines.extend(format_local_mapping_preflight_item(item));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: this preflight is advisory only. No local config was written and no installation was executed."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
 fn format_latest_assisted_execution_request(
     request: &AssistedExecutionRequest,
     requested_task_id: &str,
@@ -1599,6 +1718,41 @@ fn format_single_assisted_execution_state(
     }
 
     lines.join("\n")
+}
+
+fn format_local_mapping_preflight_item(item: &LocalMappingPreflightItem) -> Vec<String> {
+    let label = item.status.to_ascii_uppercase();
+    let title = item
+        .module_id
+        .as_deref()
+        .or(item.artifact.as_deref())
+        .or(item.action_id.as_deref())
+        .unwrap_or("unknown");
+    let mut lines = vec![format!("[{}] {}", label, title)];
+
+    if let Some(task_id) = item.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+    if let Some(runtime) = item.runtime.as_deref() {
+        lines.push(format!("  runtime: {}", runtime));
+    }
+    if let Some(artifact) = item.artifact.as_deref() {
+        lines.push(format!("  artifact: {}", artifact));
+    }
+    if let Some(source) = item.current_mapping_source.as_deref() {
+        lines.push(format!("  mapping source: {}", source));
+    }
+    if let Some(container) = item.current_container_name.as_deref() {
+        lines.push(format!("  container: {}", container));
+    }
+    if let Some(key) = item.suggested_mapping_key.as_deref() {
+        lines.push(format!("  suggested mapping key: {}", key));
+    }
+    if let Some(artifact) = item.suggested_artifact.as_deref() {
+        lines.push(format!("  suggested artifact: {}", artifact));
+    }
+    lines.push(format!("  reason: {}", item.reason));
+    lines
 }
 
 fn format_latest_assisted_execution_claim(
@@ -2256,9 +2410,9 @@ mod tests {
         format_assisted_execution_request_list, format_assisted_execution_state_list,
         format_latest_approval, format_latest_assisted_execution_attempt,
         format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
-        format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
-        format_status_update, format_submitted_approval,
-        format_submitted_assisted_execution_attempt,
+        format_local_mapping_preflight_report, format_readiness_list,
+        format_single_assisted_execution_state, format_single_readiness, format_status_update,
+        format_submitted_approval, format_submitted_assisted_execution_attempt,
         format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
@@ -2279,7 +2433,77 @@ mod tests {
             InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
             InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
         },
+        local_mapping::preflight::{
+            LocalMappingPreflightItem, LocalMappingPreflightReport, LocalMappingPreflightSummary,
+        },
     };
+
+    #[derive(Default)]
+    struct ModeCase<'a> {
+        task_id: Option<&'a str>,
+        request_id: Option<&'a str>,
+        claim_id: Option<&'a str>,
+        local_mapping_preflight: bool,
+        execution_state: bool,
+        readiness: bool,
+        execution_requests: bool,
+        execution_request: bool,
+        request_assisted_execution: bool,
+        execution_claims: bool,
+        execution_claim: bool,
+        claim_assisted_execution: bool,
+        claim_status: Option<&'a str>,
+        execution_attempts: bool,
+        execution_attempt: bool,
+        attempt_assisted_execution: bool,
+        execution_mode: Option<&'a str>,
+        approvals: bool,
+        approval: bool,
+        approve: bool,
+        status: Option<&'a str>,
+        materialize: bool,
+        approved_by: Option<&'a str>,
+        requested_by: Option<&'a str>,
+        claimed_by: Option<&'a str>,
+        attempted_by: Option<&'a str>,
+        message: Option<&'a str>,
+        expires_at_utc: Option<&'a str>,
+        lease_expires_at_utc: Option<&'a str>,
+    }
+
+    fn validate_mode_case(case: ModeCase<'_>) -> anyhow::Result<()> {
+        validate_command_mode(
+            case.task_id,
+            case.request_id,
+            case.claim_id,
+            case.local_mapping_preflight,
+            case.execution_state,
+            case.readiness,
+            case.execution_requests,
+            case.execution_request,
+            case.request_assisted_execution,
+            case.execution_claims,
+            case.execution_claim,
+            case.claim_assisted_execution,
+            case.claim_status,
+            case.execution_attempts,
+            case.execution_attempt,
+            case.attempt_assisted_execution,
+            case.execution_mode,
+            case.approvals,
+            case.approval,
+            case.approve,
+            case.status,
+            case.materialize,
+            case.approved_by,
+            case.requested_by,
+            case.claimed_by,
+            case.attempted_by,
+            case.message,
+            case.expires_at_utc,
+            case.lease_expires_at_utc,
+        )
+    }
 
     fn base_config() -> Config {
         Config {
@@ -3253,326 +3477,196 @@ mod tests {
     }
 
     #[test]
+    fn local_mapping_preflight_formatting_includes_missing_mapping_and_note() {
+        let rendered = format_local_mapping_preflight_report(&LocalMappingPreflightReport {
+            node_id: "fog-01".to_string(),
+            status: "warning".to_string(),
+            checked_at_utc: None,
+            items: vec![LocalMappingPreflightItem {
+                task_id: Some("task-1".to_string()),
+                module_id: Some("lorawan-bridge".to_string()),
+                runtime: Some("container".to_string()),
+                artifact: Some("example/lorawan-bridge:latest".to_string()),
+                status: "missing_mapping".to_string(),
+                reason: "no trusted local mapping found in DATUM config".to_string(),
+                suggested_mapping_key: Some("lorawan-bridge".to_string()),
+                suggested_artifact: Some("example/lorawan-bridge:latest".to_string()),
+                ..LocalMappingPreflightItem::default()
+            }],
+            summary: LocalMappingPreflightSummary {
+                total_items: 1,
+                applicable_items: 1,
+                already_mapped: 0,
+                missing_mapping: 1,
+                ambiguous: 0,
+                not_applicable: 0,
+                warnings: 1,
+            },
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+        });
+
+        assert!(rendered.contains("Local mapping preflight for node fog-01"));
+        assert!(rendered.contains("Status: warning"));
+        assert!(rendered.contains("[MISSING_MAPPING] lorawan-bridge"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("runtime: container"));
+        assert!(rendered.contains("artifact: example/lorawan-bridge:latest"));
+        assert!(rendered.contains("suggested mapping key: lorawan-bridge"));
+        assert!(rendered.contains("Safe to auto execute: false"));
+        assert!(rendered.contains("Side effects performed: false"));
+        assert!(rendered.contains(
+            "Note: this preflight is advisory only. No local config was written and no installation was executed."
+        ));
+    }
+
+    #[test]
+    fn local_mapping_preflight_json_preserves_raw_response() {
+        let response = LocalMappingPreflightReport {
+            node_id: "fog-01".to_string(),
+            status: "warning".to_string(),
+            checked_at_utc: None,
+            items: vec![],
+            summary: LocalMappingPreflightSummary::default(),
+            safe_to_auto_execute: false,
+            side_effects_performed: false,
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"node_id\": \"fog-01\""));
+        assert!(rendered.contains("\"status\": \"warning\""));
+        assert!(rendered.contains("\"safe_to_auto_execute\": false"));
+        assert!(rendered.contains("\"side_effects_performed\": false"));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            true,
-            true,
-            false,
-            None,
-            false,
-            Some("operator"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            approvals: true,
+            approval: true,
+            approved_by: Some("operator"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_accepts_approval_mode() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            true,
-            None,
-            false,
-            Some("operator"),
-            None,
-            None,
-            None,
-            None,
-            Some("2026-06-01T00:00:00Z"),
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            approve: true,
+            approved_by: Some("operator"),
+            expires_at_utc: Some("2026-06-01T00:00:00Z"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_ok());
     }
 
     #[test]
     fn cli_mode_validation_rejects_readiness_with_approval_modes() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            false,
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            true,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            readiness: true,
+            approval: true,
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_rejects_execution_request_ambiguity() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            false,
-            false,
-            false,
-            true,
-            true,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            Some("operator"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            execution_request: true,
+            request_assisted_execution: true,
+            requested_by: Some("operator"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_rejects_claim_ambiguity() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            Some("request-1"),
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            true,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            None,
-            Some("operator"),
-            None,
-            None,
-            Some("2026-06-01T00:00:00Z"),
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            request_id: Some("request-1"),
+            execution_claims: true,
+            claim_assisted_execution: true,
+            claimed_by: Some("operator"),
+            expires_at_utc: Some("2026-06-01T00:00:00Z"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_rejects_claim_status_ambiguity() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            Some("request-1"),
-            None,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            Some("released"),
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            request_id: Some("request-1"),
+            execution_claim: true,
+            claim_status: Some("released"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_rejects_attempt_ambiguity() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            Some("request-1"),
-            Some("claim-1"),
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            true,
-            true,
-            Some("no_op"),
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            Some("operator"),
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            request_id: Some("request-1"),
+            claim_id: Some("claim-1"),
+            execution_attempt: true,
+            attempt_assisted_execution: true,
+            execution_mode: Some("no_op"),
+            attempted_by: Some("operator"),
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_rejects_execution_state_ambiguity() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            true,
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            execution_state: true,
+            readiness: true,
+            ..ModeCase::default()
+        });
 
         assert!(result.is_err());
     }
 
     #[test]
     fn cli_mode_validation_accepts_execution_state_for_single_task() {
-        let result = validate_command_mode(
-            Some("task-1"),
-            None,
-            None,
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            false,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            execution_state: true,
+            ..ModeCase::default()
+        });
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_local_mapping_preflight_ambiguity() {
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            local_mapping_preflight: true,
+            execution_state: true,
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
     }
 }

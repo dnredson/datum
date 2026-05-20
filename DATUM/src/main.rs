@@ -12,6 +12,7 @@ mod deployment_planning;
 mod dispatch;
 mod installation_plan;
 mod installation_tasks;
+mod local_mapping;
 mod outputs;
 
 use cli::capabilities::run_capabilities_command;
@@ -98,6 +99,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.task_id.as_deref(),
             args.request_id.as_deref(),
             args.claim_id.as_deref(),
+            args.local_mapping_preflight,
             args.execution_state,
             args.readiness,
             args.execution_requests,
@@ -276,6 +278,9 @@ struct InstallationTasksArgs {
 
     #[arg(long)]
     claim_id: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    local_mapping_preflight: bool,
 
     #[arg(long, default_value_t = false)]
     execution_state: bool,
@@ -627,6 +632,7 @@ fn installation_tasks_command(
     task_id: Option<&str>,
     request_id: Option<&str>,
     claim_id: Option<&str>,
+    local_mapping_preflight: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -664,6 +670,7 @@ fn installation_tasks_command(
         task_id,
         request_id,
         claim_id,
+        local_mapping_preflight,
         execution_state,
         readiness,
         execution_requests,

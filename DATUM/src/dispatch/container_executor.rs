@@ -9,6 +9,12 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedContainerMappingMatch {
+    pub source: &'static str,
+    pub container_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContainerExecutionOutcome {
     AlreadyRunning { container_name: String },
     Started { container_name: String },
@@ -145,6 +151,36 @@ fn resolve_trusted_container_mapping(
     config: &Config,
 ) -> Result<String, ContainerExecutionOutcome> {
     let candidates = action_candidates(action);
+    resolve_trusted_container_mapping_for_candidates(&candidates, local_node_id, config)
+}
+
+pub fn resolve_trusted_container_mapping_for_candidates(
+    candidates: &[String],
+    local_node_id: &str,
+    config: &Config,
+) -> Result<String, ContainerExecutionOutcome> {
+    let matches = find_trusted_container_mapping_matches(candidates, config);
+
+    if let Some(first) = matches.first() {
+        return Ok(first.container_name.clone());
+    }
+
+    let module_hint = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "<unknown>".to_string());
+    Err(ContainerExecutionOutcome::MissingLocalMapping {
+        reason: format!(
+            "no trusted local container mapping found for node {local_node_id} and action hint {module_hint}"
+        ),
+    })
+}
+
+pub fn find_trusted_container_mapping_matches(
+    candidates: &[String],
+    config: &Config,
+) -> Vec<TrustedContainerMappingMatch> {
+    let mut matches = Vec::new();
 
     for service in config.registry_services() {
         if !service.runtime.eq_ignore_ascii_case("container") {
@@ -169,7 +205,10 @@ fn resolve_trusted_container_mapping(
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(container_name))
         {
-            return Ok(container_name.to_string());
+            matches.push(TrustedContainerMappingMatch {
+                source: "service_registry",
+                container_name: container_name.to_string(),
+            });
         }
     }
 
@@ -183,22 +222,17 @@ fn resolve_trusted_container_mapping(
                 continue;
             }
 
-            return Ok(mapping.container_name.trim().to_string());
+            matches.push(TrustedContainerMappingMatch {
+                source: "container_mappings",
+                container_name: mapping.container_name.trim().to_string(),
+            });
         }
     }
 
-    let module_hint = candidates
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_string());
-    Err(ContainerExecutionOutcome::MissingLocalMapping {
-        reason: format!(
-            "no trusted local container mapping found for node {local_node_id} and action hint {module_hint}"
-        ),
-    })
+    matches
 }
 
-fn mapping_matches(mapping: &DispatchContainerMapping, candidates: &[String]) -> bool {
+pub fn mapping_matches(mapping: &DispatchContainerMapping, candidates: &[String]) -> bool {
     [
         mapping.module_id.as_deref(),
         mapping.service_name.as_deref(),
@@ -250,8 +284,8 @@ fn ai_context_string(value: Option<&Value>, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_container_running_guarded_with_runtime, ContainerExecutionOutcome,
-        ContainerPresence, ContainerRuntime,
+        ensure_container_running_guarded_with_runtime, find_trusted_container_mapping_matches,
+        mapping_matches, ContainerExecutionOutcome, ContainerPresence, ContainerRuntime,
     };
     use crate::{
         config::{
@@ -425,5 +459,53 @@ mod tests {
         assert!(!implementation.contains(&run_arg));
         assert!(!implementation.contains(&pull_arg));
         assert!(!implementation.contains(&rm_arg));
+    }
+
+    #[test]
+    fn mapping_match_supports_module_artifact_service_and_container_candidates() {
+        let mapping = DispatchContainerMapping {
+            module_id: Some("chirpstack-primary".to_string()),
+            service_name: Some("chirpstack".to_string()),
+            container_name: "chirpstack".to_string(),
+            artifact: Some("chirpstack/chirpstack:latest".to_string()),
+        };
+
+        assert!(mapping_matches(
+            &mapping,
+            &["chirpstack-primary".to_string()]
+        ));
+        assert!(mapping_matches(
+            &mapping,
+            &["chirpstack/chirpstack:latest".to_string()]
+        ));
+        assert!(mapping_matches(&mapping, &["chirpstack".to_string()]));
+    }
+
+    #[test]
+    fn trusted_mapping_match_collection_preserves_registry_then_dispatch_order() {
+        let mut cfg = base_config();
+        cfg.dispatch
+            .as_mut()
+            .expect("dispatch config")
+            .container_mappings = vec![DispatchContainerMapping {
+            module_id: Some("chirpstack-primary".to_string()),
+            service_name: None,
+            container_name: "chirpstack-dispatch".to_string(),
+            artifact: Some("chirpstack/chirpstack:latest".to_string()),
+        }];
+
+        let matches = find_trusted_container_mapping_matches(
+            &[
+                "chirpstack-primary".to_string(),
+                "chirpstack/chirpstack:latest".to_string(),
+            ],
+            &cfg,
+        );
+
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].source, "service_registry");
+        assert_eq!(matches[0].container_name, "chirpstack");
+        assert_eq!(matches[1].source, "container_mappings");
+        assert_eq!(matches[1].container_name, "chirpstack-dispatch");
     }
 }
