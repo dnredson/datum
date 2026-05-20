@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use wasmtime::{Engine, Instance, Module, Store, TypedFunc};
 
-use crate::wasm_runtime::{WasmRuntimeInput, WasmRuntimeResult};
+use crate::wasm_runtime::{
+    report::{build_wasm_runtime_report_from_result, WasmRuntimeReport},
+    WasmRuntimeInput, WasmRuntimeResult,
+};
 
 const EMBEDDED_ADD_WAT: &str = r#"
 (module
@@ -18,6 +21,11 @@ pub fn run_embedded_wasm_add(a: i32, b: i32) -> Result<WasmRuntimeResult> {
         args: vec![a, b],
     };
     run_embedded_wasm_operation(&input)
+}
+
+pub fn run_embedded_wasm_add_report(a: i32, b: i32) -> Result<WasmRuntimeReport> {
+    let result = run_embedded_wasm_add(a, b)?;
+    Ok(build_wasm_runtime_report_from_result(&result))
 }
 
 pub fn run_embedded_wasm_operation(input: &WasmRuntimeInput) -> Result<WasmRuntimeResult> {
@@ -101,7 +109,7 @@ fn failed_result(input: &WasmRuntimeInput, message: String) -> WasmRuntimeResult
 
 #[cfg(test)]
 mod tests {
-    use super::{run_embedded_wasm_add, run_embedded_wasm_operation};
+    use super::{run_embedded_wasm_add, run_embedded_wasm_add_report, run_embedded_wasm_operation};
     use crate::wasm_runtime::WasmRuntimeInput;
 
     #[test]
@@ -122,6 +130,16 @@ mod tests {
         assert!(!result.network_access);
         assert!(!result.host_command_access);
         assert!(!result.docker_access);
+    }
+
+    #[test]
+    fn add_report_has_expected_status_result_and_mode() {
+        let report =
+            run_embedded_wasm_add_report(2, 3).expect("embedded add report should succeed");
+
+        assert_eq!(report.status, "executed");
+        assert_eq!(report.result_i32, Some(5));
+        assert_eq!(report.execution_mode, "embedded_test");
     }
 
     #[test]

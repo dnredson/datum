@@ -1,3 +1,4 @@
+pub mod report;
 pub mod runner;
 
 use serde::{Deserialize, Serialize};
