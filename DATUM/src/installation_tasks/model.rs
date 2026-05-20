@@ -406,6 +406,70 @@ pub struct AssistedExecutionStateSummaryList {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingRecommendation {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub recommendation_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub installation_id: Option<String>,
+    #[serde(default)]
+    pub planning_id: Option<String>,
+    #[serde(default)]
+    pub action_id: Option<String>,
+    #[serde(default)]
+    pub module_id: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub artifact: Option<String>,
+    #[serde(default)]
+    pub suggested_mapping_key: Option<String>,
+    #[serde(default)]
+    pub suggested_container_name: Option<String>,
+    #[serde(default)]
+    pub suggested_artifact: Option<String>,
+    #[serde(default)]
+    pub recommendation_status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub safe_to_auto_apply: Option<bool>,
+    #[serde(default)]
+    pub requires_operator: Option<bool>,
+    #[serde(default)]
+    pub source_task: Option<Value>,
+    #[serde(default)]
+    pub source_installation_item: Option<Value>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalMappingRecommendationList {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub count: Option<u64>,
+    #[serde(default)]
+    pub recommendations: Vec<LocalMappingRecommendation>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApprovalRequest {
     #[serde(default)]
     pub approved_by: Option<String>,
@@ -458,7 +522,7 @@ mod tests {
         AssistedExecutionRequestBody, AssistedExecutionRequestList, AssistedExecutionStateSummary,
         AssistedExecutionStateSummaryList, InstallationTask, InstallationTaskApproval,
         InstallationTaskApprovalList, InstallationTaskList, InstallationTaskReadiness,
-        InstallationTaskReadinessList,
+        InstallationTaskReadinessList, LocalMappingRecommendation, LocalMappingRecommendationList,
     };
 
     #[test]
@@ -1041,6 +1105,70 @@ mod tests {
         assert_eq!(
             parsed.summaries[0].state.as_deref(),
             Some("awaiting_approval")
+        );
+    }
+
+    #[test]
+    fn parse_local_mapping_recommendation() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "recommendation_id":"rec-1",
+          "task_id":"task-1",
+          "module_id":"chirpstack-primary",
+          "artifact":"chirpstack/chirpstack:latest",
+          "suggested_mapping_key":"chirpstack-primary",
+          "safe_to_auto_apply":false,
+          "requires_operator":true,
+          "reason":"trusted local mapping is required before assisted execution can proceed",
+          "future_field":"ok"
+        }"#;
+
+        let parsed: LocalMappingRecommendation =
+            serde_json::from_str(raw).expect("recommendation should parse");
+
+        assert_eq!(parsed.node_id.as_deref(), Some("fog-01"));
+        assert_eq!(parsed.task_id.as_deref(), Some("task-1"));
+        assert_eq!(
+            parsed.suggested_mapping_key.as_deref(),
+            Some("chirpstack-primary")
+        );
+        assert_eq!(parsed.safe_to_auto_apply, Some(false));
+        assert_eq!(parsed.requires_operator, Some(true));
+        assert_eq!(
+            parsed
+                .extra
+                .get("future_field")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn parse_local_mapping_recommendation_list() {
+        let raw = r#"{
+          "project_id":"smart-city-campinas",
+          "node_id":"fog-01",
+          "count":1,
+          "recommendations":[
+            {
+              "recommendation_id":"rec-1",
+              "task_id":"task-1",
+              "recommendation_status":"proposed"
+            }
+          ]
+        }"#;
+
+        let parsed: LocalMappingRecommendationList =
+            serde_json::from_str(raw).expect("recommendation list should parse");
+
+        assert_eq!(parsed.project_id.as_deref(), Some("smart-city-campinas"));
+        assert_eq!(parsed.node_id.as_deref(), Some("fog-01"));
+        assert_eq!(parsed.count, Some(1));
+        assert_eq!(parsed.recommendations.len(), 1);
+        assert_eq!(
+            parsed.recommendations[0].recommendation_status.as_deref(),
+            Some("proposed")
         );
     }
 }

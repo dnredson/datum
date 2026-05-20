@@ -14,17 +14,18 @@ use crate::{
             fetch_installation_task_readiness_for_node, fetch_installation_tasks_for_node,
             fetch_latest_assisted_execution_attempt, fetch_latest_assisted_execution_claim,
             fetch_latest_assisted_execution_request, fetch_latest_installation_task_approval,
-            materialize_installation_tasks_for_node, patch_assisted_execution_claim_status,
-            patch_installation_task_status, submit_assisted_execution_attempt,
-            submit_assisted_execution_claim, submit_assisted_execution_request,
-            submit_installation_task_approval,
+            fetch_local_mapping_recommendations_for_node, materialize_installation_tasks_for_node,
+            patch_assisted_execution_claim_status, patch_installation_task_status,
+            submit_assisted_execution_attempt, submit_assisted_execution_claim,
+            submit_assisted_execution_request, submit_installation_task_approval,
         },
         model::{
             AssistedExecutionAttempt, AssistedExecutionAttemptList, AssistedExecutionClaim,
             AssistedExecutionClaimList, AssistedExecutionRequest, AssistedExecutionRequestList,
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationTask,
             InstallationTaskApproval, InstallationTaskApprovalList, InstallationTaskList,
-            InstallationTaskReadiness, InstallationTaskReadinessList,
+            InstallationTaskReadiness, InstallationTaskReadinessList, LocalMappingRecommendation,
+            LocalMappingRecommendationList,
         },
     },
     local_mapping::preflight::{
@@ -46,6 +47,7 @@ pub fn run_installation_tasks_command(
     request_id: Option<&str>,
     claim_id: Option<&str>,
     local_mapping_preflight: bool,
+    local_mapping_recommendations: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -84,6 +86,7 @@ pub fn run_installation_tasks_command(
         request_id,
         claim_id,
         local_mapping_preflight,
+        local_mapping_recommendations,
         execution_state,
         readiness,
         execution_requests,
@@ -142,6 +145,26 @@ pub fn run_installation_tasks_command(
         }
 
         print!("{}", format_local_mapping_preflight_report(&report));
+        return Ok(());
+    }
+
+    if local_mapping_recommendations {
+        let response =
+            fetch_local_mapping_recommendations_for_node(&base_url, &project_id, &node_id)?;
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+            );
+            return Ok(());
+        }
+
+        print!(
+            "{}",
+            format_local_mapping_recommendation_list(&response, &project_id, &node_id)
+        );
         return Ok(());
     }
 
@@ -705,6 +728,7 @@ fn validate_command_mode(
     request_id: Option<&str>,
     claim_id: Option<&str>,
     local_mapping_preflight: bool,
+    local_mapping_recommendations: bool,
     execution_state: bool,
     readiness: bool,
     execution_requests: bool,
@@ -734,6 +758,7 @@ fn validate_command_mode(
     let selected_modes = [
         local_mapping_preflight && task_id.is_none(),
         local_mapping_preflight && task_id.is_some(),
+        local_mapping_recommendations,
         execution_state && task_id.is_none(),
         execution_state && task_id.is_some(),
         readiness && task_id.is_none(),
@@ -755,6 +780,7 @@ fn validate_command_mode(
         materialize,
         task_id.is_some()
             && !local_mapping_preflight
+            && !local_mapping_recommendations
             && !execution_state
             && !readiness
             && !execution_request
@@ -774,7 +800,7 @@ fn validate_command_mode(
 
     if selected_modes > 1 {
         return Err(anyhow!(
-            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
+            "ambiguous installation-tasks mode; choose only one of default list, --materialize, --task-id, --status, --local-mapping-preflight, --local-mapping-recommendations, --readiness, --execution-request, --execution-requests, --request-assisted-execution, --execution-claim, --execution-claims, --claim-assisted-execution, --claim-status, --execution-attempt, --execution-attempts, --attempt-assisted-execution, --approval, --approvals, or --approve"
         ));
     }
 
@@ -793,6 +819,30 @@ fn validate_command_mode(
     if local_mapping_preflight && claim_id.is_some() {
         return Err(anyhow!(
             "--claim-id cannot be combined with --local-mapping-preflight"
+        ));
+    }
+
+    if local_mapping_recommendations && task_id.is_some() {
+        return Err(anyhow!(
+            "--task-id cannot be combined with --local-mapping-recommendations"
+        ));
+    }
+
+    if local_mapping_recommendations && request_id.is_some() {
+        return Err(anyhow!(
+            "--request-id cannot be combined with --local-mapping-recommendations"
+        ));
+    }
+
+    if local_mapping_recommendations && claim_id.is_some() {
+        return Err(anyhow!(
+            "--claim-id cannot be combined with --local-mapping-recommendations"
+        ));
+    }
+
+    if local_mapping_recommendations && materialize {
+        return Err(anyhow!(
+            "--local-mapping-recommendations cannot be combined with --materialize"
         ));
     }
 
@@ -1664,6 +1714,115 @@ fn format_local_mapping_preflight_report(report: &LocalMappingPreflightReport) -
     lines.join("\n")
 }
 
+fn format_local_mapping_recommendation_list(
+    response: &LocalMappingRecommendationList,
+    project_id: &str,
+    requested_node_id: &str,
+) -> String {
+    let effective_node_id = response.node_id.as_deref().unwrap_or(requested_node_id);
+    let effective_project_id = response.project_id.as_deref().unwrap_or(project_id);
+    let count = response
+        .count
+        .unwrap_or(response.recommendations.len() as u64);
+
+    let mut lines = vec![
+        format!(
+            "Local mapping recommendations for node {}",
+            effective_node_id
+        ),
+        format!("Project: {}", effective_project_id),
+    ];
+
+    if response.recommendations.is_empty() {
+        lines.push("No local mapping recommendations for this node.".to_string());
+        lines.push(String::new());
+        lines.push(
+            "Local mapping recommendations are advisory only. This command did not write config and did not execute installation."
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
+
+    lines.push(format!("Recommendations: {}", count));
+    lines.push(String::new());
+
+    for (index, recommendation) in response.recommendations.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.extend(format_local_mapping_recommendation(recommendation));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Local mapping recommendations are advisory only. This command did not write config and did not execute installation."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+fn format_local_mapping_recommendation(recommendation: &LocalMappingRecommendation) -> Vec<String> {
+    let status = recommendation
+        .recommendation_status
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_uppercase();
+    let priority = recommendation
+        .priority
+        .as_deref()
+        .map(|value| format!("[{}]", value.to_ascii_uppercase()))
+        .unwrap_or_default();
+    let title = recommendation
+        .module_id
+        .as_deref()
+        .or(recommendation.suggested_mapping_key.as_deref())
+        .or(recommendation.task_id.as_deref())
+        .unwrap_or("unknown");
+
+    let mut lines = vec![format!("[{}]{} {}", status, priority, title)];
+
+    if let Some(recommendation_id) = recommendation.recommendation_id.as_deref() {
+        lines.push(format!("  recommendation_id: {}", recommendation_id));
+    }
+    if let Some(task_id) = recommendation.task_id.as_deref() {
+        lines.push(format!("  task_id: {}", task_id));
+    }
+    if let Some(module_id) = recommendation.module_id.as_deref() {
+        lines.push(format!("  module_id: {}", module_id));
+    }
+    if let Some(runtime) = recommendation.runtime.as_deref() {
+        lines.push(format!("  runtime: {}", runtime));
+    }
+    if let Some(artifact) = recommendation.artifact.as_deref() {
+        lines.push(format!("  artifact: {}", artifact));
+    }
+    if let Some(mapping_key) = recommendation.suggested_mapping_key.as_deref() {
+        lines.push(format!("  suggested mapping key: {}", mapping_key));
+    }
+    if let Some(container_name) = recommendation.suggested_container_name.as_deref() {
+        lines.push(format!("  suggested container: {}", container_name));
+    }
+    if let Some(suggested_artifact) = recommendation.suggested_artifact.as_deref() {
+        lines.push(format!("  suggested artifact: {}", suggested_artifact));
+    }
+
+    lines.push(format!(
+        "  safe to auto apply: {}",
+        recommendation.safe_to_auto_apply.unwrap_or(false)
+    ));
+    lines.push(format!(
+        "  requires operator: {}",
+        recommendation.requires_operator.unwrap_or(true)
+    ));
+    lines.push(format!(
+        "  reason: {}",
+        recommendation.reason.as_deref().unwrap_or("unknown")
+    ));
+
+    lines
+}
+
 fn format_latest_assisted_execution_request(
     request: &AssistedExecutionRequest,
     requested_task_id: &str,
@@ -2410,9 +2569,10 @@ mod tests {
         format_assisted_execution_request_list, format_assisted_execution_state_list,
         format_latest_approval, format_latest_assisted_execution_attempt,
         format_latest_assisted_execution_claim, format_latest_assisted_execution_request,
-        format_local_mapping_preflight_report, format_readiness_list,
-        format_single_assisted_execution_state, format_single_readiness, format_status_update,
-        format_submitted_approval, format_submitted_assisted_execution_attempt,
+        format_local_mapping_preflight_report, format_local_mapping_recommendation_list,
+        format_readiness_list, format_single_assisted_execution_state, format_single_readiness,
+        format_status_update, format_submitted_approval,
+        format_submitted_assisted_execution_attempt,
         format_submitted_assisted_execution_attempt_with_preflight,
         format_submitted_assisted_execution_claim, format_submitted_assisted_execution_request,
         format_task_list, format_updated_assisted_execution_claim,
@@ -2432,6 +2592,7 @@ mod tests {
             AssistedExecutionStateSummary, AssistedExecutionStateSummaryList, InstallationPolicy,
             InstallationTask, InstallationTaskApproval, InstallationTaskApprovalList,
             InstallationTaskList, InstallationTaskReadiness, InstallationTaskReadinessList,
+            LocalMappingRecommendation, LocalMappingRecommendationList,
         },
         local_mapping::preflight::{
             LocalMappingPreflightItem, LocalMappingPreflightReport, LocalMappingPreflightSummary,
@@ -2444,6 +2605,7 @@ mod tests {
         request_id: Option<&'a str>,
         claim_id: Option<&'a str>,
         local_mapping_preflight: bool,
+        local_mapping_recommendations: bool,
         execution_state: bool,
         readiness: bool,
         execution_requests: bool,
@@ -2477,6 +2639,7 @@ mod tests {
             case.request_id,
             case.claim_id,
             case.local_mapping_preflight,
+            case.local_mapping_recommendations,
             case.execution_state,
             case.readiness,
             case.execution_requests,
@@ -3541,6 +3704,94 @@ mod tests {
     }
 
     #[test]
+    fn local_mapping_recommendation_formatting_includes_expected_fields() {
+        let rendered = format_local_mapping_recommendation_list(
+            &LocalMappingRecommendationList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(1),
+                recommendations: vec![LocalMappingRecommendation {
+                    recommendation_id: Some("rec-1".to_string()),
+                    task_id: Some("task-1".to_string()),
+                    module_id: Some("chirpstack-primary".to_string()),
+                    runtime: Some("container".to_string()),
+                    artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                    suggested_mapping_key: Some("chirpstack-primary".to_string()),
+                    suggested_artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                    recommendation_status: Some("proposed".to_string()),
+                    priority: Some("high".to_string()),
+                    reason: Some(
+                        "trusted local mapping is required before assisted execution can proceed"
+                            .to_string(),
+                    ),
+                    safe_to_auto_apply: Some(false),
+                    requires_operator: Some(true),
+                    ..LocalMappingRecommendation::default()
+                }],
+                ..LocalMappingRecommendationList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("Local mapping recommendations for node fog-01"));
+        assert!(rendered.contains("Recommendations: 1"));
+        assert!(rendered.contains("[PROPOSED][HIGH] chirpstack-primary"));
+        assert!(rendered.contains("recommendation_id: rec-1"));
+        assert!(rendered.contains("task_id: task-1"));
+        assert!(rendered.contains("module_id: chirpstack-primary"));
+        assert!(rendered.contains("artifact: chirpstack/chirpstack:latest"));
+        assert!(rendered.contains("suggested mapping key: chirpstack-primary"));
+        assert!(rendered.contains("safe to auto apply: false"));
+        assert!(rendered.contains("requires operator: true"));
+        assert!(rendered.contains(
+            "reason: trusted local mapping is required before assisted execution can proceed"
+        ));
+    }
+
+    #[test]
+    fn empty_local_mapping_recommendation_list_formats_clearly() {
+        let rendered = format_local_mapping_recommendation_list(
+            &LocalMappingRecommendationList {
+                project_id: Some("smart-city-campinas".to_string()),
+                node_id: Some("fog-01".to_string()),
+                count: Some(0),
+                recommendations: vec![],
+                ..LocalMappingRecommendationList::default()
+            },
+            "smart-city-campinas",
+            "fog-01",
+        );
+
+        assert!(rendered.contains("No local mapping recommendations for this node."));
+        assert!(rendered.contains(
+            "Local mapping recommendations are advisory only. This command did not write config and did not execute installation."
+        ));
+    }
+
+    #[test]
+    fn local_mapping_recommendation_json_preserves_raw_response() {
+        let response = LocalMappingRecommendationList {
+            project_id: Some("smart-city-campinas".to_string()),
+            node_id: Some("fog-01".to_string()),
+            count: Some(1),
+            recommendations: vec![LocalMappingRecommendation {
+                recommendation_id: Some("rec-1".to_string()),
+                safe_to_auto_apply: Some(false),
+                requires_operator: Some(true),
+                ..LocalMappingRecommendation::default()
+            }],
+            ..LocalMappingRecommendationList::default()
+        };
+
+        let rendered = serde_json::to_string_pretty(&response).expect("json should render");
+
+        assert!(rendered.contains("\"recommendation_id\": \"rec-1\""));
+        assert!(rendered.contains("\"safe_to_auto_apply\": false"));
+        assert!(rendered.contains("\"requires_operator\": true"));
+    }
+
+    #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         let result = validate_mode_case(ModeCase {
             task_id: Some("task-1"),
@@ -3668,5 +3919,45 @@ mod tests {
         });
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_mode_validation_rejects_local_mapping_recommendations_with_task_id() {
+        let result = validate_mode_case(ModeCase {
+            task_id: Some("task-1"),
+            local_mapping_recommendations: true,
+            ..ModeCase::default()
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_mapping_recommendation_viewer_source_guard_has_no_docker_shell_or_config_writes() {
+        let source = include_str!("installation_tasks.rs");
+        let start = source
+            .find("if local_mapping_recommendations {")
+            .expect("local mapping recommendation branch should exist");
+        let end = source[start..]
+            .find("\n    if execution_state {")
+            .map(|offset| start + offset)
+            .expect("execution_state branch should follow recommendation branch");
+        let implementation = &source[start..end];
+
+        for forbidden in [
+            "docker run",
+            "docker pull",
+            "docker rm",
+            "docker inspect",
+            "Command::new",
+            "std::process::Command",
+            "fs::write",
+            "OpenOptions",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "installation task CLI must not contain forbidden pattern: {forbidden}"
+            );
+        }
     }
 }
