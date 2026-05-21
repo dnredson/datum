@@ -228,6 +228,7 @@ Status note:
 - `C31/90` adds `DATUM` explicit publishing and read-back support for local d-graph snapshots against `dserver`. Publishing remains metadata-only and does not run the planner, deploy modules, or reconfigure flows.
 - `S31/90` adds read-only `dserver` project d-graph materialization from the latest local `DATUM` snapshots. It does not run the planner, deploy modules, or reconfigure flows.
 - `C32/90` adds a `DATUM` read-only viewer for project d-graph materialization and summary. It does not run planner, deploy modules, or reconfigure flows.
+- `R3/90` closes the d-graph materialization phase and prepares the next macro phase: read-only planner dry-run endpoints and distributed VM test preparation.
 
 ## Safety Boundaries
 
