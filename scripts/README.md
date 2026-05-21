@@ -141,13 +141,19 @@ What it validates:
 - DATUM local d-graph snapshot publishing via `dgraph-snapshot --publish`
 - dserver node latest d-graph snapshot read-back via `GET /api/v1/nodes/{node_id}/dgraph-snapshot/latest`
 - dserver project latest d-graph snapshot list via `GET /api/v1/dgraph-snapshots/latest`
+- dserver project d-graph materialized endpoint via `GET /api/v1/dgraph/materialized`
+- dserver project d-graph materialized summary endpoint via `GET /api/v1/dgraph/materialized/summary`
 - DATUM latest d-graph snapshot viewer via `dgraph-snapshot --latest`
 - DATUM latest-all d-graph snapshot viewer via `dgraph-snapshot --latest-all`
+- DATUM project d-graph materialized viewer via `dgraph-snapshot --materialized`
+- DATUM project d-graph materialized summary viewer via `dgraph-snapshot --materialized-summary`
+- optional DATUM materialized JSON viewers via `dgraph-snapshot --materialized --json` and `dgraph-snapshot --materialized-summary --json`
 - all WASM safety/access flags remain false across local, published, and read-back reports
 - module safety metadata remains false in registry descriptors
 - `artifact_ref` remains opaque metadata only
 - `safe_to_auto_execute` remains false in local d-graph snapshots
 - `side_effects_performed` remains false in local d-graph snapshots
+- `side_effects_performed` remains false in project d-graph materialization and summary responses
 - `safe_to_auto_apply` remains false in local mapping recommendations when recommendations are present
 - `safe_to_auto_apply` remains false in local mapping patch proposals when proposals are present
 - `side_effects_performed` remains false in local mapping patch proposals when proposals are present
@@ -206,9 +212,11 @@ Notes:
 - The registry does not imply execution permission.
 - Artifact references are opaque metadata only; the smoke test does not fetch or execute them.
 - D-graph snapshot publishing is metadata-only; it does not run planner logic, deploy modules, or reconfigure flows.
+- Project d-graph materialization is read-only and is computed from the latest local DATUM snapshots.
+- Materialized output may legitimately include validation errors for partial graph data and still remain a valid read-only smoke result.
 - D-graph snapshot contents are config-derived and may legitimately be empty for modules or flows.
 - WASM is not yet a remediation executor.
-- Future milestones will materialize project-level d-graph and planner dry-run output, still without execution.
+- Future milestones may expose planner dry-run output, still without execution.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty proposal files are valid when there are no server proposals, as long as advisory wording is present and active config is unchanged.

@@ -545,6 +545,95 @@ function Assert-LocalDGraphSnapshotListContract {
     }
 }
 
+function Assert-ProjectDGraphMaterializationContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "source_snapshot_count" $StepName
+    Assert-JsonHasProperty $Json "graph" $StepName
+    Assert-JsonHasProperty $Json "summary" $StepName
+    Assert-JsonHasProperty $Json "validation_errors" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.source_snapshot_count -lt 0) {
+        throw "$StepName returned source_snapshot_count '$($Json.source_snapshot_count)', expected a non-negative value."
+    }
+
+    if ($null -eq $Json.graph) {
+        throw "$StepName returned null graph, expected an object."
+    }
+
+    if ($null -eq $Json.summary) {
+        throw "$StepName returned null summary, expected an object."
+    }
+
+    if ($Json.validation_errors -isnot [System.Array] -and $Json.validation_errors -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'validation_errors' as an array."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+
+    foreach ($graphArrayField in @("nodes", "modules", "relationships")) {
+        if ($Json.graph.PSObject.Properties.Name -contains $graphArrayField) {
+            $value = $Json.graph.$graphArrayField
+            if ($value -isnot [System.Array] -and $value -isnot [System.Collections.IEnumerable]) {
+                throw "$StepName returned graph.$graphArrayField that was not an array."
+            }
+        }
+    }
+}
+
+function Assert-ProjectDGraphMaterializationSummaryContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "source_snapshot_count" $StepName
+    Assert-JsonHasProperty $Json "summary" $StepName
+    Assert-JsonHasProperty $Json "validation_errors" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.source_snapshot_count -lt 0) {
+        throw "$StepName returned source_snapshot_count '$($Json.source_snapshot_count)', expected a non-negative value."
+    }
+
+    if ($null -eq $Json.summary) {
+        throw "$StepName returned null summary, expected an object."
+    }
+
+    if ($Json.validation_errors -isnot [System.Array] -and $Json.validation_errors -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'validation_errors' as an array."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+
+    foreach ($summaryField in @("node_count", "relationship_count")) {
+        if ($Json.summary.PSObject.Properties.Name -contains $summaryField) {
+            $value = $Json.summary.$summaryField
+            if ($null -ne $value -and $value -lt 0) {
+                throw "$StepName returned summary.$summaryField '$value', expected a non-negative value when present."
+            }
+        }
+    }
+}
+
 function Assert-NodeCapabilities {
     param($Json)
 
@@ -4003,6 +4092,144 @@ if (-not $SkipServerChecks) {
     }
 
     $clientLatestAllDgraphSnapshotViewerPerformed = $true
+
+    Write-Step "Read project d-graph materialized from server"
+    $projectMaterializedDgraph = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/materialized" `
+        -Headers $headers `
+        -StepName "Project d-graph materialized"
+    Assert-HttpOk $projectMaterializedDgraph "Project d-graph materialized"
+    Assert-ProjectDGraphMaterializationContract `
+        -Json $projectMaterializedDgraph.Json `
+        -StepName "Project d-graph materialized"
+    $serverProjectMaterializedDgraphReadPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph materialized summary from server"
+    $projectMaterializedDgraphSummary = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/materialized/summary" `
+        -Headers $headers `
+        -StepName "Project d-graph materialized summary"
+    Assert-HttpOk $projectMaterializedDgraphSummary "Project d-graph materialized summary"
+    Assert-ProjectDGraphMaterializationSummaryContract `
+        -Json $projectMaterializedDgraphSummary.Json `
+        -StepName "Project d-graph materialized summary"
+    $serverProjectMaterializedDgraphSummaryReadPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph materialized from DATUM"
+    $clientMaterializedDgraphOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--materialized"
+        ) `
+        -StepName "DATUM materialized d-graph viewer"
+
+    foreach ($requiredMaterializedDgraphMarker in @(
+        "Project d-graph materialized",
+        "Project:\s+$([regex]::Escape($ProjectId))",
+        "Source snapshots:\s+\d+",
+        "Side effects performed:\s+false",
+        "did not run planner, deploy modules, or reconfigure flows"
+    )) {
+        if ($clientMaterializedDgraphOutput -notmatch $requiredMaterializedDgraphMarker) {
+            throw "DATUM materialized d-graph viewer output did not include required marker '$requiredMaterializedDgraphMarker'."
+        }
+    }
+
+    $clientMaterializedDgraphViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph materialized summary from DATUM"
+    $clientMaterializedDgraphSummaryOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--materialized-summary"
+        ) `
+        -StepName "DATUM materialized d-graph summary viewer"
+
+    foreach ($requiredMaterializedDgraphSummaryMarker in @(
+        "Project d-graph summary",
+        "Project:\s+$([regex]::Escape($ProjectId))",
+        "Source snapshots:\s+\d+",
+        "Side effects performed:\s+false",
+        "did not run planner, deploy modules, or reconfigure flows"
+    )) {
+        if ($clientMaterializedDgraphSummaryOutput -notmatch $requiredMaterializedDgraphSummaryMarker) {
+            throw "DATUM materialized d-graph summary viewer output did not include required marker '$requiredMaterializedDgraphSummaryMarker'."
+        }
+    }
+
+    $clientMaterializedDgraphSummaryViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph materialized JSON from DATUM"
+    $clientMaterializedDgraphJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--materialized",
+            "--json"
+        ) `
+        -StepName "DATUM materialized d-graph JSON viewer"
+    $clientMaterializedDgraphJson = Convert-CommandOutputToJson `
+        -Output $clientMaterializedDgraphJsonOutput `
+        -StepName "DATUM materialized d-graph JSON viewer"
+    Assert-ProjectDGraphMaterializationContract `
+        -Json $clientMaterializedDgraphJson `
+        -StepName "DATUM materialized d-graph JSON viewer"
+    $clientMaterializedDgraphJsonViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph materialized summary JSON from DATUM"
+    $clientMaterializedDgraphSummaryJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--materialized-summary",
+            "--json"
+        ) `
+        -StepName "DATUM materialized d-graph summary JSON viewer"
+    $clientMaterializedDgraphSummaryJson = Convert-CommandOutputToJson `
+        -Output $clientMaterializedDgraphSummaryJsonOutput `
+        -StepName "DATUM materialized d-graph summary JSON viewer"
+    Assert-ProjectDGraphMaterializationSummaryContract `
+        -Json $clientMaterializedDgraphSummaryJson `
+        -StepName "DATUM materialized d-graph summary JSON viewer"
+    $clientMaterializedDgraphSummaryJsonViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
 }
 
 Write-Host ""
@@ -4499,6 +4726,18 @@ if ($serverProjectLatestDgraphSnapshotListReadPerformed) {
 else {
     Write-Host "- server project latest d-graph snapshot list (skipped: server checks disabled)"
 }
+if ($serverProjectMaterializedDgraphReadPerformed) {
+    Write-Host "- server project d-graph materialized endpoint"
+}
+else {
+    Write-Host "- server project d-graph materialized endpoint (skipped: server checks disabled)"
+}
+if ($serverProjectMaterializedDgraphSummaryReadPerformed) {
+    Write-Host "- server project d-graph materialized summary endpoint"
+}
+else {
+    Write-Host "- server project d-graph materialized summary endpoint (skipped: server checks disabled)"
+}
 if ($clientLatestDgraphSnapshotViewerPerformed) {
     Write-Host "- DATUM latest d-graph snapshot viewer"
 }
@@ -4510,6 +4749,30 @@ if ($clientLatestAllDgraphSnapshotViewerPerformed) {
 }
 else {
     Write-Host "- DATUM latest-all d-graph snapshot viewer (skipped: server checks disabled)"
+}
+if ($clientMaterializedDgraphViewerPerformed) {
+    Write-Host "- DATUM materialized d-graph viewer"
+}
+else {
+    Write-Host "- DATUM materialized d-graph viewer (skipped: server checks disabled)"
+}
+if ($clientMaterializedDgraphSummaryViewerPerformed) {
+    Write-Host "- DATUM materialized d-graph summary viewer"
+}
+else {
+    Write-Host "- DATUM materialized d-graph summary viewer (skipped: server checks disabled)"
+}
+if ($clientMaterializedDgraphJsonViewerPerformed) {
+    Write-Host "- DATUM materialized d-graph JSON viewer"
+}
+else {
+    Write-Host "- DATUM materialized d-graph JSON viewer (skipped: server checks disabled)"
+}
+if ($clientMaterializedDgraphSummaryJsonViewerPerformed) {
+    Write-Host "- DATUM materialized d-graph summary JSON viewer"
+}
+else {
+    Write-Host "- DATUM materialized d-graph summary JSON viewer (skipped: server checks disabled)"
 }
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
@@ -4610,6 +4873,13 @@ if ($sideEffectsPerformedFalseValidatedForDgraphSnapshots) {
 else {
     Write-Host "- side_effects_performed false validation for d-graph snapshots (skipped: no d-graph snapshots were validated)"
 }
+if ($sideEffectsPerformedFalseValidatedForDgraphMaterialization) {
+    Write-Host "- materialized graph side_effects_performed false validation"
+}
+else {
+    Write-Host "- materialized graph side_effects_performed false validation (skipped: no materialized d-graph responses were validated)"
+}
+Write-Host "- D-graph planner/deployment/reconfiguration not executed"
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -4632,6 +4902,7 @@ Write-Host "WASM runtime report publishing recorded metadata only."
 Write-Host "WASM module registry checks were metadata-only."
 Write-Host "WASM artifact references were not fetched or executed."
 Write-Host "D-graph snapshot publishing recorded metadata only."
+Write-Host "D-graph materialization was read-only."
 Write-Host "D-graph planner/deployment/reconfiguration execution was not performed."
 Write-Host "WASM was not connected to installation tasks or assisted execution."
 Write-Host "No local config or mapping files were modified."
