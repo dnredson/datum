@@ -21,6 +21,9 @@ pub fn build_local_dgraph_snapshot(config: &Config) -> LocalDGraphSnapshot {
     LocalDGraphSnapshot {
         node_id: config.agent.node_id.clone(),
         project_id: resolve_project_id(config),
+        snapshot_id: None,
+        reported_at_utc: None,
+        source: None,
         generated_at_utc: Some(Utc::now().to_rfc3339()),
         runtimes,
         modules,

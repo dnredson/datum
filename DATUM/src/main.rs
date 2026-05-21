@@ -90,7 +90,16 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.json,
         ),
-        Command::DgraphSnapshot(args) => dgraph_snapshot_command(&args.config, args.json),
+        Command::DgraphSnapshot(args) => dgraph_snapshot_command(
+            &args.config,
+            args.node_id.as_deref(),
+            args.project_id.as_deref(),
+            args.url.as_deref(),
+            args.publish,
+            args.latest,
+            args.latest_all,
+            args.json,
+        ),
         Command::InstallationPlan(args) => installation_plan_command(
             &args.config,
             args.node_id.as_deref(),
@@ -316,6 +325,24 @@ struct DeploymentPlanningArgs {
 struct DgraphSnapshotArgs {
     #[arg(long, default_value = "config.toml")]
     config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    project_id: Option<String>,
+
+    #[arg(long)]
+    url: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    publish: bool,
+
+    #[arg(long, default_value_t = false)]
+    latest: bool,
+
+    #[arg(long, default_value_t = false)]
+    latest_all: bool,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -725,9 +752,20 @@ fn installation_plan_command(
     run_installation_plan_command(&cfg, node_id, project_id, url, json)
 }
 
-fn dgraph_snapshot_command(config_path: &str, json: bool) -> Result<()> {
+fn dgraph_snapshot_command(
+    config_path: &str,
+    node_id: Option<&str>,
+    project_id: Option<&str>,
+    url: Option<&str>,
+    publish: bool,
+    latest: bool,
+    latest_all: bool,
+    json: bool,
+) -> Result<()> {
     let cfg = config::load_config(config_path)?;
-    run_dgraph_snapshot_command(&cfg, json)
+    run_dgraph_snapshot_command(
+        &cfg, node_id, project_id, url, publish, latest, latest_all, json,
+    )
 }
 
 fn installation_tasks_command(
