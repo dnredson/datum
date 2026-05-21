@@ -8,8 +8,10 @@ use crate::{
         client::{
             fetch_latest_local_dgraph_snapshot, fetch_latest_local_dgraph_snapshots,
             fetch_project_dgraph_materialized, fetch_project_dgraph_materialized_summary,
+            fetch_project_dgraph_planner_dry_run, fetch_project_dgraph_planner_dry_run_summary,
             publish_local_dgraph_snapshot,
         },
+        planner::{ProjectDGraphPlannerDryRunResponse, ProjectDGraphPlannerDryRunSummaryResponse},
         validate_local_dgraph_snapshot_publish_invariants, LocalDGraphSnapshot,
         LocalDGraphSnapshotList, ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary,
     },
@@ -22,6 +24,8 @@ enum DgraphSnapshotMode {
     LatestAll,
     Materialized,
     MaterializedSummary,
+    PlannerDryRun,
+    PlannerSummary,
 }
 
 pub fn run_dgraph_snapshot_command(
@@ -34,6 +38,8 @@ pub fn run_dgraph_snapshot_command(
     latest_all: bool,
     materialized: bool,
     materialized_summary: bool,
+    planner_dry_run: bool,
+    planner_summary: bool,
     json_output: bool,
 ) -> Result<()> {
     let mode = validate_dgraph_snapshot_mode(
@@ -42,6 +48,8 @@ pub fn run_dgraph_snapshot_command(
         latest_all,
         materialized,
         materialized_summary,
+        planner_dry_run,
+        planner_summary,
     )?;
 
     match mode {
@@ -156,6 +164,40 @@ pub fn run_dgraph_snapshot_command(
             );
             Ok(())
         }
+        DgraphSnapshotMode::PlannerDryRun => {
+            let base_url = resolve_base_url(cfg, url_override)?;
+            let project_id = resolve_project_id(cfg, project_id_override)?;
+            let response = fetch_project_dgraph_planner_dry_run(&base_url, &project_id)?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!("{}", format_planner_dry_run(&response, &project_id));
+            Ok(())
+        }
+        DgraphSnapshotMode::PlannerSummary => {
+            let base_url = resolve_base_url(cfg, url_override)?;
+            let project_id = resolve_project_id(cfg, project_id_override)?;
+            let response = fetch_project_dgraph_planner_dry_run_summary(&base_url, &project_id)?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!("{}", format_planner_dry_run_summary(&response, &project_id));
+            Ok(())
+        }
     }
 }
 
@@ -165,15 +207,19 @@ fn validate_dgraph_snapshot_mode(
     latest_all: bool,
     materialized: bool,
     materialized_summary: bool,
+    planner_dry_run: bool,
+    planner_summary: bool,
 ) -> Result<DgraphSnapshotMode> {
     let selected_modes = publish as u8
         + latest as u8
         + latest_all as u8
         + materialized as u8
-        + materialized_summary as u8;
+        + materialized_summary as u8
+        + planner_dry_run as u8
+        + planner_summary as u8;
     if selected_modes > 1 {
         return Err(anyhow!(
-            "--publish, --latest, --latest-all, --materialized, and --materialized-summary cannot be combined"
+            "--publish, --latest, --latest-all, --materialized, --materialized-summary, --planner-dry-run, and --planner-summary cannot be combined"
         ));
     }
 
@@ -195,6 +241,14 @@ fn validate_dgraph_snapshot_mode(
 
     if materialized_summary {
         return Ok(DgraphSnapshotMode::MaterializedSummary);
+    }
+
+    if planner_dry_run {
+        return Ok(DgraphSnapshotMode::PlannerDryRun);
+    }
+
+    if planner_summary {
+        return Ok(DgraphSnapshotMode::PlannerSummary);
     }
 
     Ok(DgraphSnapshotMode::Local)
@@ -460,6 +514,210 @@ fn format_materialized_dgraph_summary(
     lines.join("\n") + "\n"
 }
 
+fn format_planner_dry_run(
+    response: &ProjectDGraphPlannerDryRunResponse,
+    requested_project_id: &str,
+) -> String {
+    let project_id = response
+        .project_id
+        .as_deref()
+        .unwrap_or(requested_project_id);
+    let snapshot_count = response.source_snapshot_count.unwrap_or(0);
+    let planner = response.planner.as_ref().cloned().unwrap_or_default();
+    let summary = planner.summary.as_ref().cloned().unwrap_or_default();
+
+    let mut lines = vec![
+        "D-graph planner dry-run".to_string(),
+        format!("Project: {}", project_id),
+        format!("Source snapshots: {}", snapshot_count),
+        format!("Status: {}", planner.status.as_deref().unwrap_or("unknown")),
+        format!("Placements: {}", planner.placements.len()),
+        format!("Reconfigurations: {}", planner.reconfigurations.len()),
+        format!("Blocked: {}", planner.blocked.len()),
+        format!("Warnings: {}", planner.warnings.len()),
+        format!(
+            "Side effects performed: {}",
+            response.side_effects_performed.unwrap_or(false)
+        ),
+    ];
+
+    if !response.materialization_validation_errors.is_empty() {
+        lines.push(format!(
+            "Materialization validation errors: {}",
+            response.materialization_validation_errors.len()
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("Placements:".to_string());
+    if planner.placements.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        for placement in &planner.placements {
+            lines.push(format!(
+                "  - module: {}",
+                placement.module_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    selected node: {}",
+                placement.selected_node_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    runtime: {}",
+                placement
+                    .selected_runtime_id
+                    .as_deref()
+                    .unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    status: {}",
+                placement.status.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    reason: {}",
+                placement.reason.as_deref().unwrap_or("none")
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Reconfigurations:".to_string());
+    if planner.reconfigurations.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        for reconfiguration in &planner.reconfigurations {
+            lines.push(format!(
+                "  - flow: {}",
+                reconfiguration.flow_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    module: {}",
+                reconfiguration
+                    .affected_module_id
+                    .as_deref()
+                    .unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    from: {}",
+                reconfiguration.from_node_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    to: {}",
+                reconfiguration.to_node_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    status: {}",
+                reconfiguration.status.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    reason: {}",
+                reconfiguration.reason.as_deref().unwrap_or("none")
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Blocked:".to_string());
+    if planner.blocked.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        for blocked in &planner.blocked {
+            lines.push(format!(
+                "  - target: {}/{}",
+                blocked.target_kind.as_deref().unwrap_or("unknown"),
+                blocked.target_id.as_deref().unwrap_or("unknown")
+            ));
+            lines.push(format!(
+                "    reason: {}",
+                blocked.reason.as_deref().unwrap_or("none")
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Warnings:".to_string());
+    if planner.warnings.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        for warning in &planner.warnings {
+            lines.push(format!(
+                "  - {}",
+                warning.reason.as_deref().unwrap_or("unknown")
+            ));
+        }
+    }
+
+    if summary.placement_count.is_some()
+        || summary.reconfiguration_count.is_some()
+        || summary.blocked_count.is_some()
+        || summary.warning_count.is_some()
+    {
+        lines.push(String::new());
+        lines.push(format!(
+            "Summary counts: placements={}, reconfigurations={}, blocked={}, warnings={}",
+            summary.placement_count.unwrap_or(0),
+            summary.reconfiguration_count.unwrap_or(0),
+            summary.blocked_count.unwrap_or(0),
+            summary.warning_count.unwrap_or(0)
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: proposed placements and reconfigurations are advisory only. This command did not execute them.".to_string(),
+    );
+    lines.join("\n") + "\n"
+}
+
+fn format_planner_dry_run_summary(
+    response: &ProjectDGraphPlannerDryRunSummaryResponse,
+    requested_project_id: &str,
+) -> String {
+    let project_id = response
+        .project_id
+        .as_deref()
+        .unwrap_or(requested_project_id);
+    let snapshot_count = response.source_snapshot_count.unwrap_or(0);
+    let summary = response.summary.as_ref().cloned().unwrap_or_default();
+
+    let mut lines = vec![
+        "D-graph planner dry-run summary".to_string(),
+        format!("Project: {}", project_id),
+        format!("Source snapshots: {}", snapshot_count),
+        format!(
+            "Status: {}",
+            response.status.as_deref().unwrap_or("unknown")
+        ),
+        format!("Placements: {}", response.placement_count.unwrap_or(0)),
+        format!(
+            "Reconfigurations: {}",
+            response.reconfiguration_count.unwrap_or(0)
+        ),
+        format!("Blocked: {}", response.blocked_count.unwrap_or(0)),
+        format!("Warnings: {}", response.warning_count.unwrap_or(0)),
+        format!(
+            "Candidate nodes: {}",
+            summary.candidate_node_count.unwrap_or(0)
+        ),
+        format!(
+            "Unhealthy nodes: {}",
+            summary.unhealthy_node_count.unwrap_or(0)
+        ),
+        format!(
+            "Degraded flows: {}",
+            summary.degraded_flow_count.unwrap_or(0)
+        ),
+        format!(
+            "Side effects performed: {}",
+            response.side_effects_performed.unwrap_or(false)
+        ),
+    ];
+
+    lines.push(String::new());
+    lines.push("Note: this command only reads planner dry-run metadata. It did not deploy modules, execute installation, call Docker, or reconfigure flows.".to_string());
+    lines.join("\n") + "\n"
+}
+
 fn extract_ids(
     graph: Option<&serde_json::Value>,
     array_field: &str,
@@ -511,8 +769,9 @@ fn append_snapshot_count_lines(lines: &mut Vec<String>, snapshot: &LocalDGraphSn
 mod tests {
     use super::{
         format_latest_snapshot, format_latest_snapshot_list, format_local_dgraph_snapshot,
-        format_materialized_dgraph, format_materialized_dgraph_summary, format_published_snapshot,
-        resolve_base_url, resolve_project_id, validate_dgraph_snapshot_mode, DgraphSnapshotMode,
+        format_materialized_dgraph, format_materialized_dgraph_summary, format_planner_dry_run,
+        format_planner_dry_run_summary, format_published_snapshot, resolve_base_url,
+        resolve_project_id, validate_dgraph_snapshot_mode, DgraphSnapshotMode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, FileJsonConfig, HttpConfig, OutputsConfig},
@@ -524,6 +783,11 @@ mod tests {
                 validate_local_dgraph_snapshot_publish_invariants, LocalCapabilitySnapshot,
                 LocalDGraphSnapshot, LocalDGraphSnapshotList, LocalHealthSnapshot,
                 LocalModuleSnapshot, LocalRuntimeSnapshot,
+            },
+            planner::{
+                DGraphPlacementDecision, DGraphPlannerBlockedItem, DGraphPlannerDryRun,
+                DGraphPlannerSummary, DGraphPlannerWarning, DGraphReconfigurationDecision,
+                ProjectDGraphPlannerDryRunResponse, ProjectDGraphPlannerDryRunSummaryResponse,
             },
         },
     };
@@ -615,50 +879,82 @@ mod tests {
     #[test]
     fn cli_mode_validation_accepts_local_publish_and_latest_modes() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(true, false, false, false, false)
+            validate_dgraph_snapshot_mode(true, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Publish
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, true, false, false, false)
+            validate_dgraph_snapshot_mode(false, true, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Latest
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, true, false, false)
+            validate_dgraph_snapshot_mode(false, false, true, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::LatestAll
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, true, false)
+            validate_dgraph_snapshot_mode(false, false, false, true, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Materialized
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, true)
+            validate_dgraph_snapshot_mode(false, false, false, false, true, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::MaterializedSummary
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(false, false, false, false, false, true, false)
+                .expect("mode should validate"),
+            DgraphSnapshotMode::PlannerDryRun
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, true)
+                .expect("mode should validate"),
+            DgraphSnapshotMode::PlannerSummary
         ));
     }
 
     #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
-        assert!(validate_dgraph_snapshot_mode(true, true, false, false, false).is_err());
-        assert!(validate_dgraph_snapshot_mode(true, false, true, false, false).is_err());
-        assert!(validate_dgraph_snapshot_mode(false, true, true, false, false).is_err());
-        assert!(validate_dgraph_snapshot_mode(true, false, false, true, false).is_err());
-        assert!(validate_dgraph_snapshot_mode(true, false, false, false, true).is_err());
+        assert!(
+            validate_dgraph_snapshot_mode(true, true, false, false, false, false, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(true, false, true, false, false, false, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(false, true, true, false, false, false, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(true, false, false, true, false, false, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(true, false, false, false, true, false, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(true, false, false, false, false, true, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(true, false, false, false, false, false, true).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(false, false, false, true, false, true, false).is_err()
+        );
+        assert!(
+            validate_dgraph_snapshot_mode(false, false, false, false, true, false, true).is_err()
+        );
     }
 
     #[test]
     fn local_dgraph_snapshot_without_publish_does_not_require_server_config_helpers() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
@@ -814,6 +1110,151 @@ mod tests {
     }
 
     #[test]
+    fn formatting_planner_summary_includes_project_status_counts_and_false_side_effects() {
+        let rendered = format_planner_dry_run_summary(
+            &ProjectDGraphPlannerDryRunSummaryResponse {
+                project_id: Some("smart-city-campinas".to_string()),
+                source_snapshot_count: Some(2),
+                status: Some("planned".to_string()),
+                summary: Some(DGraphPlannerSummary {
+                    placement_count: Some(1),
+                    reconfiguration_count: Some(0),
+                    blocked_count: Some(0),
+                    warning_count: Some(0),
+                    candidate_node_count: Some(2),
+                    unhealthy_node_count: Some(0),
+                    degraded_flow_count: Some(0),
+                }),
+                placement_count: Some(1),
+                reconfiguration_count: Some(0),
+                blocked_count: Some(0),
+                warning_count: Some(0),
+                side_effects_performed: Some(false),
+                metadata: Some(serde_json::json!({"planner_mode":"dry_run"})),
+            },
+            "smart-city-campinas",
+        );
+
+        assert!(rendered.contains("D-graph planner dry-run summary"));
+        assert!(rendered.contains("Project: smart-city-campinas"));
+        assert!(rendered.contains("Source snapshots: 2"));
+        assert!(rendered.contains("Status: planned"));
+        assert!(rendered.contains("Placements: 1"));
+        assert!(rendered.contains("Candidate nodes: 2"));
+        assert!(rendered.contains("Side effects performed: false"));
+        assert!(rendered.contains(
+            "did not deploy modules, execute installation, call Docker, or reconfigure flows"
+        ));
+    }
+
+    #[test]
+    fn formatting_planner_dry_run_displays_placements_reconfigurations_blocked_and_warnings() {
+        let rendered = format_planner_dry_run(
+            &ProjectDGraphPlannerDryRunResponse {
+                project_id: Some("smart-city-campinas".to_string()),
+                source_snapshot_count: Some(2),
+                materialization_validation_errors: vec!["partial graph".to_string()],
+                planner: Some(DGraphPlannerDryRun {
+                    project_id: Some("smart-city-campinas".to_string()),
+                    planner_version: Some("0.1.0".to_string()),
+                    generated_at_utc: Some("2026-05-21T12:00:00Z".to_string()),
+                    status: Some("partially_blocked".to_string()),
+                    placements: vec![DGraphPlacementDecision {
+                        placement_id: Some("p1".to_string()),
+                        module_id: Some("chirpstack-primary".to_string()),
+                        selected_node_id: Some("fog-01".to_string()),
+                        selected_runtime_id: Some("container:fog-01".to_string()),
+                        reason: Some("available node".to_string()),
+                        status: Some("proposed".to_string()),
+                        metadata: None,
+                    }],
+                    reconfigurations: vec![DGraphReconfigurationDecision {
+                        reconfiguration_id: Some("r1".to_string()),
+                        flow_id: Some("flow-a".to_string()),
+                        affected_module_id: Some("broker".to_string()),
+                        from_node_id: Some("fog-01".to_string()),
+                        to_node_id: Some("fog-02".to_string()),
+                        reason: Some("failover".to_string()),
+                        status: Some("proposed".to_string()),
+                        metadata: None,
+                    }],
+                    blocked: vec![DGraphPlannerBlockedItem {
+                        item_id: Some("b1".to_string()),
+                        target_kind: Some("module".to_string()),
+                        target_id: Some("chirpstack-primary".to_string()),
+                        reason: Some("no candidate".to_string()),
+                        metadata: None,
+                    }],
+                    warnings: vec![DGraphPlannerWarning {
+                        warning_id: Some("w1".to_string()),
+                        reason: Some("runtime fallback".to_string()),
+                        metadata: None,
+                    }],
+                    summary: Some(DGraphPlannerSummary {
+                        placement_count: Some(1),
+                        reconfiguration_count: Some(1),
+                        blocked_count: Some(1),
+                        warning_count: Some(1),
+                        candidate_node_count: Some(2),
+                        unhealthy_node_count: Some(0),
+                        degraded_flow_count: Some(0),
+                    }),
+                    side_effects_performed: Some(false),
+                    metadata: None,
+                }),
+                side_effects_performed: Some(false),
+                metadata: None,
+            },
+            "smart-city-campinas",
+        );
+
+        assert!(rendered.contains("D-graph planner dry-run"));
+        assert!(rendered.contains("Status: partially_blocked"));
+        assert!(rendered.contains("Placements: 1"));
+        assert!(rendered.contains("Reconfigurations: 1"));
+        assert!(rendered.contains("Blocked: 1"));
+        assert!(rendered.contains("Warnings: 1"));
+        assert!(rendered.contains("module: chirpstack-primary"));
+        assert!(rendered.contains("selected node: fog-01"));
+        assert!(rendered.contains("flow: flow-a"));
+        assert!(rendered.contains("target: module/chirpstack-primary"));
+        assert!(rendered.contains("runtime fallback"));
+        assert!(rendered.contains("advisory only"));
+    }
+
+    #[test]
+    fn formatting_planner_dry_run_shows_none_for_empty_sections() {
+        let rendered = format_planner_dry_run(
+            &ProjectDGraphPlannerDryRunResponse {
+                project_id: Some("smart-city-campinas".to_string()),
+                source_snapshot_count: Some(0),
+                materialization_validation_errors: Vec::new(),
+                planner: Some(DGraphPlannerDryRun {
+                    project_id: Some("smart-city-campinas".to_string()),
+                    planner_version: Some("0.1.0".to_string()),
+                    generated_at_utc: None,
+                    status: Some("empty".to_string()),
+                    placements: Vec::new(),
+                    reconfigurations: Vec::new(),
+                    blocked: Vec::new(),
+                    warnings: Vec::new(),
+                    summary: Some(DGraphPlannerSummary::default()),
+                    side_effects_performed: Some(false),
+                    metadata: None,
+                }),
+                side_effects_performed: Some(false),
+                metadata: None,
+            },
+            "smart-city-campinas",
+        );
+
+        assert!(rendered.contains("Placements:\n  none"));
+        assert!(rendered.contains("Reconfigurations:\n  none"));
+        assert!(rendered.contains("Blocked:\n  none"));
+        assert!(rendered.contains("Warnings:\n  none"));
+    }
+
+    #[test]
     fn local_invariant_check_rejects_safe_to_auto_execute_true() {
         let snapshot = LocalDGraphSnapshot {
             safe_to_auto_execute: true,
@@ -849,6 +1290,7 @@ mod tests {
             "OpenOptions",
             "run_embedded_wasm",
             "plan_dgraph_dry_run",
+            "dispatch --execute",
         ] {
             assert!(
                 !implementation.contains(forbidden),

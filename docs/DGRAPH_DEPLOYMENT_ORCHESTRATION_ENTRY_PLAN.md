@@ -230,6 +230,7 @@ Status note:
 - `C32/90` adds a `DATUM` read-only viewer for project d-graph materialization and summary. It does not run planner, deploy modules, or reconfigure flows.
 - `R3/90` closes the d-graph materialization phase and prepares the next macro phase: read-only planner dry-run endpoints and distributed VM test preparation.
 - `S32/100` exposes a read-only `dserver` d-graph planner dry-run over the materialized project graph. It does not deploy, execute, call Docker, run WASM, or reconfigure flows, and it prepares the DATUM viewer and future local/2-VM dry-run testing.
+- `C33/100` adds a `DATUM` read-only viewer for d-graph planner dry-run and summary. It does not execute planner decisions, deploy modules, or reconfigure flows.
 
 ## Safety Boundaries
 

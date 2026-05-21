@@ -10,6 +10,7 @@ use reqwest::{
 use crate::dgraph_snapshot::{
     materialized::{ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary},
     model::{LocalDGraphSnapshot, LocalDGraphSnapshotList},
+    planner::{ProjectDGraphPlannerDryRunResponse, ProjectDGraphPlannerDryRunSummaryResponse},
 };
 
 pub fn publish_local_dgraph_snapshot(
@@ -97,6 +98,44 @@ pub fn fetch_project_dgraph_materialized_summary(
     parse_materialized_summary_response(response, "fetch project d-graph materialized summary")
 }
 
+pub fn fetch_project_dgraph_planner_dry_run(
+    base_url: &str,
+    project_id: &str,
+) -> Result<ProjectDGraphPlannerDryRunResponse> {
+    let endpoint = project_dgraph_planner_dry_run_endpoint_url(base_url)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch project d-graph planner dry-run from {}", endpoint))?;
+
+    parse_planner_dry_run_response(response, "fetch project d-graph planner dry-run")
+}
+
+pub fn fetch_project_dgraph_planner_dry_run_summary(
+    base_url: &str,
+    project_id: &str,
+) -> Result<ProjectDGraphPlannerDryRunSummaryResponse> {
+    let endpoint = project_dgraph_planner_dry_run_summary_endpoint_url(base_url)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| {
+            format!(
+                "fetch project d-graph planner dry-run summary from {}",
+                endpoint
+            )
+        })?;
+
+    parse_planner_dry_run_summary_response(
+        response,
+        "fetch project d-graph planner dry-run summary",
+    )
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -156,6 +195,34 @@ fn parse_materialized_summary_response(
     response: Response,
     label: &str,
 ) -> Result<ProjectDGraphMaterializationSummary> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_planner_dry_run_response(
+    response: Response,
+    label: &str,
+) -> Result<ProjectDGraphPlannerDryRunResponse> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_planner_dry_run_summary_response(
+    response: Response,
+    label: &str,
+) -> Result<ProjectDGraphPlannerDryRunSummaryResponse> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -233,12 +300,35 @@ pub fn project_dgraph_materialized_summary_endpoint_url(base_url: &str) -> Resul
     with_segments(base_url, &segments)
 }
 
+pub fn project_dgraph_planner_dry_run_endpoint_url(base_url: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "dgraph".to_string(),
+        "planner".to_string(),
+        "dry-run".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
+pub fn project_dgraph_planner_dry_run_summary_endpoint_url(base_url: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "dgraph".to_string(),
+        "planner".to_string(),
+        "dry-run".to_string(),
+        "summary".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         local_dgraph_snapshot_latest_endpoint_url, local_dgraph_snapshot_publish_endpoint_url,
         local_dgraph_snapshots_latest_endpoint_url, project_dgraph_materialized_endpoint_url,
         project_dgraph_materialized_summary_endpoint_url,
+        project_dgraph_planner_dry_run_endpoint_url,
+        project_dgraph_planner_dry_run_summary_endpoint_url,
     };
     use crate::dgraph_snapshot::model::{
         LocalCapabilitySnapshot, LocalDGraphSnapshot, LocalFlowSnapshot, LocalHealthSnapshot,
@@ -307,6 +397,31 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://localhost:8080/api/v1/dgraph/materialized/summary"
+        );
+    }
+
+    #[test]
+    fn planner_dry_run_url_construction_is_correct() {
+        let url =
+            project_dgraph_planner_dry_run_endpoint_url("http://localhost:8080/api/v1/snapshots")
+                .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/dgraph/planner/dry-run"
+        );
+    }
+
+    #[test]
+    fn planner_dry_run_summary_url_construction_is_correct() {
+        let url = project_dgraph_planner_dry_run_summary_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/dgraph/planner/dry-run/summary"
         );
     }
 
@@ -392,6 +507,7 @@ mod tests {
             "run_embedded_wasm",
             "wasm_runtime::runner",
             "plan_dgraph_dry_run",
+            "dispatch --execute",
         ] {
             assert!(
                 !implementation.contains(forbidden),
