@@ -97,6 +97,10 @@ This stage should prove that the graph entities and relationships are useful bef
 - no artifact transfer
 - no installation execution
 
+Status note:
+
+- `G2/90` adds pure dry-run placement and reconfiguration planning over the d-graph without endpoints, storage, or execution
+
 This stage should stay metadata-only or dry-run only.
 
 ### Stage G3: 2-VM Distributed Smoke
