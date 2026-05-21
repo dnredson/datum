@@ -1131,6 +1131,104 @@ function Assert-LocalMappingPreflightReportContract {
     }
 }
 
+function Assert-ProjectDGraphPlannerDryRunContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "source_snapshot_count" $StepName
+    Assert-JsonHasProperty $Json "materialization_validation_errors" $StepName
+    Assert-JsonHasProperty $Json "planner" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.source_snapshot_count -lt 0) {
+        throw "$StepName returned source_snapshot_count '$($Json.source_snapshot_count)', expected a non-negative value."
+    }
+
+    if ($Json.materialization_validation_errors -isnot [System.Array] -and $Json.materialization_validation_errors -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'materialization_validation_errors' as an array."
+    }
+
+    if ($null -eq $Json.planner) {
+        throw "$StepName returned null planner, expected an object."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+
+    foreach ($plannerProperty in @("placements", "reconfigurations", "blocked", "warnings")) {
+        Assert-JsonHasProperty $Json "planner.$plannerProperty" $StepName
+        $plannerValue = $Json.planner.$plannerProperty
+        if ($plannerValue -isnot [System.Array] -and $plannerValue -isnot [System.Collections.IEnumerable]) {
+            throw "$StepName returned planner.$plannerProperty that was not an array."
+        }
+    }
+
+    Assert-JsonHasProperty $Json "planner.side_effects_performed" $StepName
+    if ($Json.planner.side_effects_performed -ne $false) {
+        throw "$StepName returned planner.side_effects_performed='$($Json.planner.side_effects_performed)', expected 'False'."
+    }
+
+    if ($Json.planner.PSObject.Properties.Name -notcontains "status") {
+        throw "$StepName did not return planner.status."
+    }
+
+    if ($Json.planner.PSObject.Properties.Name -notcontains "summary" -or $null -eq $Json.planner.summary) {
+        throw "$StepName did not return planner.summary as an object."
+    }
+}
+
+function Assert-ProjectDGraphPlannerDryRunSummaryContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "source_snapshot_count" $StepName
+    Assert-JsonHasProperty $Json "summary" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.source_snapshot_count -lt 0) {
+        throw "$StepName returned source_snapshot_count '$($Json.source_snapshot_count)', expected a non-negative value."
+    }
+
+    if ($null -eq $Json.summary) {
+        throw "$StepName returned null summary, expected an object."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+
+    if ($Json.PSObject.Properties.Name -contains "status" -and
+        [string]::IsNullOrWhiteSpace([string]$Json.status)) {
+        throw "$StepName returned empty status."
+    }
+
+    foreach ($countProperty in @("placement_count", "reconfiguration_count", "blocked_count", "warning_count")) {
+        if ($Json.PSObject.Properties.Name -contains $countProperty) {
+            if ($null -eq $Json.$countProperty) {
+                throw "$StepName returned null $countProperty."
+            }
+        }
+        elseif ($Json.summary.PSObject.Properties.Name -notcontains $countProperty) {
+            throw "$StepName did not return $countProperty either at the top level or inside summary."
+        }
+    }
+}
+
 function Assert-LocalMappingPreflightReportListContract {
     param(
         $Json,
@@ -1766,6 +1864,13 @@ $selectedClaimId = $null
 $selectedClaimEncodedId = $null
 $selectedClaimStatus = $null
 $sideEffectsPerformedFalseValidated = $false
+$serverProjectPlannerDryRunReadPerformed = $false
+$serverProjectPlannerDryRunSummaryReadPerformed = $false
+$clientPlannerDryRunViewerPerformed = $false
+$clientPlannerSummaryViewerPerformed = $false
+$clientPlannerDryRunJsonViewerPerformed = $false
+$clientPlannerSummaryJsonViewerPerformed = $false
+$sideEffectsPerformedFalseValidatedForDgraphPlanner = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -4230,6 +4335,147 @@ if (-not $SkipServerChecks) {
     $clientMaterializedDgraphSummaryJsonViewerPerformed = $true
     $sideEffectsPerformedFalseValidated = $true
     $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+
+    Write-Step "Read project d-graph planner dry-run from server"
+    $projectPlannerDryRun = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/planner/dry-run" `
+        -Headers $headers `
+        -StepName "Project d-graph planner dry-run"
+    Assert-HttpOk $projectPlannerDryRun "Project d-graph planner dry-run"
+    Assert-ProjectDGraphPlannerDryRunContract `
+        -Json $projectPlannerDryRun.Json `
+        -StepName "Project d-graph planner dry-run"
+    $serverProjectPlannerDryRunReadPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+
+    Write-Step "Read project d-graph planner dry-run summary from server"
+    $projectPlannerDryRunSummary = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/planner/dry-run/summary" `
+        -Headers $headers `
+        -StepName "Project d-graph planner dry-run summary"
+    Assert-HttpOk $projectPlannerDryRunSummary "Project d-graph planner dry-run summary"
+    Assert-ProjectDGraphPlannerDryRunSummaryContract `
+        -Json $projectPlannerDryRunSummary.Json `
+        -StepName "Project d-graph planner dry-run summary"
+    $serverProjectPlannerDryRunSummaryReadPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+
+    Write-Step "Read project d-graph planner dry-run from DATUM"
+    $clientPlannerDryRunOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--planner-dry-run"
+        ) `
+        -StepName "DATUM planner dry-run viewer"
+
+    foreach ($requiredPlannerDryRunMarker in @(
+        "D-graph planner dry-run",
+        "Project:\s+$([regex]::Escape($ProjectId))",
+        "Source snapshots:\s+\d+",
+        "Status:\s+(planned|partially_blocked|blocked|empty|unknown)",
+        "Side effects performed:\s+false",
+        "advisory only",
+        "did not execute"
+    )) {
+        if ($clientPlannerDryRunOutput -notmatch $requiredPlannerDryRunMarker) {
+            throw "DATUM planner dry-run viewer output did not include required marker '$requiredPlannerDryRunMarker'."
+        }
+    }
+
+    $clientPlannerDryRunViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+
+    Write-Step "Read project d-graph planner dry-run summary from DATUM"
+    $clientPlannerSummaryOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--planner-summary"
+        ) `
+        -StepName "DATUM planner summary viewer"
+
+    foreach ($requiredPlannerSummaryMarker in @(
+        "D-graph planner dry-run summary",
+        "Project:\s+$([regex]::Escape($ProjectId))",
+        "Source snapshots:\s+\d+",
+        "Status:\s+(planned|partially_blocked|blocked|empty|unknown)",
+        "Side effects performed:\s+false",
+        "did not deploy modules, execute installation, call Docker, or reconfigure flows"
+    )) {
+        if ($clientPlannerSummaryOutput -notmatch $requiredPlannerSummaryMarker) {
+            throw "DATUM planner summary viewer output did not include required marker '$requiredPlannerSummaryMarker'."
+        }
+    }
+
+    $clientPlannerSummaryViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+
+    Write-Step "Read project d-graph planner dry-run JSON from DATUM"
+    $clientPlannerDryRunJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--planner-dry-run",
+            "--json"
+        ) `
+        -StepName "DATUM planner dry-run JSON viewer"
+    $clientPlannerDryRunJson = Convert-CommandOutputToJson `
+        -Output $clientPlannerDryRunJsonOutput `
+        -StepName "DATUM planner dry-run JSON viewer"
+    Assert-ProjectDGraphPlannerDryRunContract `
+        -Json $clientPlannerDryRunJson `
+        -StepName "DATUM planner dry-run JSON viewer"
+    $clientPlannerDryRunJsonViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+
+    Write-Step "Read project d-graph planner dry-run summary JSON from DATUM"
+    $clientPlannerSummaryJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--planner-summary",
+            "--json"
+        ) `
+        -StepName "DATUM planner summary JSON viewer"
+    $clientPlannerSummaryJson = Convert-CommandOutputToJson `
+        -Output $clientPlannerSummaryJsonOutput `
+        -StepName "DATUM planner summary JSON viewer"
+    Assert-ProjectDGraphPlannerDryRunSummaryContract `
+        -Json $clientPlannerSummaryJson `
+        -StepName "DATUM planner summary JSON viewer"
+    $clientPlannerSummaryJsonViewerPerformed = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
 }
 
 Write-Host ""
@@ -4738,6 +4984,18 @@ if ($serverProjectMaterializedDgraphSummaryReadPerformed) {
 else {
     Write-Host "- server project d-graph materialized summary endpoint (skipped: server checks disabled)"
 }
+if ($serverProjectPlannerDryRunReadPerformed) {
+    Write-Host "- server d-graph planner dry-run endpoint"
+}
+else {
+    Write-Host "- server d-graph planner dry-run endpoint (skipped: server checks disabled)"
+}
+if ($serverProjectPlannerDryRunSummaryReadPerformed) {
+    Write-Host "- server d-graph planner dry-run summary endpoint"
+}
+else {
+    Write-Host "- server d-graph planner dry-run summary endpoint (skipped: server checks disabled)"
+}
 if ($clientLatestDgraphSnapshotViewerPerformed) {
     Write-Host "- DATUM latest d-graph snapshot viewer"
 }
@@ -4773,6 +5031,30 @@ if ($clientMaterializedDgraphSummaryJsonViewerPerformed) {
 }
 else {
     Write-Host "- DATUM materialized d-graph summary JSON viewer (skipped: server checks disabled)"
+}
+if ($clientPlannerDryRunViewerPerformed) {
+    Write-Host "- DATUM planner dry-run viewer"
+}
+else {
+    Write-Host "- DATUM planner dry-run viewer (skipped: server checks disabled)"
+}
+if ($clientPlannerSummaryViewerPerformed) {
+    Write-Host "- DATUM planner summary viewer"
+}
+else {
+    Write-Host "- DATUM planner summary viewer (skipped: server checks disabled)"
+}
+if ($clientPlannerDryRunJsonViewerPerformed) {
+    Write-Host "- DATUM planner dry-run JSON viewer"
+}
+else {
+    Write-Host "- DATUM planner dry-run JSON viewer (skipped: server checks disabled)"
+}
+if ($clientPlannerSummaryJsonViewerPerformed) {
+    Write-Host "- DATUM planner summary JSON viewer"
+}
+else {
+    Write-Host "- DATUM planner summary JSON viewer (skipped: server checks disabled)"
 }
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
@@ -4879,7 +5161,15 @@ if ($sideEffectsPerformedFalseValidatedForDgraphMaterialization) {
 else {
     Write-Host "- materialized graph side_effects_performed false validation (skipped: no materialized d-graph responses were validated)"
 }
-Write-Host "- D-graph planner/deployment/reconfiguration not executed"
+if ($sideEffectsPerformedFalseValidatedForDgraphPlanner) {
+    Write-Host "- planner side_effects_performed false validation"
+}
+else {
+    Write-Host "- planner side_effects_performed false validation (skipped: no planner dry-run responses were validated)"
+}
+Write-Host "- planner JSON viewer checks"
+Write-Host "- D-graph planner decisions not executed"
+Write-Host "- D-graph deployment/reconfiguration not executed"
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -4903,7 +5193,9 @@ Write-Host "WASM module registry checks were metadata-only."
 Write-Host "WASM artifact references were not fetched or executed."
 Write-Host "D-graph snapshot publishing recorded metadata only."
 Write-Host "D-graph materialization was read-only."
-Write-Host "D-graph planner/deployment/reconfiguration execution was not performed."
+Write-Host "D-graph planner dry-run was advisory/read-only."
+Write-Host "D-graph planner decisions were not executed."
+Write-Host "D-graph deployment/reconfiguration execution was not performed."
 Write-Host "WASM was not connected to installation tasks or assisted execution."
 Write-Host "No local config or mapping files were modified."
 Write-Host "No proposed config snippet was applied."

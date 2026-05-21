@@ -143,17 +143,24 @@ What it validates:
 - dserver project latest d-graph snapshot list via `GET /api/v1/dgraph-snapshots/latest`
 - dserver project d-graph materialized endpoint via `GET /api/v1/dgraph/materialized`
 - dserver project d-graph materialized summary endpoint via `GET /api/v1/dgraph/materialized/summary`
+- dserver d-graph planner dry-run endpoint via `GET /api/v1/dgraph/planner/dry-run`
+- dserver d-graph planner dry-run summary endpoint via `GET /api/v1/dgraph/planner/dry-run/summary`
 - DATUM latest d-graph snapshot viewer via `dgraph-snapshot --latest`
 - DATUM latest-all d-graph snapshot viewer via `dgraph-snapshot --latest-all`
 - DATUM project d-graph materialized viewer via `dgraph-snapshot --materialized`
 - DATUM project d-graph materialized summary viewer via `dgraph-snapshot --materialized-summary`
 - optional DATUM materialized JSON viewers via `dgraph-snapshot --materialized --json` and `dgraph-snapshot --materialized-summary --json`
+- DATUM planner dry-run viewer via `dgraph-snapshot --planner-dry-run`
+- DATUM planner summary viewer via `dgraph-snapshot --planner-summary`
+- optional DATUM planner JSON viewers via `dgraph-snapshot --planner-dry-run --json` and `dgraph-snapshot --planner-summary --json`
 - all WASM safety/access flags remain false across local, published, and read-back reports
 - module safety metadata remains false in registry descriptors
 - `artifact_ref` remains opaque metadata only
 - `safe_to_auto_execute` remains false in local d-graph snapshots
 - `side_effects_performed` remains false in local d-graph snapshots
 - `side_effects_performed` remains false in project d-graph materialization and summary responses
+- `side_effects_performed` remains false in d-graph planner dry-run and summary responses
+- planner decisions remain advisory and are not executed
 - `safe_to_auto_apply` remains false in local mapping recommendations when recommendations are present
 - `safe_to_auto_apply` remains false in local mapping patch proposals when proposals are present
 - `side_effects_performed` remains false in local mapping patch proposals when proposals are present
@@ -167,7 +174,7 @@ What it validates:
 What it does not do:
 - start `dserver`
 - run `dispatch --execute`
-- run d-graph planner execution
+- execute planner decisions
 - execute deployment
 - execute installation
 - execute registered modules
@@ -214,9 +221,12 @@ Notes:
 - D-graph snapshot publishing is metadata-only; it does not run planner logic, deploy modules, or reconfigure flows.
 - Project d-graph materialization is read-only and is computed from the latest local DATUM snapshots.
 - Materialized output may legitimately include validation errors for partial graph data and still remain a valid read-only smoke result.
+- Planner dry-run output is derived from the materialized project d-graph.
+- Planner output may legitimately be empty, blocked, or partially blocked depending on snapshot completeness.
+- Planner dry-run is advisory/read-only; it does not execute deployment or reconfiguration decisions.
 - D-graph snapshot contents are config-derived and may legitimately be empty for modules or flows.
 - WASM is not yet a remediation executor.
-- Future milestones may expose planner dry-run output, still without execution.
+- Future milestones prepare 2-VM and 3-VM distributed testing, still initially metadata-only/dry-run.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty proposal files are valid when there are no server proposals, as long as advisory wording is present and active config is unchanged.
