@@ -124,6 +124,14 @@ What it validates:
 - server node latest `local-mapping-preflight/latest` endpoint
 - server project latest `local-mapping-preflight/latest` endpoint
 - optional client single-task local mapping preflight publish via `installation-tasks --task-id <task_id> --local-mapping-preflight --publish-local-mapping-preflight`
+- DATUM local WASM runtime add test via `wasm-test --add 2 3`
+- DATUM local WASM JSON report via `wasm-test --add 2 3 --json`
+- DATUM WASM runtime report publishing via `wasm-test --add 2 3 --publish-report`
+- dserver node latest WASM runtime report read-back via `GET /api/v1/nodes/{node_id}/wasm-runtime-reports/latest`
+- dserver project latest WASM runtime report list via `GET /api/v1/wasm-runtime-reports/latest`
+- DATUM latest WASM runtime report viewer via `wasm-test --latest-report`
+- DATUM project latest WASM runtime reports viewer via `wasm-test --latest-reports`
+- all WASM safety/access flags remain false across local, published, and read-back reports
 - `safe_to_auto_apply` remains false in local mapping recommendations when recommendations are present
 - `safe_to_auto_apply` remains false in local mapping patch proposals when proposals are present
 - `side_effects_performed` remains false in local mapping patch proposals when proposals are present
@@ -137,9 +145,13 @@ What it validates:
 What it does not do:
 - start `dserver`
 - run `dispatch --execute`
+- connect WASM to installation tasks
+- connect WASM to assisted execution claims
 - perform Docker/container side effects
 - run Docker inspect
-- run WASM
+- run host commands
+- grant WASM filesystem access
+- grant WASM network access
 - perform migration
 - transfer artifacts
 - install anything
@@ -166,6 +178,9 @@ Notes:
 - Local mapping preflight is advisory only; it does not write config, modify mappings, or execute installation work.
 - Local mapping preflight publishing is advisory metadata only; it does not write config, modify mappings, or execute installation work.
 - Local mapping context in assisted execution state is advisory only; it does not grant execution permission or execute deployment or installation work.
+- WebAssembly is now present as a sandboxed v0 runtime, but this smoke test only executes an embedded add module.
+- WASM runtime report publishing is metadata-only; it does not execute installation work or assisted execution.
+- WASM is not yet a remediation executor.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty proposal files are valid when there are no server proposals, as long as advisory wording is present and active config is unchanged.
@@ -187,4 +202,4 @@ Notes:
 - If no installation task exists, optional single-task local mapping preflight checks are skipped and the smoke test still succeeds.
 - If no installation task exists, optional single-task local mapping preflight publish checks are skipped and the smoke test still succeeds.
 - Repeated or partial smoke runs may legitimately have missing approval, request, claim, attempt, state-summary, recommendation, preflight, or published-report detail for some tasks; the smoke test tolerates that as long as the read-only endpoints respond with clean JSON and the safety invariants remain false.
-- WebAssembly remains mandatory for the long-term project roadmap, but WASM execution is not part of this smoke milestone.
+- WebAssembly remains mandatory for the long-term project roadmap, and this smoke milestone validates the sandboxed v0 runtime report chain only.

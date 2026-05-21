@@ -31,11 +31,17 @@ function Run-CommandOrFail {
 
     Write-Host "[$StepName] $($Command -join ' ')"
     Push-Location $WorkingDirectory
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        $PSNativeCommandUseErrorActionPreference = $false
+        $ErrorActionPreference = "Continue"
         $output = & $Command[0] $Command[1..($Command.Length - 1)] 2>&1 | Out-String
         $exitCode = $LASTEXITCODE
     }
     finally {
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
 
@@ -142,6 +148,146 @@ function Assert-JsonHasProperty {
             throw "Step '$StepName' expected JSON property '$PropertyPath', but '$segment' was missing."
         }
         $current = $property.Value
+    }
+}
+
+function Convert-CommandOutputToJson {
+    param(
+        [string]$Output,
+        [string]$StepName
+    )
+
+    $trimmed = $Output.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Step '$StepName' did not return JSON output."
+    }
+
+    if (-not $trimmed.StartsWith("{") -or -not $trimmed.EndsWith("}")) {
+        throw "Step '$StepName' did not return clean JSON output.`n$trimmed"
+    }
+
+    try {
+        return $trimmed | ConvertFrom-Json -Depth 100
+    }
+    catch {
+        throw "Step '$StepName' returned invalid JSON.`n$trimmed"
+    }
+}
+
+function Assert-WasmRuntimeSafetyContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    foreach ($propertyName in @(
+        "safe_to_auto_execute",
+        "side_effects_performed",
+        "filesystem_access",
+        "network_access",
+        "host_command_access",
+        "docker_access",
+        "artifact_access",
+        "installation_task_access",
+        "assisted_execution_access"
+    )) {
+        Assert-JsonHasProperty $Json $propertyName $StepName
+        if ($Json.$propertyName -ne $false) {
+            throw "$StepName returned $propertyName='$($Json.$propertyName)', expected 'False'."
+        }
+    }
+}
+
+function Assert-WasmRuntimeReportContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [switch]$RequireProjectId,
+        [switch]$RequireNodeId
+    )
+
+    Assert-JsonHasProperty $Json "module_name" $StepName
+    Assert-JsonHasProperty $Json "function_name" $StepName
+    Assert-JsonHasProperty $Json "execution_mode" $StepName
+    Assert-JsonHasProperty $Json "status" $StepName
+    Assert-JsonHasProperty $Json "result_i32" $StepName
+
+    if ($RequireProjectId) {
+        Assert-JsonHasProperty $Json "project_id" $StepName
+        if ($Json.project_id -ne $ProjectId) {
+            throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+        }
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.module_name)) {
+        throw "$StepName did not include a non-empty module_name."
+    }
+
+    if ($Json.function_name -ne "add") {
+        throw "$StepName returned function_name '$($Json.function_name)', expected 'add'."
+    }
+
+    if ($Json.execution_mode -ne "embedded_test") {
+        throw "$StepName returned execution_mode '$($Json.execution_mode)', expected 'embedded_test'."
+    }
+
+    if ($Json.status -ne "executed") {
+        throw "$StepName returned status '$($Json.status)', expected 'executed'."
+    }
+
+    if ($Json.result_i32 -ne 5) {
+        throw "$StepName returned result_i32 '$($Json.result_i32)', expected '5'."
+    }
+
+    Assert-WasmRuntimeSafetyContract -Json $Json -StepName $StepName
+}
+
+function Assert-WasmRuntimePublishedReportContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-WasmRuntimeReportContract `
+        -Json $Json `
+        -StepName $StepName `
+        -RequireProjectId `
+        -RequireNodeId
+    Assert-JsonHasProperty $Json "report_id" $StepName
+    Assert-JsonHasProperty $Json "reported_at_utc" $StepName
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.report_id)) {
+        throw "$StepName did not include a non-empty report_id."
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$Json.reported_at_utc)) {
+        throw "$StepName did not include a non-empty reported_at_utc."
+    }
+}
+
+function Assert-WasmRuntimeReportListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "reports" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.reports -isnot [System.Array] -and $Json.reports -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'reports' as an array."
     }
 }
 
@@ -1253,6 +1399,14 @@ $safeToAutoApplyFalseValidated = $false
 $requiresOperatorTrueValidated = $false
 $safeToAutoExecuteFalseValidatedForLocalMappingPreflight = $false
 $sideEffectsPerformedFalseValidatedForLocalMappingPreflight = $false
+$clientLocalWasmRuntimeAddTestPerformed = $false
+$clientLocalWasmRuntimeJsonTestPerformed = $false
+$clientWasmRuntimeReportPublishPerformed = $false
+$serverNodeLatestWasmRuntimeReportReadPerformed = $false
+$serverProjectLatestWasmRuntimeReportListReadPerformed = $false
+$clientLatestWasmRuntimeReportViewerPerformed = $false
+$clientLatestWasmRuntimeReportsViewerPerformed = $false
+$safeAccessFlagsFalseValidatedForWasm = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
@@ -2897,6 +3051,222 @@ if (-not $SkipServerChecks) {
     }
 }
 
+Write-Step "Run local WASM runtime add test from DATUM"
+$clientLocalWasmRuntimeAddOutput = Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--quiet", "--", "wasm-test", "--add", "2", "3") `
+    -StepName "DATUM local WASM runtime add test"
+
+if ($clientLocalWasmRuntimeAddOutput -notmatch "WASM runtime v0 report") {
+    throw "DATUM local WASM runtime add test output did not include the report heading."
+}
+
+if ($clientLocalWasmRuntimeAddOutput -notmatch "result:\s+5") {
+    throw "DATUM local WASM runtime add test output did not include 'result: 5'."
+}
+
+foreach ($requiredLocalWasmMarker in @(
+    "safe to auto execute:\s+false",
+    "side effects performed:\s+false",
+    "filesystem access:\s+false",
+    "network access:\s+false",
+    "host command access:\s+false",
+    "docker access:\s+false",
+    "artifact access:\s+false",
+    "installation task access:\s+false",
+    "assisted execution access:\s+false",
+    "local-only and was not published to the server"
+)) {
+    if ($clientLocalWasmRuntimeAddOutput -notmatch $requiredLocalWasmMarker) {
+        throw "DATUM local WASM runtime add test output did not include required marker '$requiredLocalWasmMarker'."
+    }
+}
+
+$clientLocalWasmRuntimeAddTestPerformed = $true
+$safeToAutoExecuteFalseValidated = $true
+$sideEffectsPerformedFalseValidated = $true
+$safeAccessFlagsFalseValidatedForWasm = $true
+
+Write-Step "Run local WASM runtime JSON test from DATUM"
+$clientLocalWasmRuntimeJsonOutput = Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--quiet", "--", "wasm-test", "--add", "2", "3", "--json") `
+    -StepName "DATUM local WASM runtime JSON test"
+$clientLocalWasmRuntimeJson = Convert-CommandOutputToJson `
+    -Output $clientLocalWasmRuntimeJsonOutput `
+    -StepName "DATUM local WASM runtime JSON test"
+Assert-WasmRuntimeReportContract `
+    -Json $clientLocalWasmRuntimeJson `
+    -StepName "DATUM local WASM runtime JSON test"
+$clientLocalWasmRuntimeJsonTestPerformed = $true
+$safeToAutoExecuteFalseValidated = $true
+$sideEffectsPerformedFalseValidated = $true
+$safeAccessFlagsFalseValidatedForWasm = $true
+
+if (-not $SkipServerChecks) {
+    Write-Step "Publish WASM runtime report from DATUM"
+    $clientWasmRuntimeReportPublishOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--add",
+            "2",
+            "3",
+            "--publish-report"
+        ) `
+        -StepName "DATUM WASM runtime report publish"
+
+    if ($clientWasmRuntimeReportPublishOutput -notmatch "Published WASM runtime report") {
+        throw "DATUM WASM runtime report publish output did not indicate that a report was published."
+    }
+
+    foreach ($requiredPublishedWasmMarker in @(
+        "status:\s+executed",
+        "result:\s+5",
+        "safe to auto execute:\s+false",
+        "side effects performed:\s+false",
+        "published an isolated WASM runtime test report only",
+        "did not execute installation",
+        "not connected to assisted execution"
+    )) {
+        if ($clientWasmRuntimeReportPublishOutput -notmatch $requiredPublishedWasmMarker) {
+            throw "DATUM WASM runtime report publish output did not include required marker '$requiredPublishedWasmMarker'."
+        }
+    }
+
+    $clientWasmRuntimeReportPublishPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+
+    Write-Step "Read latest WASM runtime report for node from server"
+    $nodeLatestWasmRuntimeReport = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/nodes/$NodeId/wasm-runtime-reports/latest" `
+        -Headers $headers `
+        -StepName "Node latest WASM runtime report"
+    Assert-HttpOk $nodeLatestWasmRuntimeReport "Node latest WASM runtime report"
+    Assert-WasmRuntimePublishedReportContract `
+        -Json $nodeLatestWasmRuntimeReport.Json `
+        -StepName "Node latest WASM runtime report"
+    $serverNodeLatestWasmRuntimeReportReadPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+
+    Write-Step "Read latest WASM runtime reports for project from server"
+    $projectLatestWasmRuntimeReports = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/wasm-runtime-reports/latest" `
+        -Headers $headers `
+        -StepName "Project latest WASM runtime reports"
+    Assert-HttpOk $projectLatestWasmRuntimeReports "Project latest WASM runtime reports"
+    Assert-WasmRuntimeReportListContract `
+        -Json $projectLatestWasmRuntimeReports.Json `
+        -StepName "Project latest WASM runtime reports"
+    $firstProjectLatestWasmRuntimeReport = @(
+        $projectLatestWasmRuntimeReports.Json.reports | Select-Object -First 1
+    )
+    if ($firstProjectLatestWasmRuntimeReport.Count -gt 0) {
+        Assert-WasmRuntimeReportContract `
+            -Json $firstProjectLatestWasmRuntimeReport[0] `
+            -StepName "Project latest WASM runtime reports"
+        $safeToAutoExecuteFalseValidated = $true
+        $sideEffectsPerformedFalseValidated = $true
+        $safeAccessFlagsFalseValidatedForWasm = $true
+    }
+    $serverProjectLatestWasmRuntimeReportListReadPerformed = $true
+
+    Write-Step "Read latest WASM runtime report from DATUM"
+    $clientLatestWasmRuntimeReportOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--latest-report"
+        ) `
+        -StepName "DATUM latest WASM runtime report viewer"
+
+    if ($clientLatestWasmRuntimeReportOutput -notmatch "Latest WASM runtime report") {
+        throw "DATUM latest WASM runtime report viewer output did not include the expected heading."
+    }
+
+    foreach ($requiredLatestWasmMarker in @(
+        "status:\s+executed",
+        "result:\s+5",
+        "safe to auto execute:\s+false",
+        "side effects performed:\s+false",
+        "filesystem access:\s+false",
+        "network access:\s+false",
+        "host command access:\s+false",
+        "docker access:\s+false",
+        "artifact access:\s+false",
+        "installation task access:\s+false",
+        "assisted execution access:\s+false"
+    )) {
+        if ($clientLatestWasmRuntimeReportOutput -notmatch $requiredLatestWasmMarker) {
+            throw "DATUM latest WASM runtime report viewer output did not include required marker '$requiredLatestWasmMarker'."
+        }
+    }
+
+    $clientLatestWasmRuntimeReportViewerPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+
+    Write-Step "Read latest WASM runtime reports from DATUM"
+    $clientLatestWasmRuntimeReportsOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--latest-reports"
+        ) `
+        -StepName "DATUM latest WASM runtime reports viewer"
+
+    if ($clientLatestWasmRuntimeReportsOutput -notmatch "Latest WASM runtime reports") {
+        throw "DATUM latest WASM runtime reports viewer output did not include the expected heading."
+    }
+
+    if ($clientLatestWasmRuntimeReportsOutput -match "safe to auto execute:") {
+        foreach ($requiredLatestWasmListMarker in @(
+            "safe to auto execute:\s+false",
+            "side effects performed:\s+false",
+            "filesystem access:\s+false",
+            "network access:\s+false",
+            "host command access:\s+false",
+            "docker access:\s+false",
+            "artifact access:\s+false",
+            "installation task access:\s+false",
+            "assisted execution access:\s+false"
+        )) {
+            if ($clientLatestWasmRuntimeReportsOutput -notmatch $requiredLatestWasmListMarker) {
+                throw "DATUM latest WASM runtime reports viewer output did not include required marker '$requiredLatestWasmListMarker'."
+            }
+        }
+
+        $safeToAutoExecuteFalseValidated = $true
+        $sideEffectsPerformedFalseValidated = $true
+        $safeAccessFlagsFalseValidatedForWasm = $true
+    }
+
+    $clientLatestWasmRuntimeReportsViewerPerformed = $true
+}
+
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
 Write-Host ""
@@ -3289,6 +3659,48 @@ if ($clientSingleTaskLocalMappingPreflightPublishPerformed) {
 else {
     Write-Host "- optional DATUM single-task local mapping preflight publish (skipped: no tasks materialized)"
 }
+if ($clientLocalWasmRuntimeAddTestPerformed) {
+    Write-Host "- DATUM local WASM runtime add test"
+}
+else {
+    Write-Host "- DATUM local WASM runtime add test (skipped)"
+}
+if ($clientLocalWasmRuntimeJsonTestPerformed) {
+    Write-Host "- DATUM local WASM JSON report test"
+}
+else {
+    Write-Host "- DATUM local WASM JSON report test (skipped)"
+}
+if ($clientWasmRuntimeReportPublishPerformed) {
+    Write-Host "- DATUM WASM runtime report publish"
+}
+else {
+    Write-Host "- DATUM WASM runtime report publish (skipped: server checks disabled)"
+}
+if ($serverNodeLatestWasmRuntimeReportReadPerformed) {
+    Write-Host "- server node latest WASM runtime report read-back"
+}
+else {
+    Write-Host "- server node latest WASM runtime report read-back (skipped: server checks disabled)"
+}
+if ($serverProjectLatestWasmRuntimeReportListReadPerformed) {
+    Write-Host "- server project latest WASM runtime report list"
+}
+else {
+    Write-Host "- server project latest WASM runtime report list (skipped: server checks disabled)"
+}
+if ($clientLatestWasmRuntimeReportViewerPerformed) {
+    Write-Host "- DATUM latest WASM runtime report viewer"
+}
+else {
+    Write-Host "- DATUM latest WASM runtime report viewer (skipped: server checks disabled)"
+}
+if ($clientLatestWasmRuntimeReportsViewerPerformed) {
+    Write-Host "- DATUM project latest WASM runtime reports viewer"
+}
+else {
+    Write-Host "- DATUM project latest WASM runtime reports viewer (skipped: server checks disabled)"
+}
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
 }
@@ -3364,10 +3776,16 @@ if ($sideEffectsPerformedFalseValidatedForLocalMappingPreflight) {
 else {
     Write-Host "- side_effects_performed false validation for local mapping preflight (skipped: no local mapping preflight was run)"
 }
+if ($safeAccessFlagsFalseValidatedForWasm) {
+    Write-Host "- all WASM safety/access flags false validation"
+}
+else {
+    Write-Host "- all WASM safety/access flags false validation (skipped: no WASM runtime report was validated)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
-Write-Host "No Docker/container/WASM/migration side effects were performed."
+Write-Host "No Docker/container/WASM-host/migration side effects were performed."
 Write-Host "Operator approval, when performed, recorded metadata only."
 Write-Host "Assisted readiness, when ready, was informational only."
 Write-Host "Assisted execution request, when performed, recorded metadata only."
@@ -3376,10 +3794,13 @@ Write-Host "Assisted claim lifecycle update, when performed, recorded metadata o
 Write-Host "Assisted execution attempt, when performed, recorded no-op/dry-run metadata only."
 Write-Host "Assisted execution state checks were read-only."
 Write-Host "Local mapping recommendations and preflight checks were advisory only."
+Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
+Write-Host "Local mapping context in assisted execution state was advisory only."
 Write-Host "Local mapping patch proposals were advisory only."
 Write-Host "Local mapping patch proposal file generation wrote only a separate operator-review file."
 Write-Host "Local mapping patch revalidation was read-only and did not apply changes."
-Write-Host "Local mapping preflight publishing, when performed, recorded advisory metadata only."
-Write-Host "Local mapping context in assisted execution state was advisory only."
+Write-Host "WASM runtime test executed only an isolated embedded module."
+Write-Host "WASM runtime report publishing recorded metadata only."
+Write-Host "WASM was not connected to installation tasks or assisted execution."
 Write-Host "No local config or mapping files were modified."
 Write-Host "No proposed config snippet was applied."
