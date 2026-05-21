@@ -72,6 +72,44 @@ pub struct DGraphPlannerSummary {
     pub degraded_flow_count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProjectDGraphPlannerDryRunResponse {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub source_snapshot_count: u64,
+    #[serde(default)]
+    pub materialization_validation_errors: Vec<String>,
+    #[serde(default)]
+    pub planner: DGraphPlannerDryRun,
+    #[serde(default)]
+    pub side_effects_performed: bool,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProjectDGraphPlannerDryRunSummaryResponse {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub source_snapshot_count: u64,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub summary: DGraphPlannerSummary,
+    #[serde(default)]
+    pub placement_count: u64,
+    #[serde(default)]
+    pub reconfiguration_count: u64,
+    #[serde(default)]
+    pub blocked_count: u64,
+    #[serde(default)]
+    pub warning_count: u64,
+    #[serde(default)]
+    pub side_effects_performed: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DGraphPlacementPlanResult {
     pub placements: Vec<DGraphPlacementDecision>,
@@ -251,6 +289,41 @@ pub fn plan_dgraph_dry_run(graph: &DGraph) -> DGraphPlannerDryRun {
         summary,
         side_effects_performed: false,
         metadata: None,
+    }
+}
+
+pub fn build_project_dgraph_planner_dry_run_response(
+    project_id: &str,
+    source_snapshot_count: u64,
+    materialization_validation_errors: Vec<String>,
+    planner: DGraphPlannerDryRun,
+) -> ProjectDGraphPlannerDryRunResponse {
+    ProjectDGraphPlannerDryRunResponse {
+        project_id: project_id.to_string(),
+        source_snapshot_count,
+        materialization_validation_errors,
+        planner,
+        side_effects_performed: false,
+        metadata: Some(serde_json::json!({
+            "planner_mode": "dry_run",
+            "execution_performed": false,
+        })),
+    }
+}
+
+impl ProjectDGraphPlannerDryRunResponse {
+    pub fn as_summary(&self) -> ProjectDGraphPlannerDryRunSummaryResponse {
+        ProjectDGraphPlannerDryRunSummaryResponse {
+            project_id: self.project_id.clone(),
+            source_snapshot_count: self.source_snapshot_count,
+            status: self.planner.status.clone(),
+            summary: self.planner.summary.clone(),
+            placement_count: self.planner.placements.len() as u64,
+            reconfiguration_count: self.planner.reconfigurations.len() as u64,
+            blocked_count: self.planner.blocked.len() as u64,
+            warning_count: self.planner.warnings.len() as u64,
+            side_effects_performed: false,
+        }
     }
 }
 
@@ -976,5 +1049,85 @@ mod tests {
             blocked_first.blocked[0].item_id,
             blocked_second.blocked[0].item_id
         );
+    }
+
+    #[test]
+    fn project_response_wrapper_keeps_side_effects_false() {
+        let planner = plan_dgraph_dry_run(&sample_two_node_dgraph("smart-city-campinas"));
+        let response = build_project_dgraph_planner_dry_run_response(
+            "smart-city-campinas",
+            2,
+            Vec::new(),
+            planner,
+        );
+
+        assert!(!response.side_effects_performed);
+        assert!(!response.planner.side_effects_performed);
+    }
+
+    #[test]
+    fn dry_run_over_empty_graph_keeps_side_effects_false() {
+        let graph = DGraph {
+            project_id: "smart-city-campinas".to_string(),
+            ..DGraph::default()
+        };
+        let dry_run = plan_dgraph_dry_run(&graph);
+
+        assert_eq!(dry_run.status, "empty");
+        assert!(!dry_run.side_effects_performed);
+    }
+
+    #[test]
+    fn summary_response_counts_items_correctly() {
+        let planner = plan_dgraph_dry_run(&sample_unavailable_node_reconfiguration_graph(
+            "smart-city-campinas",
+        ));
+        let response = build_project_dgraph_planner_dry_run_response(
+            "smart-city-campinas",
+            1,
+            vec!["partial materialization".to_string()],
+            planner,
+        );
+        let summary = response.as_summary();
+
+        assert_eq!(summary.project_id, "smart-city-campinas");
+        assert_eq!(summary.source_snapshot_count, 1);
+        assert_eq!(summary.reconfiguration_count, 1);
+        assert_eq!(summary.blocked_count, 0);
+        assert_eq!(summary.warning_count, 0);
+        assert!(!summary.side_effects_performed);
+    }
+
+    #[test]
+    fn materialization_validation_errors_are_preserved_in_project_response() {
+        let planner = plan_dgraph_dry_run(&sample_two_node_dgraph("smart-city-campinas"));
+        let response = build_project_dgraph_planner_dry_run_response(
+            "smart-city-campinas",
+            2,
+            vec!["flow references partial data".to_string()],
+            planner,
+        );
+
+        assert_eq!(
+            response.materialization_validation_errors,
+            vec!["flow references partial data".to_string()]
+        );
+    }
+
+    #[test]
+    fn planner_validation_errors_produce_blocked_output() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.project_id.clear();
+
+        let response = build_project_dgraph_planner_dry_run_response(
+            "smart-city-campinas",
+            1,
+            vec!["project_id must not be empty".to_string()],
+            plan_dgraph_dry_run(&graph),
+        );
+
+        assert_eq!(response.planner.status, "blocked");
+        assert!(!response.planner.blocked.is_empty());
+        assert!(!response.side_effects_performed);
     }
 }
