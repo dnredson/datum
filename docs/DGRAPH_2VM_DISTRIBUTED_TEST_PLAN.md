@@ -4,6 +4,13 @@
 
 This document defines the first `2-VM` distributed metadata-only test for `DATUM` and `dserver`.
 
+Status notes:
+
+- `A7/100` documented the first `2-VM` metadata-only distributed test plan.
+- `I24/100` adds a parameterized `2-VM` metadata-only smoke script draft.
+- The draft is safe to validate without live VMs by using `-AllowMissingConfigs`.
+- The draft does not execute deployment or planner decisions.
+
 The goal is to validate that:
 
 - two independent `DATUM` node identities can publish metadata to one `dserver`
