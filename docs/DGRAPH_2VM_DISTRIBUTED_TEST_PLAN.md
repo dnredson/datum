@@ -10,8 +10,11 @@ Status notes:
 - `I24/100` adds a parameterized `2-VM` metadata-only smoke script draft.
 - `A8/100` adds the follow-up `3-VM` orchestration and reconfiguration dry-run test plan.
 - `R4/100` adds a distributed dry-run preparation checkpoint that summarizes live `2-VM` readiness and remaining `3-VM` gaps.
+- `I26/100` adds a live preflight checklist and sanitized config templates for `fog-01` and `fog-02`.
 - The draft is safe to validate without live VMs by using `-AllowMissingConfigs`.
 - The draft does not execute deployment or planner decisions.
+
+`I26/100` still does not run a live `2-VM` smoke as validation. It prepares the first real metadata-only distributed run.
 
 The goal is to validate that:
 

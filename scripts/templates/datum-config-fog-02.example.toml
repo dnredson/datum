@@ -1,0 +1,93 @@
+# Sanitized example for the first live 2-VM metadata-only d-graph dry-run.
+# Copy this file to an untracked local path before editing it for a real environment.
+# Do not commit real environment configs, credentials, service-account paths, or tokens.
+
+[agent]
+node_id = "fog-02"
+cycle_s = 5
+schema_version = "0.0.1"
+# Optional:
+# hostname = "fog-02"
+# stage = "fog"
+
+[agent.events]
+max_per_snapshot = 50
+deduplicate = true
+prefer_severity = true
+
+[outputs.file_json]
+enabled = true
+path = "snapshot-fog-02.json"
+
+[outputs.http]
+enabled = true
+url = "http://<dserver-ip>:8080/api/v1/snapshots"
+project_id = "<project-id>"
+timeout_s = 10
+
+[dispatch]
+enabled = false
+url = "http://<dserver-ip>:8080/api/v1/dispatch/for-node/{node_id}"
+project_id = "<project-id>"
+timeout_s = 10
+execute = false
+publish_results = false
+allow_container_execution = false
+
+[assisted_execution]
+enabled = false
+allow_no_op_attempts = true
+allow_dry_run_attempts = true
+allow_side_effects = false
+
+[collectors.process_windows]
+enabled = true
+mode = "group_by_name"
+names = ["datum.exe", "docker desktop.exe", "dockerd.exe"]
+max_entries = 50
+include_pids = false
+
+[collectors.connection_ping]
+enabled = true
+targets = ["1.1.1.1"]
+count = 2
+timeout_s = 1
+
+[collectors.docker]
+enabled = true
+mode = "all"
+
+[auto_recovery]
+enabled = true
+dry_run = false
+cooldown_s = 60
+max_attempts_per_window = 3
+attempt_window_s = 300
+
+[services]
+enabled = true
+
+[service_registry]
+enabled = true
+
+[[service_registry.services]]
+name = "mqtt-adapter"
+runtime = "container"
+
+[service_registry.services.selector]
+container_name = "<container-name-if-known>"
+
+[service_registry.services.recovery]
+policy = "docker_restart"
+
+[[service_registry.services.checks]]
+kind = "http"
+url = "http://127.0.0.1:8002"
+timeout_ms = 1500
+
+[desired_state]
+enabled = true
+
+[[desired_state.services]]
+name = "mqtt-adapter"
+desired = "running"

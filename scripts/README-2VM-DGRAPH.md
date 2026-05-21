@@ -15,6 +15,14 @@ It is intended to validate a metadata-only path across two node identities and o
 
 It does not execute planner decisions, deploy modules, call Docker, or reconfigure flows.
 
+Related files:
+
+- example templates:
+  - `scripts/templates/datum-config-fog-01.example.toml`
+  - `scripts/templates/datum-config-fog-02.example.toml`
+- live checklist:
+  - `docs/DGRAPH_2VM_LIVE_PREFLIGHT_CHECKLIST.md`
+
 ## Topology Assumptions
 
 The draft assumes:
@@ -64,6 +72,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-dgraph-2vm-metadata-onl
   -Node2Id "fog-02" `
   -Node2Config ".\DATUM\config-fog-02.toml"
 ```
+
+## Template Copy Workflow
+
+Use the example templates as a starting point only.
+
+1. Copy `scripts/templates/datum-config-fog-01.example.toml` to an untracked local file such as `DATUM/config-fog-01.local.toml`.
+2. Copy `scripts/templates/datum-config-fog-02.example.toml` to an untracked local file such as `DATUM/config-fog-02.local.toml`.
+3. Edit `node_id`, `project_id`, server URLs, and any local container or service names.
+4. Keep those real environment files out of Git.
+
+The templates are sanitized examples only. They must not contain credentials, tokens, service-account paths, or other environment secrets.
 
 ## Draft Validation Mode
 
@@ -121,3 +140,4 @@ This mode exists so the draft can be syntax-validated safely in the repo before 
 - Snapshot and planner results may be sparse, empty, blocked, or partially blocked depending on config completeness.
 - Fixture scenarios are useful for pre-live degraded or unavailable node simulations and remain metadata-only.
 - The live `2-VM` environment still needs real `fog-01` and `fog-02` configs before the draft becomes an operational smoke run.
+- The live preflight checklist in `docs/DGRAPH_2VM_LIVE_PREFLIGHT_CHECKLIST.md` should be completed before the first required real distributed run.
