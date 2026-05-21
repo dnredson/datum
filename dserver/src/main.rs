@@ -17,6 +17,7 @@ use api::action_results::{
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
 use api::dashboard::get_dashboard;
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
+use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
@@ -207,6 +208,11 @@ async fn main() {
         .route(
             "/api/v1/dgraph-snapshots/latest",
             get(list_latest_local_dgraph_snapshots),
+        )
+        .route("/api/v1/dgraph/materialized", get(get_materialized_dgraph))
+        .route(
+            "/api/v1/dgraph/materialized/summary",
+            get(get_materialized_dgraph_summary),
         )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",

@@ -3,6 +3,7 @@ pub mod analysis;
 pub mod capabilities;
 pub mod dashboard;
 pub mod deployment_planning;
+pub mod dgraph_materialized;
 pub mod dispatch;
 pub mod dmap;
 pub mod events;

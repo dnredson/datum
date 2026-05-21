@@ -226,6 +226,7 @@ Status note:
 - `C30/90` adds `DATUM` local d-graph snapshot reporting for node, runtime, module, flow, health, and capability metadata. It remains local and read-only, and it does not inspect Docker state, execute WASM, deploy modules, or reconfigure flows.
 - `S30/90` adds `dserver` ingestion and read-back contracts for `DATUM` local d-graph snapshots. It does not materialize a full project d-graph yet, run the planner, or execute deployment behavior.
 - `C31/90` adds `DATUM` explicit publishing and read-back support for local d-graph snapshots against `dserver`. Publishing remains metadata-only and does not run the planner, deploy modules, or reconfigure flows.
+- `S31/90` adds read-only `dserver` project d-graph materialization from the latest local `DATUM` snapshots. It does not run the planner, deploy modules, or reconfigure flows.
 
 ## Safety Boundaries
 
