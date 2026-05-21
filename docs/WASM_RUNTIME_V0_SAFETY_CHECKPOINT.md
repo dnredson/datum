@@ -22,8 +22,11 @@ Current implemented flow:
 - dserver can store and return the latest report for a node or project
 - the repo-root smoke test validates the local report, publish path, server read-back, and DATUM latest-report viewers
 - `W5/80` adds explicit execution limits metadata for the embedded runner, including fuel and timeout configuration
+- `W6/80` adds a metadata-only WASM module registry contract on dserver
 - the runner still uses only embedded test WASM
 - no artifact loading or task integration was added
+- the registry does not store binaries, fetch artifacts, or execute modules
+- all module safety fields remain false in v0
 
 ## Current Hard Safety Guarantees
 

@@ -13,6 +13,7 @@ use crate::core::{
     },
     local_mapping_preflight::LocalMappingPreflightReport,
     model::SnapshotEnvelope,
+    wasm_module_registry::WasmModuleDescriptor,
     wasm_runtime_reports::WasmRuntimeReport,
 };
 use crate::{config::AppConfig, core::capabilities::NodeCapabilities};
@@ -36,6 +37,7 @@ pub struct FirebaseClient {
     pub collection_node_capabilities: String,
     pub collection_action_results: String,
     pub collection_action_results_latest: String,
+    pub collection_wasm_module_registry: String,
     pub collection_wasm_runtime_reports: String,
     pub collection_wasm_runtime_reports_latest: String,
     pub collection_local_mapping_preflight_reports: String,
@@ -132,6 +134,11 @@ impl FirebaseClient {
             .collection_action_results_latest
             .clone()
             .unwrap_or_else(|| "datum_action_results_latest".to_string());
+        let collection_wasm_module_registry = app_config
+            .firebase
+            .collection_wasm_module_registry
+            .clone()
+            .unwrap_or_else(|| "datum_wasm_module_registry".to_string());
         let collection_wasm_runtime_reports = app_config
             .firebase
             .collection_wasm_runtime_reports
@@ -214,6 +221,7 @@ impl FirebaseClient {
             collection_node_capabilities,
             collection_action_results,
             collection_action_results_latest,
+            collection_wasm_module_registry,
             collection_wasm_runtime_reports,
             collection_wasm_runtime_reports_latest,
             collection_local_mapping_preflight_reports,
@@ -1457,6 +1465,108 @@ impl FirebaseClient {
         }
 
         Ok(reports)
+    }
+
+    pub async fn put_wasm_module_descriptor(
+        &self,
+        project_id: &str,
+        module_id: &str,
+        descriptor: &WasmModuleDescriptor,
+    ) -> Result<()> {
+        let doc_id = format!("project:{}:wasm-module:{}", project_id, module_id);
+        let url = self.doc_url(&self.collection_wasm_module_registry, &doc_id);
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "module_id": Self::firestore_string(module_id),
+                "module_name": Self::firestore_string(&descriptor.module_name),
+                "status": Self::firestore_string(&descriptor.status),
+                "payload": Self::firestore_json_string(descriptor)?
+            }
+        });
+
+        let res = self.client.patch(&url).json(&body).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("put_wasm_module_descriptor failed: {}", text));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_wasm_module_descriptor(
+        &self,
+        project_id: &str,
+        module_id: &str,
+    ) -> Result<Option<WasmModuleDescriptor>> {
+        let doc_id = format!("project:{}:wasm-module:{}", project_id, module_id);
+        let url = self.doc_url(&self.collection_wasm_module_registry, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_wasm_module_descriptor failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "wasm module descriptor",
+        )?))
+    }
+
+    pub async fn list_wasm_module_descriptors(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<WasmModuleDescriptor>> {
+        let url = self.collection_url(&self.collection_wasm_module_registry);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("list_wasm_module_descriptors failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut modules = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id {
+                continue;
+            }
+
+            modules.push(Self::parse_payload_from_document(
+                doc,
+                "wasm module descriptor",
+            )?);
+        }
+
+        Ok(modules)
     }
 
     pub async fn put_installation_task(

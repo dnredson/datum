@@ -40,6 +40,9 @@ use api::installation_tasks::{
 };
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::topology::{get_topology, set_topology};
+use api::wasm_module_registry::{
+    get_wasm_module_descriptor, list_wasm_module_descriptors, post_wasm_module_descriptor,
+};
 use api::wasm_runtime_reports::{
     get_latest_wasm_runtime_report, list_latest_wasm_runtime_reports, post_wasm_runtime_report,
 };
@@ -115,6 +118,14 @@ async fn main() {
         .route(
             "/api/v1/wasm-runtime-reports/latest",
             get(list_latest_wasm_runtime_reports),
+        )
+        .route(
+            "/api/v1/wasm-modules",
+            post(post_wasm_module_descriptor).get(list_wasm_module_descriptors),
+        )
+        .route(
+            "/api/v1/wasm-modules/:module_id",
+            get(get_wasm_module_descriptor),
         )
         .route("/api/v1/graph/latest", get(get_latest_graph))
         .route("/api/v1/graph/materialized", get(get_materialized_graph))

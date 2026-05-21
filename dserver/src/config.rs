@@ -43,6 +43,7 @@ pub struct FirebaseConfig {
     pub collection_action_results_latest: Option<String>,
     pub collection_wasm_runtime_reports: Option<String>,
     pub collection_wasm_runtime_reports_latest: Option<String>,
+    pub collection_wasm_module_registry: Option<String>,
     pub collection_local_mapping_preflight_reports: Option<String>,
     pub collection_local_mapping_preflight_reports_latest: Option<String>,
     pub collection_installation_tasks: Option<String>,

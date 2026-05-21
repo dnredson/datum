@@ -15,4 +15,5 @@ pub mod middleware;
 pub mod nodes;
 pub mod planner;
 pub mod topology;
+pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;
