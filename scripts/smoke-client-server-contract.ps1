@@ -106,6 +106,46 @@ function Invoke-JsonEndpoint {
     }
 }
 
+function Invoke-JsonPostEndpoint {
+    param(
+        [string]$Url,
+        [hashtable]$Headers,
+        [object]$Body,
+        [string]$StepName
+    )
+
+    Write-Host "[$StepName] POST $Url"
+    $jsonBody = $Body | ConvertTo-Json -Depth 100
+    $response = Invoke-WebRequest `
+        -Uri $Url `
+        -Headers $Headers `
+        -Method Post `
+        -ContentType "application/json" `
+        -Body $jsonBody `
+        -SkipHttpErrorCheck
+    $body = $response.Content
+    $json = $null
+
+    if ($body) {
+        try {
+            $json = $body | ConvertFrom-Json -Depth 100
+        }
+        catch {
+            throw "Step '$StepName' returned non-JSON content.`n$body"
+        }
+    }
+
+    if ($VerboseOutput -and $body) {
+        Write-Host $body
+    }
+
+    [pscustomobject]@{
+        StatusCode = [int]$response.StatusCode
+        Body = $body
+        Json = $json
+    }
+}
+
 function Assert-HttpOk {
     param(
         $Response,
@@ -288,6 +328,140 @@ function Assert-WasmRuntimeReportListContract {
 
     if ($Json.reports -isnot [System.Array] -and $Json.reports -isnot [System.Collections.IEnumerable]) {
         throw "$StepName did not return 'reports' as an array."
+    }
+}
+
+function Assert-WasmModuleSafetyContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    foreach ($propertyName in @(
+        "filesystem_access",
+        "network_access",
+        "host_command_access",
+        "docker_access",
+        "artifact_access",
+        "installation_task_access",
+        "assisted_execution_access",
+        "side_effects_allowed",
+        "safe_to_auto_execute"
+    )) {
+        Assert-JsonHasProperty $Json $propertyName $StepName
+        if ($Json.$propertyName -ne $false) {
+            throw "$StepName returned $propertyName='$($Json.$propertyName)', expected 'False'."
+        }
+    }
+}
+
+function Find-WasmModuleDescriptorById {
+    param(
+        $Modules,
+        [string]$ModuleId
+    )
+
+    return @($Modules | Where-Object { $_.module_id -eq $ModuleId } | Select-Object -First 1)
+}
+
+function Assert-WasmModuleDescriptorContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "module_id" $StepName
+    Assert-JsonHasProperty $Json "module_name" $StepName
+    Assert-JsonHasProperty $Json "module_kind" $StepName
+    Assert-JsonHasProperty $Json "status" $StepName
+    Assert-JsonHasProperty $Json "allowed_functions" $StepName
+    Assert-JsonHasProperty $Json "safety" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.module_id -ne "embedded-add") {
+        throw "$StepName returned module_id '$($Json.module_id)', expected 'embedded-add'."
+    }
+
+    if ($Json.module_name -ne "embedded:add") {
+        throw "$StepName returned module_name '$($Json.module_name)', expected 'embedded:add'."
+    }
+
+    if ($Json.module_kind -ne "embedded_test") {
+        throw "$StepName returned module_kind '$($Json.module_kind)', expected 'embedded_test'."
+    }
+
+    if ($Json.status -ne "registered") {
+        throw "$StepName returned status '$($Json.status)', expected 'registered'."
+    }
+
+    $matchingFunction = @($Json.allowed_functions | Where-Object { $_.function_name -eq "add" } | Select-Object -First 1)
+    if ($matchingFunction.Count -eq 0) {
+        throw "$StepName did not return allowed_functions containing function_name 'add'."
+    }
+
+    if ($matchingFunction[0].allowed_execution_modes -notcontains "embedded_test") {
+        throw "$StepName did not return allowed_execution_modes containing 'embedded_test' for function 'add'."
+    }
+
+    if ($null -ne $matchingFunction[0].max_fuel -and $matchingFunction[0].max_fuel -le 0) {
+        throw "$StepName returned non-positive max_fuel '$($matchingFunction[0].max_fuel)'."
+    }
+
+    if ($null -ne $matchingFunction[0].timeout_ms -and $matchingFunction[0].timeout_ms -le 0) {
+        throw "$StepName returned non-positive timeout_ms '$($matchingFunction[0].timeout_ms)'."
+    }
+
+    Assert-WasmModuleSafetyContract -Json $Json.safety -StepName $StepName
+}
+
+function Assert-WasmModuleDescriptorListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "modules" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.modules -isnot [System.Array] -and $Json.modules -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'modules' as an array."
+    }
+}
+
+function Assert-WasmModuleArtifactMetadataOnly {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "artifact_ref" $StepName
+    if ($null -eq $Json.artifact_ref) {
+        throw "$StepName did not include artifact_ref metadata."
+    }
+
+    Assert-JsonHasProperty $Json "artifact_ref.artifact_id" $StepName
+    Assert-JsonHasProperty $Json "artifact_ref.artifact_uri" $StepName
+    Assert-JsonHasProperty $Json "artifact_ref.provenance" $StepName
+
+    if ($Json.artifact_ref.artifact_id -ne "embedded-add-metadata-only") {
+        throw "$StepName returned artifact_id '$($Json.artifact_ref.artifact_id)', expected 'embedded-add-metadata-only'."
+    }
+
+    if ($Json.artifact_ref.artifact_uri -ne "metadata-only://embedded-add") {
+        throw "$StepName returned artifact_uri '$($Json.artifact_ref.artifact_uri)', expected 'metadata-only://embedded-add'."
+    }
+
+    if ($Json.artifact_ref.provenance -ne "embedded test descriptor only") {
+        throw "$StepName returned provenance '$($Json.artifact_ref.provenance)', expected 'embedded test descriptor only'."
     }
 }
 
@@ -1406,7 +1580,15 @@ $serverNodeLatestWasmRuntimeReportReadPerformed = $false
 $serverProjectLatestWasmRuntimeReportListReadPerformed = $false
 $clientLatestWasmRuntimeReportViewerPerformed = $false
 $clientLatestWasmRuntimeReportsViewerPerformed = $false
+$serverWasmModuleDescriptorRegistrationPerformed = $false
+$serverWasmModuleRegistryListReadPerformed = $false
+$serverSingleWasmModuleDescriptorReadPerformed = $false
+$clientWasmModuleRegistryViewerPerformed = $false
+$clientSingleWasmModuleViewerPerformed = $false
+$clientWasmModuleRegistryJsonViewerPerformed = $false
+$clientSingleWasmModuleJsonViewerPerformed = $false
 $safeAccessFlagsFalseValidatedForWasm = $false
+$wasmArtifactMetadataOnlyValidated = $false
 $selectedRequestTaskId = $null
 $selectedRequestId = $null
 $selectedRequestEncodedTaskId = $null
@@ -3075,7 +3257,7 @@ foreach ($requiredLocalWasmMarker in @(
     "artifact access:\s+false",
     "installation task access:\s+false",
     "assisted execution access:\s+false",
-    "local-only and was not published to the server"
+    "isolated, local-only, and not connected to installation tasks or assisted execution"
 )) {
     if ($clientLocalWasmRuntimeAddOutput -notmatch $requiredLocalWasmMarker) {
         throw "DATUM local WASM runtime add test output did not include required marker '$requiredLocalWasmMarker'."
@@ -3265,6 +3447,283 @@ if (-not $SkipServerChecks) {
     }
 
     $clientLatestWasmRuntimeReportsViewerPerformed = $true
+
+    Write-Step "Register or validate metadata-only WASM module descriptor on server"
+    $embeddedAddModuleDescriptorBody = @{
+        module_id = "embedded-add"
+        module_name = "embedded:add"
+        module_version = "v0"
+        module_kind = "embedded_test"
+        status = "registered"
+        allowed_functions = @(
+            @{
+                function_name = "add"
+                allowed_execution_modes = @("embedded_test")
+                max_fuel = 1000000
+                timeout_ms = 1000
+            }
+        )
+        artifact_ref = @{
+            artifact_id = "embedded-add-metadata-only"
+            artifact_uri = "metadata-only://embedded-add"
+            sha256 = $null
+            signature_ref = $null
+            provenance = "embedded test descriptor only"
+        }
+        safety = @{
+            filesystem_access = $false
+            network_access = $false
+            host_command_access = $false
+            docker_access = $false
+            artifact_access = $false
+            installation_task_access = $false
+            assisted_execution_access = $false
+            side_effects_allowed = $false
+            safe_to_auto_execute = $false
+        }
+        metadata = @{
+            smoke_test = $true
+            metadata_only = $true
+        }
+    }
+    $wasmModuleRegistrationResponse = Invoke-JsonPostEndpoint `
+        -Url "$ServerUrl/api/v1/wasm-modules" `
+        -Headers $headers `
+        -Body $embeddedAddModuleDescriptorBody `
+        -StepName "WASM module descriptor registration"
+
+    if ($wasmModuleRegistrationResponse.StatusCode -ge 200 -and $wasmModuleRegistrationResponse.StatusCode -lt 300) {
+        Assert-WasmModuleDescriptorContract `
+            -Json $wasmModuleRegistrationResponse.Json `
+            -StepName "WASM module descriptor registration"
+        Assert-WasmModuleArtifactMetadataOnly `
+            -Json $wasmModuleRegistrationResponse.Json `
+            -StepName "WASM module descriptor registration"
+        $serverWasmModuleDescriptorRegistrationPerformed = $true
+        $safeAccessFlagsFalseValidatedForWasm = $true
+        $wasmArtifactMetadataOnlyValidated = $true
+    }
+    elseif ($wasmModuleRegistrationResponse.StatusCode -in @(409, 422)) {
+        $registrationBodyExcerpt = ($wasmModuleRegistrationResponse.Body | Out-String).Trim()
+        Write-Warning "WASM module descriptor registration returned status $($wasmModuleRegistrationResponse.StatusCode); falling back to GET /api/v1/wasm-modules/embedded-add. $registrationBodyExcerpt"
+
+        $existingEmbeddedAddModule = Invoke-JsonEndpoint `
+            -Url "$ServerUrl/api/v1/wasm-modules/embedded-add" `
+            -Headers $headers `
+            -StepName "Fallback WASM module descriptor"
+        Assert-HttpOk $existingEmbeddedAddModule "Fallback WASM module descriptor"
+        Assert-WasmModuleDescriptorContract `
+            -Json $existingEmbeddedAddModule.Json `
+            -StepName "Fallback WASM module descriptor"
+        Assert-WasmModuleArtifactMetadataOnly `
+            -Json $existingEmbeddedAddModule.Json `
+            -StepName "Fallback WASM module descriptor"
+        $serverWasmModuleDescriptorRegistrationPerformed = $true
+        $serverSingleWasmModuleDescriptorReadPerformed = $true
+        $safeAccessFlagsFalseValidatedForWasm = $true
+        $wasmArtifactMetadataOnlyValidated = $true
+    }
+    else {
+        $registrationExcerpt = ($wasmModuleRegistrationResponse.Body | Out-String).Trim()
+        throw "WASM module descriptor registration expected a compatible success status or duplicate-compatible fallback, got HTTP $($wasmModuleRegistrationResponse.StatusCode).`n$registrationExcerpt"
+    }
+
+    Write-Step "Read WASM module registry list from server"
+    $projectWasmModuleRegistry = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/wasm-modules" `
+        -Headers $headers `
+        -StepName "Project WASM module registry"
+    Assert-HttpOk $projectWasmModuleRegistry "Project WASM module registry"
+    Assert-WasmModuleDescriptorListContract `
+        -Json $projectWasmModuleRegistry.Json `
+        -StepName "Project WASM module registry"
+    $embeddedAddModuleListEntry = Find-WasmModuleDescriptorById `
+        -Modules $projectWasmModuleRegistry.Json.modules `
+        -ModuleId "embedded-add"
+    if ($embeddedAddModuleListEntry.Count -eq 0) {
+        throw "Project WASM module registry did not include module_id 'embedded-add' after registration or fallback validation."
+    }
+    Assert-WasmModuleDescriptorContract `
+        -Json $embeddedAddModuleListEntry[0] `
+        -StepName "Project WASM module registry"
+    Assert-WasmModuleArtifactMetadataOnly `
+        -Json $embeddedAddModuleListEntry[0] `
+        -StepName "Project WASM module registry"
+    $serverWasmModuleRegistryListReadPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
+
+    Write-Step "Read single WASM module descriptor from server"
+    $singleWasmModuleDescriptor = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/wasm-modules/embedded-add" `
+        -Headers $headers `
+        -StepName "Single WASM module descriptor"
+    Assert-HttpOk $singleWasmModuleDescriptor "Single WASM module descriptor"
+    Assert-WasmModuleDescriptorContract `
+        -Json $singleWasmModuleDescriptor.Json `
+        -StepName "Single WASM module descriptor"
+    Assert-WasmModuleArtifactMetadataOnly `
+        -Json $singleWasmModuleDescriptor.Json `
+        -StepName "Single WASM module descriptor"
+    $serverSingleWasmModuleDescriptorReadPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
+
+    Write-Step "Read WASM module registry from DATUM"
+    $clientWasmModuleRegistryOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--modules"
+        ) `
+        -StepName "DATUM WASM module registry viewer"
+
+    foreach ($requiredModuleRegistryMarker in @(
+        "WASM module registry",
+        "embedded-add",
+        "name:\s+embedded:add",
+        "kind:\s+embedded_test",
+        "functions:\s+add",
+        "safe to auto execute:\s+false",
+        "side effects allowed:\s+false",
+        "filesystem access:\s+false",
+        "network access:\s+false",
+        "host command access:\s+false",
+        "docker access:\s+false",
+        "artifact access:\s+false",
+        "installation task access:\s+false",
+        "assisted execution access:\s+false",
+        "metadata only",
+        "did not download artifacts or execute WASM modules"
+    )) {
+        if ($clientWasmModuleRegistryOutput -notmatch $requiredModuleRegistryMarker) {
+            throw "DATUM WASM module registry viewer output did not include required marker '$requiredModuleRegistryMarker'."
+        }
+    }
+
+    $clientWasmModuleRegistryViewerPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
+
+    Write-Step "Read single WASM module descriptor from DATUM"
+    $clientSingleWasmModuleOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--module",
+            "embedded-add"
+        ) `
+        -StepName "DATUM single WASM module viewer"
+
+    foreach ($requiredSingleModuleMarker in @(
+        "WASM module descriptor:\s+embedded-add",
+        "name:\s+embedded:add",
+        "kind:\s+embedded_test",
+        "status:\s+registered",
+        "artifact uri:\s+metadata only",
+        "Functions:",
+        "- add",
+        "modes:\s+embedded_test",
+        "max fuel:\s+1000000",
+        "timeout ms:\s+1000",
+        "safe to auto execute:\s+false",
+        "side effects allowed:\s+false",
+        "filesystem access:\s+false",
+        "network access:\s+false",
+        "host command access:\s+false",
+        "docker access:\s+false",
+        "artifact access:\s+false",
+        "installation task access:\s+false",
+        "assisted execution access:\s+false",
+        "artifact references are metadata only",
+        "did not fetch artifacts or execute modules"
+    )) {
+        if ($clientSingleWasmModuleOutput -notmatch $requiredSingleModuleMarker) {
+            throw "DATUM single WASM module viewer output did not include required marker '$requiredSingleModuleMarker'."
+        }
+    }
+
+    $clientSingleWasmModuleViewerPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
+
+    Write-Step "Read WASM module registry JSON from DATUM"
+    $clientWasmModuleRegistryJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--modules",
+            "--json"
+        ) `
+        -StepName "DATUM WASM module registry JSON viewer"
+    $clientWasmModuleRegistryJson = Convert-CommandOutputToJson `
+        -Output $clientWasmModuleRegistryJsonOutput `
+        -StepName "DATUM WASM module registry JSON viewer"
+    Assert-WasmModuleDescriptorListContract `
+        -Json $clientWasmModuleRegistryJson `
+        -StepName "DATUM WASM module registry JSON viewer"
+    $clientEmbeddedAddModuleJsonListEntry = Find-WasmModuleDescriptorById `
+        -Modules $clientWasmModuleRegistryJson.modules `
+        -ModuleId "embedded-add"
+    if ($clientEmbeddedAddModuleJsonListEntry.Count -eq 0) {
+        throw "DATUM WASM module registry JSON viewer did not include module_id 'embedded-add'."
+    }
+    Assert-WasmModuleDescriptorContract `
+        -Json $clientEmbeddedAddModuleJsonListEntry[0] `
+        -StepName "DATUM WASM module registry JSON viewer"
+    Assert-WasmModuleArtifactMetadataOnly `
+        -Json $clientEmbeddedAddModuleJsonListEntry[0] `
+        -StepName "DATUM WASM module registry JSON viewer"
+    $clientWasmModuleRegistryJsonViewerPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
+
+    Write-Step "Read single WASM module descriptor JSON from DATUM"
+    $clientSingleWasmModuleJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "wasm-test",
+            "--config",
+            $ResolvedClientConfig,
+            "--module",
+            "embedded-add",
+            "--json"
+        ) `
+        -StepName "DATUM single WASM module JSON viewer"
+    $clientSingleWasmModuleJson = Convert-CommandOutputToJson `
+        -Output $clientSingleWasmModuleJsonOutput `
+        -StepName "DATUM single WASM module JSON viewer"
+    Assert-WasmModuleDescriptorContract `
+        -Json $clientSingleWasmModuleJson `
+        -StepName "DATUM single WASM module JSON viewer"
+    Assert-WasmModuleArtifactMetadataOnly `
+        -Json $clientSingleWasmModuleJson `
+        -StepName "DATUM single WASM module JSON viewer"
+    $clientSingleWasmModuleJsonViewerPerformed = $true
+    $safeAccessFlagsFalseValidatedForWasm = $true
+    $wasmArtifactMetadataOnlyValidated = $true
 }
 
 Write-Host ""
@@ -3701,6 +4160,36 @@ if ($clientLatestWasmRuntimeReportsViewerPerformed) {
 else {
     Write-Host "- DATUM project latest WASM runtime reports viewer (skipped: server checks disabled)"
 }
+if ($serverWasmModuleDescriptorRegistrationPerformed) {
+    Write-Host "- server WASM module descriptor registration/check"
+}
+else {
+    Write-Host "- server WASM module descriptor registration/check (skipped: server checks disabled)"
+}
+if ($serverWasmModuleRegistryListReadPerformed) {
+    Write-Host "- server WASM module registry list"
+}
+else {
+    Write-Host "- server WASM module registry list (skipped: server checks disabled)"
+}
+if ($serverSingleWasmModuleDescriptorReadPerformed) {
+    Write-Host "- server single WASM module descriptor"
+}
+else {
+    Write-Host "- server single WASM module descriptor (skipped: server checks disabled)"
+}
+if ($clientWasmModuleRegistryViewerPerformed) {
+    Write-Host "- DATUM WASM module registry viewer"
+}
+else {
+    Write-Host "- DATUM WASM module registry viewer (skipped: server checks disabled)"
+}
+if ($clientSingleWasmModuleViewerPerformed) {
+    Write-Host "- DATUM single WASM module viewer"
+}
+else {
+    Write-Host "- DATUM single WASM module viewer (skipped: server checks disabled)"
+}
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
 }
@@ -3780,7 +4269,13 @@ if ($safeAccessFlagsFalseValidatedForWasm) {
     Write-Host "- all WASM safety/access flags false validation"
 }
 else {
-    Write-Host "- all WASM safety/access flags false validation (skipped: no WASM runtime report was validated)"
+    Write-Host "- all WASM safety/access flags false validation (skipped: no WASM runtime report or registry descriptor was validated)"
+}
+if ($wasmArtifactMetadataOnlyValidated) {
+    Write-Host "- metadata-only artifact reference validation"
+}
+else {
+    Write-Host "- metadata-only artifact reference validation (skipped: no WASM module registry descriptor was validated)"
 }
 Write-Host ""
 Write-Host "No dispatch execution was performed."
@@ -3801,6 +4296,8 @@ Write-Host "Local mapping patch proposal file generation wrote only a separate o
 Write-Host "Local mapping patch revalidation was read-only and did not apply changes."
 Write-Host "WASM runtime test executed only an isolated embedded module."
 Write-Host "WASM runtime report publishing recorded metadata only."
+Write-Host "WASM module registry checks were metadata-only."
+Write-Host "WASM artifact references were not fetched or executed."
 Write-Host "WASM was not connected to installation tasks or assisted execution."
 Write-Host "No local config or mapping files were modified."
 Write-Host "No proposed config snippet was applied."
