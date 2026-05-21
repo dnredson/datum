@@ -72,6 +72,8 @@ This keeps the first WASM milestone isolated, non-destructive, and suitable as g
 - `W3/80`: dserver WASM execution report contract, metadata-only
 - `W4/80`: DATUM publish WASM no-op execution report
 - `I19/80`: smoke test for WASM no-op runtime/report chain
+- status: `I19/80` is complete; `W5` is the recommended next safe step
+- `W5/80`: add execution limits, fuel, and timeout controls to the embedded DATUM-local runner
 - later: connect WASM tasks to assisted execution state only after policy review
 - much later: real assisted installation executor with artifact verification and rollback
 
