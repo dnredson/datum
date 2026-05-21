@@ -84,6 +84,10 @@ For now, `DATUM` must remain guarded and non-destructive. The current system is 
 - no deployment execution
 - validate graph model and planning logic
 
+Status note:
+
+- `G1/90` adds pure `dserver` d-graph deployment and orchestration model foundations, validation helpers, relationship derivation, and sample local graph coverage without endpoints or execution
+
 This stage should prove that the graph entities and relationships are useful before live distributed behavior is introduced.
 
 ### Stage G2: Local Deployment Dry-Run
