@@ -9,6 +9,7 @@ Status notes:
 - `A7/100` documented the first `2-VM` metadata-only distributed test plan.
 - `I24/100` adds a parameterized `2-VM` metadata-only smoke script draft.
 - `A8/100` adds the follow-up `3-VM` orchestration and reconfiguration dry-run test plan.
+- `R4/100` adds a distributed dry-run preparation checkpoint that summarizes live `2-VM` readiness and remaining `3-VM` gaps.
 - The draft is safe to validate without live VMs by using `-AllowMissingConfigs`.
 - The draft does not execute deployment or planner decisions.
 
