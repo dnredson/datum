@@ -1,6 +1,7 @@
 pub mod capabilities;
 pub mod commands;
 pub mod deployment_planning;
+pub mod dgraph_snapshot;
 pub mod dispatch;
 pub mod installation_plan;
 pub mod installation_tasks;

@@ -221,6 +221,10 @@ Recommended next milestones:
 
 This sequence keeps modeling, ingestion, and smoke validation ahead of real side effects.
 
+Status note:
+
+- `C30/90` adds `DATUM` local d-graph snapshot reporting for node, runtime, module, flow, health, and capability metadata. It remains local and read-only, and it does not inspect Docker state, execute WASM, deploy modules, or reconfigure flows.
+
 ## Safety Boundaries
 
 The early G milestones must preserve these boundaries:

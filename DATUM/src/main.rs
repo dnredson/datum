@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod core;
 mod deployment_planning;
+mod dgraph_snapshot;
 mod dispatch;
 mod installation_plan;
 mod installation_tasks;
@@ -18,6 +19,7 @@ mod wasm_runtime;
 
 use cli::capabilities::run_capabilities_command;
 use cli::deployment_planning::run_deployment_planning_command;
+use cli::dgraph_snapshot::run_dgraph_snapshot_command;
 use cli::dispatch::run_dispatch_command;
 use cli::installation_plan::run_installation_plan_command;
 use cli::installation_tasks::run_installation_tasks_command;
@@ -43,6 +45,7 @@ fn main() -> Result<()> {
             | "capabilities"
             | "deployment-planning"
             | "deploy-plan"
+            | "dgraph-snapshot"
             | "installation-plan"
             | "install-plan"
             | "installation-tasks"
@@ -87,6 +90,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.url.as_deref(),
             args.json,
         ),
+        Command::DgraphSnapshot(args) => dgraph_snapshot_command(&args.config, args.json),
         Command::InstallationPlan(args) => installation_plan_command(
             &args.config,
             args.node_id.as_deref(),
@@ -173,6 +177,8 @@ enum Command {
     Capabilities(CapabilitiesArgs),
     #[command(name = "deployment-planning", alias = "deploy-plan")]
     DeploymentPlanning(DeploymentPlanningArgs),
+    #[command(name = "dgraph-snapshot")]
+    DgraphSnapshot(DgraphSnapshotArgs),
     #[command(name = "installation-plan", alias = "install-plan")]
     InstallationPlan(InstallationPlanArgs),
     #[command(name = "installation-tasks", alias = "install-tasks")]
@@ -301,6 +307,15 @@ struct DeploymentPlanningArgs {
 
     #[arg(long)]
     url: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct DgraphSnapshotArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -708,6 +723,11 @@ fn installation_plan_command(
 ) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     run_installation_plan_command(&cfg, node_id, project_id, url, json)
+}
+
+fn dgraph_snapshot_command(config_path: &str, json: bool) -> Result<()> {
+    let cfg = config::load_config(config_path)?;
+    run_dgraph_snapshot_command(&cfg, json)
 }
 
 fn installation_tasks_command(
