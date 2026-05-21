@@ -465,6 +465,86 @@ function Assert-WasmModuleArtifactMetadataOnly {
     }
 }
 
+function Assert-LocalDGraphSnapshotContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [switch]$RequireProjectId,
+        [switch]$RequireNodeId,
+        [switch]$RequireSnapshotMetadata
+    )
+
+    if ($RequireProjectId) {
+        Assert-JsonHasProperty $Json "project_id" $StepName
+        if ($Json.project_id -ne $ProjectId) {
+            throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+        }
+    }
+
+    if ($RequireNodeId) {
+        Assert-JsonHasProperty $Json "node_id" $StepName
+        if ($Json.node_id -ne $NodeId) {
+            throw "$StepName returned node_id '$($Json.node_id)', expected '$NodeId'."
+        }
+    }
+
+    if ($RequireSnapshotMetadata) {
+        Assert-JsonHasProperty $Json "snapshot_id" $StepName
+        Assert-JsonHasProperty $Json "reported_at_utc" $StepName
+
+        if ([string]::IsNullOrWhiteSpace([string]$Json.snapshot_id)) {
+            throw "$StepName did not include a non-empty snapshot_id."
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$Json.reported_at_utc)) {
+            throw "$StepName did not include a non-empty reported_at_utc."
+        }
+    }
+
+    foreach ($propertyName in @(
+        "runtimes",
+        "modules",
+        "flows",
+        "health",
+        "capabilities"
+    )) {
+        Assert-JsonHasProperty $Json $propertyName $StepName
+        if ($Json.$propertyName -isnot [System.Array] -and $Json.$propertyName -isnot [System.Collections.IEnumerable]) {
+            throw "$StepName did not return '$propertyName' as an array."
+        }
+    }
+
+    Assert-JsonHasProperty $Json "safe_to_auto_execute" $StepName
+    Assert-JsonHasProperty $Json "side_effects_performed" $StepName
+
+    if ($Json.safe_to_auto_execute -ne $false) {
+        throw "$StepName returned safe_to_auto_execute='$($Json.safe_to_auto_execute)', expected 'False'."
+    }
+
+    if ($Json.side_effects_performed -ne $false) {
+        throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
+    }
+}
+
+function Assert-LocalDGraphSnapshotListContract {
+    param(
+        $Json,
+        [string]$StepName
+    )
+
+    Assert-JsonHasProperty $Json "project_id" $StepName
+    Assert-JsonHasProperty $Json "count" $StepName
+    Assert-JsonHasProperty $Json "snapshots" $StepName
+
+    if ($Json.project_id -ne $ProjectId) {
+        throw "$StepName returned project_id '$($Json.project_id)', expected '$ProjectId'."
+    }
+
+    if ($Json.snapshots -isnot [System.Array] -and $Json.snapshots -isnot [System.Collections.IEnumerable]) {
+        throw "$StepName did not return 'snapshots' as an array."
+    }
+}
+
 function Assert-NodeCapabilities {
     param($Json)
 
@@ -3726,6 +3806,205 @@ if (-not $SkipServerChecks) {
     $wasmArtifactMetadataOnlyValidated = $true
 }
 
+Write-Step "Run local d-graph snapshot summary from DATUM"
+$clientLocalDgraphSnapshotOutput = Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--quiet", "--", "dgraph-snapshot", "--config", $ResolvedClientConfig) `
+    -StepName "DATUM local d-graph snapshot summary"
+
+foreach ($requiredLocalDgraphMarker in @(
+    "Local d-graph snapshot",
+    "node:\s+$([regex]::Escape($NodeId))",
+    "runtimes:\s+\d+",
+    "modules:\s+\d+",
+    "flows:\s+\d+",
+    "health entries:\s+\d+",
+    "capabilities:\s+\d+",
+    "safe to auto execute:\s+false",
+    "side effects performed:\s+false",
+    "did not inspect Docker/container state, execute WASM, deploy modules, or modify config"
+)) {
+    if ($clientLocalDgraphSnapshotOutput -notmatch $requiredLocalDgraphMarker) {
+        throw "DATUM local d-graph snapshot summary output did not include required marker '$requiredLocalDgraphMarker'."
+    }
+}
+
+$clientLocalDgraphSnapshotSummaryPerformed = $true
+$safeToAutoExecuteFalseValidated = $true
+$sideEffectsPerformedFalseValidated = $true
+$safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+$sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+
+Write-Step "Run local d-graph snapshot JSON from DATUM"
+$clientLocalDgraphSnapshotJsonOutput = Run-CommandOrFail `
+    -WorkingDirectory $DatumDir `
+    -Command @("cargo", "run", "--quiet", "--", "dgraph-snapshot", "--config", $ResolvedClientConfig, "--json") `
+    -StepName "DATUM local d-graph snapshot JSON"
+$clientLocalDgraphSnapshotJson = Convert-CommandOutputToJson `
+    -Output $clientLocalDgraphSnapshotJsonOutput `
+    -StepName "DATUM local d-graph snapshot JSON"
+Assert-LocalDGraphSnapshotContract `
+    -Json $clientLocalDgraphSnapshotJson `
+    -StepName "DATUM local d-graph snapshot JSON" `
+    -RequireNodeId
+$clientLocalDgraphSnapshotJsonPerformed = $true
+$safeToAutoExecuteFalseValidated = $true
+$sideEffectsPerformedFalseValidated = $true
+$safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+$sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+
+if (-not $SkipServerChecks) {
+    Write-Step "Publish local d-graph snapshot from DATUM"
+    $clientPublishDgraphSnapshotOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--publish"
+        ) `
+        -StepName "DATUM local d-graph snapshot publish"
+
+    foreach ($requiredPublishedDgraphMarker in @(
+        "Published local d-graph snapshot",
+        "safe to auto execute:\s+false",
+        "side effects performed:\s+false",
+        "published local d-graph snapshot metadata only",
+        "did not run planner logic, deploy modules, or reconfigure flows"
+    )) {
+        if ($clientPublishDgraphSnapshotOutput -notmatch $requiredPublishedDgraphMarker) {
+            throw "DATUM local d-graph snapshot publish output did not include required marker '$requiredPublishedDgraphMarker'."
+        }
+    }
+
+    $clientLocalDgraphSnapshotPublishPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+
+    Write-Step "Read latest d-graph snapshot for node from server"
+    $nodeLatestDgraphSnapshot = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/nodes/$NodeId/dgraph-snapshot/latest" `
+        -Headers $headers `
+        -StepName "Node latest d-graph snapshot"
+    Assert-HttpOk $nodeLatestDgraphSnapshot "Node latest d-graph snapshot"
+    Assert-LocalDGraphSnapshotContract `
+        -Json $nodeLatestDgraphSnapshot.Json `
+        -StepName "Node latest d-graph snapshot" `
+        -RequireProjectId `
+        -RequireNodeId `
+        -RequireSnapshotMetadata
+    $serverNodeLatestDgraphSnapshotReadPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+
+    Write-Step "Read latest d-graph snapshots for project from server"
+    $projectLatestDgraphSnapshots = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph-snapshots/latest" `
+        -Headers $headers `
+        -StepName "Project latest d-graph snapshots"
+    Assert-HttpOk $projectLatestDgraphSnapshots "Project latest d-graph snapshots"
+    Assert-LocalDGraphSnapshotListContract `
+        -Json $projectLatestDgraphSnapshots.Json `
+        -StepName "Project latest d-graph snapshots"
+    $firstProjectLatestDgraphSnapshot = @(
+        $projectLatestDgraphSnapshots.Json.snapshots | Select-Object -First 1
+    )
+    if ($firstProjectLatestDgraphSnapshot.Count -gt 0) {
+        Assert-LocalDGraphSnapshotContract `
+            -Json $firstProjectLatestDgraphSnapshot[0] `
+            -StepName "Project latest d-graph snapshots"
+        $safeToAutoExecuteFalseValidated = $true
+        $sideEffectsPerformedFalseValidated = $true
+        $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+        $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+    }
+    $serverProjectLatestDgraphSnapshotListReadPerformed = $true
+
+    Write-Step "Read latest d-graph snapshot from DATUM"
+    $clientLatestDgraphSnapshotOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--latest"
+        ) `
+        -StepName "DATUM latest d-graph snapshot viewer"
+
+    foreach ($requiredLatestDgraphMarker in @(
+        "Latest local d-graph snapshot",
+        "safe to auto execute:\s+false",
+        "side effects performed:\s+false",
+        "did not run planner logic, deploy modules, or reconfigure flows"
+    )) {
+        if ($clientLatestDgraphSnapshotOutput -notmatch $requiredLatestDgraphMarker) {
+            throw "DATUM latest d-graph snapshot viewer output did not include required marker '$requiredLatestDgraphMarker'."
+        }
+    }
+
+    $clientLatestDgraphSnapshotViewerPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+
+    Write-Step "Read latest d-graph snapshots from DATUM"
+    $clientLatestAllDgraphSnapshotsOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--latest-all"
+        ) `
+        -StepName "DATUM latest-all d-graph snapshot viewer"
+
+    foreach ($requiredLatestAllDgraphMarker in @(
+        "Latest local d-graph snapshots",
+        "count:\s+\d+",
+        "metadata only",
+        "did not run planner logic, deploy modules, or reconfigure flows"
+    )) {
+        if ($clientLatestAllDgraphSnapshotsOutput -notmatch $requiredLatestAllDgraphMarker) {
+            throw "DATUM latest-all d-graph snapshot viewer output did not include required marker '$requiredLatestAllDgraphMarker'."
+        }
+    }
+
+    if ($clientLatestAllDgraphSnapshotsOutput -match "safe to auto execute:") {
+        foreach ($requiredLatestAllSafetyMarker in @(
+            "safe to auto execute:\s+false",
+            "side effects performed:\s+false"
+        )) {
+            if ($clientLatestAllDgraphSnapshotsOutput -notmatch $requiredLatestAllSafetyMarker) {
+                throw "DATUM latest-all d-graph snapshot viewer output did not include required marker '$requiredLatestAllSafetyMarker'."
+            }
+        }
+
+        $safeToAutoExecuteFalseValidated = $true
+        $sideEffectsPerformedFalseValidated = $true
+        $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+        $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+    }
+
+    $clientLatestAllDgraphSnapshotViewerPerformed = $true
+}
+
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
 Write-Host ""
@@ -4190,6 +4469,48 @@ if ($clientSingleWasmModuleViewerPerformed) {
 else {
     Write-Host "- DATUM single WASM module viewer (skipped: server checks disabled)"
 }
+if ($clientLocalDgraphSnapshotSummaryPerformed) {
+    Write-Host "- DATUM local d-graph snapshot summary"
+}
+else {
+    Write-Host "- DATUM local d-graph snapshot summary (skipped)"
+}
+if ($clientLocalDgraphSnapshotJsonPerformed) {
+    Write-Host "- DATUM local d-graph snapshot JSON"
+}
+else {
+    Write-Host "- DATUM local d-graph snapshot JSON (skipped)"
+}
+if ($clientLocalDgraphSnapshotPublishPerformed) {
+    Write-Host "- DATUM local d-graph snapshot publish"
+}
+else {
+    Write-Host "- DATUM local d-graph snapshot publish (skipped: server checks disabled)"
+}
+if ($serverNodeLatestDgraphSnapshotReadPerformed) {
+    Write-Host "- server node latest d-graph snapshot read-back"
+}
+else {
+    Write-Host "- server node latest d-graph snapshot read-back (skipped: server checks disabled)"
+}
+if ($serverProjectLatestDgraphSnapshotListReadPerformed) {
+    Write-Host "- server project latest d-graph snapshot list"
+}
+else {
+    Write-Host "- server project latest d-graph snapshot list (skipped: server checks disabled)"
+}
+if ($clientLatestDgraphSnapshotViewerPerformed) {
+    Write-Host "- DATUM latest d-graph snapshot viewer"
+}
+else {
+    Write-Host "- DATUM latest d-graph snapshot viewer (skipped: server checks disabled)"
+}
+if ($clientLatestAllDgraphSnapshotViewerPerformed) {
+    Write-Host "- DATUM latest-all d-graph snapshot viewer"
+}
+else {
+    Write-Host "- DATUM latest-all d-graph snapshot viewer (skipped: server checks disabled)"
+}
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
 }
@@ -4277,6 +4598,18 @@ if ($wasmArtifactMetadataOnlyValidated) {
 else {
     Write-Host "- metadata-only artifact reference validation (skipped: no WASM module registry descriptor was validated)"
 }
+if ($safeToAutoExecuteFalseValidatedForDgraphSnapshots) {
+    Write-Host "- safe_to_auto_execute false validation for d-graph snapshots"
+}
+else {
+    Write-Host "- safe_to_auto_execute false validation for d-graph snapshots (skipped: no d-graph snapshots were validated)"
+}
+if ($sideEffectsPerformedFalseValidatedForDgraphSnapshots) {
+    Write-Host "- side_effects_performed false validation for d-graph snapshots"
+}
+else {
+    Write-Host "- side_effects_performed false validation for d-graph snapshots (skipped: no d-graph snapshots were validated)"
+}
 Write-Host ""
 Write-Host "No dispatch execution was performed."
 Write-Host "No deployment or installation execution was performed."
@@ -4298,6 +4631,8 @@ Write-Host "WASM runtime test executed only an isolated embedded module."
 Write-Host "WASM runtime report publishing recorded metadata only."
 Write-Host "WASM module registry checks were metadata-only."
 Write-Host "WASM artifact references were not fetched or executed."
+Write-Host "D-graph snapshot publishing recorded metadata only."
+Write-Host "D-graph planner/deployment/reconfiguration execution was not performed."
 Write-Host "WASM was not connected to installation tasks or assisted execution."
 Write-Host "No local config or mapping files were modified."
 Write-Host "No proposed config snippet was applied."

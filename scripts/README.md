@@ -136,9 +136,18 @@ What it validates:
 - dserver single WASM module descriptor via `GET /api/v1/wasm-modules/{module_id}`
 - DATUM WASM module registry viewer via `wasm-test --modules`
 - DATUM single WASM module viewer via `wasm-test --module <module_id>`
+- DATUM local d-graph snapshot summary via `dgraph-snapshot`
+- DATUM local d-graph snapshot JSON via `dgraph-snapshot --json`
+- DATUM local d-graph snapshot publishing via `dgraph-snapshot --publish`
+- dserver node latest d-graph snapshot read-back via `GET /api/v1/nodes/{node_id}/dgraph-snapshot/latest`
+- dserver project latest d-graph snapshot list via `GET /api/v1/dgraph-snapshots/latest`
+- DATUM latest d-graph snapshot viewer via `dgraph-snapshot --latest`
+- DATUM latest-all d-graph snapshot viewer via `dgraph-snapshot --latest-all`
 - all WASM safety/access flags remain false across local, published, and read-back reports
 - module safety metadata remains false in registry descriptors
 - `artifact_ref` remains opaque metadata only
+- `safe_to_auto_execute` remains false in local d-graph snapshots
+- `side_effects_performed` remains false in local d-graph snapshots
 - `safe_to_auto_apply` remains false in local mapping recommendations when recommendations are present
 - `safe_to_auto_apply` remains false in local mapping patch proposals when proposals are present
 - `side_effects_performed` remains false in local mapping patch proposals when proposals are present
@@ -152,6 +161,9 @@ What it validates:
 What it does not do:
 - start `dserver`
 - run `dispatch --execute`
+- run d-graph planner execution
+- execute deployment
+- execute installation
 - execute registered modules
 - fetch `artifact_uri`
 - download artifacts
@@ -193,8 +205,10 @@ Notes:
 - WASM runtime report publishing is metadata-only; it does not execute installation work or assisted execution.
 - The registry does not imply execution permission.
 - Artifact references are opaque metadata only; the smoke test does not fetch or execute them.
+- D-graph snapshot publishing is metadata-only; it does not run planner logic, deploy modules, or reconfigure flows.
+- D-graph snapshot contents are config-derived and may legitimately be empty for modules or flows.
 - WASM is not yet a remediation executor.
-- Future d-graph deployment/orchestration testing should build on this only after a dedicated architecture checkpoint.
+- Future milestones will materialize project-level d-graph and planner dry-run output, still without execution.
 - Empty local mapping recommendation results are valid and do not fail the smoke test.
 - Empty local mapping patch proposal results are valid and do not fail the smoke test.
 - Empty proposal files are valid when there are no server proposals, as long as advisory wording is present and active config is unchanged.
