@@ -233,6 +233,7 @@ Status note:
 - `C33/100` adds a `DATUM` read-only viewer for d-graph planner dry-run and summary. It does not execute planner decisions, deploy modules, or reconfigure flows.
 - `A7/100` documents the first `2-VM` metadata-only distributed test plan. No code or runtime behavior was changed.
 - `A8/100` documents the first `3-VM` orchestration and reconfiguration dry-run test plan. No code or runtime behavior was changed.
+- `C34/100` adds a `DATUM` local d-graph snapshot fixture mode for safe degraded and failure scenario simulation. Fixtures remain metadata-only and do not execute planner decisions, deploy modules, or reconfigure flows.
 
 ## Safety Boundaries
 

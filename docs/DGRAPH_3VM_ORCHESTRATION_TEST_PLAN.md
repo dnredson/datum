@@ -4,6 +4,12 @@
 
 This document defines the first `3-VM` orchestration and reconfiguration dry-run test for `DATUM` and `dserver`.
 
+Status notes:
+
+- `A8/100` documented the first `3-VM` orchestration and reconfiguration dry-run test plan.
+- `C34/100` adds local fixture mode to simulate degraded, unavailable, missing-module, and related scenarios safely.
+- Fixture snapshots remain metadata-only and can later support `3-VM` dry-run validation.
+
 The goal is to validate that:
 
 - three independent `DATUM` node identities can publish metadata to one `dserver`

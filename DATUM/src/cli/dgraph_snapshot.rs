@@ -4,7 +4,7 @@ use serde_json::json;
 use crate::{
     config::Config,
     dgraph_snapshot::{
-        build_local_dgraph_snapshot,
+        build_dgraph_fixture_snapshot, build_local_dgraph_snapshot,
         client::{
             fetch_latest_local_dgraph_snapshot, fetch_latest_local_dgraph_snapshots,
             fetch_project_dgraph_materialized, fetch_project_dgraph_materialized_summary,
@@ -12,8 +12,9 @@ use crate::{
             publish_local_dgraph_snapshot,
         },
         planner::{ProjectDGraphPlannerDryRunResponse, ProjectDGraphPlannerDryRunSummaryResponse},
-        validate_local_dgraph_snapshot_publish_invariants, LocalDGraphSnapshot,
-        LocalDGraphSnapshotList, ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary,
+        validate_local_dgraph_snapshot_publish_invariants, DGraphSnapshotFixtureScenario,
+        LocalDGraphSnapshot, LocalDGraphSnapshotList, ProjectDGraphMaterialization,
+        ProjectDGraphMaterializationSummary,
     },
 };
 
@@ -33,6 +34,7 @@ pub fn run_dgraph_snapshot_command(
     node_id_override: Option<&str>,
     project_id_override: Option<&str>,
     url_override: Option<&str>,
+    fixture_scenario: Option<&str>,
     publish: bool,
     latest: bool,
     latest_all: bool,
@@ -43,6 +45,7 @@ pub fn run_dgraph_snapshot_command(
     json_output: bool,
 ) -> Result<()> {
     let mode = validate_dgraph_snapshot_mode(
+        fixture_scenario.is_some(),
         publish,
         latest,
         latest_all,
@@ -51,15 +54,24 @@ pub fn run_dgraph_snapshot_command(
         planner_dry_run,
         planner_summary,
     )?;
+    let fixture_scenario = fixture_scenario
+        .map(DGraphSnapshotFixtureScenario::parse)
+        .transpose()?;
 
     match mode {
         DgraphSnapshotMode::Local => {
-            let snapshot = build_local_dgraph_snapshot(cfg);
+            let snapshot = match fixture_scenario {
+                Some(scenario) => build_dgraph_fixture_snapshot(cfg, scenario),
+                None => build_local_dgraph_snapshot(cfg),
+            };
             print_local_snapshot_output(&snapshot, json_output);
             Ok(())
         }
         DgraphSnapshotMode::Publish => {
-            let snapshot = build_local_dgraph_snapshot(cfg);
+            let snapshot = match fixture_scenario {
+                Some(scenario) => build_dgraph_fixture_snapshot(cfg, scenario),
+                None => build_local_dgraph_snapshot(cfg),
+            };
             validate_local_dgraph_snapshot_publish_invariants(&snapshot)?;
 
             let base_url = resolve_base_url(cfg, url_override)?;
@@ -85,7 +97,11 @@ pub fn run_dgraph_snapshot_command(
             print!("{}", format_local_dgraph_snapshot(&snapshot));
             print!("{}", format_published_snapshot(&server_snapshot));
             println!();
-            println!("Note: this command published local d-graph snapshot metadata only. It did not run planner logic, deploy modules, or reconfigure flows.");
+            if fixture_scenario.is_some() {
+                println!("Note: publishing recorded fixture metadata only. No planner decision was executed.");
+            } else {
+                println!("Note: this command published local d-graph snapshot metadata only. It did not run planner logic, deploy modules, or reconfigure flows.");
+            }
             Ok(())
         }
         DgraphSnapshotMode::Latest => {
@@ -202,6 +218,7 @@ pub fn run_dgraph_snapshot_command(
 }
 
 fn validate_dgraph_snapshot_mode(
+    fixture: bool,
     publish: bool,
     latest: bool,
     latest_all: bool,
@@ -210,6 +227,19 @@ fn validate_dgraph_snapshot_mode(
     planner_dry_run: bool,
     planner_summary: bool,
 ) -> Result<DgraphSnapshotMode> {
+    if fixture
+        && (latest
+            || latest_all
+            || materialized
+            || materialized_summary
+            || planner_dry_run
+            || planner_summary)
+    {
+        return Err(anyhow!(
+            "--fixture cannot be combined with --latest, --latest-all, --materialized, --materialized-summary, --planner-dry-run, or --planner-summary"
+        ));
+    }
+
     let selected_modes = publish as u8
         + latest as u8
         + latest_all as u8
@@ -311,7 +341,10 @@ fn print_local_snapshot_output(snapshot: &LocalDGraphSnapshot, json_output: bool
 }
 
 fn format_local_dgraph_snapshot(snapshot: &LocalDGraphSnapshot) -> String {
-    let mut lines = vec!["Local d-graph snapshot".to_string()];
+    let mut lines = vec![snapshot_heading(snapshot, false).to_string()];
+    if let Some(scenario) = fixture_scenario_name(snapshot) {
+        lines.push(format!("  scenario: {}", scenario));
+    }
     append_snapshot_header_lines(&mut lines, snapshot);
     append_snapshot_count_lines(&mut lines, snapshot);
 
@@ -344,18 +377,51 @@ fn format_local_dgraph_snapshot(snapshot: &LocalDGraphSnapshot) -> String {
     }
 
     lines.push(String::new());
-    lines.push("Note: this command only reports local d-graph metadata. It did not inspect Docker/container state, execute WASM, deploy modules, or modify config.".to_string());
+    if is_fixture_snapshot(snapshot) {
+        lines.push("Note: this is metadata-only fixture data. It did not inspect Docker, execute WASM, deploy modules, or reconfigure flows.".to_string());
+    } else {
+        lines.push("Note: this command only reports local d-graph metadata. It did not inspect Docker/container state, execute WASM, deploy modules, or modify config.".to_string());
+    }
     lines.join("\n") + "\n"
 }
 
 fn format_published_snapshot(snapshot: &LocalDGraphSnapshot) -> String {
-    let mut lines = vec!["Published local d-graph snapshot".to_string()];
+    let mut lines = vec![snapshot_heading(snapshot, true).to_string()];
+    if let Some(scenario) = fixture_scenario_name(snapshot) {
+        lines.push(format!("  scenario: {}", scenario));
+    }
     if let Some(snapshot_id) = snapshot.snapshot_id.as_deref() {
         lines.push(format!("  snapshot_id: {}", snapshot_id));
     }
     lines.push(format!("  node_id: {}", snapshot.node_id));
     append_snapshot_count_lines(&mut lines, snapshot);
     lines.join("\n") + "\n"
+}
+
+fn is_fixture_snapshot(snapshot: &LocalDGraphSnapshot) -> bool {
+    snapshot
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("fixture"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn fixture_scenario_name(snapshot: &LocalDGraphSnapshot) -> Option<&str> {
+    snapshot
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("fixture_scenario"))
+        .and_then(|value| value.as_str())
+}
+
+fn snapshot_heading(snapshot: &LocalDGraphSnapshot, published: bool) -> &'static str {
+    match (published, is_fixture_snapshot(snapshot)) {
+        (true, true) => "Published local d-graph fixture snapshot",
+        (true, false) => "Published local d-graph snapshot",
+        (false, true) => "Local d-graph fixture snapshot",
+        (false, false) => "Local d-graph snapshot",
+    }
 }
 
 fn format_latest_snapshot(snapshot: &LocalDGraphSnapshot) -> String {
@@ -879,82 +945,109 @@ mod tests {
     #[test]
     fn cli_mode_validation_accepts_local_publish_and_latest_modes() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(true, false, false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, true, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Publish
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, true, false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, true, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Latest
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, true, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, true, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::LatestAll
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, true, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, true, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Materialized
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, true, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, true, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::MaterializedSummary
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, true, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, true, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::PlannerDryRun
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, true)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, true)
                 .expect("mode should validate"),
             DgraphSnapshotMode::PlannerSummary
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(true, false, false, false, false, false, false, false)
+                .expect("fixture mode should validate"),
+            DgraphSnapshotMode::Local
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(true, true, false, false, false, false, false, false)
+                .expect("fixture publish mode should validate"),
+            DgraphSnapshotMode::Publish
         ));
     }
 
     #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
-        assert!(
-            validate_dgraph_snapshot_mode(true, true, false, false, false, false, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(true, false, true, false, false, false, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(false, true, true, false, false, false, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(true, false, false, true, false, false, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(true, false, false, false, true, false, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(true, false, false, false, false, true, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(true, false, false, false, false, false, true).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(false, false, false, true, false, true, false).is_err()
-        );
-        assert!(
-            validate_dgraph_snapshot_mode(false, false, false, false, true, false, true).is_err()
-        );
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, true, false, false, false, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, false, true, false, false, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, false, true, true, false, false, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, false, false, true, false, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, false, false, false, true, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, false, false, false, false, true, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, true, false, false, false, false, false, true
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, false, false, false, true, false, true, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            false, false, false, false, false, true, false, true
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            true, false, true, false, false, false, false, false
+        )
+        .is_err());
+        assert!(validate_dgraph_snapshot_mode(
+            true, false, false, false, false, false, true, false
+        )
+        .is_err());
     }
 
     #[test]
     fn local_dgraph_snapshot_without_publish_does_not_require_server_config_helpers() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false)
+            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, false)
                 .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
@@ -998,6 +1091,24 @@ mod tests {
     }
 
     #[test]
+    fn formatting_fixture_snapshot_includes_scenario_and_fixture_note() {
+        let mut snapshot = sample_snapshot();
+        snapshot.metadata = Some(serde_json::json!({
+            "reporting_only": true,
+            "fixture": true,
+            "fixture_scenario": "degraded-node"
+        }));
+
+        let rendered = format_local_dgraph_snapshot(&snapshot);
+
+        assert!(rendered.contains("Local d-graph fixture snapshot"));
+        assert!(rendered.contains("scenario: degraded-node"));
+        assert!(rendered.contains(
+            "this is metadata-only fixture data. It did not inspect Docker, execute WASM, deploy modules, or reconfigure flows"
+        ));
+    }
+
+    #[test]
     fn formatting_published_snapshot_includes_snapshot_id_and_counts() {
         let rendered = format_published_snapshot(&sample_snapshot());
 
@@ -1007,6 +1118,20 @@ mod tests {
         assert!(rendered.contains("modules: 1"));
         assert!(rendered.contains("safe to auto execute: false"));
         assert!(rendered.contains("side effects performed: false"));
+    }
+
+    #[test]
+    fn formatting_published_fixture_snapshot_includes_fixture_heading() {
+        let mut snapshot = sample_snapshot();
+        snapshot.metadata = Some(serde_json::json!({
+            "fixture": true,
+            "fixture_scenario": "missing-module"
+        }));
+
+        let rendered = format_published_snapshot(&snapshot);
+
+        assert!(rendered.contains("Published local d-graph fixture snapshot"));
+        assert!(rendered.contains("scenario: missing-module"));
     }
 
     #[test]
