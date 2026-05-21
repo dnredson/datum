@@ -148,6 +148,8 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.publish_report,
             args.latest_report,
             args.latest_reports,
+            args.modules,
+            args.module.as_deref(),
             args.json,
         ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
@@ -212,6 +214,12 @@ struct WasmTestArgs {
 
     #[arg(long, default_value_t = false)]
     latest_reports: bool,
+
+    #[arg(long, default_value_t = false)]
+    modules: bool,
+
+    #[arg(long)]
+    module: Option<String>,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -803,6 +811,8 @@ fn wasm_test_command(
     publish_report: bool,
     latest_report: bool,
     latest_reports: bool,
+    modules: bool,
+    module: Option<&str>,
     json: bool,
 ) -> Result<()> {
     run_wasm_test_command(
@@ -816,6 +826,8 @@ fn wasm_test_command(
         publish_report,
         latest_report,
         latest_reports,
+        modules,
+        module,
         json,
     )
 }

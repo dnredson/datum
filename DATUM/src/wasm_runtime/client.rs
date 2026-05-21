@@ -7,7 +7,10 @@ use reqwest::{
     Url,
 };
 
-use crate::wasm_runtime::report::{WasmRuntimeReport, WasmRuntimeReportList};
+use crate::wasm_runtime::{
+    registry::{WasmModuleDescriptor, WasmModuleDescriptorList},
+    report::{WasmRuntimeReport, WasmRuntimeReportList},
+};
 
 pub fn publish_wasm_runtime_report(
     base_url: &str,
@@ -59,6 +62,34 @@ pub fn fetch_latest_wasm_runtime_reports_for_project(
     parse_report_list_response(response, "fetch latest WASM runtime reports")
 }
 
+pub fn fetch_wasm_modules(base_url: &str, project_id: &str) -> Result<WasmModuleDescriptorList> {
+    let endpoint = wasm_modules_endpoint_url(base_url)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch WASM module registry from {}", endpoint))?;
+
+    parse_module_list_response(response, "fetch WASM module registry")
+}
+
+pub fn fetch_wasm_module(
+    base_url: &str,
+    project_id: &str,
+    module_id: &str,
+) -> Result<WasmModuleDescriptor> {
+    let endpoint = wasm_module_endpoint_url(base_url, module_id)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch WASM module descriptor from {}", endpoint))?;
+
+    parse_module_response(response, "fetch WASM module descriptor")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -87,6 +118,28 @@ fn parse_report_response(response: Response, label: &str) -> Result<WasmRuntimeR
 }
 
 fn parse_report_list_response(response: Response, label: &str) -> Result<WasmRuntimeReportList> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_module_response(response: Response, label: &str) -> Result<WasmModuleDescriptor> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_module_list_response(response: Response, label: &str) -> Result<WasmModuleDescriptorList> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -148,12 +201,25 @@ pub fn wasm_runtime_reports_latest_endpoint_url(base_url: &str) -> Result<Url> {
     with_segments(base_url, &segments)
 }
 
+pub fn wasm_modules_endpoint_url(base_url: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.push("wasm-modules".to_string());
+    with_segments(base_url, &segments)
+}
+
+pub fn wasm_module_endpoint_url(base_url: &str, module_id: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend(["wasm-modules".to_string(), module_id.to_string()]);
+    with_segments(base_url, &segments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
+        wasm_module_endpoint_url, wasm_modules_endpoint_url,
         wasm_runtime_report_latest_endpoint_url, wasm_runtime_reports_publish_endpoint_url,
     };
-    use crate::wasm_runtime::report::WasmRuntimeReport;
+    use crate::wasm_runtime::{registry::WasmModuleDescriptor, report::WasmRuntimeReport};
 
     #[test]
     fn publish_url_construction_is_correct() {
@@ -180,6 +246,26 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://localhost:8080/api/v1/nodes/fog-01/wasm-runtime-reports/latest"
+        );
+    }
+
+    #[test]
+    fn wasm_modules_url_construction_is_correct() {
+        let url = wasm_modules_endpoint_url("http://localhost:8080/api/v1/snapshots")
+            .expect("url should build");
+
+        assert_eq!(url.as_str(), "http://localhost:8080/api/v1/wasm-modules");
+    }
+
+    #[test]
+    fn wasm_module_url_construction_is_correct() {
+        let url =
+            wasm_module_endpoint_url("http://localhost:8080/api/v1/snapshots", "embedded add")
+                .expect("url should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/wasm-modules/embedded%20add"
         );
     }
 
@@ -235,6 +321,36 @@ mod tests {
     }
 
     #[test]
+    fn module_json_preserves_artifact_ref_and_metadata() {
+        let descriptor = WasmModuleDescriptor {
+            project_id: Some("smart-city-campinas".to_string()),
+            module_id: Some("embedded-add".to_string()),
+            module_name: Some("embedded:add".to_string()),
+            module_version: Some("v0".to_string()),
+            module_kind: Some("embedded_test".to_string()),
+            status: Some("registered".to_string()),
+            allowed_functions: vec![],
+            artifact_ref: Some(crate::wasm_runtime::registry::WasmArtifactRef {
+                artifact_id: Some("artifact-1".to_string()),
+                artifact_uri: Some("opaque://metadata-only".to_string()),
+                sha256: Some("abc123".to_string()),
+                signature_ref: None,
+                provenance: Some("fixture".to_string()),
+                metadata: Some(serde_json::json!({ "kind": "opaque" })),
+            }),
+            safety: None,
+            created_at_utc: None,
+            updated_at_utc: None,
+            metadata: Some(serde_json::json!({ "note": "metadata only" })),
+        };
+
+        let rendered = serde_json::to_string(&descriptor).expect("descriptor should serialize");
+
+        assert!(rendered.contains("\"artifact_uri\":\"opaque://metadata-only\""));
+        assert!(rendered.contains("\"note\":\"metadata only\""));
+    }
+
+    #[test]
     fn source_guard_confirms_no_installation_or_assisted_execution_references() {
         let source = include_str!("client.rs");
         let implementation = source
@@ -253,6 +369,8 @@ mod tests {
             "docker inspect",
             "fs::write",
             "OpenOptions",
+            "reqwest::get(",
+            "artifact_uri)",
         ] {
             assert!(
                 !implementation.contains(forbidden),

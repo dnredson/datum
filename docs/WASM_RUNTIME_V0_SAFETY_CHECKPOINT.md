@@ -23,10 +23,12 @@ Current implemented flow:
 - the repo-root smoke test validates the local report, publish path, server read-back, and DATUM latest-report viewers
 - `W5/80` adds explicit execution limits metadata for the embedded runner, including fuel and timeout configuration
 - `W6/80` adds a metadata-only WASM module registry contract on dserver
+- `W7/80` adds a DATUM-side metadata-only WASM module registry viewer
 - the runner still uses only embedded test WASM
 - no artifact loading or task integration was added
 - the registry does not store binaries, fetch artifacts, or execute modules
 - all module safety fields remain false in v0
+- the DATUM registry viewer does not fetch artifacts or execute modules
 
 ## Current Hard Safety Guarantees
 
@@ -137,13 +139,17 @@ Risk profile:
 
 ## Recommendation
 
-Prefer `W5` next: execution limits, fuel, and timeout controls for the embedded WASM runner.
+`W5`, `W6`, and `W7` are now complete:
+
+- `W5` added execution limits, fuel, and timeout controls for the embedded WASM runner
+- `W6` added a metadata-only dserver module registry contract
+- `W7` adds a DATUM-side metadata-only registry viewer
 
 Do not move to artifact loading or task integration yet.
 
 Reason:
 
-- `W5` improves safety without expanding scope
+- the current path improved safety and visibility without expanding execution scope
 - it strengthens the existing isolated runtime boundary
 - it avoids premature coupling to installation tasks or assisted execution
 
