@@ -7,10 +7,11 @@ use crate::{
         build_local_dgraph_snapshot,
         client::{
             fetch_latest_local_dgraph_snapshot, fetch_latest_local_dgraph_snapshots,
+            fetch_project_dgraph_materialized, fetch_project_dgraph_materialized_summary,
             publish_local_dgraph_snapshot,
         },
         validate_local_dgraph_snapshot_publish_invariants, LocalDGraphSnapshot,
-        LocalDGraphSnapshotList,
+        LocalDGraphSnapshotList, ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary,
     },
 };
 
@@ -19,6 +20,8 @@ enum DgraphSnapshotMode {
     Publish,
     Latest,
     LatestAll,
+    Materialized,
+    MaterializedSummary,
 }
 
 pub fn run_dgraph_snapshot_command(
@@ -29,9 +32,17 @@ pub fn run_dgraph_snapshot_command(
     publish: bool,
     latest: bool,
     latest_all: bool,
+    materialized: bool,
+    materialized_summary: bool,
     json_output: bool,
 ) -> Result<()> {
-    let mode = validate_dgraph_snapshot_mode(publish, latest, latest_all)?;
+    let mode = validate_dgraph_snapshot_mode(
+        publish,
+        latest,
+        latest_all,
+        materialized,
+        materialized_summary,
+    )?;
 
     match mode {
         DgraphSnapshotMode::Local => {
@@ -104,6 +115,47 @@ pub fn run_dgraph_snapshot_command(
             print!("{}", format_latest_snapshot_list(&snapshot_list));
             Ok(())
         }
+        DgraphSnapshotMode::Materialized => {
+            let base_url = resolve_base_url(cfg, url_override)?;
+            let project_id = resolve_project_id(cfg, project_id_override)?;
+            let materialized_response = fetch_project_dgraph_materialized(&base_url, &project_id)?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&materialized_response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!(
+                "{}",
+                format_materialized_dgraph(&materialized_response, &project_id)
+            );
+            Ok(())
+        }
+        DgraphSnapshotMode::MaterializedSummary => {
+            let base_url = resolve_base_url(cfg, url_override)?;
+            let project_id = resolve_project_id(cfg, project_id_override)?;
+            let summary_response =
+                fetch_project_dgraph_materialized_summary(&base_url, &project_id)?;
+
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&summary_response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+
+            print!(
+                "{}",
+                format_materialized_dgraph_summary(&summary_response, &project_id)
+            );
+            Ok(())
+        }
     }
 }
 
@@ -111,11 +163,17 @@ fn validate_dgraph_snapshot_mode(
     publish: bool,
     latest: bool,
     latest_all: bool,
+    materialized: bool,
+    materialized_summary: bool,
 ) -> Result<DgraphSnapshotMode> {
-    let selected_modes = publish as u8 + latest as u8 + latest_all as u8;
+    let selected_modes = publish as u8
+        + latest as u8
+        + latest_all as u8
+        + materialized as u8
+        + materialized_summary as u8;
     if selected_modes > 1 {
         return Err(anyhow!(
-            "--publish, --latest, and --latest-all cannot be combined"
+            "--publish, --latest, --latest-all, --materialized, and --materialized-summary cannot be combined"
         ));
     }
 
@@ -129,6 +187,14 @@ fn validate_dgraph_snapshot_mode(
 
     if latest_all {
         return Ok(DgraphSnapshotMode::LatestAll);
+    }
+
+    if materialized {
+        return Ok(DgraphSnapshotMode::Materialized);
+    }
+
+    if materialized_summary {
+        return Ok(DgraphSnapshotMode::MaterializedSummary);
     }
 
     Ok(DgraphSnapshotMode::Local)
@@ -300,6 +366,118 @@ fn format_latest_snapshot_list(snapshot_list: &LocalDGraphSnapshotList) -> Strin
     lines.join("\n") + "\n"
 }
 
+fn format_materialized_dgraph(
+    response: &ProjectDGraphMaterialization,
+    requested_project_id: &str,
+) -> String {
+    let project_id = response
+        .project_id
+        .as_deref()
+        .unwrap_or(requested_project_id);
+    let snapshot_count = response.source_snapshot_count.unwrap_or(0);
+    let summary = response.summary.as_ref().cloned().unwrap_or_default();
+    let node_ids = extract_ids(response.graph.as_ref(), "nodes", "node_id");
+    let module_ids = extract_ids(response.graph.as_ref(), "modules", "module_id");
+
+    let mut lines = vec![
+        "Project d-graph materialized".to_string(),
+        format!("Project: {}", project_id),
+        format!("Source snapshots: {}", snapshot_count),
+        format!("Nodes: {}", summary.node_count.unwrap_or(0)),
+        format!("Runtimes: {}", summary.runtime_count.unwrap_or(0)),
+        format!("Modules: {}", summary.module_count.unwrap_or(0)),
+        format!("Flows: {}", summary.flow_count.unwrap_or(0)),
+        format!("Relationships: {}", summary.relationship_count.unwrap_or(0)),
+        format!("Validation errors: {}", response.validation_errors.len()),
+        format!(
+            "Side effects performed: {}",
+            response.side_effects_performed.unwrap_or(false)
+        ),
+    ];
+
+    if !node_ids.is_empty() {
+        lines.push(format!("Node IDs: {}", node_ids.join(", ")));
+    }
+
+    if !module_ids.is_empty() {
+        lines.push(format!("Module IDs: {}", module_ids.join(", ")));
+    } else {
+        lines.push("Module details: use --json for full graph".to_string());
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "Note: this command did not run planner, deploy modules, or reconfigure flows.".to_string(),
+    );
+    lines.join("\n") + "\n"
+}
+
+fn format_materialized_dgraph_summary(
+    response: &ProjectDGraphMaterializationSummary,
+    requested_project_id: &str,
+) -> String {
+    let project_id = response
+        .project_id
+        .as_deref()
+        .unwrap_or(requested_project_id);
+    let snapshot_count = response.source_snapshot_count.unwrap_or(0);
+    let summary = response.summary.as_ref().cloned().unwrap_or_default();
+
+    let mut lines = vec![
+        "Project d-graph summary".to_string(),
+        format!("Project: {}", project_id),
+        format!("Source snapshots: {}", snapshot_count),
+        format!("Nodes: {}", summary.node_count.unwrap_or(0)),
+        format!("Runtimes: {}", summary.runtime_count.unwrap_or(0)),
+        format!("Modules: {}", summary.module_count.unwrap_or(0)),
+        format!("Artifacts: {}", summary.artifact_count.unwrap_or(0)),
+        format!("Flows: {}", summary.flow_count.unwrap_or(0)),
+        format!("Relationships: {}", summary.relationship_count.unwrap_or(0)),
+        format!(
+            "Unhealthy targets: {}",
+            summary.unhealthy_targets.unwrap_or(0)
+        ),
+        format!(
+            "Pending deployment intents: {}",
+            summary.pending_deployment_intents.unwrap_or(0)
+        ),
+        format!(
+            "Proposed placements: {}",
+            summary.proposed_placements.unwrap_or(0)
+        ),
+        format!(
+            "Proposed reconfigurations: {}",
+            summary.proposed_reconfigurations.unwrap_or(0)
+        ),
+        format!(
+            "Side effects performed: {}",
+            response.side_effects_performed.unwrap_or(false)
+        ),
+    ];
+
+    lines.push(String::new());
+    lines.push("Note: this command only reads materialized d-graph metadata. It did not run planner, deploy modules, or reconfigure flows.".to_string());
+    lines.join("\n") + "\n"
+}
+
+fn extract_ids(
+    graph: Option<&serde_json::Value>,
+    array_field: &str,
+    id_field: &str,
+) -> Vec<String> {
+    graph
+        .and_then(|graph| graph.get(array_field))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get(id_field).and_then(|value| value.as_str()))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn append_snapshot_header_lines(lines: &mut Vec<String>, snapshot: &LocalDGraphSnapshot) {
     lines.push(format!("  node: {}", snapshot.node_id));
     if let Some(project_id) = snapshot.project_id.as_deref() {
@@ -333,15 +511,20 @@ fn append_snapshot_count_lines(lines: &mut Vec<String>, snapshot: &LocalDGraphSn
 mod tests {
     use super::{
         format_latest_snapshot, format_latest_snapshot_list, format_local_dgraph_snapshot,
-        format_published_snapshot, resolve_base_url, resolve_project_id,
-        validate_dgraph_snapshot_mode, DgraphSnapshotMode,
+        format_materialized_dgraph, format_materialized_dgraph_summary, format_published_snapshot,
+        resolve_base_url, resolve_project_id, validate_dgraph_snapshot_mode, DgraphSnapshotMode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, FileJsonConfig, HttpConfig, OutputsConfig},
-        dgraph_snapshot::model::{
-            validate_local_dgraph_snapshot_publish_invariants, LocalCapabilitySnapshot,
-            LocalDGraphSnapshot, LocalDGraphSnapshotList, LocalHealthSnapshot, LocalModuleSnapshot,
-            LocalRuntimeSnapshot,
+        dgraph_snapshot::{
+            materialized::{
+                DGraphSummary, ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary,
+            },
+            model::{
+                validate_local_dgraph_snapshot_publish_invariants, LocalCapabilitySnapshot,
+                LocalDGraphSnapshot, LocalDGraphSnapshotList, LocalHealthSnapshot,
+                LocalModuleSnapshot, LocalRuntimeSnapshot,
+            },
         },
     };
 
@@ -432,34 +615,51 @@ mod tests {
     #[test]
     fn cli_mode_validation_accepts_local_publish_and_latest_modes() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false).expect("mode should validate"),
+            validate_dgraph_snapshot_mode(false, false, false, false, false)
+                .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(true, false, false).expect("mode should validate"),
+            validate_dgraph_snapshot_mode(true, false, false, false, false)
+                .expect("mode should validate"),
             DgraphSnapshotMode::Publish
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, true, false).expect("mode should validate"),
+            validate_dgraph_snapshot_mode(false, true, false, false, false)
+                .expect("mode should validate"),
             DgraphSnapshotMode::Latest
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, true).expect("mode should validate"),
+            validate_dgraph_snapshot_mode(false, false, true, false, false)
+                .expect("mode should validate"),
             DgraphSnapshotMode::LatestAll
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(false, false, false, true, false)
+                .expect("mode should validate"),
+            DgraphSnapshotMode::Materialized
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(false, false, false, false, true)
+                .expect("mode should validate"),
+            DgraphSnapshotMode::MaterializedSummary
         ));
     }
 
     #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
-        assert!(validate_dgraph_snapshot_mode(true, true, false).is_err());
-        assert!(validate_dgraph_snapshot_mode(true, false, true).is_err());
-        assert!(validate_dgraph_snapshot_mode(false, true, true).is_err());
+        assert!(validate_dgraph_snapshot_mode(true, true, false, false, false).is_err());
+        assert!(validate_dgraph_snapshot_mode(true, false, true, false, false).is_err());
+        assert!(validate_dgraph_snapshot_mode(false, true, true, false, false).is_err());
+        assert!(validate_dgraph_snapshot_mode(true, false, false, true, false).is_err());
+        assert!(validate_dgraph_snapshot_mode(true, false, false, false, true).is_err());
     }
 
     #[test]
     fn local_dgraph_snapshot_without_publish_does_not_require_server_config_helpers() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false).expect("mode should validate"),
+            validate_dgraph_snapshot_mode(false, false, false, false, false)
+                .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
     }
@@ -543,6 +743,77 @@ mod tests {
     }
 
     #[test]
+    fn formatting_materialized_summary_includes_counts_and_false_side_effects() {
+        let rendered = format_materialized_dgraph_summary(
+            &ProjectDGraphMaterializationSummary {
+                project_id: Some("smart-city-campinas".to_string()),
+                source_snapshot_count: Some(2),
+                summary: Some(DGraphSummary {
+                    node_count: Some(2),
+                    runtime_count: Some(2),
+                    module_count: Some(4),
+                    artifact_count: Some(2),
+                    flow_count: Some(1),
+                    relationship_count: Some(8),
+                    unhealthy_targets: Some(0),
+                    pending_deployment_intents: Some(0),
+                    proposed_placements: Some(0),
+                    proposed_reconfigurations: Some(0),
+                }),
+                validation_errors: Vec::new(),
+                side_effects_performed: Some(false),
+            },
+            "smart-city-campinas",
+        );
+
+        assert!(rendered.contains("Project d-graph summary"));
+        assert!(rendered.contains("Project: smart-city-campinas"));
+        assert!(rendered.contains("Source snapshots: 2"));
+        assert!(rendered.contains("Nodes: 2"));
+        assert!(rendered.contains("Modules: 4"));
+        assert!(rendered.contains("Relationships: 8"));
+        assert!(rendered.contains("Side effects performed: false"));
+    }
+
+    #[test]
+    fn formatting_materialized_view_includes_validation_error_count_and_ids() {
+        let rendered = format_materialized_dgraph(
+            &ProjectDGraphMaterialization {
+                project_id: Some("smart-city-campinas".to_string()),
+                generated_at_utc: Some("2026-05-21T12:00:00Z".to_string()),
+                source_snapshot_count: Some(2),
+                graph: Some(serde_json::json!({
+                    "nodes":[{"node_id":"fog-01"},{"node_id":"fog-02"}],
+                    "modules":[{"module_id":"collector"},{"module_id":"broker"}]
+                })),
+                summary: Some(DGraphSummary {
+                    node_count: Some(2),
+                    runtime_count: Some(2),
+                    module_count: Some(4),
+                    artifact_count: Some(2),
+                    flow_count: Some(1),
+                    relationship_count: Some(8),
+                    unhealthy_targets: Some(0),
+                    pending_deployment_intents: Some(0),
+                    proposed_placements: Some(0),
+                    proposed_reconfigurations: Some(0),
+                }),
+                validation_errors: vec!["missing module reference".to_string()],
+                side_effects_performed: Some(false),
+                metadata: None,
+            },
+            "smart-city-campinas",
+        );
+
+        assert!(rendered.contains("Project d-graph materialized"));
+        assert!(rendered.contains("Source snapshots: 2"));
+        assert!(rendered.contains("Validation errors: 1"));
+        assert!(rendered.contains("Node IDs: fog-01, fog-02"));
+        assert!(rendered.contains("Module IDs: collector, broker"));
+        assert!(rendered.contains("Side effects performed: false"));
+    }
+
+    #[test]
     fn local_invariant_check_rejects_safe_to_auto_execute_true() {
         let snapshot = LocalDGraphSnapshot {
             safe_to_auto_execute: true,
@@ -577,6 +848,7 @@ mod tests {
             "fs::write",
             "OpenOptions",
             "run_embedded_wasm",
+            "plan_dgraph_dry_run",
         ] {
             assert!(
                 !implementation.contains(forbidden),

@@ -98,6 +98,8 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.publish,
             args.latest,
             args.latest_all,
+            args.materialized,
+            args.materialized_summary,
             args.json,
         ),
         Command::InstallationPlan(args) => installation_plan_command(
@@ -343,6 +345,12 @@ struct DgraphSnapshotArgs {
 
     #[arg(long, default_value_t = false)]
     latest_all: bool,
+
+    #[arg(long, default_value_t = false)]
+    materialized: bool,
+
+    #[arg(long, default_value_t = false)]
+    materialized_summary: bool,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -760,11 +768,22 @@ fn dgraph_snapshot_command(
     publish: bool,
     latest: bool,
     latest_all: bool,
+    materialized: bool,
+    materialized_summary: bool,
     json: bool,
 ) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     run_dgraph_snapshot_command(
-        &cfg, node_id, project_id, url, publish, latest, latest_all, json,
+        &cfg,
+        node_id,
+        project_id,
+        url,
+        publish,
+        latest,
+        latest_all,
+        materialized,
+        materialized_summary,
+        json,
     )
 }
 

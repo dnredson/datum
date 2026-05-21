@@ -7,7 +7,10 @@ use reqwest::{
     Url,
 };
 
-use crate::dgraph_snapshot::model::{LocalDGraphSnapshot, LocalDGraphSnapshotList};
+use crate::dgraph_snapshot::{
+    materialized::{ProjectDGraphMaterialization, ProjectDGraphMaterializationSummary},
+    model::{LocalDGraphSnapshot, LocalDGraphSnapshotList},
+};
 
 pub fn publish_local_dgraph_snapshot(
     base_url: &str,
@@ -59,6 +62,41 @@ pub fn fetch_latest_local_dgraph_snapshots(
     parse_snapshot_list_response(response, "fetch latest local d-graph snapshots")
 }
 
+pub fn fetch_project_dgraph_materialized(
+    base_url: &str,
+    project_id: &str,
+) -> Result<ProjectDGraphMaterialization> {
+    let endpoint = project_dgraph_materialized_endpoint_url(base_url)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| format!("fetch project d-graph materialized from {}", endpoint))?;
+
+    parse_materialized_response(response, "fetch project d-graph materialized")
+}
+
+pub fn fetch_project_dgraph_materialized_summary(
+    base_url: &str,
+    project_id: &str,
+) -> Result<ProjectDGraphMaterializationSummary> {
+    let endpoint = project_dgraph_materialized_summary_endpoint_url(base_url)?;
+    let client = build_client()?;
+    let response = client
+        .get(endpoint.clone())
+        .headers(project_header(project_id)?)
+        .send()
+        .with_context(|| {
+            format!(
+                "fetch project d-graph materialized summary from {}",
+                endpoint
+            )
+        })?;
+
+    parse_materialized_summary_response(response, "fetch project d-graph materialized summary")
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(10))
@@ -90,6 +128,34 @@ fn parse_snapshot_list_response(
     response: Response,
     label: &str,
 ) -> Result<LocalDGraphSnapshotList> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_materialized_response(
+    response: Response,
+    label: &str,
+) -> Result<ProjectDGraphMaterialization> {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(anyhow!("{label} failed: status={} body={}", status, body));
+    }
+
+    serde_json::from_str(&body).with_context(|| format!("parse {label} response JSON"))
+}
+
+fn parse_materialized_summary_response(
+    response: Response,
+    label: &str,
+) -> Result<ProjectDGraphMaterializationSummary> {
     let status = response.status();
     let body = response.text().unwrap_or_default();
 
@@ -151,11 +217,28 @@ pub fn local_dgraph_snapshots_latest_endpoint_url(base_url: &str) -> Result<Url>
     with_segments(base_url, &segments)
 }
 
+pub fn project_dgraph_materialized_endpoint_url(base_url: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend(["dgraph".to_string(), "materialized".to_string()]);
+    with_segments(base_url, &segments)
+}
+
+pub fn project_dgraph_materialized_summary_endpoint_url(base_url: &str) -> Result<Url> {
+    let mut segments = base_api_segments(base_url)?;
+    segments.extend([
+        "dgraph".to_string(),
+        "materialized".to_string(),
+        "summary".to_string(),
+    ]);
+    with_segments(base_url, &segments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         local_dgraph_snapshot_latest_endpoint_url, local_dgraph_snapshot_publish_endpoint_url,
-        local_dgraph_snapshots_latest_endpoint_url,
+        local_dgraph_snapshots_latest_endpoint_url, project_dgraph_materialized_endpoint_url,
+        project_dgraph_materialized_summary_endpoint_url,
     };
     use crate::dgraph_snapshot::model::{
         LocalCapabilitySnapshot, LocalDGraphSnapshot, LocalFlowSnapshot, LocalHealthSnapshot,
@@ -199,6 +282,31 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "http://localhost:8080/api/v1/dgraph-snapshots/latest"
+        );
+    }
+
+    #[test]
+    fn materialized_url_construction_is_correct() {
+        let url =
+            project_dgraph_materialized_endpoint_url("http://localhost:8080/api/v1/snapshots")
+                .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/dgraph/materialized"
+        );
+    }
+
+    #[test]
+    fn materialized_summary_url_construction_is_correct() {
+        let url = project_dgraph_materialized_summary_endpoint_url(
+            "http://localhost:8080/api/v1/snapshots",
+        )
+        .expect("endpoint should build");
+
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/api/v1/dgraph/materialized/summary"
         );
     }
 
@@ -283,6 +391,7 @@ mod tests {
             "OpenOptions",
             "run_embedded_wasm",
             "wasm_runtime::runner",
+            "plan_dgraph_dry_run",
         ] {
             assert!(
                 !implementation.contains(forbidden),
