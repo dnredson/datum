@@ -8,6 +8,7 @@ Status notes:
 
 - `A8/100` documented the first `3-VM` orchestration and reconfiguration dry-run test plan.
 - `C34/100` adds local fixture mode to simulate degraded, unavailable, missing-module, and related scenarios safely.
+- `I25/100` validates fixture scenarios in smoke without touching Docker state, VM state, or planner execution.
 - Fixture snapshots remain metadata-only and can later support `3-VM` dry-run validation.
 
 The goal is to validate that:

@@ -42,6 +42,7 @@ The script accepts:
 - `Node1Config`
 - `Node2Id`
 - `Node2Config`
+- `FixtureScenario` (optional)
 
 Default identities are:
 
@@ -85,6 +86,7 @@ This mode exists so the draft can be syntax-validated safely in the repo before 
 - `-SkipPublish`: skip `DATUM dgraph-snapshot --publish` and run server read-back only
 - `-SkipDatumCommands`: skip all `DATUM` commands and run server-side checks only
 - `-AllowMissingConfigs`: permit documentation/preflight exit when config files are not present
+- `-FixtureScenario <scenario>`: append `--fixture <scenario>` to both publish commands for metadata-only degraded or unavailable simulations
 
 ## What The Script Does
 
@@ -95,6 +97,7 @@ This mode exists so the draft can be syntax-validated safely in the repo before 
 - reads planner dry-run summary
 - runs `DATUM` materialized/planner summary viewers when not skipped
 - checks `side_effects_performed=false`
+- can optionally publish fixture scenarios such as `degraded-node` or `unavailable-node` when `-FixtureScenario` is provided
 
 ## What The Script Does Not Do
 
@@ -116,4 +119,5 @@ This mode exists so the draft can be syntax-validated safely in the repo before 
 
 - The script is intentionally conservative. It treats planner output as advisory/read-only only.
 - Snapshot and planner results may be sparse, empty, blocked, or partially blocked depending on config completeness.
+- Fixture scenarios are useful for pre-live degraded or unavailable node simulations and remain metadata-only.
 - The live `2-VM` environment still needs real `fog-01` and `fog-02` configs before the draft becomes an operational smoke run.

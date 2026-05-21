@@ -526,6 +526,89 @@ function Assert-LocalDGraphSnapshotContract {
     }
 }
 
+function Assert-LocalDGraphFixtureSnapshotContract {
+    param(
+        $Json,
+        [string]$StepName,
+        [string]$Scenario
+    )
+
+    Assert-LocalDGraphSnapshotContract `
+        -Json $Json `
+        -StepName $StepName `
+        -RequireNodeId
+
+    Assert-JsonHasProperty $Json "metadata" $StepName
+    Assert-JsonHasProperty $Json "metadata.fixture" $StepName
+    Assert-JsonHasProperty $Json "metadata.fixture_scenario" $StepName
+
+    if ($Json.metadata.fixture -ne $true) {
+        throw "$StepName returned metadata.fixture='$($Json.metadata.fixture)', expected 'True'."
+    }
+
+    if ($Json.metadata.fixture_scenario -ne $Scenario) {
+        throw "$StepName returned metadata.fixture_scenario='$($Json.metadata.fixture_scenario)', expected '$Scenario'."
+    }
+
+    switch ($Scenario) {
+        "degraded-node" {
+            $matchingHealth = @($Json.health | Where-Object {
+                    $_.target_kind -eq "node" -and
+                    $_.target_id -eq $NodeId -and
+                    $_.status -eq "degraded"
+                })
+            if ($matchingHealth.Count -lt 1) {
+                throw "$StepName did not include a degraded node health entry for '$NodeId'."
+            }
+        }
+        "unavailable-node" {
+            $matchingHealth = @($Json.health | Where-Object {
+                    $_.target_kind -eq "node" -and
+                    $_.target_id -eq $NodeId -and
+                    $_.status -eq "unavailable"
+                })
+            if ($matchingHealth.Count -lt 1) {
+                throw "$StepName did not include an unavailable node health entry for '$NodeId'."
+            }
+        }
+        "missing-module" {
+            $missingModule = @($Json.modules | Where-Object { $_.observed_state -eq "missing" })
+            $missingModuleHealth = @($Json.health | Where-Object {
+                    $_.target_kind -eq "module" -and $_.status -eq "missing"
+                })
+            if ($missingModule.Count -lt 1 -and $missingModuleHealth.Count -lt 1) {
+                throw "$StepName did not include missing-module metadata in modules or health entries."
+            }
+        }
+        "degraded-flow" {
+            $degradedFlow = @($Json.flows | Where-Object { $_.status -eq "degraded" })
+            $degradedEdge = @(
+                $Json.flows |
+                ForEach-Object { @($_.edges) } |
+                Where-Object { $_.status -eq "degraded" }
+            )
+            $degradedFlowHealth = @($Json.health | Where-Object {
+                    $_.target_kind -eq "flow" -and $_.status -eq "degraded"
+                })
+            if ($degradedFlow.Count -lt 1 -and $degradedEdge.Count -lt 1 -and $degradedFlowHealth.Count -lt 1) {
+                throw "$StepName did not include degraded flow metadata in flows, edges, or health entries."
+            }
+        }
+        "no-candidate" {
+            $unavailableRuntime = @($Json.runtimes | Where-Object { $_.status -eq "unavailable" })
+            $unsupportedCapability = @($Json.capabilities | Where-Object {
+                    $_.capability_kind -eq "container_runtime_configured" -and $_.supported -eq $false
+                })
+            $runtimeHealth = @($Json.health | Where-Object {
+                    $_.target_kind -eq "runtime" -and $_.status -eq "unavailable"
+                })
+            if ($unavailableRuntime.Count -lt 1 -and $unsupportedCapability.Count -lt 1 -and $runtimeHealth.Count -lt 1) {
+                throw "$StepName did not include unavailable runtime or unsupported capability metadata for the no-candidate scenario."
+            }
+        }
+    }
+}
+
 function Assert-LocalDGraphSnapshotListContract {
     param(
         $Json,
@@ -1871,6 +1954,12 @@ $clientPlannerSummaryViewerPerformed = $false
 $clientPlannerDryRunJsonViewerPerformed = $false
 $clientPlannerSummaryJsonViewerPerformed = $false
 $sideEffectsPerformedFalseValidatedForDgraphPlanner = $false
+$localFixtureScenarioJsonChecksPerformed = $false
+$fixtureMetadataValidated = $false
+$fixturePublishReadBackPerformed = $false
+$materializedAfterFixturePublishValidated = $false
+$plannerAfterFixturePublishValidated = $false
+$sideEffectsPerformedFalseValidatedForDgraphFixtures = $false
 if (-not $SkipServerChecks) {
     Write-Step "Read installation tasks from server"
 
@@ -4478,6 +4567,181 @@ if (-not $SkipServerChecks) {
     $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
 }
 
+Write-Step "Validate local d-graph fixture scenario JSON from DATUM"
+$fixtureScenarios = @(
+    "baseline",
+    "degraded-node",
+    "unavailable-node",
+    "missing-module",
+    "degraded-flow",
+    "no-candidate"
+)
+
+foreach ($fixtureScenario in $fixtureScenarios) {
+    $fixtureJsonOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--fixture",
+            $fixtureScenario,
+            "--json"
+        ) `
+        -StepName "DATUM local d-graph fixture JSON ($fixtureScenario)"
+    $fixtureJson = Convert-CommandOutputToJson `
+        -Output $fixtureJsonOutput `
+        -StepName "DATUM local d-graph fixture JSON ($fixtureScenario)"
+    Assert-LocalDGraphFixtureSnapshotContract `
+        -Json $fixtureJson `
+        -StepName "DATUM local d-graph fixture JSON ($fixtureScenario)" `
+        -Scenario $fixtureScenario
+}
+
+$localFixtureScenarioJsonChecksPerformed = $true
+$fixtureMetadataValidated = $true
+$safeToAutoExecuteFalseValidated = $true
+$sideEffectsPerformedFalseValidated = $true
+$safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+$sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+$sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+
+if (-not $SkipServerChecks) {
+    Write-Step "Publish selected d-graph fixture scenarios from DATUM"
+    foreach ($fixtureScenario in @("baseline", "unavailable-node")) {
+        $fixturePublishOutput = Run-CommandOrFail `
+            -WorkingDirectory $DatumDir `
+            -Command @(
+                "cargo",
+                "run",
+                "--quiet",
+                "--",
+                "dgraph-snapshot",
+                "--config",
+                $ResolvedClientConfig,
+                "--fixture",
+                $fixtureScenario,
+                "--publish"
+            ) `
+            -StepName "DATUM local d-graph fixture publish ($fixtureScenario)"
+
+        foreach ($requiredFixturePublishMarker in @(
+            "Published local d-graph fixture snapshot",
+            "scenario:\s+$([regex]::Escape($fixtureScenario))",
+            "safe to auto execute:\s+false",
+            "side effects performed:\s+false",
+            "recorded fixture metadata only",
+            "No planner decision was executed"
+        )) {
+            if ($fixturePublishOutput -notmatch $requiredFixturePublishMarker) {
+                throw "DATUM local d-graph fixture publish ($fixtureScenario) output did not include required marker '$requiredFixturePublishMarker'."
+            }
+        }
+    }
+
+    $fixturePublishReadBackPerformed = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+
+    Write-Step "Read latest published d-graph fixture snapshot from server"
+    $fixtureLatestDgraphSnapshot = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/nodes/$NodeId/dgraph-snapshot/latest" `
+        -Headers $headers `
+        -StepName "Node latest d-graph fixture snapshot"
+    Assert-HttpOk $fixtureLatestDgraphSnapshot "Node latest d-graph fixture snapshot"
+    Assert-LocalDGraphSnapshotContract `
+        -Json $fixtureLatestDgraphSnapshot.Json `
+        -StepName "Node latest d-graph fixture snapshot" `
+        -RequireProjectId `
+        -RequireNodeId `
+        -RequireSnapshotMetadata
+    if ($fixtureLatestDgraphSnapshot.Json.PSObject.Properties.Name -contains "metadata" -and $null -ne $fixtureLatestDgraphSnapshot.Json.metadata) {
+        if ($fixtureLatestDgraphSnapshot.Json.metadata.PSObject.Properties.Name -contains "fixture") {
+            if ($fixtureLatestDgraphSnapshot.Json.metadata.fixture -ne $true) {
+                throw "Node latest d-graph fixture snapshot returned metadata.fixture='$($fixtureLatestDgraphSnapshot.Json.metadata.fixture)', expected 'True' when present."
+            }
+        }
+
+        if ($fixtureLatestDgraphSnapshot.Json.metadata.PSObject.Properties.Name -contains "fixture_scenario") {
+            if ($fixtureLatestDgraphSnapshot.Json.metadata.fixture_scenario -ne "unavailable-node") {
+                throw "Node latest d-graph fixture snapshot returned metadata.fixture_scenario='$($fixtureLatestDgraphSnapshot.Json.metadata.fixture_scenario)', expected 'unavailable-node' when present."
+            }
+        }
+    }
+
+    $sideEffectsPerformedFalseValidated = $true
+    $safeToAutoExecuteFalseValidated = $true
+    $safeToAutoExecuteFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphSnapshots = $true
+    $sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+
+    Write-Step "Read project d-graph materialized after fixture publish from server"
+    $projectMaterializedAfterFixture = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/materialized" `
+        -Headers $headers `
+        -StepName "Project d-graph materialized after fixture publish"
+    Assert-HttpOk $projectMaterializedAfterFixture "Project d-graph materialized after fixture publish"
+    Assert-ProjectDGraphMaterializationContract `
+        -Json $projectMaterializedAfterFixture.Json `
+        -StepName "Project d-graph materialized after fixture publish"
+    $materializedAfterFixturePublishValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphMaterialization = $true
+    $sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+
+    Write-Step "Read project d-graph planner dry-run after fixture publish from server"
+    $projectPlannerAfterFixture = Invoke-JsonEndpoint `
+        -Url "$ServerUrl/api/v1/dgraph/planner/dry-run" `
+        -Headers $headers `
+        -StepName "Project d-graph planner dry-run after fixture publish"
+    Assert-HttpOk $projectPlannerAfterFixture "Project d-graph planner dry-run after fixture publish"
+    Assert-ProjectDGraphPlannerDryRunContract `
+        -Json $projectPlannerAfterFixture.Json `
+        -StepName "Project d-graph planner dry-run after fixture publish"
+    $plannerAfterFixturePublishValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+    $sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+
+    Write-Step "Read project d-graph planner dry-run from DATUM after fixture publish"
+    $clientPlannerDryRunAfterFixtureOutput = Run-CommandOrFail `
+        -WorkingDirectory $DatumDir `
+        -Command @(
+            "cargo",
+            "run",
+            "--quiet",
+            "--",
+            "dgraph-snapshot",
+            "--config",
+            $ResolvedClientConfig,
+            "--planner-dry-run"
+        ) `
+        -StepName "DATUM planner dry-run viewer after fixture publish"
+
+    foreach ($requiredPlannerAfterFixtureMarker in @(
+        "D-graph planner dry-run",
+        "Side effects performed:\s+false",
+        "advisory only",
+        "did not execute"
+    )) {
+        if ($clientPlannerDryRunAfterFixtureOutput -notmatch $requiredPlannerAfterFixtureMarker) {
+            throw "DATUM planner dry-run viewer after fixture publish output did not include required marker '$requiredPlannerAfterFixtureMarker'."
+        }
+    }
+
+    $plannerAfterFixturePublishValidated = $true
+    $sideEffectsPerformedFalseValidated = $true
+    $sideEffectsPerformedFalseValidatedForDgraphPlanner = $true
+    $sideEffectsPerformedFalseValidatedForDgraphFixtures = $true
+}
+
 Write-Host ""
 Write-Host "DATUM client/server contract smoke test passed."
 Write-Host ""
@@ -5056,6 +5320,36 @@ if ($clientPlannerSummaryJsonViewerPerformed) {
 else {
     Write-Host "- DATUM planner summary JSON viewer (skipped: server checks disabled)"
 }
+if ($localFixtureScenarioJsonChecksPerformed) {
+    Write-Host "- local fixture scenario JSON checks"
+}
+else {
+    Write-Host "- local fixture scenario JSON checks (skipped)"
+}
+if ($fixtureMetadataValidated) {
+    Write-Host "- fixture metadata validation"
+}
+else {
+    Write-Host "- fixture metadata validation (skipped)"
+}
+if ($fixturePublishReadBackPerformed) {
+    Write-Host "- selected fixture publish/read-back"
+}
+else {
+    Write-Host "- selected fixture publish/read-back (skipped: server checks disabled)"
+}
+if ($materializedAfterFixturePublishValidated) {
+    Write-Host "- materialization after fixture publish"
+}
+else {
+    Write-Host "- materialization after fixture publish (skipped: server checks disabled)"
+}
+if ($plannerAfterFixturePublishValidated) {
+    Write-Host "- planner dry-run after fixture publish"
+}
+else {
+    Write-Host "- planner dry-run after fixture publish (skipped: server checks disabled)"
+}
 if ($serverAssistedExecutionStateLocalMappingContextReadPerformed) {
     Write-Host "- server assisted execution state local mapping context check"
 }
@@ -5167,6 +5461,12 @@ if ($sideEffectsPerformedFalseValidatedForDgraphPlanner) {
 else {
     Write-Host "- planner side_effects_performed false validation (skipped: no planner dry-run responses were validated)"
 }
+if ($sideEffectsPerformedFalseValidatedForDgraphFixtures) {
+    Write-Host "- fixture scenario side_effects_performed false validation"
+}
+else {
+    Write-Host "- fixture scenario side_effects_performed false validation (skipped: no fixture scenarios were validated)"
+}
 Write-Host "- planner JSON viewer checks"
 Write-Host "- D-graph planner decisions not executed"
 Write-Host "- D-graph deployment/reconfiguration not executed"
@@ -5191,6 +5491,8 @@ Write-Host "WASM runtime test executed only an isolated embedded module."
 Write-Host "WASM runtime report publishing recorded metadata only."
 Write-Host "WASM module registry checks were metadata-only."
 Write-Host "WASM artifact references were not fetched or executed."
+Write-Host "D-graph fixture scenarios were metadata-only."
+Write-Host "D-graph fixture publishing recorded metadata only."
 Write-Host "D-graph snapshot publishing recorded metadata only."
 Write-Host "D-graph materialization was read-only."
 Write-Host "D-graph planner dry-run was advisory/read-only."

@@ -6,6 +6,7 @@ param(
     [string]$Node1Config = ".\DATUM\config-fog-01.toml",
     [string]$Node2Id = "fog-02",
     [string]$Node2Config = ".\DATUM\config-fog-02.toml",
+    [string]$FixtureScenario,
     [switch]$SkipPublish,
     [switch]$SkipDatumCommands,
     [switch]$AllowMissingConfigs
@@ -203,6 +204,7 @@ $projectLatestSnapshotsChecked = $false
 $projectMaterializedSummaryChecked = $false
 $projectPlannerSummaryChecked = $false
 $sideEffectsChecked = $false
+$fixtureScenarioUsed = $false
 
 Write-Step "2-VM metadata-only smoke draft parameters"
 Write-Host "ServerUrl: $ServerUrl"
@@ -212,9 +214,14 @@ Write-Host "Node1Id: $Node1Id"
 Write-Host "Node1Config: $ResolvedNode1Config"
 Write-Host "Node2Id: $Node2Id"
 Write-Host "Node2Config: $ResolvedNode2Config"
+Write-Host "FixtureScenario: $FixtureScenario"
 Write-Host "SkipPublish: $SkipPublish"
 Write-Host "SkipDatumCommands: $SkipDatumCommands"
 Write-Host "AllowMissingConfigs: $AllowMissingConfigs"
+
+if (-not [string]::IsNullOrWhiteSpace($FixtureScenario)) {
+    $fixtureScenarioUsed = $true
+}
 
 if (-not (Test-Path -LiteralPath $ResolvedDatumDir -PathType Container)) {
     throw "DatumDir '$ResolvedDatumDir' does not exist."
@@ -250,17 +257,39 @@ Assert-HttpOk -Response $health -StepName "Server health"
 
 if (-not $SkipDatumCommands -and -not $SkipPublish) {
     Write-Step "Publish node 1 d-graph snapshot"
+    $node1PublishArguments = @("run", "--", "dgraph-snapshot", "--config", $ResolvedNode1Config)
+    if ($fixtureScenarioUsed) {
+        $node1PublishArguments += @("--fixture", $FixtureScenario)
+    }
+    $node1PublishArguments += "--publish"
     $publishNode1 = Invoke-DatumCommand `
-        -Arguments @("run", "--", "dgraph-snapshot", "--config", $ResolvedNode1Config, "--publish") `
+        -Arguments $node1PublishArguments `
         -StepName "DATUM node 1 publish"
-    Assert-OutputContains -Output $publishNode1 -Pattern "Published local d-graph snapshot" -StepName "DATUM node 1 publish"
+    if ($fixtureScenarioUsed) {
+        Assert-OutputContains -Output $publishNode1 -Pattern "Published local d-graph fixture snapshot" -StepName "DATUM node 1 publish"
+        Assert-OutputContains -Output $publishNode1 -Pattern "scenario:\s*$([regex]::Escape($FixtureScenario))" -StepName "DATUM node 1 publish"
+    }
+    else {
+        Assert-OutputContains -Output $publishNode1 -Pattern "Published local d-graph snapshot" -StepName "DATUM node 1 publish"
+    }
     Assert-OutputContains -Output $publishNode1 -Pattern "side effects performed:\s*false" -StepName "DATUM node 1 publish"
 
     Write-Step "Publish node 2 d-graph snapshot"
+    $node2PublishArguments = @("run", "--", "dgraph-snapshot", "--config", $ResolvedNode2Config)
+    if ($fixtureScenarioUsed) {
+        $node2PublishArguments += @("--fixture", $FixtureScenario)
+    }
+    $node2PublishArguments += "--publish"
     $publishNode2 = Invoke-DatumCommand `
-        -Arguments @("run", "--", "dgraph-snapshot", "--config", $ResolvedNode2Config, "--publish") `
+        -Arguments $node2PublishArguments `
         -StepName "DATUM node 2 publish"
-    Assert-OutputContains -Output $publishNode2 -Pattern "Published local d-graph snapshot" -StepName "DATUM node 2 publish"
+    if ($fixtureScenarioUsed) {
+        Assert-OutputContains -Output $publishNode2 -Pattern "Published local d-graph fixture snapshot" -StepName "DATUM node 2 publish"
+        Assert-OutputContains -Output $publishNode2 -Pattern "scenario:\s*$([regex]::Escape($FixtureScenario))" -StepName "DATUM node 2 publish"
+    }
+    else {
+        Assert-OutputContains -Output $publishNode2 -Pattern "Published local d-graph snapshot" -StepName "DATUM node 2 publish"
+    }
     Assert-OutputContains -Output $publishNode2 -Pattern "side effects performed:\s*false" -StepName "DATUM node 2 publish"
 }
 elseif ($SkipPublish) {

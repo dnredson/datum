@@ -153,11 +153,17 @@ What it validates:
 - DATUM planner dry-run viewer via `dgraph-snapshot --planner-dry-run`
 - DATUM planner summary viewer via `dgraph-snapshot --planner-summary`
 - optional DATUM planner JSON viewers via `dgraph-snapshot --planner-dry-run --json` and `dgraph-snapshot --planner-summary --json`
+- local fixture JSON generation via `dgraph-snapshot --fixture <scenario> --json`
+- fixture metadata markers via `metadata.fixture=true` and `metadata.fixture_scenario=<scenario>`
+- selected fixture publish/read-back via `dgraph-snapshot --fixture baseline --publish` and `dgraph-snapshot --fixture unavailable-node --publish`
+- materialized d-graph re-check after fixture publish
+- planner dry-run re-check after fixture publish
 - all WASM safety/access flags remain false across local, published, and read-back reports
 - module safety metadata remains false in registry descriptors
 - `artifact_ref` remains opaque metadata only
 - `safe_to_auto_execute` remains false in local d-graph snapshots
 - `side_effects_performed` remains false in local d-graph snapshots
+- `side_effects_performed` remains false in fixture d-graph snapshots
 - `side_effects_performed` remains false in project d-graph materialization and summary responses
 - `side_effects_performed` remains false in d-graph planner dry-run and summary responses
 - planner decisions remain advisory and are not executed
@@ -224,6 +230,8 @@ Notes:
 - Planner dry-run output is derived from the materialized project d-graph.
 - Planner output may legitimately be empty, blocked, or partially blocked depending on snapshot completeness.
 - Planner dry-run is advisory/read-only; it does not execute deployment or reconfiguration decisions.
+- Fixture scenario output is metadata-only and can simulate degraded, unavailable, missing-module, degraded-flow, and no-candidate states without touching Docker or VM state.
+- Fixture publishing records snapshot metadata only; it does not execute planner decisions, deployment, or reconfiguration.
 - D-graph snapshot contents are config-derived and may legitimately be empty for modules or flows.
 - WASM is not yet a remediation executor.
 - Future milestones prepare 2-VM and 3-VM distributed testing, still initially metadata-only/dry-run.
