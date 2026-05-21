@@ -11,6 +11,7 @@ pub mod health;
 pub mod ingest;
 pub mod installation_plan;
 pub mod installation_tasks;
+pub mod local_dgraph_snapshot;
 pub mod middleware;
 pub mod nodes;
 pub mod planner;

@@ -38,6 +38,10 @@ use api::installation_tasks::{
     post_assisted_execution_request, post_installation_task_approval,
     post_local_mapping_preflight_report,
 };
+use api::local_dgraph_snapshot::{
+    get_latest_local_dgraph_snapshot, list_latest_local_dgraph_snapshots,
+    post_local_dgraph_snapshot,
+};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::topology::{get_topology, set_topology};
 use api::wasm_module_registry::{
@@ -191,6 +195,18 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/local-mapping-preflight/latest",
             get(get_latest_local_mapping_preflight_report),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/dgraph-snapshot",
+            post(post_local_dgraph_snapshot),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/dgraph-snapshot/latest",
+            get(get_latest_local_dgraph_snapshot),
+        )
+        .route(
+            "/api/v1/dgraph-snapshots/latest",
+            get(list_latest_local_dgraph_snapshots),
         )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",

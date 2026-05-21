@@ -224,6 +224,7 @@ This sequence keeps modeling, ingestion, and smoke validation ahead of real side
 Status note:
 
 - `C30/90` adds `DATUM` local d-graph snapshot reporting for node, runtime, module, flow, health, and capability metadata. It remains local and read-only, and it does not inspect Docker state, execute WASM, deploy modules, or reconfigure flows.
+- `S30/90` adds `dserver` ingestion and read-back contracts for `DATUM` local d-graph snapshots. It does not materialize a full project d-graph yet, run the planner, or execute deployment behavior.
 
 ## Safety Boundaries
 

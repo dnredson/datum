@@ -10,6 +10,7 @@ pub mod events;
 pub mod graph_builder;
 pub mod installation_plan;
 pub mod installation_tasks;
+pub mod local_dgraph_snapshot;
 pub mod local_mapping_patch_proposals;
 pub mod local_mapping_preflight;
 pub mod local_mapping_recommendations;

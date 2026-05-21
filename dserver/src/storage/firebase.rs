@@ -11,6 +11,7 @@ use crate::core::{
         normalize_installation_task, AssistedExecutionAttempt, AssistedExecutionClaim,
         AssistedExecutionRequest, InstallationTask, InstallationTaskApproval,
     },
+    local_dgraph_snapshot::LocalDGraphSnapshot,
     local_mapping_preflight::LocalMappingPreflightReport,
     model::SnapshotEnvelope,
     wasm_module_registry::WasmModuleDescriptor,
@@ -42,6 +43,8 @@ pub struct FirebaseClient {
     pub collection_wasm_runtime_reports_latest: String,
     pub collection_local_mapping_preflight_reports: String,
     pub collection_local_mapping_preflight_reports_latest: String,
+    pub collection_local_dgraph_snapshots: String,
+    pub collection_local_dgraph_snapshots_latest: String,
     pub collection_installation_tasks: String,
     pub collection_installation_task_approvals: String,
     pub collection_installation_task_approvals_latest: String,
@@ -159,6 +162,16 @@ impl FirebaseClient {
             .collection_local_mapping_preflight_reports_latest
             .clone()
             .unwrap_or_else(|| "datum_local_mapping_preflight_reports_latest".to_string());
+        let collection_local_dgraph_snapshots = app_config
+            .firebase
+            .collection_local_dgraph_snapshots
+            .clone()
+            .unwrap_or_else(|| "datum_local_dgraph_snapshots".to_string());
+        let collection_local_dgraph_snapshots_latest = app_config
+            .firebase
+            .collection_local_dgraph_snapshots_latest
+            .clone()
+            .unwrap_or_else(|| "datum_local_dgraph_snapshots_latest".to_string());
         let collection_installation_tasks = app_config
             .firebase
             .collection_installation_tasks
@@ -226,6 +239,8 @@ impl FirebaseClient {
             collection_wasm_runtime_reports_latest,
             collection_local_mapping_preflight_reports,
             collection_local_mapping_preflight_reports_latest,
+            collection_local_dgraph_snapshots,
+            collection_local_dgraph_snapshots_latest,
             collection_installation_tasks,
             collection_installation_task_approvals,
             collection_installation_task_approvals_latest,
@@ -1343,6 +1358,133 @@ impl FirebaseClient {
         }
 
         Ok(reports)
+    }
+
+    pub async fn put_local_dgraph_snapshot(
+        &self,
+        project_id: &str,
+        node_id: &str,
+        snapshot: &LocalDGraphSnapshot,
+    ) -> Result<()> {
+        let raw_doc_id = format!(
+            "project:{}:node:{}:snapshot:{}",
+            project_id, node_id, snapshot.snapshot_id
+        );
+        let latest_doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let raw_url = self.doc_url(&self.collection_local_dgraph_snapshots, &raw_doc_id);
+        let latest_url = self.doc_url(
+            &self.collection_local_dgraph_snapshots_latest,
+            &latest_doc_id,
+        );
+
+        let body = json!({
+            "fields": {
+                "project_id": Self::firestore_string(project_id),
+                "node_id": Self::firestore_string(node_id),
+                "snapshot_id": Self::firestore_string(&snapshot.snapshot_id),
+                "reported_at_utc": Self::firestore_string(&snapshot.reported_at_utc),
+                "payload": Self::firestore_json_string(snapshot)?
+            }
+        });
+
+        let raw_res = self.client.patch(&raw_url).json(&body).send().await?;
+        let raw_status = raw_res.status();
+        let raw_text = raw_res.text().await.unwrap_or_default();
+
+        if !raw_status.is_success() {
+            return Err(anyhow!(
+                "put_local_dgraph_snapshot raw store failed: {}",
+                raw_text
+            ));
+        }
+
+        let latest_res = self.client.patch(&latest_url).json(&body).send().await?;
+        let latest_status = latest_res.status();
+        let latest_text = latest_res.text().await.unwrap_or_default();
+
+        if !latest_status.is_success() {
+            return Err(anyhow!(
+                "put_local_dgraph_snapshot latest store failed: {}",
+                latest_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_latest_local_dgraph_snapshot(
+        &self,
+        project_id: &str,
+        node_id: &str,
+    ) -> Result<Option<LocalDGraphSnapshot>> {
+        let doc_id = format!("project:{}:node:{}", project_id, node_id);
+        let url = self.doc_url(&self.collection_local_dgraph_snapshots_latest, &doc_id);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!("get_latest_local_dgraph_snapshot failed: {}", text));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        Ok(Some(Self::parse_payload_from_document(
+            raw,
+            "local dgraph snapshot",
+        )?))
+    }
+
+    pub async fn list_latest_local_dgraph_snapshots(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<LocalDGraphSnapshot>> {
+        let url = self.collection_url(&self.collection_local_dgraph_snapshots_latest);
+
+        let res = self.client.get(&url).send().await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "list_latest_local_dgraph_snapshots failed: {}",
+                text
+            ));
+        }
+
+        let raw: Value = serde_json::from_str(&text)?;
+        let docs = raw
+            .get("documents")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut snapshots = Vec::new();
+
+        for doc in docs {
+            let fields = doc.get("fields").cloned().unwrap_or_default();
+            let doc_project_id = fields
+                .get("project_id")
+                .and_then(|v| v.get("stringValue"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if doc_project_id != project_id {
+                continue;
+            }
+
+            snapshots.push(Self::parse_payload_from_document(
+                doc,
+                "local dgraph snapshot",
+            )?);
+        }
+
+        Ok(snapshots)
     }
 
     pub async fn put_wasm_runtime_report(
