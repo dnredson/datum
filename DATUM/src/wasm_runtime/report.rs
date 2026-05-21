@@ -86,6 +86,12 @@ pub fn build_wasm_runtime_report_from_result(result: &WasmRuntimeResult) -> Wasm
         metadata: Some(json!({
             "local_only": true,
             "published_to_server": false,
+            "limits": {
+                "fuel_configured": result.limit_outcome.fuel_configured,
+                "fuel_consumed": result.limit_outcome.fuel_consumed,
+                "timeout_ms": result.limit_outcome.timeout_ms,
+                "limit_exceeded": result.limit_outcome.limit_exceeded,
+            }
         })),
     }
 }
@@ -130,7 +136,7 @@ mod tests {
         build_wasm_runtime_report_from_result,
         validate_local_wasm_runtime_report_publish_invariants,
     };
-    use crate::wasm_runtime::WasmRuntimeResult;
+    use crate::wasm_runtime::{WasmRuntimeLimits, WasmRuntimeResult};
 
     fn sample_result() -> WasmRuntimeResult {
         WasmRuntimeResult {
@@ -145,6 +151,13 @@ mod tests {
             network_access: false,
             host_command_access: false,
             docker_access: false,
+            limits: WasmRuntimeLimits::default(),
+            limit_outcome: crate::wasm_runtime::WasmRuntimeLimitOutcome {
+                fuel_configured: Some(1_000_000),
+                fuel_consumed: Some(3),
+                timeout_ms: Some(1_000),
+                limit_exceeded: Some(false),
+            },
         }
     }
 
@@ -185,6 +198,49 @@ mod tests {
         assert!(rendered.contains("\"installation_task_access\": false"));
         assert!(rendered.contains("\"assisted_execution_access\": false"));
         assert!(rendered.contains("\"published_to_server\": false"));
+        assert!(rendered.contains("\"fuel_configured\": 1000000"));
+        assert!(rendered.contains("\"timeout_ms\": 1000"));
+    }
+
+    #[test]
+    fn report_includes_limit_metadata() {
+        let mut result = sample_result();
+        result.limits = WasmRuntimeLimits {
+            fuel: Some(42),
+            timeout_ms: Some(7),
+        };
+        result.limit_outcome.fuel_configured = Some(42);
+        result.limit_outcome.fuel_consumed = Some(3);
+        result.limit_outcome.timeout_ms = Some(7);
+        result.limit_outcome.limit_exceeded = Some(false);
+
+        let report = build_wasm_runtime_report_from_result(&result);
+        let limits = report
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("limits"))
+            .expect("limit metadata should be present");
+
+        assert_eq!(
+            limits
+                .get("fuel_configured")
+                .and_then(|value| value.as_u64()),
+            Some(42)
+        );
+        assert_eq!(
+            limits.get("fuel_consumed").and_then(|value| value.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            limits.get("timeout_ms").and_then(|value| value.as_u64()),
+            Some(7)
+        );
+        assert_eq!(
+            limits
+                .get("limit_exceeded")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]

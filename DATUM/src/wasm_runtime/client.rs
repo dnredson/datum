@@ -209,7 +209,14 @@ mod tests {
             artifact_access: false,
             installation_task_access: false,
             assisted_execution_access: false,
-            metadata: None,
+            metadata: Some(serde_json::json!({
+                "limits": {
+                    "fuel_configured": 1000000,
+                    "fuel_consumed": 3,
+                    "timeout_ms": 1000,
+                    "limit_exceeded": false
+                }
+            })),
         };
 
         let rendered =
@@ -224,6 +231,7 @@ mod tests {
         assert!(rendered.contains("\"artifact_access\":false"));
         assert!(rendered.contains("\"installation_task_access\":false"));
         assert!(rendered.contains("\"assisted_execution_access\":false"));
+        assert!(rendered.contains("\"fuel_configured\":1000000"));
     }
 
     #[test]

@@ -12,7 +12,8 @@ use crate::{
             validate_local_wasm_runtime_report_publish_invariants, WasmRuntimeReport,
             WasmRuntimeReportList,
         },
-        runner::run_embedded_wasm_add_report,
+        runner::run_embedded_wasm_add_report_with_limits,
+        WasmRuntimeLimits,
     },
 };
 
@@ -29,21 +30,27 @@ pub fn run_wasm_test_command(
     project_id_override: Option<&str>,
     url_override: Option<&str>,
     add_args: &[i32],
+    fuel: Option<u64>,
+    timeout_ms: Option<u64>,
     publish_report: bool,
     latest_report: bool,
     latest_reports: bool,
     json_output: bool,
 ) -> Result<()> {
     let mode = validate_wasm_test_mode(add_args, publish_report, latest_report, latest_reports)?;
+    let limits = WasmRuntimeLimits {
+        fuel: fuel.or(WasmRuntimeLimits::default().fuel),
+        timeout_ms: timeout_ms.or(WasmRuntimeLimits::default().timeout_ms),
+    };
 
     match mode {
         WasmTestMode::LocalAdd => {
-            let report = build_local_add_report(add_args)?;
+            let report = build_local_add_report(add_args, &limits)?;
             print_local_add_output(&report, json_output);
             Ok(())
         }
         WasmTestMode::PublishAdd => {
-            let report = build_local_add_report(add_args)?;
+            let report = build_local_add_report(add_args, &limits)?;
             validate_local_wasm_runtime_report_publish_invariants(&report)?;
 
             let (base_url, project_id, node_id) = resolve_server_runtime_context(
@@ -118,12 +125,15 @@ pub fn run_wasm_test_command(
     }
 }
 
-fn build_local_add_report(add_args: &[i32]) -> Result<WasmRuntimeReport> {
+fn build_local_add_report(
+    add_args: &[i32],
+    limits: &WasmRuntimeLimits,
+) -> Result<WasmRuntimeReport> {
     if add_args.len() != 2 {
         return Err(anyhow!("--add requires exactly two i32 arguments"));
     }
 
-    run_embedded_wasm_add_report(add_args[0], add_args[1])
+    run_embedded_wasm_add_report_with_limits(add_args[0], add_args[1], limits)
 }
 
 fn validate_wasm_test_mode(
@@ -281,10 +291,11 @@ fn format_wasm_test_report(report: &WasmRuntimeReport) -> String {
         lines.push(format!("  message: {}", message));
     }
 
+    append_limit_lines(&mut lines, report);
     append_safety_lines(&mut lines, report);
     lines.push(String::new());
     lines.push(
-        "Note: this WASM report is local-only and was not published to the server.".to_string(),
+        "Note: this WASM test is isolated, local-only, and not connected to installation tasks or assisted execution.".to_string(),
     );
 
     lines.join("\n") + "\n"
@@ -302,6 +313,7 @@ fn format_published_report(report: &WasmRuntimeReport) -> String {
     if let Some(value) = report.result_i32 {
         lines.push(format!("  result: {}", value));
     }
+    append_limit_lines(&mut lines, report);
     lines.push(format!(
         "  safe to auto execute: {}",
         report.safe_to_auto_execute
@@ -332,6 +344,7 @@ fn format_latest_report(report: &WasmRuntimeReport) -> String {
     if let Some(value) = report.result_i32 {
         lines.push(format!("  result: {}", value));
     }
+    append_limit_lines(&mut lines, report);
     append_safety_lines(&mut lines, report);
     lines.join("\n") + "\n"
 }
@@ -361,9 +374,25 @@ fn format_latest_report_list(report_list: &WasmRuntimeReportList) -> String {
         if let Some(value) = report.result_i32 {
             lines.push(format!("  result: {}", value));
         }
+        append_limit_lines(&mut lines, report);
     }
 
     lines.join("\n") + "\n"
+}
+
+fn append_limit_lines(lines: &mut Vec<String>, report: &WasmRuntimeReport) {
+    if let Some(value) = metadata_u64(report, &["limits", "fuel_configured"]) {
+        lines.push(format!("  fuel configured: {}", value));
+    }
+    if let Some(value) = metadata_u64(report, &["limits", "fuel_consumed"]) {
+        lines.push(format!("  fuel consumed: {}", value));
+    }
+    if let Some(value) = metadata_u64(report, &["limits", "timeout_ms"]) {
+        lines.push(format!("  timeout ms: {}", value));
+    }
+    if let Some(value) = metadata_bool(report, &["limits", "limit_exceeded"]) {
+        lines.push(format!("  limit exceeded: {}", value));
+    }
 }
 
 fn append_safety_lines(lines: &mut Vec<String>, report: &WasmRuntimeReport) {
@@ -391,6 +420,25 @@ fn append_safety_lines(lines: &mut Vec<String>, report: &WasmRuntimeReport) {
         "  assisted execution access: {}",
         report.assisted_execution_access
     ));
+}
+
+fn metadata_u64(report: &WasmRuntimeReport, path: &[&str]) -> Option<u64> {
+    metadata_value(report, path).and_then(|value| value.as_u64())
+}
+
+fn metadata_bool(report: &WasmRuntimeReport, path: &[&str]) -> Option<bool> {
+    metadata_value(report, path).and_then(|value| value.as_bool())
+}
+
+fn metadata_value<'a>(
+    report: &'a WasmRuntimeReport,
+    path: &[&str],
+) -> Option<&'a serde_json::Value> {
+    let mut current = report.metadata.as_ref()?;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
 }
 
 #[cfg(test)]
@@ -465,12 +513,25 @@ mod tests {
             artifact_access: false,
             installation_task_access: false,
             assisted_execution_access: false,
-            metadata: None,
+            metadata: Some(serde_json::json!({
+                "local_only": true,
+                "published_to_server": false,
+                "limits": {
+                    "fuel_configured": 1000000,
+                    "fuel_consumed": 3,
+                    "timeout_ms": 1000,
+                    "limit_exceeded": false
+                }
+            })),
         });
 
         assert!(rendered.contains("WASM runtime v0 report"));
         assert!(rendered.contains("mode: embedded_test"));
         assert!(rendered.contains("result: 5"));
+        assert!(rendered.contains("fuel configured: 1000000"));
+        assert!(rendered.contains("fuel consumed: 3"));
+        assert!(rendered.contains("timeout ms: 1000"));
+        assert!(rendered.contains("limit exceeded: false"));
         assert!(rendered.contains("safe to auto execute: false"));
         assert!(rendered.contains("side effects performed: false"));
         assert!(rendered.contains("filesystem access: false"));
@@ -480,8 +541,9 @@ mod tests {
         assert!(rendered.contains("artifact access: false"));
         assert!(rendered.contains("installation task access: false"));
         assert!(rendered.contains("assisted execution access: false"));
-        assert!(rendered
-            .contains("Note: this WASM report is local-only and was not published to the server."));
+        assert!(rendered.contains(
+            "Note: this WASM test is isolated, local-only, and not connected to installation tasks or assisted execution."
+        ));
     }
 
     #[test]

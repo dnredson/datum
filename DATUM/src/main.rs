@@ -143,6 +143,8 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.project_id.as_deref(),
             args.url.as_deref(),
             &args.add,
+            args.fuel,
+            args.timeout_ms,
             args.publish_report,
             args.latest_report,
             args.latest_reports,
@@ -195,6 +197,12 @@ struct WasmTestArgs {
 
     #[arg(long, num_args = 2, value_names = ["A", "B"])]
     add: Vec<i32>,
+
+    #[arg(long)]
+    fuel: Option<u64>,
+
+    #[arg(long)]
+    timeout_ms: Option<u64>,
 
     #[arg(long, default_value_t = false)]
     publish_report: bool,
@@ -790,6 +798,8 @@ fn wasm_test_command(
     project_id: Option<&str>,
     url: Option<&str>,
     add_args: &[i32],
+    fuel: Option<u64>,
+    timeout_ms: Option<u64>,
     publish_report: bool,
     latest_report: bool,
     latest_reports: bool,
@@ -801,6 +811,8 @@ fn wasm_test_command(
         project_id,
         url,
         add_args,
+        fuel,
+        timeout_ms,
         publish_report,
         latest_report,
         latest_reports,

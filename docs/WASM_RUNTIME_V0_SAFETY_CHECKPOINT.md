@@ -21,6 +21,9 @@ Current implemented flow:
 - DATUM can publish the report to dserver as metadata only
 - dserver can store and return the latest report for a node or project
 - the repo-root smoke test validates the local report, publish path, server read-back, and DATUM latest-report viewers
+- `W5/80` adds explicit execution limits metadata for the embedded runner, including fuel and timeout configuration
+- the runner still uses only embedded test WASM
+- no artifact loading or task integration was added
 
 ## Current Hard Safety Guarantees
 
