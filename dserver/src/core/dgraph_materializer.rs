@@ -75,11 +75,22 @@ pub fn materialize_project_dgraph_from_snapshots(
 
     for snapshot in snapshots {
         let fragment = local_snapshot_to_dgraph_fragment(snapshot);
+        let canonical_runtime_ids = fragment
+            .runtimes
+            .iter()
+            .map(|runtime| {
+                (
+                    runtime.runtime_id.clone(),
+                    canonical_runtime_id(project_id, &runtime.node_id, &runtime.runtime_id),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
 
         for node in fragment.nodes {
             merge_node(&mut nodes, node);
         }
         for runtime in fragment.runtimes {
+            let runtime = node_scope_runtime(project_id, runtime);
             runtimes
                 .entry(runtime.runtime_id.clone())
                 .or_insert(runtime);
@@ -100,7 +111,12 @@ pub fn materialize_project_dgraph_from_snapshots(
                 .entry(capability.capability_id.clone())
                 .or_insert(capability);
         }
-        for report in fragment.health_reports {
+        for mut report in fragment.health_reports {
+            if report.target_kind.eq_ignore_ascii_case("runtime") {
+                if let Some(canonical_id) = canonical_runtime_ids.get(&report.target_id) {
+                    report.target_id = canonical_id.clone();
+                }
+            }
             health_reports
                 .entry(report.report_id.clone())
                 .or_insert(report);
@@ -130,7 +146,8 @@ pub fn materialize_project_dgraph_from_snapshots(
                 .entry(wasm_report.report_id.clone())
                 .or_insert(wasm_report);
         }
-        for relationship in fragment.relationships {
+        for mut relationship in fragment.relationships {
+            canonicalize_runtime_relationship(&mut relationship, &canonical_runtime_ids);
             relationships
                 .entry(relationship_key(&relationship))
                 .or_insert(relationship);
@@ -178,6 +195,52 @@ pub fn materialize_project_dgraph_from_snapshots(
     }));
 
     graph
+}
+
+pub fn canonical_runtime_id(project_id: &str, node_id: &str, local_runtime_id: &str) -> String {
+    format!("project:{project_id}:node:{node_id}:runtime:{local_runtime_id}")
+}
+
+fn node_scope_runtime(project_id: &str, mut runtime: DGraphRuntime) -> DGraphRuntime {
+    let local_runtime_id = runtime.runtime_id.clone();
+    runtime.runtime_id = canonical_runtime_id(project_id, &runtime.node_id, &local_runtime_id);
+    runtime.metadata = Some(match runtime.metadata {
+        Some(Value::Object(mut metadata)) => {
+            metadata.insert("local_runtime_id".to_string(), json!(local_runtime_id));
+            Value::Object(metadata)
+        }
+        Some(metadata) => json!({
+            "local_runtime_id": local_runtime_id,
+            "runtime_metadata": metadata,
+        }),
+        None => json!({ "local_runtime_id": local_runtime_id }),
+    });
+    runtime
+}
+
+fn canonicalize_runtime_relationship(
+    relationship: &mut DGraphRelationship,
+    canonical_runtime_ids: &BTreeMap<String, String>,
+) {
+    if relationship.from_kind.eq_ignore_ascii_case("runtime") {
+        if let Some(canonical_id) = canonical_runtime_ids.get(&relationship.from_id) {
+            relationship.from_id = canonical_id.clone();
+        }
+    }
+    if relationship.to_kind.eq_ignore_ascii_case("runtime") {
+        if let Some(canonical_id) = canonical_runtime_ids.get(&relationship.to_id) {
+            relationship.to_id = canonical_id.clone();
+        }
+    }
+
+    relationship.relationship_id = format!(
+        "rel:{}:{}:{}:{}:{}",
+        relationship.from_kind.to_lowercase(),
+        relationship.from_id,
+        relationship.relation.to_lowercase(),
+        relationship.to_kind.to_lowercase(),
+        relationship.to_id,
+    );
 }
 
 pub fn build_project_dgraph_materialization(
@@ -431,7 +494,17 @@ mod tests {
             "smart-city-campinas",
             &[snapshot("fog-01", "snap-1")],
         );
-        assert_eq!(graph.runtimes[0].runtime_id, "runtime-fog-01");
+        assert_eq!(
+            graph.runtimes[0].runtime_id,
+            "project:smart-city-campinas:node:fog-01:runtime:runtime-fog-01"
+        );
+        assert_eq!(
+            graph.runtimes[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("local_runtime_id")),
+            Some(&json!("runtime-fog-01"))
+        );
         assert_eq!(
             graph.artifacts[0].artifact_id,
             "artifact:fog-01:collector-fog-01"
@@ -447,7 +520,8 @@ mod tests {
         assert!(graph.relationships.iter().any(|relationship| {
             relationship.relation == "HAS_RUNTIME"
                 && relationship.from_id == "fog-01"
-                && relationship.to_id == "runtime-fog-01"
+                && relationship.to_id
+                    == "project:smart-city-campinas:node:fog-01:runtime:runtime-fog-01"
         }));
         assert!(graph.relationships.iter().any(|relationship| {
             relationship.relation == "CONTAINS"
@@ -468,6 +542,57 @@ mod tests {
         assert_eq!(
             materialization.summary.relationship_count,
             materialization.graph.relationships.len() as u64
+        );
+    }
+
+    #[test]
+    fn same_local_runtime_id_on_two_nodes_remains_node_scoped() {
+        let mut first = snapshot("fog-01", "snap-1");
+        let mut second = snapshot("fog-02", "snap-2");
+        first.runtimes[0].runtime_id = "runtime-container-local".to_string();
+        second.runtimes[0].runtime_id = "runtime-container-local".to_string();
+
+        let materialization =
+            build_project_dgraph_materialization("smart-city-campinas", &[first, second]);
+        let runtime_ids = materialization
+            .graph
+            .runtimes
+            .iter()
+            .map(|runtime| runtime.runtime_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(materialization.summary.runtime_count, 2);
+        assert!(runtime_ids
+            .contains(&"project:smart-city-campinas:node:fog-01:runtime:runtime-container-local"));
+        assert!(runtime_ids
+            .contains(&"project:smart-city-campinas:node:fog-02:runtime:runtime-container-local"));
+        assert!(materialization.graph.runtimes.iter().all(|runtime| {
+            runtime
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("local_runtime_id"))
+                == Some(&json!("runtime-container-local"))
+        }));
+    }
+
+    #[test]
+    fn one_node_runtime_is_materialized_once_with_its_local_identity_traceable() {
+        let mut single = snapshot("fog-01", "snap-1");
+        single.runtimes[0].runtime_id = "runtime-container-local".to_string();
+
+        let graph = materialize_project_dgraph_from_snapshots("smart-city-campinas", &[single]);
+
+        assert_eq!(graph.runtimes.len(), 1);
+        assert_eq!(
+            graph.runtimes[0].runtime_id,
+            "project:smart-city-campinas:node:fog-01:runtime:runtime-container-local"
+        );
+        assert_eq!(
+            graph.runtimes[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("local_runtime_id")),
+            Some(&json!("runtime-container-local"))
         );
     }
 

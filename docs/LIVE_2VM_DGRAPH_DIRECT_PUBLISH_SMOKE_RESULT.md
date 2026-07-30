@@ -79,6 +79,10 @@ The distributed metadata-only pipeline is working: `dserver` received snapshots 
 
 ## Issues and Follow-Ups
 
-1. **Runtime identity.** `runtime_count=1` despite two nodes because both fixtures use `runtime-container-local`. Candidate follow-up: `C37/110 — Node-Scoped Runtime Identity in Materialized D-Graph`.
+1. **Runtime identity.** `runtime_count=1` despite two nodes because both fixtures use `runtime-container-local`. `C37/110` addresses this observation by node-scoping runtime identity during materialization.
 2. **Module health.** Baseline reported `unhealthy_targets=2` because metadata-only modules have `observed_state=unknown`. This is expected for fixture/config-only snapshots and should remain documented.
 3. **Flow metadata.** `flow_count=0` because current templates do not include richer flow metadata. Add richer flow metadata before 3-VM tests.
+
+## C37 Validation Status
+
+The C37 regression tests validate that matching local runtime IDs from `fog-01` and `fog-02` materialize as two canonical node-scoped runtime entities. A follow-up live check is deferred: the locally running `dserver` holds its executable lock, so it was not stopped or restarted for this documentation and materialization-only change.
