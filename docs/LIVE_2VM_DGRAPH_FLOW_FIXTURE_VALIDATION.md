@@ -74,7 +74,7 @@ The planner correctly counts `degraded_flow_count=1`, but does not currently emi
 
 C39 makes degraded flow metadata visible as structured planner advisory warnings. Degraded flows still do not trigger automatic reconfiguration: the planner remains read-only/dry-run. `status=planned` means a dry-run plan can be produced; `warning_count>0` identifies advisory concerns such as degraded flows.
 
-Live C39 validation remains pending because the locally running `dserver` executable was not stopped or restarted during this advisory-only implementation.
+Live C39 validation confirmed degraded-flow planner warnings: `degraded_flow_count=1` produces one deterministic advisory warning while the dry-run remains `status=planned` and performs no reconfiguration.
 
 ## Safety Confirmation
 
