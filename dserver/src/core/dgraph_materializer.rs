@@ -476,6 +476,79 @@ mod tests {
     }
 
     #[test]
+    fn cross_node_fixture_flow_is_materialized_once_with_metadata() {
+        let mut fog_01 = snapshot("fog-01", "snap-1");
+        let mut fog_02 = snapshot("fog-02", "snap-2");
+        fog_01.runtimes[0].runtime_id = "runtime-container-local".to_string();
+        fog_02.runtimes[0].runtime_id = "runtime-container-local".to_string();
+        fog_01.modules[0].module_id = "chirpstack-primary".to_string();
+        fog_02.modules[0].module_id = "mqtt-adapter".to_string();
+        fog_01.flows[0] = LocalFlowSnapshot {
+            flow_id: "flow-chirpstack-to-mqtt-adapter".to_string(),
+            flow_kind: Some("application_data".to_string()),
+            modules: vec!["chirpstack-primary".to_string(), "mqtt-adapter".to_string()],
+            edges: vec![LocalFlowEdgeSnapshot {
+                edge_id: "edge:chirpstack-primary:mqtt-adapter:mqtt".to_string(),
+                from_module_id: "chirpstack-primary".to_string(),
+                to_module_id: "mqtt-adapter".to_string(),
+                protocol: Some("mqtt".to_string()),
+                status: Some("configured".to_string()),
+                metadata: Some(json!({ "fixture": true, "cross_node": true })),
+            }],
+            status: Some("configured".to_string()),
+            source: "fixture".to_string(),
+            metadata: Some(json!({
+                "fixture": true,
+                "reporting_only": true,
+                "cross_node": true,
+                "source_node_id": "fog-01",
+                "target_node_id": "fog-02",
+            })),
+        };
+        fog_02.flows[0] = fog_01.flows[0].clone();
+
+        let materialization =
+            build_project_dgraph_materialization("smart-city-campinas", &[fog_01, fog_02]);
+
+        assert_eq!(materialization.summary.node_count, 2);
+        assert_eq!(materialization.summary.runtime_count, 2);
+        assert_eq!(materialization.summary.module_count, 2);
+        assert_eq!(materialization.summary.flow_count, 1);
+        assert!(!materialization.side_effects_performed);
+        let flow = materialization
+            .graph
+            .flows
+            .iter()
+            .find(|flow| flow.flow_id == "flow-chirpstack-to-mqtt-adapter")
+            .expect("cross-node flow should be materialized");
+        assert_eq!(flow.edges.len(), 1);
+        assert_eq!(
+            flow.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("details"))
+                .and_then(|metadata| metadata.get("cross_node")),
+            Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn degraded_fixture_flow_status_is_preserved_without_side_effects() {
+        let mut fog_01 = snapshot("fog-01", "snap-1");
+        fog_01.flows[0].flow_id = "flow-chirpstack-to-mqtt-adapter".to_string();
+        fog_01.flows[0].status = Some("degraded".to_string());
+        fog_01.flows[0].metadata = Some(json!({ "fixture": true, "reporting_only": true }));
+
+        let materialization =
+            build_project_dgraph_materialization("smart-city-campinas", &[fog_01]);
+        assert_eq!(materialization.summary.flow_count, 1);
+        assert_eq!(
+            materialization.graph.flows[0].status.as_deref(),
+            Some("degraded")
+        );
+        assert!(!materialization.side_effects_performed);
+    }
+
+    #[test]
     fn duplicate_module_ids_are_deduplicated() {
         let first = snapshot("fog-01", "snap-1");
         let mut second = snapshot("fog-01", "snap-2");

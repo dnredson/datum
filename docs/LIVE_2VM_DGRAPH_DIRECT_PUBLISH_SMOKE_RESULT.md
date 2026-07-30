@@ -90,3 +90,7 @@ The C37 regression tests validate that matching local runtime IDs from `fog-01` 
 ## C37 Live Validation Update
 
 C37 was subsequently live validated. The two-node materialized graph now reports `runtime_count=2`; runtime entities are node-scoped during materialization.
+
+## C38 Flow Fixture Update
+
+C38 introduces metadata-only flow fixtures. The two-node fixture can now represent the advisory, read-only logical flow `fog-01/chirpstack-primary -> fog-02/mqtt-adapter`; it neither publishes real telemetry nor executes reconfiguration. Live publishing of this new fixture remains pending a planned `dserver` restart.

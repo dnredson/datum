@@ -55,6 +55,13 @@ pub fn build_dgraph_fixture_snapshot(
     let mut snapshot = build_local_dgraph_snapshot(config);
     ensure_fixture_baseline_entities(&mut snapshot);
 
+    if matches!(
+        scenario,
+        DGraphSnapshotFixtureScenario::Baseline | DGraphSnapshotFixtureScenario::DegradedFlow
+    ) {
+        ensure_cross_node_flow_fixture(&mut snapshot);
+    }
+
     match scenario {
         DGraphSnapshotFixtureScenario::Baseline => {}
         DGraphSnapshotFixtureScenario::DegradedNode => {
@@ -114,7 +121,8 @@ pub fn build_dgraph_fixture_snapshot(
             );
         }
         DGraphSnapshotFixtureScenario::DegradedFlow => {
-            let flow_id = ensure_flow(&mut snapshot);
+            let flow_id = ensure_cross_node_flow_fixture(&mut snapshot)
+                .unwrap_or_else(|| ensure_flow(&mut snapshot));
             if let Some(flow) = snapshot
                 .flows
                 .iter_mut()
@@ -230,6 +238,106 @@ pub fn build_dgraph_fixture_snapshot(
     snapshot.safe_to_auto_execute = false;
     snapshot.side_effects_performed = false;
     snapshot
+}
+
+fn ensure_cross_node_flow_fixture(snapshot: &mut LocalDGraphSnapshot) -> Option<String> {
+    if snapshot.node_id != "fog-01" {
+        return None;
+    }
+
+    let source_module_id = ensure_named_fixture_module(
+        snapshot,
+        "chirpstack-primary",
+        "fog-01",
+        "fixture-chirpstack-primary",
+    );
+    let target_module_id =
+        ensure_named_fixture_module(snapshot, "mqtt-adapter", "fog-02", "fixture-mqtt-adapter");
+    let flow_id = "flow-chirpstack-to-mqtt-adapter".to_string();
+    let edge_id = "edge:chirpstack-primary:mqtt-adapter:mqtt".to_string();
+    let flow_metadata = json!({
+        "fixture": true,
+        "reporting_only": true,
+        "cross_node": true,
+        "source_node_id": "fog-01",
+        "target_node_id": "fog-02",
+    });
+
+    if let Some(flow) = snapshot
+        .flows
+        .iter_mut()
+        .find(|flow| flow.flow_id == flow_id)
+    {
+        flow.flow_kind = Some("application_data".to_string());
+        flow.modules = vec![source_module_id.clone(), target_module_id.clone()];
+        flow.status = Some("configured".to_string());
+        flow.source = "fixture".to_string();
+        merge_metadata(&mut flow.metadata, flow_metadata.clone());
+        if !flow.edges.iter().any(|edge| edge.edge_id == edge_id) {
+            flow.edges.push(LocalFlowEdgeSnapshot {
+                edge_id,
+                from_module_id: source_module_id,
+                to_module_id: target_module_id,
+                protocol: Some("mqtt".to_string()),
+                status: Some("configured".to_string()),
+                metadata: Some(flow_metadata),
+            });
+        }
+        return Some(flow_id);
+    }
+
+    snapshot.flows.push(LocalFlowSnapshot {
+        flow_id: flow_id.clone(),
+        flow_kind: Some("application_data".to_string()),
+        modules: vec![source_module_id.clone(), target_module_id.clone()],
+        edges: vec![LocalFlowEdgeSnapshot {
+            edge_id,
+            from_module_id: source_module_id,
+            to_module_id: target_module_id,
+            protocol: Some("mqtt".to_string()),
+            status: Some("configured".to_string()),
+            metadata: Some(flow_metadata.clone()),
+        }],
+        status: Some("configured".to_string()),
+        source: "fixture".to_string(),
+        metadata: Some(flow_metadata),
+    });
+    Some(flow_id)
+}
+
+fn ensure_named_fixture_module(
+    snapshot: &mut LocalDGraphSnapshot,
+    module_id: &str,
+    node_id: &str,
+    local_mapping_key: &str,
+) -> String {
+    let metadata = json!({
+        "fixture": true,
+        "reporting_only": true,
+        "node_id": node_id,
+    });
+    if let Some(module) = snapshot
+        .modules
+        .iter_mut()
+        .find(|module| module.module_id == module_id)
+    {
+        merge_metadata(&mut module.metadata, metadata);
+        return module_id.to_string();
+    }
+
+    snapshot.modules.push(LocalModuleSnapshot {
+        module_id: module_id.to_string(),
+        module_kind: Some("service".to_string()),
+        desired_state: Some("running".to_string()),
+        observed_state: Some("unknown".to_string()),
+        runtime: Some("container".to_string()),
+        artifact_ref: None,
+        local_mapping_key: Some(local_mapping_key.to_string()),
+        local_container_name: None,
+        source: "fixture".to_string(),
+        metadata: Some(metadata),
+    });
+    module_id.to_string()
 }
 
 fn ensure_fixture_baseline_entities(snapshot: &mut LocalDGraphSnapshot) {
@@ -529,6 +637,38 @@ mod tests {
     }
 
     #[test]
+    fn fog_01_baseline_fixture_includes_metadata_only_cross_node_flow() {
+        let snapshot = build_dgraph_fixture_snapshot(
+            &sparse_config(),
+            DGraphSnapshotFixtureScenario::Baseline,
+        );
+        let flow = snapshot
+            .flows
+            .iter()
+            .find(|flow| flow.flow_id == "flow-chirpstack-to-mqtt-adapter")
+            .expect("fog-01 baseline should include the cross-node fixture flow");
+
+        assert_eq!(flow.flow_kind.as_deref(), Some("application_data"));
+        assert_eq!(
+            flow.modules,
+            vec!["chirpstack-primary".to_string(), "mqtt-adapter".to_string()]
+        );
+        assert!(flow.edges.iter().any(|edge| {
+            edge.from_module_id == "chirpstack-primary"
+                && edge.to_module_id == "mqtt-adapter"
+                && edge.protocol.as_deref() == Some("mqtt")
+        }));
+        assert_eq!(
+            flow.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("cross_node")),
+            Some(&serde_json::json!(true))
+        );
+        assert!(!snapshot.safe_to_auto_execute);
+        assert!(!snapshot.side_effects_performed);
+    }
+
+    #[test]
     fn degraded_node_fixture_has_node_health_status_degraded() {
         let snapshot = build_dgraph_fixture_snapshot(
             &base_config(),
@@ -556,6 +696,7 @@ mod tests {
             .any(|health| health.target_kind == "node"
                 && health.target_id == "fog-01"
                 && health.status == "unavailable"));
+        assert!(!snapshot.side_effects_performed);
     }
 
     #[test]
@@ -589,6 +730,19 @@ mod tests {
             .any(|edge| edge.status.as_deref() == Some("degraded"));
 
         assert!(degraded_flow || degraded_edge);
+        assert!(snapshot.flows.iter().any(|flow| {
+            flow.flow_id == "flow-chirpstack-to-mqtt-adapter"
+                && flow
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("cross_node"))
+                    == Some(&serde_json::json!(true))
+        }));
+        assert!(snapshot.health.iter().any(|health| {
+            health.target_kind == "flow"
+                && health.target_id == "flow-chirpstack-to-mqtt-adapter"
+                && health.status == "degraded"
+        }));
     }
 
     #[test]

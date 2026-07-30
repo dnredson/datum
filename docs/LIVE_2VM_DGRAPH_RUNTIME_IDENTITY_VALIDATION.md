@@ -73,6 +73,7 @@ Earlier pre-C37/manual unavailable-node testing returned `blocked_count=2` and `
 
 ## Follow-Ups
 
-1. **C38/110 candidate:** Add richer flow metadata fixtures; current live tests still show `flow_count=0`.
-2. **Planner semantics:** Clarify whether unavailable nodes should produce `blocked_count`/`warning_count` or only reduce `candidate_node_count`.
-3. **Baseline health:** Baseline still has `unhealthy_targets=2` because module health remains unknown in metadata-only mode.
+C38 adds metadata-only flow fixtures for the advisory, read-only logical flow `fog-01/chirpstack-primary -> fog-02/mqtt-adapter`. It does not publish real telemetry or execute reconfiguration.
+
+1. **Planner semantics:** Clarify whether unavailable nodes should produce `blocked_count`/`warning_count` or only reduce `candidate_node_count`.
+2. **Baseline health:** Baseline still has `unhealthy_targets=2` because module health remains unknown in metadata-only mode.
