@@ -16,6 +16,7 @@ Status notes:
 - `C37/110` materializes runtime entities as node-scoped entities, preventing identical local runtime IDs from collapsing across nodes.
 - C37 resolved the runtime identity collapse in live 2-VM validation; the next recommended refinement is richer flow metadata fixtures.
 - `C38/110` adds metadata-only flow fixtures for the advisory/read-only logical flow `fog-01/chirpstack-primary -> fog-02/mqtt-adapter`; no telemetry is published and no reconfiguration is executed.
+- `C38/110` completed live validation of the metadata-only cross-node flow fixtures; the next recommended refinement is flow-aware planner advisory semantics.
 
 ## Completed Readiness Scope
 

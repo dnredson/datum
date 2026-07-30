@@ -93,4 +93,8 @@ C37 was subsequently live validated. The two-node materialized graph now reports
 
 ## C38 Flow Fixture Update
 
-C38 introduces metadata-only flow fixtures. The two-node fixture can now represent the advisory, read-only logical flow `fog-01/chirpstack-primary -> fog-02/mqtt-adapter`; it neither publishes real telemetry nor executes reconfiguration. Live publishing of this new fixture remains pending a planned `dserver` restart.
+C38 introduces metadata-only flow fixtures. The two-node fixture can now represent the advisory, read-only logical flow `fog-01/chirpstack-primary -> fog-02/mqtt-adapter`; it neither publishes real telemetry nor executes reconfiguration.
+
+## C38 Live Flow Validation Update
+
+C38 was subsequently live validated. The 2-node baseline now materializes one metadata-only cross-node flow (`flow_count=1`).
