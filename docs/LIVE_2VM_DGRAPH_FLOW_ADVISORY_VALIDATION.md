@@ -94,3 +94,7 @@ After normalization, `warning_count=0` and `degraded_flow_count=0`.
 1. `C40/110` candidate: prepare a final live validation checkpoint for the metadata-only D-Graph pipeline.
 2. Future planner refinement: optionally convert degraded-flow warnings into advisory reconfiguration proposals, still without execution.
 3. Future 3VM scenario: extend fixtures to represent a multi-hop flow across mist/fog/cloud.
+
+## C40 Readiness Summary
+
+`C40/110` adds `GET /api/v1/dgraph/readiness/summary`, a consolidated read-only view of latest snapshots, materialized graph state, planner dry-run state, validation errors, and safety/readiness checks. It remains metadata-only: it does not execute deployment, dispatch, or flow reconfiguration.

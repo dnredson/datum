@@ -9,12 +9,12 @@ use crate::{
             fetch_latest_local_dgraph_snapshot, fetch_latest_local_dgraph_snapshots,
             fetch_project_dgraph_materialized, fetch_project_dgraph_materialized_summary,
             fetch_project_dgraph_planner_dry_run, fetch_project_dgraph_planner_dry_run_summary,
-            publish_local_dgraph_snapshot,
+            fetch_project_dgraph_readiness_summary, publish_local_dgraph_snapshot,
         },
         planner::{ProjectDGraphPlannerDryRunResponse, ProjectDGraphPlannerDryRunSummaryResponse},
         validate_local_dgraph_snapshot_publish_invariants, DGraphSnapshotFixtureScenario,
         LocalDGraphSnapshot, LocalDGraphSnapshotList, ProjectDGraphMaterialization,
-        ProjectDGraphMaterializationSummary,
+        ProjectDGraphMaterializationSummary, ProjectDGraphReadinessSummaryResponse,
     },
 };
 
@@ -27,6 +27,7 @@ enum DgraphSnapshotMode {
     MaterializedSummary,
     PlannerDryRun,
     PlannerSummary,
+    ReadinessSummary,
 }
 
 pub fn run_dgraph_snapshot_command(
@@ -42,6 +43,7 @@ pub fn run_dgraph_snapshot_command(
     materialized_summary: bool,
     planner_dry_run: bool,
     planner_summary: bool,
+    readiness_summary: bool,
     json_output: bool,
 ) -> Result<()> {
     let mode = validate_dgraph_snapshot_mode(
@@ -53,6 +55,7 @@ pub fn run_dgraph_snapshot_command(
         materialized_summary,
         planner_dry_run,
         planner_summary,
+        readiness_summary,
     )?;
     let fixture_scenario = fixture_scenario
         .map(DGraphSnapshotFixtureScenario::parse)
@@ -214,6 +217,21 @@ pub fn run_dgraph_snapshot_command(
             print!("{}", format_planner_dry_run_summary(&response, &project_id));
             Ok(())
         }
+        DgraphSnapshotMode::ReadinessSummary => {
+            let base_url = resolve_base_url(cfg, url_override)?;
+            let project_id = resolve_project_id(cfg, project_id_override)?;
+            let response = fetch_project_dgraph_readiness_summary(&base_url, &project_id)?;
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response)
+                        .unwrap_or_else(|_| "{\"error\":\"failed to render JSON\"}".to_string())
+                );
+                return Ok(());
+            }
+            print!("{}", format_readiness_summary(&response, &project_id));
+            Ok(())
+        }
     }
 }
 
@@ -226,6 +244,7 @@ fn validate_dgraph_snapshot_mode(
     materialized_summary: bool,
     planner_dry_run: bool,
     planner_summary: bool,
+    readiness_summary: bool,
 ) -> Result<DgraphSnapshotMode> {
     if fixture
         && (latest
@@ -233,10 +252,11 @@ fn validate_dgraph_snapshot_mode(
             || materialized
             || materialized_summary
             || planner_dry_run
-            || planner_summary)
+            || planner_summary
+            || readiness_summary)
     {
         return Err(anyhow!(
-            "--fixture cannot be combined with --latest, --latest-all, --materialized, --materialized-summary, --planner-dry-run, or --planner-summary"
+            "--fixture cannot be combined with read-only server viewer options"
         ));
     }
 
@@ -246,11 +266,10 @@ fn validate_dgraph_snapshot_mode(
         + materialized as u8
         + materialized_summary as u8
         + planner_dry_run as u8
-        + planner_summary as u8;
+        + planner_summary as u8
+        + readiness_summary as u8;
     if selected_modes > 1 {
-        return Err(anyhow!(
-            "--publish, --latest, --latest-all, --materialized, --materialized-summary, --planner-dry-run, and --planner-summary cannot be combined"
-        ));
+        return Err(anyhow!("d-graph snapshot modes cannot be combined"));
     }
 
     if publish {
@@ -279,6 +298,10 @@ fn validate_dgraph_snapshot_mode(
 
     if planner_summary {
         return Ok(DgraphSnapshotMode::PlannerSummary);
+    }
+
+    if readiness_summary {
+        return Ok(DgraphSnapshotMode::ReadinessSummary);
     }
 
     Ok(DgraphSnapshotMode::Local)
@@ -577,6 +600,47 @@ fn format_materialized_dgraph_summary(
 
     lines.push(String::new());
     lines.push("Note: this command only reads materialized d-graph metadata. It did not run planner, deploy modules, or reconfigure flows.".to_string());
+    lines.join("\n") + "\n"
+}
+
+fn format_readiness_summary(
+    response: &ProjectDGraphReadinessSummaryResponse,
+    requested_project_id: &str,
+) -> String {
+    let project_id = response
+        .project_id
+        .as_deref()
+        .unwrap_or(requested_project_id);
+    let materialized = response
+        .materialized_summary
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+    let graph = materialized.summary.unwrap_or_default();
+    let planner = response
+        .planner_summary
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+    let planner_counts = planner.summary.unwrap_or_default();
+
+    let lines = vec![
+        "D-graph readiness summary".to_string(),
+        format!("Project: {project_id}"),
+        format!("Readiness: {}", response.readiness_status.as_deref().unwrap_or("unknown")),
+        format!("Source snapshots: {}", response.source_snapshot_count.unwrap_or(0)),
+        format!("Nodes: {}", graph.node_count.unwrap_or(0)),
+        format!("Runtimes: {}", graph.runtime_count.unwrap_or(0)),
+        format!("Modules: {}", graph.module_count.unwrap_or(0)),
+        format!("Flows: {}", graph.flow_count.unwrap_or(0)),
+        format!("Planner status: {}", planner.status.as_deref().unwrap_or("unknown")),
+        format!("Warnings: {}", response.warning_count.unwrap_or(planner.warning_count.unwrap_or(0))),
+        format!("Degraded flows: {}", response.degraded_flow_count.unwrap_or(planner_counts.degraded_flow_count.unwrap_or(0))),
+        format!("Blocked: {}", response.blocked_count.unwrap_or(planner.blocked_count.unwrap_or(0))),
+        format!("Side effects performed: {}", response.side_effects_performed.unwrap_or(false)),
+        String::new(),
+        "Note: this consolidated readiness view only reads metadata, materializes the d-graph, and runs the advisory dry-run planner. It does not execute dispatch, deployment, or flow reconfiguration.".to_string(),
+    ];
     lines.join("\n") + "\n"
 }
 
@@ -945,101 +1009,128 @@ mod tests {
     #[test]
     fn cli_mode_validation_accepts_local_publish_and_latest_modes() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, true, false, false, false, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, true, false, false, false, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::Publish
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, true, false, false, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, true, false, false, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::Latest
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, true, false, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, true, false, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::LatestAll
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, true, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, true, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::Materialized
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, true, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, true, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::MaterializedSummary
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, true, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, false, true, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::PlannerDryRun
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, true)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, false, false, true, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::PlannerSummary
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(true, false, false, false, false, false, false, false)
-                .expect("fixture mode should validate"),
+            validate_dgraph_snapshot_mode(
+                true, false, false, false, false, false, false, false, false
+            )
+            .expect("fixture mode should validate"),
             DgraphSnapshotMode::Local
         ));
         assert!(matches!(
-            validate_dgraph_snapshot_mode(true, true, false, false, false, false, false, false)
-                .expect("fixture publish mode should validate"),
+            validate_dgraph_snapshot_mode(
+                true, true, false, false, false, false, false, false, false
+            )
+            .expect("fixture publish mode should validate"),
             DgraphSnapshotMode::Publish
+        ));
+        assert!(matches!(
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, false, false, false, true
+            )
+            .expect("mode should validate"),
+            DgraphSnapshotMode::ReadinessSummary
         ));
     }
 
     #[test]
     fn cli_mode_validation_rejects_ambiguous_combinations() {
         assert!(validate_dgraph_snapshot_mode(
-            false, true, true, false, false, false, false, false
+            false, true, true, false, false, false, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, true, false, true, false, false, false, false
+            false, true, false, true, false, false, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, false, true, true, false, false, false, false
+            false, false, true, true, false, false, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, true, false, false, true, false, false, false
+            false, true, false, false, true, false, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, true, false, false, false, true, false, false
+            false, true, false, false, false, true, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, true, false, false, false, false, true, false
+            false, true, false, false, false, false, true, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, true, false, false, false, false, false, true
+            false, true, false, false, false, false, false, true, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, false, false, false, true, false, true, false
+            false, false, false, false, true, false, true, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            false, false, false, false, false, true, false, true
+            false, false, false, false, false, true, false, true, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            true, false, true, false, false, false, false, false
+            true, false, true, false, false, false, false, false, false
         )
         .is_err());
         assert!(validate_dgraph_snapshot_mode(
-            true, false, false, false, false, false, true, false
+            true, false, false, false, false, false, true, false, false
         )
         .is_err());
     }
@@ -1047,8 +1138,10 @@ mod tests {
     #[test]
     fn local_dgraph_snapshot_without_publish_does_not_require_server_config_helpers() {
         assert!(matches!(
-            validate_dgraph_snapshot_mode(false, false, false, false, false, false, false, false)
-                .expect("mode should validate"),
+            validate_dgraph_snapshot_mode(
+                false, false, false, false, false, false, false, false, false
+            )
+            .expect("mode should validate"),
             DgraphSnapshotMode::Local
         ));
     }

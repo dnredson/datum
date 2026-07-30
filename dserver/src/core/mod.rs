@@ -6,6 +6,7 @@ pub mod deployment_plan;
 pub mod dgraph;
 pub mod dgraph_materializer;
 pub mod dgraph_planner;
+pub mod dgraph_readiness;
 pub mod dispatch_policy;
 pub mod events;
 pub mod graph_builder;

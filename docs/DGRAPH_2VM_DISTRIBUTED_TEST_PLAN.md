@@ -182,6 +182,7 @@ Use:
 - server `GET /api/v1/dgraph/planner/dry-run/summary`
 - `DATUM` `dgraph-snapshot --planner-dry-run`
 - `DATUM` `dgraph-snapshot --planner-summary`
+- `DATUM` `dgraph-snapshot --readiness-summary` consolidates the latest-snapshot, materialization, and planner dry-run checks without executing any decision.
 
 Expected result:
 

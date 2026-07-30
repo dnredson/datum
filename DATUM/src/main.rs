@@ -103,6 +103,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.materialized_summary,
             args.planner_dry_run,
             args.planner_summary,
+            args.readiness_summary,
             args.json,
         ),
         Command::InstallationPlan(args) => installation_plan_command(
@@ -363,6 +364,9 @@ struct DgraphSnapshotArgs {
 
     #[arg(long, default_value_t = false)]
     planner_summary: bool,
+
+    #[arg(long, default_value_t = false)]
+    readiness_summary: bool,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -785,6 +789,7 @@ fn dgraph_snapshot_command(
     materialized_summary: bool,
     planner_dry_run: bool,
     planner_summary: bool,
+    readiness_summary: bool,
     json: bool,
 ) -> Result<()> {
     let cfg = config::load_config(config_path)?;
@@ -801,6 +806,7 @@ fn dgraph_snapshot_command(
         materialized_summary,
         planner_dry_run,
         planner_summary,
+        readiness_summary,
         json,
     )
 }

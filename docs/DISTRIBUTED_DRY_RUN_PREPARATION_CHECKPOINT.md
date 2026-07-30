@@ -19,6 +19,7 @@ Status notes:
 - `C38/110` completed live validation of the metadata-only cross-node flow fixtures; the next recommended refinement is flow-aware planner advisory semantics.
 - `C39/110` makes degraded flow metadata visible as planner advisory warnings. Degraded flows do not trigger automatic reconfiguration; the planner remains read-only/dry-run, and `status=planned` may include advisory warnings.
 - `C39/110` completed live validation of advisory warning semantics for degraded flows.
+- `C40/110` adds a consolidated read-only D-Graph readiness summary combining latest snapshots, materialized graph and planner dry-run summaries, validation errors, and safety checks. It remains metadata-only and does not execute deployment, dispatch, or reconfiguration.
 
 ## Completed Readiness Scope
 

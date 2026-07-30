@@ -19,6 +19,7 @@ use api::dashboard::get_dashboard;
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
 use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
 use api::dgraph_planner::{get_dgraph_planner_dry_run, get_dgraph_planner_dry_run_summary};
+use api::dgraph_readiness::get_dgraph_readiness_summary;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
@@ -222,6 +223,10 @@ async fn main() {
         .route(
             "/api/v1/dgraph/planner/dry-run/summary",
             get(get_dgraph_planner_dry_run_summary),
+        )
+        .route(
+            "/api/v1/dgraph/readiness/summary",
+            get(get_dgraph_readiness_summary),
         )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",
