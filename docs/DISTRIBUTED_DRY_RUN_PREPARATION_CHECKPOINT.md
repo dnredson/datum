@@ -12,6 +12,7 @@ Status notes:
 - `C34/100` added local d-graph snapshot fixture mode for degraded and failure simulation.
 - `I25/100` extended smoke coverage with fixture scenarios and planner visibility checks.
 - `R4/100` records distributed dry-run readiness before the first required live `2-VM` execution.
+- `I28/110` completed live two-node metadata-only validation; the system is ready for the next refinement phase.
 
 ## Completed Readiness Scope
 

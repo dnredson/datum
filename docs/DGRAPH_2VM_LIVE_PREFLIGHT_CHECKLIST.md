@@ -10,6 +10,8 @@ Use it together with:
 - [Distributed Dry-Run Preparation Checkpoint](./DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT.md)
 - [2-VM D-Graph Metadata Smoke Draft](../scripts/README-2VM-DGRAPH.md)
 
+> `I28/110` records a successful live 2-VM metadata-only direct publish smoke test. Direct DATUM `--publish` works after `C36/110`; manual JSON patching is no longer needed.
+
 ## A. Environment Assumptions
 
 - one reachable `dserver`
