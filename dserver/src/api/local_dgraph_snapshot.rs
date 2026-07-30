@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 
 use crate::{
     core::local_dgraph_snapshot::{
-        normalize_local_dgraph_snapshot, validate_local_dgraph_snapshot, LocalDGraphSnapshot,
-        LocalDGraphSnapshotList,
+        normalize_local_dgraph_snapshot, validate_local_dgraph_snapshot, IncomingDGraphSnapshot,
+        LocalDGraphSnapshot, LocalDGraphSnapshotList,
     },
     AppState,
 };
@@ -51,7 +51,7 @@ pub async fn post_local_dgraph_snapshot(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
-    Json(payload): Json<LocalDGraphSnapshot>,
+    Json(payload): Json<IncomingDGraphSnapshot>,
 ) -> Result<JsonResponse<LocalDGraphSnapshot>, ApiError> {
     let project_id = extract_project_id(&headers)?;
     let normalized = normalize_local_dgraph_snapshot(&project_id, &node_id, payload);

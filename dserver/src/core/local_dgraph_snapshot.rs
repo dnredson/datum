@@ -45,6 +45,61 @@ pub struct LocalDGraphSnapshot {
     pub side_effects_performed: bool,
 }
 
+/// Request payload accepted from a DATUM node. Identity and ingestion time are
+/// intentionally optional here because dserver assigns their canonical values.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct IncomingDGraphSnapshot {
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
+    #[serde(default)]
+    pub reported_at_utc: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub generated_at_utc: Option<String>,
+    #[serde(default)]
+    pub runtimes: Vec<LocalRuntimeSnapshot>,
+    #[serde(default)]
+    pub modules: Vec<LocalModuleSnapshot>,
+    #[serde(default)]
+    pub flows: Vec<LocalFlowSnapshot>,
+    #[serde(default)]
+    pub health: Vec<LocalHealthSnapshot>,
+    #[serde(default)]
+    pub capabilities: Vec<LocalCapabilitySnapshot>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub safe_to_auto_execute: bool,
+    #[serde(default)]
+    pub side_effects_performed: bool,
+}
+
+impl From<IncomingDGraphSnapshot> for LocalDGraphSnapshot {
+    fn from(input: IncomingDGraphSnapshot) -> Self {
+        Self {
+            project_id: input.project_id.unwrap_or_default(),
+            node_id: input.node_id.unwrap_or_default(),
+            snapshot_id: input.snapshot_id.unwrap_or_default(),
+            reported_at_utc: input.reported_at_utc.unwrap_or_default(),
+            source: input.source,
+            generated_at_utc: input.generated_at_utc,
+            runtimes: input.runtimes,
+            modules: input.modules,
+            flows: input.flows,
+            health: input.health,
+            capabilities: input.capabilities,
+            metadata: input.metadata,
+            safe_to_auto_execute: input.safe_to_auto_execute,
+            side_effects_performed: input.side_effects_performed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalRuntimeSnapshot {
     #[serde(default)]
@@ -160,8 +215,9 @@ pub struct LocalDGraphSnapshotList {
 pub fn normalize_local_dgraph_snapshot(
     project_id: &str,
     node_id: &str,
-    mut input: LocalDGraphSnapshot,
+    input: IncomingDGraphSnapshot,
 ) -> LocalDGraphSnapshot {
+    let mut input = LocalDGraphSnapshot::from(input);
     input.project_id = project_id.to_string();
     input.node_id = node_id.to_string();
     input.snapshot_id = format!(
@@ -172,15 +228,7 @@ pub fn normalize_local_dgraph_snapshot(
     );
     input.reported_at_utc = Utc::now().to_rfc3339();
 
-    if input
-        .source
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("")
-        .is_empty()
-    {
-        input.source = Some("client".to_string());
-    }
+    input.source = Some("client".to_string());
 
     input
 }
@@ -514,6 +562,25 @@ mod tests {
         }
     }
 
+    fn incoming_snapshot(snapshot: LocalDGraphSnapshot) -> IncomingDGraphSnapshot {
+        IncomingDGraphSnapshot {
+            project_id: Some(snapshot.project_id),
+            node_id: Some(snapshot.node_id),
+            snapshot_id: Some(snapshot.snapshot_id),
+            reported_at_utc: Some(snapshot.reported_at_utc),
+            source: snapshot.source,
+            generated_at_utc: snapshot.generated_at_utc,
+            runtimes: snapshot.runtimes,
+            modules: snapshot.modules,
+            flows: snapshot.flows,
+            health: snapshot.health,
+            capabilities: snapshot.capabilities,
+            metadata: snapshot.metadata,
+            safe_to_auto_execute: snapshot.safe_to_auto_execute,
+            side_effects_performed: snapshot.side_effects_performed,
+        }
+    }
+
     fn populated_snapshot() -> LocalDGraphSnapshot {
         LocalDGraphSnapshot {
             runtimes: vec![LocalRuntimeSnapshot {
@@ -589,11 +656,11 @@ mod tests {
         let normalized = normalize_local_dgraph_snapshot(
             "project-a",
             "node-b",
-            LocalDGraphSnapshot {
+            incoming_snapshot(LocalDGraphSnapshot {
                 project_id: "wrong".to_string(),
                 node_id: "wrong".to_string(),
                 ..minimal_snapshot()
-            },
+            }),
         );
 
         assert_eq!(normalized.project_id, "project-a");
@@ -603,16 +670,57 @@ mod tests {
     }
 
     #[test]
-    fn normalization_sets_source_client_when_missing() {
+    fn normalization_overrides_untrusted_source_with_client() {
         let normalized = normalize_local_dgraph_snapshot(
             "project-a",
             "node-b",
-            LocalDGraphSnapshot {
-                source: None,
+            incoming_snapshot(LocalDGraphSnapshot {
+                source: Some("untrusted-source".to_string()),
                 ..minimal_snapshot()
-            },
+            }),
         );
 
+        assert_eq!(normalized.source.as_deref(), Some("client"));
+    }
+
+    #[test]
+    fn incoming_snapshot_accepts_null_server_owned_fields_and_normalizes_them() {
+        let incoming: IncomingDGraphSnapshot = serde_json::from_value(json!({
+            "project_id": "untrusted-project",
+            "node_id": "untrusted-node",
+            "snapshot_id": null,
+            "reported_at_utc": null,
+            "source": null,
+            "safe_to_auto_execute": false,
+            "side_effects_performed": false
+        }))
+        .expect("incoming snapshot with null canonical fields should deserialize");
+
+        let normalized = normalize_local_dgraph_snapshot("smart-city-campinas", "fog-01", incoming);
+
+        assert_eq!(normalized.project_id, "smart-city-campinas");
+        assert_eq!(normalized.node_id, "fog-01");
+        assert!(!normalized.snapshot_id.is_empty());
+        assert!(!normalized.reported_at_utc.is_empty());
+        assert_eq!(normalized.source.as_deref(), Some("client"));
+        assert!(!normalized.safe_to_auto_execute);
+        assert!(!normalized.side_effects_performed);
+    }
+
+    #[test]
+    fn incoming_snapshot_accepts_absent_server_owned_fields() {
+        let incoming: IncomingDGraphSnapshot = serde_json::from_value(json!({
+            "safe_to_auto_execute": false,
+            "side_effects_performed": false
+        }))
+        .expect("incoming snapshot without canonical fields should deserialize");
+
+        let normalized = normalize_local_dgraph_snapshot("project-a", "node-b", incoming);
+
+        assert_eq!(normalized.project_id, "project-a");
+        assert_eq!(normalized.node_id, "node-b");
+        assert!(!normalized.snapshot_id.is_empty());
+        assert!(!normalized.reported_at_utc.is_empty());
         assert_eq!(normalized.source.as_deref(), Some("client"));
     }
 
