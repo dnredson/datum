@@ -98,3 +98,5 @@ After normalization, `warning_count=0` and `degraded_flow_count=0`.
 ## C40 Readiness Summary
 
 `C40/110` adds `GET /api/v1/dgraph/readiness/summary`, a consolidated read-only view of latest snapshots, materialized graph state, planner dry-run state, validation errors, and safety/readiness checks. It remains metadata-only: it does not execute deployment, dispatch, or flow reconfiguration.
+
+The completed phase, including its final baseline and degraded-flow readiness results, is recorded in [Live D-Graph Metadata-Only Validation Phase: Final Record](LIVE_DGRAPH_METADATA_ONLY_VALIDATION_PHASE_FINAL.md).

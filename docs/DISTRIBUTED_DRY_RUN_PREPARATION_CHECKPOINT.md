@@ -20,6 +20,7 @@ Status notes:
 - `C39/110` makes degraded flow metadata visible as planner advisory warnings. Degraded flows do not trigger automatic reconfiguration; the planner remains read-only/dry-run, and `status=planned` may include advisory warnings.
 - `C39/110` completed live validation of advisory warning semantics for degraded flows.
 - `C40/110` adds a consolidated read-only D-Graph readiness summary combining latest snapshots, materialized graph and planner dry-run summaries, validation errors, and safety checks. It remains metadata-only and does not execute deployment, dispatch, or reconfiguration.
+- The live metadata-only D-Graph validation phase reached `110/110`. Its final baseline readiness status is `ready`, its final degraded-flow status is `ready_with_warnings`, and the system is ready for the next macro phase. See [the final phase record](LIVE_DGRAPH_METADATA_ONLY_VALIDATION_PHASE_FINAL.md).
 
 ## Completed Readiness Scope
 
