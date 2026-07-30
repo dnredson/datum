@@ -86,3 +86,7 @@ The distributed metadata-only pipeline is working: `dserver` received snapshots 
 ## C37 Validation Status
 
 The C37 regression tests validate that matching local runtime IDs from `fog-01` and `fog-02` materialize as two canonical node-scoped runtime entities. A follow-up live check is deferred: the locally running `dserver` holds its executable lock, so it was not stopped or restarted for this documentation and materialization-only change.
+
+## C37 Live Validation Update
+
+C37 was subsequently live validated. The two-node materialized graph now reports `runtime_count=2`; runtime entities are node-scoped during materialization.

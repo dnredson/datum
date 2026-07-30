@@ -14,6 +14,7 @@ Status notes:
 - `R4/100` records distributed dry-run readiness before the first required live `2-VM` execution.
 - `I28/110` completed live two-node metadata-only validation; the system is ready for the next refinement phase.
 - `C37/110` materializes runtime entities as node-scoped entities, preventing identical local runtime IDs from collapsing across nodes.
+- C37 resolved the runtime identity collapse in live 2-VM validation; the next recommended refinement is richer flow metadata fixtures.
 
 ## Completed Readiness Scope
 
