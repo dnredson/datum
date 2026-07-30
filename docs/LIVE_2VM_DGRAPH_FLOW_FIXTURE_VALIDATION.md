@@ -70,6 +70,12 @@ After normalization, `degraded_flow_count` returned to `0`.
 
 The planner correctly counts `degraded_flow_count=1`, but does not currently emit `warning_count` or `blocked_count` for degraded flows. This is a follow-up semantics item, not a C38 failure. Candidate follow-up: `C39/110` Flow-aware planner advisory semantics.
 
+## C39 Planner Advisory Update
+
+C39 makes degraded flow metadata visible as structured planner advisory warnings. Degraded flows still do not trigger automatic reconfiguration: the planner remains read-only/dry-run. `status=planned` means a dry-run plan can be produced; `warning_count>0` identifies advisory concerns such as degraded flows.
+
+Live C39 validation remains pending because the locally running `dserver` executable was not stopped or restarted during this advisory-only implementation.
+
 ## Safety Confirmation
 
 - No real telemetry ingestion was performed.

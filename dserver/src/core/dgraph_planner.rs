@@ -253,6 +253,7 @@ pub fn plan_dgraph_dry_run(graph: &DGraph) -> DGraphPlannerDryRun {
 
     let mut warnings = placement_result.warnings;
     append_unique_warnings(&mut warnings, reconfiguration_result.warnings);
+    append_degraded_flow_advisories(graph, &mut warnings);
 
     let placements = placement_result.placements;
     let reconfigurations = reconfiguration_result.reconfigurations;
@@ -673,6 +674,33 @@ fn append_unique_warnings(
     }
 }
 
+fn append_degraded_flow_advisories(graph: &DGraph, warnings: &mut Vec<DGraphPlannerWarning>) {
+    for flow in &graph.flows {
+        if !is_degraded_status(flow.status.as_deref().unwrap_or("unknown")) {
+            continue;
+        }
+
+        push_warning(
+            warnings,
+            DGraphPlannerWarning {
+                warning_id: deterministic_warning_id("flow", &flow.flow_id, "degraded"),
+                reason: format!(
+                    "flow '{}' is degraded; this metadata-only dry-run remains advisory and does not execute reconfiguration",
+                    flow.flow_id
+                ),
+                metadata: Some(serde_json::json!({
+                    "kind": "degraded_flow",
+                    "severity": "warning",
+                    "target_kind": "flow",
+                    "target_id": flow.flow_id,
+                    "side_effects_performed": false,
+                    "execution_performed": false,
+                })),
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,7 +762,7 @@ mod tests {
                 flow_kind: Some("pipeline".to_string()),
                 modules: vec!["module-missing".to_string()],
                 edges: vec![],
-                status: Some("degraded".to_string()),
+                status: Some("configured".to_string()),
                 metadata: None,
             }],
             capabilities: vec![],
@@ -756,6 +784,7 @@ mod tests {
         graph.modules[0].module_id = "module-placed".to_string();
         graph.modules[0].observed_state = Some("running".to_string());
         graph.flows[0].modules = vec!["module-placed".to_string()];
+        graph.flows[0].status = Some("degraded".to_string());
         graph.placements = vec![DGraphPlacementDecision {
             placement_id: "placement-existing".to_string(),
             module_id: "module-placed".to_string(),
@@ -1023,6 +1052,71 @@ mod tests {
         assert_eq!(dry_run.summary.candidate_node_count, 1);
         assert_eq!(dry_run.summary.unhealthy_node_count, 1);
         assert_eq!(dry_run.summary.degraded_flow_count, 1);
+        assert_eq!(dry_run.summary.warning_count, 1);
+    }
+
+    #[test]
+    fn baseline_flow_has_no_degraded_flow_advisory() {
+        let graph = sample_two_node_dgraph("smart-city-campinas");
+        let dry_run = plan_dgraph_dry_run(&graph);
+
+        assert_eq!(graph.flows.len(), 1);
+        assert_eq!(dry_run.summary.degraded_flow_count, 0);
+        assert_eq!(dry_run.summary.warning_count, 0);
+        assert_eq!(dry_run.summary.blocked_count, 0);
+        assert!(!dry_run.side_effects_performed);
+    }
+
+    #[test]
+    fn degraded_flow_emits_structured_advisory_without_reconfiguration_execution() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].flow_id = "flow-chirpstack-to-mqtt-adapter".to_string();
+        graph.flows[0].status = Some("degraded".to_string());
+        graph.relationships = build_basic_dgraph_relationships(&graph);
+
+        let dry_run = plan_dgraph_dry_run(&graph);
+
+        assert_eq!(graph.flows.len(), 1);
+        assert_eq!(dry_run.summary.degraded_flow_count, 1);
+        assert!(dry_run.summary.warning_count >= 1);
+        assert_eq!(dry_run.status, "planned");
+        assert!(dry_run.reconfigurations.is_empty());
+        assert!(!dry_run.side_effects_performed);
+        let warning = dry_run
+            .warnings
+            .iter()
+            .find(|warning| {
+                warning.warning_id == "warning:flow:flow-chirpstack-to-mqtt-adapter:degraded"
+            })
+            .expect("degraded flow advisory should be present");
+        assert!(warning.reason.contains("flow-chirpstack-to-mqtt-adapter"));
+        assert_eq!(
+            warning
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("kind"))
+                .and_then(|value| value.as_str()),
+            Some("degraded_flow")
+        );
+        assert_eq!(
+            warning
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("execution_performed"))
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn unavailable_node_behavior_remains_read_only() {
+        let dry_run = plan_dgraph_dry_run(&sample_unavailable_node_reconfiguration_graph(
+            "smart-city-campinas",
+        ));
+
+        assert_eq!(dry_run.summary.candidate_node_count, 1);
+        assert_eq!(dry_run.summary.unhealthy_node_count, 1);
+        assert!(!dry_run.side_effects_performed);
     }
 
     #[test]
@@ -1094,7 +1188,7 @@ mod tests {
         assert_eq!(summary.source_snapshot_count, 1);
         assert_eq!(summary.reconfiguration_count, 1);
         assert_eq!(summary.blocked_count, 0);
-        assert_eq!(summary.warning_count, 0);
+        assert_eq!(summary.warning_count, 1);
         assert!(!summary.side_effects_performed);
     }
 
