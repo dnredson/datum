@@ -198,6 +198,40 @@ mod tests {
     }
 
     #[test]
+    fn healthy_three_node_continuum_is_ready_and_read_only() {
+        let mut fog_01 = snapshot("fog-01", "configured");
+        let mut fog_02 = snapshot("fog-02", "configured");
+        let mut cloud_01 = snapshot("cloud-01", "configured");
+        fog_01.modules[0].module_id = "chirpstack-primary".to_string();
+        fog_01.flows[0].modules = vec!["chirpstack-primary".to_string()];
+        fog_02.modules[0].module_id = "mqtt-adapter".to_string();
+        fog_02.flows[0].flow_id = "flow-mqtt-adapter-to-magistrala-core".to_string();
+        fog_02.flows[0].modules = vec!["mqtt-adapter".to_string()];
+        cloud_01.modules[0].module_id = "magistrala-core".to_string();
+        cloud_01.flows.clear();
+
+        let response = build_project_dgraph_readiness_summary(
+            "smart-city-campinas",
+            &[fog_01, fog_02, cloud_01],
+        );
+
+        assert_eq!(response.readiness_status, "ready");
+        assert_eq!(response.source_snapshot_count, 3);
+        assert_eq!(response.materialized_summary.summary.node_count, 3);
+        assert_eq!(response.materialized_summary.summary.runtime_count, 3);
+        assert_eq!(response.materialized_summary.summary.module_count, 3);
+        assert_eq!(response.materialized_summary.summary.flow_count, 2);
+        assert!(response.checks.has_multiple_nodes);
+        assert!(response.checks.has_node_scoped_runtimes);
+        assert!(response.checks.has_flow_metadata);
+        assert_eq!(response.warning_count, 0);
+        assert_eq!(response.degraded_flow_count, 0);
+        assert_eq!(response.blocked_count, 0);
+        assert!(!response.side_effects_performed);
+        assert_eq!(response.metadata.unwrap()["execution_performed"], false);
+    }
+
+    #[test]
     fn degraded_flow_is_ready_with_warnings_and_read_only() {
         let response = build_project_dgraph_readiness_summary(
             "smart-city-campinas",

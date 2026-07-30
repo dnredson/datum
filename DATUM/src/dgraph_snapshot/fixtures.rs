@@ -241,26 +241,77 @@ pub fn build_dgraph_fixture_snapshot(
 }
 
 fn ensure_cross_node_flow_fixture(snapshot: &mut LocalDGraphSnapshot) -> Option<String> {
-    if snapshot.node_id != "fog-01" {
-        return None;
+    match snapshot.node_id.as_str() {
+        "fog-01" => Some(ensure_cross_node_flow(
+            snapshot,
+            "flow-chirpstack-to-mqtt-adapter",
+            "chirpstack-primary",
+            "fog-01",
+            "fixture-chirpstack-primary",
+            "mqtt-adapter",
+            "fog-02",
+            "fixture-mqtt-adapter",
+            "mqtt",
+        )),
+        "fog-02" => Some(ensure_cross_node_flow(
+            snapshot,
+            "flow-mqtt-adapter-to-magistrala-core",
+            "mqtt-adapter",
+            "fog-02",
+            "fixture-mqtt-adapter",
+            "magistrala-core",
+            "cloud-01",
+            "fixture-magistrala-core",
+            "mqtt",
+        )),
+        "cloud-01" => {
+            ensure_named_fixture_module(
+                snapshot,
+                "magistrala-core",
+                "cloud-01",
+                "fixture-magistrala-core",
+            );
+            None
+        }
+        _ => None,
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn ensure_cross_node_flow(
+    snapshot: &mut LocalDGraphSnapshot,
+    flow_id: &str,
+    source_module_id: &str,
+    source_node_id: &str,
+    source_mapping_key: &str,
+    target_module_id: &str,
+    target_node_id: &str,
+    target_mapping_key: &str,
+    protocol: &str,
+) -> String {
     let source_module_id = ensure_named_fixture_module(
         snapshot,
-        "chirpstack-primary",
-        "fog-01",
-        "fixture-chirpstack-primary",
+        source_module_id,
+        source_node_id,
+        source_mapping_key,
     );
-    let target_module_id =
-        ensure_named_fixture_module(snapshot, "mqtt-adapter", "fog-02", "fixture-mqtt-adapter");
-    let flow_id = "flow-chirpstack-to-mqtt-adapter".to_string();
-    let edge_id = "edge:chirpstack-primary:mqtt-adapter:mqtt".to_string();
+    let target_module_id = ensure_named_fixture_module(
+        snapshot,
+        target_module_id,
+        target_node_id,
+        target_mapping_key,
+    );
+    let flow_id = flow_id.to_string();
+    let edge_id = format!(
+        "edge:{}:{}:{}",
+        source_module_id, target_module_id, protocol
+    );
     let flow_metadata = json!({
         "fixture": true,
         "reporting_only": true,
         "cross_node": true,
-        "source_node_id": "fog-01",
-        "target_node_id": "fog-02",
+        "source_node_id": source_node_id,
+        "target_node_id": target_node_id,
     });
 
     if let Some(flow) = snapshot
@@ -278,12 +329,12 @@ fn ensure_cross_node_flow_fixture(snapshot: &mut LocalDGraphSnapshot) -> Option<
                 edge_id,
                 from_module_id: source_module_id,
                 to_module_id: target_module_id,
-                protocol: Some("mqtt".to_string()),
+                protocol: Some(protocol.to_string()),
                 status: Some("configured".to_string()),
                 metadata: Some(flow_metadata),
             });
         }
-        return Some(flow_id);
+        return flow_id;
     }
 
     snapshot.flows.push(LocalFlowSnapshot {
@@ -294,7 +345,7 @@ fn ensure_cross_node_flow_fixture(snapshot: &mut LocalDGraphSnapshot) -> Option<
             edge_id,
             from_module_id: source_module_id,
             to_module_id: target_module_id,
-            protocol: Some("mqtt".to_string()),
+            protocol: Some(protocol.to_string()),
             status: Some("configured".to_string()),
             metadata: Some(flow_metadata.clone()),
         }],
@@ -302,7 +353,7 @@ fn ensure_cross_node_flow_fixture(snapshot: &mut LocalDGraphSnapshot) -> Option<
         source: "fixture".to_string(),
         metadata: Some(flow_metadata),
     });
-    Some(flow_id)
+    flow_id
 }
 
 fn ensure_named_fixture_module(
@@ -664,6 +715,64 @@ mod tests {
                 .and_then(|metadata| metadata.get("cross_node")),
             Some(&serde_json::json!(true))
         );
+        assert!(!snapshot.safe_to_auto_execute);
+        assert!(!snapshot.side_effects_performed);
+    }
+
+    #[test]
+    fn fog_02_baseline_fixture_includes_metadata_only_cloud_flow() {
+        let mut config = sparse_config();
+        config.agent.node_id = "fog-02".to_string();
+        let snapshot =
+            build_dgraph_fixture_snapshot(&config, DGraphSnapshotFixtureScenario::Baseline);
+        let flow = snapshot
+            .flows
+            .iter()
+            .find(|flow| flow.flow_id == "flow-mqtt-adapter-to-magistrala-core")
+            .expect("fog-02 baseline should include the cloud-bound fixture flow");
+
+        assert_eq!(
+            flow.modules,
+            vec!["mqtt-adapter".to_string(), "magistrala-core".to_string()]
+        );
+        assert!(flow.edges.iter().any(|edge| {
+            edge.from_module_id == "mqtt-adapter"
+                && edge.to_module_id == "magistrala-core"
+                && edge.protocol.as_deref() == Some("mqtt")
+        }));
+        assert_eq!(
+            flow.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("target_node_id")),
+            Some(&serde_json::json!("cloud-01"))
+        );
+        assert!(!snapshot.safe_to_auto_execute);
+        assert!(!snapshot.side_effects_performed);
+    }
+
+    #[test]
+    fn cloud_01_baseline_fixture_includes_magistrala_core_metadata() {
+        let mut config = sparse_config();
+        config.agent.node_id = "cloud-01".to_string();
+        let snapshot =
+            build_dgraph_fixture_snapshot(&config, DGraphSnapshotFixtureScenario::Baseline);
+        let module = snapshot
+            .modules
+            .iter()
+            .find(|module| module.module_id == "magistrala-core")
+            .expect("cloud-01 baseline should include magistrala-core");
+
+        assert_eq!(
+            module
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("node_id")),
+            Some(&serde_json::json!("cloud-01"))
+        );
+        assert!(!snapshot
+            .flows
+            .iter()
+            .any(|flow| flow.flow_id == "flow-mqtt-adapter-to-magistrala-core"));
         assert!(!snapshot.safe_to_auto_execute);
         assert!(!snapshot.side_effects_performed);
     }

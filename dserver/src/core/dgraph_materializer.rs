@@ -532,6 +532,93 @@ mod tests {
     }
 
     #[test]
+    fn three_node_continuum_materializes_two_cross_node_flows() {
+        let mut fog_01 = snapshot("fog-01", "snap-1");
+        let mut fog_02 = snapshot("fog-02", "snap-2");
+        let mut cloud_01 = snapshot("cloud-01", "snap-3");
+        fog_01.modules[0].module_id = "chirpstack-primary".to_string();
+        fog_02.modules[0].module_id = "mqtt-adapter".to_string();
+        cloud_01.modules[0].module_id = "magistrala-core".to_string();
+
+        fog_01.flows[0] = LocalFlowSnapshot {
+            flow_id: "flow-chirpstack-to-mqtt-adapter".to_string(),
+            flow_kind: Some("application_data".to_string()),
+            modules: vec!["chirpstack-primary".to_string(), "mqtt-adapter".to_string()],
+            edges: vec![LocalFlowEdgeSnapshot {
+                edge_id: "edge:chirpstack-primary:mqtt-adapter:mqtt".to_string(),
+                from_module_id: "chirpstack-primary".to_string(),
+                to_module_id: "mqtt-adapter".to_string(),
+                protocol: Some("mqtt".to_string()),
+                status: Some("configured".to_string()),
+                metadata: Some(json!({ "fixture": true, "cross_node": true })),
+            }],
+            status: Some("configured".to_string()),
+            source: "fixture".to_string(),
+            metadata: Some(json!({
+                "fixture": true,
+                "reporting_only": true,
+                "cross_node": true,
+                "source_node_id": "fog-01",
+                "target_node_id": "fog-02",
+            })),
+        };
+        fog_02.flows[0] = LocalFlowSnapshot {
+            flow_id: "flow-mqtt-adapter-to-magistrala-core".to_string(),
+            flow_kind: Some("application_data".to_string()),
+            modules: vec!["mqtt-adapter".to_string(), "magistrala-core".to_string()],
+            edges: vec![LocalFlowEdgeSnapshot {
+                edge_id: "edge:mqtt-adapter:magistrala-core:mqtt".to_string(),
+                from_module_id: "mqtt-adapter".to_string(),
+                to_module_id: "magistrala-core".to_string(),
+                protocol: Some("mqtt".to_string()),
+                status: Some("configured".to_string()),
+                metadata: Some(json!({ "fixture": true, "cross_node": true })),
+            }],
+            status: Some("configured".to_string()),
+            source: "fixture".to_string(),
+            metadata: Some(json!({
+                "fixture": true,
+                "reporting_only": true,
+                "cross_node": true,
+                "source_node_id": "fog-02",
+                "target_node_id": "cloud-01",
+            })),
+        };
+        cloud_01.flows.clear();
+
+        let materialization = build_project_dgraph_materialization(
+            "smart-city-campinas",
+            &[fog_01, fog_02, cloud_01],
+        );
+
+        assert_eq!(materialization.source_snapshot_count, 3);
+        assert_eq!(materialization.summary.node_count, 3);
+        assert_eq!(materialization.summary.runtime_count, 3);
+        assert_eq!(materialization.summary.module_count, 3);
+        assert_eq!(materialization.summary.flow_count, 2);
+        assert!(materialization
+            .graph
+            .flows
+            .iter()
+            .any(|flow| flow.flow_id == "flow-chirpstack-to-mqtt-adapter"));
+        let cloud_flow = materialization
+            .graph
+            .flows
+            .iter()
+            .find(|flow| flow.flow_id == "flow-mqtt-adapter-to-magistrala-core")
+            .expect("cloud-bound cross-node flow should be materialized");
+        assert_eq!(
+            cloud_flow
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("details"))
+                .and_then(|metadata| metadata.get("target_node_id")),
+            Some(&json!("cloud-01"))
+        );
+        assert!(!materialization.side_effects_performed);
+    }
+
+    #[test]
     fn degraded_fixture_flow_status_is_preserved_without_side_effects() {
         let mut fog_01 = snapshot("fog-01", "snap-1");
         fog_01.flows[0].flow_id = "flow-chirpstack-to-mqtt-adapter".to_string();
