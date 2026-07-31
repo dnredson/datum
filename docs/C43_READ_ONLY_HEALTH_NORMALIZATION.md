@@ -79,31 +79,35 @@ C43 does not:
 
 The existing `side_effects_performed=false` and `execution_performed=false` guarantees remain unchanged.
 
-## Verification Required Before Merge
+## Verification
 
-Run from the repository root:
+C43 passed the complete Windows validation suite before merge:
 
-```text
-cargo fmt --manifest-path dserver/Cargo.toml -- --check
-cargo test --manifest-path dserver/Cargo.toml
-cargo build --manifest-path dserver/Cargo.toml
-cargo fmt --manifest-path DATUM/Cargo.toml -- --check
-cargo test --manifest-path DATUM/Cargo.toml
-cargo build --manifest-path DATUM/Cargo.toml
-```
+- `dserver`: 368/368 tests, `cargo fmt --check`, and build;
+- `DATUM`: 353/353 tests, `cargo fmt --check`, and build;
+- only the pre-existing DATUM `dead_code` warnings remained.
 
-The current implementation workspace did not provide a Rust toolchain, so these commands must pass before C43 is marked complete and promoted from `112/130` to `113/130`.
-
-## Follow-Up
-
-After the contract is verified, a metadata-only live read can confirm that the restored C42 baseline changes from the historical `unhealthy_targets=3` to:
+The metadata-only live read on `main@caa0e46` then confirmed the restored C42 baseline as:
 
 ```text
-healthy_targets=0
-unknown_targets=3
-degraded_targets=0
-unavailable_targets=0
-unhealthy_targets=0
+readiness_status       : ready
+healthy_targets        : 0
+unknown_targets        : 3
+degraded_targets       : 0
+unavailable_targets    : 0
+unhealthy_targets      : 0
+warning_count          : 0
+blocked_count          : 0
+side_effects_performed : False
+execution_performed    : False
 ```
 
-Deriving health from a fresh local service observation remains a separate increment. C43 only makes the summary semantics trustworthy before that observation source is introduced.
+The materialized graph retained 3 snapshots, 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, and 14 relationships with zero validation errors. All readiness checks passed.
+
+See [the C43 live validation record](LIVE_C43_READ_ONLY_HEALTH_NORMALIZATION_VALIDATION.md) for the complete evidence.
+
+## Closure And Follow-Up
+
+C43/130 is implementation-, Rust-, and live-validated. Progress advances from `112/130` to `113/130`.
+
+Deriving health from a fresh local service observation remains a separate increment. C43 makes the summary semantics trustworthy before that observation source is introduced.
