@@ -2,8 +2,11 @@
 
 ## Status
 
-Implementation prepared for Rust validation. The project remains at `113/130` until formatting,
-tests, builds, and a live read-only validation pass.
+C44 is complete. Formatting, tests, builds, local read-only inspection, explicit metadata
+publication, materialized aggregation, and baseline restoration all passed. Project progress is
+`114/130`.
+
+See [the live C44 validation record](LIVE_C44_READ_ONLY_OBSERVED_HEALTH_VALIDATION.md).
 
 ## Objective
 
@@ -69,20 +72,27 @@ safe_to_auto_execute=false
 side_effects_performed=false
 ```
 
-## Required validation
+## Completed validation
 
-Before C44 can close:
+```text
+dserver:
+  cargo fmt --check: passed
+  tests: 368/368 passed
+  build: passed
 
-```powershell
-cargo fmt --manifest-path dserver\Cargo.toml -- --check
-cargo test --manifest-path dserver\Cargo.toml
-cargo build --manifest-path dserver\Cargo.toml
-
-cargo fmt --manifest-path DATUM\Cargo.toml -- --check
-cargo test --manifest-path DATUM\Cargo.toml
-cargo build --manifest-path DATUM\Cargo.toml
+DATUM:
+  cargo fmt --check: passed
+  tests: 360/360 passed
+  build: passed
 ```
 
-The live validation must first inspect a current `snapshot.json` and then exercise only the
-read-only translation. Publishing observed health remains a separate, explicit step after local
-output is confirmed.
+The live `fog-02` observation used source
+`persisted_local_snapshot`, remained fresh at `age_s=10` with `ttl_s=60`, and preserved
+`raw_status=unavailable` as canonical `unavailable`. The translation reported
+`checks_executed=false`, `safe_to_auto_execute=false`, and
+`side_effects_performed=false`.
+
+After explicit publication, the three-node graph reported one unavailable target and two unknown
+targets with no validation errors. The baseline fixture was then restored to 3 nodes, 3
+node-scoped runtimes, 3 modules, 2 flows, 14 relationships, 3 unknown targets, zero unavailable
+or unhealthy targets, and no side effects.
