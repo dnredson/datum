@@ -59,7 +59,7 @@ The live baseline materialized as:
 - `validation_error_count=0`
 - `side_effects_performed=false`
 
-The `unhealthy_targets=3` result represents the three metadata-only modules whose operational health remains `unknown`. It does not represent unhealthy nodes; the planner reported `unhealthy_node_count=0`.
+The historical `unhealthy_targets=3` result represents the three metadata-only modules whose operational health remains `unknown`. It does not represent unhealthy nodes; the planner reported `unhealthy_node_count=0`. C43 supersedes this summary behavior by reporting those entries as `unknown_targets=3` and `unhealthy_targets=0`.
 
 ## Baseline Planner And Readiness
 
@@ -151,7 +151,7 @@ The final persisted state returned to:
 
 - Three logical DATUM nodes can publish independent metadata-only snapshots across two physical hosts.
 - The multi-hop logical chain materializes with three node-scoped runtimes, three canonical modules, and two cross-node flows.
-- The planner produces one advisory placement per candidate node without executing placement.
+- The planner produces one advisory placement per unplaced module without executing placement.
 - Degrading the cloud-bound flow produces exactly one structured advisory warning.
 - The degraded-flow scenario does not create a reconfiguration proposal or blocker.
 - Restoring the baseline removes the warning and returns readiness to `ready`.
@@ -170,7 +170,7 @@ The final persisted state returned to:
 
 ## Known Limitations
 
-1. Module health remains `unknown` in the metadata-only baseline, so `unhealthy_targets=3` is expected.
+1. At validation time, module health remained `unknown` and the pre-C43 contract reported `unhealthy_targets=3`. C43 preserves the historical record while correcting future summaries to `unknown_targets=3` and `unhealthy_targets=0`.
 2. Flow and module observations remain fixture-based rather than derived from live services or telemetry.
 3. The three logical nodes were distributed over two physical hosts; this was not a three-physical-host run.
 4. The planner remains advisory and intentionally does not execute placement or reconfiguration.

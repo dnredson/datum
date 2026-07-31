@@ -576,6 +576,16 @@ fn format_materialized_dgraph_summary(
         format!("Artifacts: {}", summary.artifact_count.unwrap_or(0)),
         format!("Flows: {}", summary.flow_count.unwrap_or(0)),
         format!("Relationships: {}", summary.relationship_count.unwrap_or(0)),
+        format!("Healthy targets: {}", summary.healthy_targets.unwrap_or(0)),
+        format!("Unknown targets: {}", summary.unknown_targets.unwrap_or(0)),
+        format!(
+            "Degraded targets: {}",
+            summary.degraded_targets.unwrap_or(0)
+        ),
+        format!(
+            "Unavailable targets: {}",
+            summary.unavailable_targets.unwrap_or(0)
+        ),
         format!(
             "Unhealthy targets: {}",
             summary.unhealthy_targets.unwrap_or(0)
@@ -1269,7 +1279,11 @@ mod tests {
                     artifact_count: Some(2),
                     flow_count: Some(1),
                     relationship_count: Some(8),
-                    unhealthy_targets: Some(0),
+                    healthy_targets: Some(1),
+                    unknown_targets: Some(2),
+                    degraded_targets: Some(1),
+                    unavailable_targets: Some(0),
+                    unhealthy_targets: Some(1),
                     pending_deployment_intents: Some(0),
                     proposed_placements: Some(0),
                     proposed_reconfigurations: Some(0),
@@ -1286,6 +1300,11 @@ mod tests {
         assert!(rendered.contains("Nodes: 2"));
         assert!(rendered.contains("Modules: 4"));
         assert!(rendered.contains("Relationships: 8"));
+        assert!(rendered.contains("Healthy targets: 1"));
+        assert!(rendered.contains("Unknown targets: 2"));
+        assert!(rendered.contains("Degraded targets: 1"));
+        assert!(rendered.contains("Unavailable targets: 0"));
+        assert!(rendered.contains("Unhealthy targets: 1"));
         assert!(rendered.contains("Side effects performed: false"));
     }
 
@@ -1307,7 +1326,11 @@ mod tests {
                     artifact_count: Some(2),
                     flow_count: Some(1),
                     relationship_count: Some(8),
-                    unhealthy_targets: Some(0),
+                    healthy_targets: Some(1),
+                    unknown_targets: Some(2),
+                    degraded_targets: Some(1),
+                    unavailable_targets: Some(0),
+                    unhealthy_targets: Some(1),
                     pending_deployment_intents: Some(0),
                     proposed_placements: Some(0),
                     proposed_reconfigurations: Some(0),

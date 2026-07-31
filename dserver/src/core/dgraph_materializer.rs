@@ -596,6 +596,11 @@ mod tests {
         assert_eq!(materialization.summary.runtime_count, 3);
         assert_eq!(materialization.summary.module_count, 3);
         assert_eq!(materialization.summary.flow_count, 2);
+        assert_eq!(materialization.summary.healthy_targets, 0);
+        assert_eq!(materialization.summary.unknown_targets, 3);
+        assert_eq!(materialization.summary.degraded_targets, 0);
+        assert_eq!(materialization.summary.unavailable_targets, 0);
+        assert_eq!(materialization.summary.unhealthy_targets, 0);
         assert!(materialization
             .graph
             .flows

@@ -285,6 +285,14 @@ pub struct DGraphSummary {
     pub artifact_count: u64,
     pub flow_count: u64,
     pub relationship_count: u64,
+    #[serde(default)]
+    pub healthy_targets: u64,
+    #[serde(default)]
+    pub unknown_targets: u64,
+    #[serde(default)]
+    pub degraded_targets: u64,
+    #[serde(default)]
+    pub unavailable_targets: u64,
     pub unhealthy_targets: u64,
     pub pending_deployment_intents: u64,
     pub proposed_placements: u64,
@@ -820,7 +828,38 @@ pub fn build_basic_dgraph_relationships(graph: &DGraph) -> Vec<DGraphRelationshi
     relationships
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthStatusClass {
+    Healthy,
+    Unknown,
+    Degraded,
+    Unavailable,
+}
+
+fn classify_health_status(status: &str) -> HealthStatusClass {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "healthy" | "ok" | "running" => HealthStatusClass::Healthy,
+        "degraded" | "warning" => HealthStatusClass::Degraded,
+        "unavailable" | "down" | "failed" | "critical" => HealthStatusClass::Unavailable,
+        _ => HealthStatusClass::Unknown,
+    }
+}
+
 pub fn summarize_dgraph(graph: &DGraph) -> DGraphSummary {
+    let mut healthy_targets = 0;
+    let mut unknown_targets = 0;
+    let mut degraded_targets = 0;
+    let mut unavailable_targets = 0;
+
+    for report in &graph.health_reports {
+        match classify_health_status(&report.status) {
+            HealthStatusClass::Healthy => healthy_targets += 1,
+            HealthStatusClass::Unknown => unknown_targets += 1,
+            HealthStatusClass::Degraded => degraded_targets += 1,
+            HealthStatusClass::Unavailable => unavailable_targets += 1,
+        }
+    }
+
     DGraphSummary {
         node_count: graph.nodes.len() as u64,
         runtime_count: graph.runtimes.len() as u64,
@@ -828,11 +867,11 @@ pub fn summarize_dgraph(graph: &DGraph) -> DGraphSummary {
         artifact_count: graph.artifacts.len() as u64,
         flow_count: graph.flows.len() as u64,
         relationship_count: graph.relationships.len() as u64,
-        unhealthy_targets: graph
-            .health_reports
-            .iter()
-            .filter(|report| !matches!(report.status.as_str(), "healthy" | "ok" | "running"))
-            .count() as u64,
+        healthy_targets,
+        unknown_targets,
+        degraded_targets,
+        unavailable_targets,
+        unhealthy_targets: degraded_targets + unavailable_targets,
         pending_deployment_intents: graph
             .deployment_intents
             .iter()
@@ -1287,10 +1326,53 @@ mod tests {
         assert_eq!(summary.artifact_count, 1);
         assert_eq!(summary.flow_count, 1);
         assert_eq!(summary.relationship_count, graph.relationships.len() as u64);
+        assert_eq!(summary.healthy_targets, 0);
+        assert_eq!(summary.unknown_targets, 0);
+        assert_eq!(summary.degraded_targets, 1);
+        assert_eq!(summary.unavailable_targets, 0);
         assert_eq!(summary.unhealthy_targets, 1);
         assert_eq!(summary.pending_deployment_intents, 1);
         assert_eq!(summary.proposed_placements, 1);
         assert_eq!(summary.proposed_reconfigurations, 1);
+    }
+
+    #[test]
+    fn summary_normalizes_health_without_treating_unknown_as_unhealthy() {
+        let mut graph = sample_local_dgraph("smart-city-campinas");
+        let statuses = [
+            "healthy",
+            " OK ",
+            "RUNNING",
+            "degraded",
+            " Warning ",
+            "unavailable",
+            "DOWN",
+            "failed",
+            "critical",
+            "unknown",
+            "pending",
+            "",
+        ];
+        graph.health_reports = statuses
+            .iter()
+            .enumerate()
+            .map(|(index, status)| DGraphHealthReport {
+                report_id: format!("health-{index}"),
+                target_kind: "module".to_string(),
+                target_id: "module-ingest".to_string(),
+                status: (*status).to_string(),
+                reason: None,
+                metadata: None,
+            })
+            .collect();
+
+        let summary = summarize_dgraph(&graph);
+
+        assert_eq!(summary.healthy_targets, 3);
+        assert_eq!(summary.unknown_targets, 3);
+        assert_eq!(summary.degraded_targets, 2);
+        assert_eq!(summary.unavailable_targets, 4);
+        assert_eq!(summary.unhealthy_targets, 6);
     }
 
     #[test]
