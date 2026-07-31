@@ -23,7 +23,8 @@ Status notes:
 - The live metadata-only D-Graph validation phase reached `110/110`. Its final baseline readiness status is `ready`, its final degraded-flow status is `ready_with_warnings`, and the system is ready for the next macro phase. See [the final phase record](LIVE_DGRAPH_METADATA_ONLY_VALIDATION_PHASE_FINAL.md).
 - `C41/130` adds the `cloud-01/magistrala-core` metadata-only fixture, the second logical flow `fog-02/mqtt-adapter -> cloud-01/magistrala-core`, a sanitized cloud config template, and a two-host/three-node validation plan. Live publication remains deferred to the next milestone. See [the C41 plan](C41_CLOUD_01_METADATA_ONLY_3NODE_CONTINUUM_PLAN.md).
 - `C42/130` completed live three-logical-node metadata-only validation across two physical hosts. The baseline materialized 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, and 14 relationships with `readiness_status=ready`; the degraded cloud-bound flow produced one advisory warning with `readiness_status=ready_with_warnings`; the restored final baseline returned to zero warnings and zero degraded flows. No execution or side effects occurred. See [the C42 live record](LIVE_3NODE_DGRAPH_METADATA_ONLY_VALIDATION.md).
-- `C43/130` completed read-only health normalization and live validation. The same restored C42 baseline now reports `unknown_targets=3` and `unhealthy_targets=0`, with `readiness_status=ready`, zero warnings or blockers, and no execution or side effects. Progress is `113/130`. See [the C43 implementation record](C43_READ_ONLY_HEALTH_NORMALIZATION.md) and [live validation record](LIVE_C43_READ_ONLY_HEALTH_NORMALIZATION_VALIDATION.md).
+- `C43/130` completed read-only health normalization and live validation. The same restored C42 baseline now reports `unknown_targets=3` and `unhealthy_targets=0`, with `readiness_status=ready`, zero warnings or blockers, and no execution or side effects. See [the C43 implementation record](C43_READ_ONLY_HEALTH_NORMALIZATION.md) and [live validation record](LIVE_C43_READ_ONLY_HEALTH_NORMALIZATION_VALIDATION.md).
+- `C44/130` completed read-only observed-health derivation and live validation. A fresh persisted `fog-02/mqtt-adapter` observation was preserved as `unavailable` with source, raw status, age, TTL, and freshness metadata while `checks_executed=false`, `safe_to_auto_execute=false`, and `side_effects_performed=false`. Explicit publication materialized one unavailable and two unknown targets; the final restored baseline returned to 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, 14 relationships, 3 unknown targets, zero unavailable or unhealthy targets, zero validation errors, and no side effects. Progress is `114/130`. See [the C44 implementation record](C44_READ_ONLY_OBSERVED_HEALTH.md) and [live validation record](LIVE_C44_READ_ONLY_OBSERVED_HEALTH_VALIDATION.md).
 
 ## Completed Readiness Scope
 
@@ -49,6 +50,9 @@ The project now has:
 - a validated degraded-flow sequence with baseline restoration
 - normalized health counts that distinguish `unknown`, `healthy`, `degraded`, and `unavailable`
 - live confirmation that metadata-only `unknown` state is not reported as unhealthy
+- opt-in health derivation from fresh persisted local service observations
+- live confirmation that observed-health translation executes no checks and preserves explicit failure classes
+- explicit reporting-only publication of observed health with final three-node baseline restoration
 
 ## Current Safety Guarantees
 
@@ -68,6 +72,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - no local mapping mutation
 - d-graph snapshots are metadata-only
 - fixtures are metadata-only
+- observed-health translation reads persisted observations without executing checks
 - planner dry-run is advisory and read-only
 - `side_effects_performed` remains `false` in the relevant snapshot, materialization, and planner contracts
 
@@ -96,26 +101,19 @@ Optional:
 
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- read-only health derived from service observations rather than fixture-only state
 - a reusable multi-host three-node smoke script
 - richer advisory reconfiguration proposal semantics
+- broader live observed-health coverage for healthy, degraded, stale, absent, and clock-skewed states
 - a separate safety contract before any placement, recovery, migration, or reconfiguration execution
 
 ## Recommended Next Milestone Options
 
-### Option `C44/130`: Read-Only Observed Health
-
-- derive module health from safe local service observations
-- preserve `unknown` as distinct from degraded or unavailable
-- publish only metadata
-- keep planner, dispatch, recovery, Docker, and WASM execution disabled
-- recommended as the next capability increment
-
 ### Option `I32/130`: Repeatable Live Three-Node Smoke Script
 
-- encode the validated publication, read-back, degraded-flow, and restoration sequence
+- encode the validated publication, read-back, degraded-flow, observed-health, and restoration sequence
 - keep real environment values in untracked local inputs
 - assert the final restored baseline and safety flags
+- recommended next to make the expanded live workflow repeatable
 
 ### Option `C45/130`: Enriched Planner Advisory Proposals
 
@@ -123,13 +121,25 @@ Optional:
 - do not execute placement or reconfiguration
 - retain deterministic warning and safety metadata
 
+### Option `I33/130`: Observed-Health Scenario Matrix
+
+- exercise healthy, degraded, stale, absent, unrecognized, and future-skewed observations live
+- preserve the read-only and reporting-only boundary
+- restore the three-node baseline after every scenario
+
 Recommendation:
 
-- prefer `C44/130` next to derive normalized health from fresh, safe local observations
-- follow with `I32/130` to encode the expanded live workflow once the observed-health contract is stable
+- prefer `I32/130` next to encode the now-stable three-node and observed-health workflow
+- follow with `C45/130` for richer advisory proposals
+- retain `I33/130` as focused operational coverage before execution-oriented work
 
 ## Practical Summary
 
-C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node, two-flow continuum across two physical hosts while remaining metadata-only and non-executing. C43 then proves that the restored baseline can distinguish unobserved metadata from explicit unhealthy state without changing readiness or safety behavior.
+C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
+two-flow continuum across two physical hosts while remaining metadata-only and non-executing.
+C43 proves that the restored baseline distinguishes unobserved metadata from explicit unhealthy
+state. C44 now proves that a fresh persisted service observation can be translated and explicitly
+published as canonical health without running checks or performing operational side effects.
 
-The next architecture boundary is connecting fresh, safe local observations to the normalized health contract. Executed orchestration remains deliberately out of scope.
+The next practical step is making the validated multi-host sequence repeatable. Executed
+orchestration remains deliberately out of scope.

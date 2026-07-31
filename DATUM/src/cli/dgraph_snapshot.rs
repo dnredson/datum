@@ -1,10 +1,13 @@
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use serde_json::json;
 
 use crate::{
+    cli::snapshot_reader::read_snapshot_from_config,
     config::Config,
     dgraph_snapshot::{
-        build_dgraph_fixture_snapshot, build_local_dgraph_snapshot,
+        apply_persisted_observed_health, build_dgraph_fixture_snapshot,
+        build_local_dgraph_snapshot,
         client::{
             fetch_latest_local_dgraph_snapshot, fetch_latest_local_dgraph_snapshots,
             fetch_project_dgraph_materialized, fetch_project_dgraph_materialized_summary,
@@ -36,6 +39,7 @@ pub fn run_dgraph_snapshot_command(
     project_id_override: Option<&str>,
     url_override: Option<&str>,
     fixture_scenario: Option<&str>,
+    observed_health: bool,
     publish: bool,
     latest: bool,
     latest_all: bool,
@@ -60,21 +64,16 @@ pub fn run_dgraph_snapshot_command(
     let fixture_scenario = fixture_scenario
         .map(DGraphSnapshotFixtureScenario::parse)
         .transpose()?;
+    validate_observed_health_mode(observed_health, fixture_scenario.is_some(), &mode)?;
 
     match mode {
         DgraphSnapshotMode::Local => {
-            let snapshot = match fixture_scenario {
-                Some(scenario) => build_dgraph_fixture_snapshot(cfg, scenario),
-                None => build_local_dgraph_snapshot(cfg),
-            };
+            let snapshot = build_local_snapshot(cfg, fixture_scenario, observed_health)?;
             print_local_snapshot_output(&snapshot, json_output);
             Ok(())
         }
         DgraphSnapshotMode::Publish => {
-            let snapshot = match fixture_scenario {
-                Some(scenario) => build_dgraph_fixture_snapshot(cfg, scenario),
-                None => build_local_dgraph_snapshot(cfg),
-            };
+            let snapshot = build_local_snapshot(cfg, fixture_scenario, observed_health)?;
             validate_local_dgraph_snapshot_publish_invariants(&snapshot)?;
 
             let base_url = resolve_base_url(cfg, url_override)?;
@@ -102,6 +101,8 @@ pub fn run_dgraph_snapshot_command(
             println!();
             if fixture_scenario.is_some() {
                 println!("Note: publishing recorded fixture metadata only. No planner decision was executed.");
+            } else if observed_health {
+                println!("Note: this command published health derived read-only from the persisted local snapshot. It did not execute checks, planner logic, recovery, deployment, or flow reconfiguration.");
             } else {
                 println!("Note: this command published local d-graph snapshot metadata only. It did not run planner logic, deploy modules, or reconfigure flows.");
             }
@@ -233,6 +234,47 @@ pub fn run_dgraph_snapshot_command(
             Ok(())
         }
     }
+}
+
+fn build_local_snapshot(
+    cfg: &Config,
+    fixture_scenario: Option<DGraphSnapshotFixtureScenario>,
+    observed_health: bool,
+) -> Result<LocalDGraphSnapshot> {
+    if let Some(scenario) = fixture_scenario {
+        return Ok(build_dgraph_fixture_snapshot(cfg, scenario));
+    }
+
+    let mut snapshot = build_local_dgraph_snapshot(cfg);
+    if observed_health {
+        let observed = read_snapshot_from_config(cfg)?;
+        apply_persisted_observed_health(&mut snapshot, &observed, Utc::now())?;
+    }
+    Ok(snapshot)
+}
+
+fn validate_observed_health_mode(
+    observed_health: bool,
+    fixture: bool,
+    mode: &DgraphSnapshotMode,
+) -> Result<()> {
+    if !observed_health {
+        return Ok(());
+    }
+
+    if fixture {
+        return Err(anyhow!(
+            "--observed-health cannot be combined with --fixture"
+        ));
+    }
+
+    if !matches!(mode, DgraphSnapshotMode::Local | DgraphSnapshotMode::Publish) {
+        return Err(anyhow!(
+            "--observed-health is only valid for local or --publish snapshot modes"
+        ));
+    }
+
+    Ok(())
 }
 
 fn validate_dgraph_snapshot_mode(
@@ -576,8 +618,14 @@ fn format_materialized_dgraph_summary(
         format!("Artifacts: {}", summary.artifact_count.unwrap_or(0)),
         format!("Flows: {}", summary.flow_count.unwrap_or(0)),
         format!("Relationships: {}", summary.relationship_count.unwrap_or(0)),
-        format!("Healthy targets: {}", summary.healthy_targets.unwrap_or(0)),
-        format!("Unknown targets: {}", summary.unknown_targets.unwrap_or(0)),
+        format!(
+            "Healthy targets: {}",
+            summary.healthy_targets.unwrap_or(0)
+        ),
+        format!(
+            "Unknown targets: {}",
+            summary.unknown_targets.unwrap_or(0)
+        ),
         format!(
             "Degraded targets: {}",
             summary.degraded_targets.unwrap_or(0)
@@ -911,7 +959,8 @@ mod tests {
         format_latest_snapshot, format_latest_snapshot_list, format_local_dgraph_snapshot,
         format_materialized_dgraph, format_materialized_dgraph_summary, format_planner_dry_run,
         format_planner_dry_run_summary, format_published_snapshot, resolve_base_url,
-        resolve_project_id, validate_dgraph_snapshot_mode, DgraphSnapshotMode,
+        resolve_project_id, validate_dgraph_snapshot_mode, validate_observed_health_mode,
+        DgraphSnapshotMode,
     };
     use crate::{
         config::{AgentConfig, Config, DispatchConfig, FileJsonConfig, HttpConfig, OutputsConfig},
@@ -1095,6 +1144,25 @@ mod tests {
             .expect("mode should validate"),
             DgraphSnapshotMode::ReadinessSummary
         ));
+    }
+
+    #[test]
+    fn observed_health_is_limited_to_local_and_publish_modes() {
+        validate_observed_health_mode(true, false, &DgraphSnapshotMode::Local)
+            .expect("local observed health should validate");
+        validate_observed_health_mode(true, false, &DgraphSnapshotMode::Publish)
+            .expect("published observed health should validate");
+
+        assert!(validate_observed_health_mode(true, true, &DgraphSnapshotMode::Local).is_err());
+        assert!(
+            validate_observed_health_mode(true, false, &DgraphSnapshotMode::Latest).is_err()
+        );
+        assert!(validate_observed_health_mode(
+            true,
+            false,
+            &DgraphSnapshotMode::MaterializedSummary
+        )
+        .is_err());
     }
 
     #[test]
