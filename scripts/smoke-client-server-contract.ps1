@@ -657,6 +657,16 @@ function Assert-ProjectDGraphMaterializationContract {
         throw "$StepName returned null summary, expected an object."
     }
 
+    foreach ($requiredHealthField in @(
+        "healthy_targets",
+        "unknown_targets",
+        "degraded_targets",
+        "unavailable_targets",
+        "unhealthy_targets"
+    )) {
+        Assert-JsonHasProperty $Json.summary $requiredHealthField "$StepName summary"
+    }
+
     if ($Json.validation_errors -isnot [System.Array] -and $Json.validation_errors -isnot [System.Collections.IEnumerable]) {
         throw "$StepName did not return 'validation_errors' as an array."
     }
@@ -707,13 +717,26 @@ function Assert-ProjectDGraphMaterializationSummaryContract {
         throw "$StepName returned side_effects_performed='$($Json.side_effects_performed)', expected 'False'."
     }
 
-    foreach ($summaryField in @("node_count", "relationship_count")) {
+    foreach ($summaryField in @(
+        "node_count",
+        "relationship_count",
+        "healthy_targets",
+        "unknown_targets",
+        "degraded_targets",
+        "unavailable_targets",
+        "unhealthy_targets"
+    )) {
         if ($Json.summary.PSObject.Properties.Name -contains $summaryField) {
             $value = $Json.summary.$summaryField
             if ($null -ne $value -and $value -lt 0) {
                 throw "$StepName returned summary.$summaryField '$value', expected a non-negative value when present."
             }
         }
+    }
+
+    $expectedUnhealthyTargets = $Json.summary.degraded_targets + $Json.summary.unavailable_targets
+    if ($Json.summary.unhealthy_targets -ne $expectedUnhealthyTargets) {
+        throw "$StepName returned summary.unhealthy_targets '$($Json.summary.unhealthy_targets)', expected degraded_targets + unavailable_targets '$expectedUnhealthyTargets'."
     }
 }
 

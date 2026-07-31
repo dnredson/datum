@@ -23,6 +23,7 @@ Status notes:
 - The live metadata-only D-Graph validation phase reached `110/110`. Its final baseline readiness status is `ready`, its final degraded-flow status is `ready_with_warnings`, and the system is ready for the next macro phase. See [the final phase record](LIVE_DGRAPH_METADATA_ONLY_VALIDATION_PHASE_FINAL.md).
 - `C41/130` adds the `cloud-01/magistrala-core` metadata-only fixture, the second logical flow `fog-02/mqtt-adapter -> cloud-01/magistrala-core`, a sanitized cloud config template, and a two-host/three-node validation plan. Live publication remains deferred to the next milestone. See [the C41 plan](C41_CLOUD_01_METADATA_ONLY_3NODE_CONTINUUM_PLAN.md).
 - `C42/130` completed live three-logical-node metadata-only validation across two physical hosts. The baseline materialized 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, and 14 relationships with `readiness_status=ready`; the degraded cloud-bound flow produced one advisory warning with `readiness_status=ready_with_warnings`; the restored final baseline returned to zero warnings and zero degraded flows. No execution or side effects occurred. See [the C42 live record](LIVE_3NODE_DGRAPH_METADATA_ONLY_VALIDATION.md).
+- `C43/130` implements read-only health normalization so `unknown` is distinct from explicit degraded or unavailable state. The server exposes separate category counts, DATUM consumes and displays them, and the smoke contract validates the aggregate invariant. Rust verification remains required before advancing from `112/130` to `113/130`. See [the C43 implementation record](C43_READ_ONLY_HEALTH_NORMALIZATION.md).
 
 ## Completed Readiness Scope
 
@@ -94,7 +95,7 @@ Optional:
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
 - read-only health derived from service observations rather than fixture-only state
-- explicit distinction between `unknown` metadata-only health and genuinely unhealthy state
+- Rust and metadata-only live validation of the implemented `unknown` versus unhealthy distinction
 - a reusable multi-host three-node smoke script
 - richer advisory reconfiguration proposal semantics
 - a separate safety contract before any placement, recovery, migration, or reconfiguration execution
@@ -123,11 +124,11 @@ Optional:
 
 Recommendation:
 
-- prefer `C43/130` next because the main remaining semantic gap is that metadata-only module health is still `unknown`
-- follow with `I32/130` once the observed-health contract is stable
+- complete the pending Rust and metadata-only live validation for `C43/130`
+- follow with `I32/130` once the normalized health contract is stable
 
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node, two-flow continuum across two physical hosts while remaining metadata-only and non-executing. The final persisted baseline is clean and ready.
 
-The next architecture boundary is no longer basic distributed publication or materialization. It is converting safe local observations into trustworthy health semantics while preserving the distinction between unknown and unhealthy state. Executed orchestration remains deliberately out of scope.
+The next architecture boundary is no longer basic distributed publication or materialization. C43 implements the first trustworthy health-summary distinction between unknown and unhealthy state; it must now be verified before safe local observation sources are connected. Executed orchestration remains deliberately out of scope.
