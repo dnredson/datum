@@ -576,14 +576,8 @@ fn format_materialized_dgraph_summary(
         format!("Artifacts: {}", summary.artifact_count.unwrap_or(0)),
         format!("Flows: {}", summary.flow_count.unwrap_or(0)),
         format!("Relationships: {}", summary.relationship_count.unwrap_or(0)),
-        format!(
-            "Healthy targets: {}",
-            summary.healthy_targets.unwrap_or(0)
-        ),
-        format!(
-            "Unknown targets: {}",
-            summary.unknown_targets.unwrap_or(0)
-        ),
+        format!("Healthy targets: {}", summary.healthy_targets.unwrap_or(0)),
+        format!("Unknown targets: {}", summary.unknown_targets.unwrap_or(0)),
         format!(
             "Degraded targets: {}",
             summary.degraded_targets.unwrap_or(0)
