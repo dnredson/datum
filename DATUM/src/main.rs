@@ -96,6 +96,7 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.project_id.as_deref(),
             args.url.as_deref(),
             args.fixture.as_deref(),
+            args.observed_health,
             args.publish,
             args.latest,
             args.latest_all,
@@ -343,6 +344,9 @@ struct DgraphSnapshotArgs {
 
     #[arg(long)]
     fixture: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    observed_health: bool,
 
     #[arg(long, default_value_t = false)]
     publish: bool,
@@ -782,6 +786,7 @@ fn dgraph_snapshot_command(
     project_id: Option<&str>,
     url: Option<&str>,
     fixture: Option<&str>,
+    observed_health: bool,
     publish: bool,
     latest: bool,
     latest_all: bool,
@@ -799,6 +804,7 @@ fn dgraph_snapshot_command(
         project_id,
         url,
         fixture,
+        observed_health,
         publish,
         latest,
         latest_all,
