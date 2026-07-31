@@ -124,3 +124,11 @@ The following remain outside C41:
 - config-derived real observations or telemetry;
 - executed placement, migration, recovery, or reconfiguration;
 - changing unknown metadata-only health into operational health semantics.
+
+## C42 Live Validation Result
+
+The planned follow-up was completed successfully in `C42/130`.
+
+The live run validated three independent latest snapshots across two physical hosts, materialized three nodes, three node-scoped runtimes, three modules, two cross-node flows, and fourteen baseline relationships. Baseline readiness was `ready`; the isolated degraded-flow scenario was `ready_with_warnings` with one deterministic advisory warning and no reconfiguration or execution. The `fog-02` baseline was restored afterward, returning the final persisted state to zero warnings and zero degraded flows.
+
+See [C42 Live Three-Node Metadata-Only Validation](LIVE_3NODE_DGRAPH_METADATA_ONLY_VALIDATION.md) for the complete evidence.
