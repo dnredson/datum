@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document summarizes what is now ready for distributed metadata-only and dry-run validation, and what still needs preparation before the first live `2-VM` and `3-VM` experiments.
+This document summarizes readiness for distributed metadata-only and dry-run validation, records the completed live two-node and three-logical-node experiments, and tracks the remaining work before any executed orchestration.
 
 Status notes:
 
@@ -22,6 +22,7 @@ Status notes:
 - `C40/110` adds a consolidated read-only D-Graph readiness summary combining latest snapshots, materialized graph and planner dry-run summaries, validation errors, and safety checks. It remains metadata-only and does not execute deployment, dispatch, or reconfiguration.
 - The live metadata-only D-Graph validation phase reached `110/110`. Its final baseline readiness status is `ready`, its final degraded-flow status is `ready_with_warnings`, and the system is ready for the next macro phase. See [the final phase record](LIVE_DGRAPH_METADATA_ONLY_VALIDATION_PHASE_FINAL.md).
 - `C41/130` adds the `cloud-01/magistrala-core` metadata-only fixture, the second logical flow `fog-02/mqtt-adapter -> cloud-01/magistrala-core`, a sanitized cloud config template, and a two-host/three-node validation plan. Live publication remains deferred to the next milestone. See [the C41 plan](C41_CLOUD_01_METADATA_ONLY_3NODE_CONTINUUM_PLAN.md).
+- `C42/130` completed live three-logical-node metadata-only validation across two physical hosts. The baseline materialized 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, and 14 relationships with `readiness_status=ready`; the degraded cloud-bound flow produced one advisory warning with `readiness_status=ready_with_warnings`; the restored final baseline returned to zero warnings and zero degraded flows. No execution or side effects occurred. See [the C42 live record](LIVE_3NODE_DGRAPH_METADATA_ONLY_VALIDATION.md).
 
 ## Completed Readiness Scope
 
@@ -41,6 +42,10 @@ The project now has:
 - smoke coverage for fixture scenarios
 - a `2-VM` metadata-only smoke script draft
 - `2-VM` and `3-VM` distributed test plans
+- sanitized config templates for `fog-01`, `fog-02`, and `cloud-01`
+- successful live three-logical-node baseline publication and read-back
+- live validation of the multi-hop metadata-only flow chain
+- a validated degraded-flow sequence with baseline restoration
 
 ## Current Safety Guarantees
 
@@ -86,51 +91,43 @@ Optional:
 - use one real config-derived snapshot and one fixture snapshot
 - run `DATUM` viewer commands from only one operator machine
 
-## Remaining Gaps Before 3-VM Orchestration Dry-Run
+## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- per-node config templates for `fog-01`, `fog-02`, and `cloud-01`
-- richer flow metadata in `DATUM` config and snapshot generation
-- explicit health and degraded-node reporting beyond fixture mode
-- a multi-host orchestration script beyond the current `2-VM` draft
-- expected module and flow names for reproducible planner output
-- a decision on Firestore emulator versus real backend
-- expected failure and degradation scenario order
-- a baseline restoration procedure after degraded fixture publish
+- read-only health derived from service observations rather than fixture-only state
+- explicit distinction between `unknown` metadata-only health and genuinely unhealthy state
+- a reusable multi-host three-node smoke script
+- richer advisory reconfiguration proposal semantics
+- a separate safety contract before any placement, recovery, migration, or reconfiguration execution
 
 ## Recommended Next Milestone Options
 
-### Option `I26/100`: Live 2-VM Preflight and Config Template Pack
+### Option `C43/130`: Read-Only Observed Health Normalization
 
-- create example config templates for `fog-01` and `fog-02`
-- create a checklist for local paths and environment variables
-- make no runtime behavior changes
-- recommended before the first actual live distributed run
+- derive module health from safe local service observations
+- preserve `unknown` as distinct from degraded or unavailable
+- publish only metadata
+- keep planner, dispatch, recovery, Docker, and WASM execution disabled
+- recommended as the next capability increment
 
-### Option `I27/100`: Execute the First Live 2-VM Metadata-Only Smoke
+### Option `I32/130`: Repeatable Live Three-Node Smoke Script
 
-- run the distributed smoke script against a real environment
-- collect output and operator notes
-- document the result
-- only after configs and backend reachability are ready
+- encode the validated publication, read-back, degraded-flow, and restoration sequence
+- keep real environment values in untracked local inputs
+- assert the final restored baseline and safety flags
 
-### Option `C35/100`: Richer DATUM Flow Metadata in D-Graph Snapshots
+### Option `C44/130`: Enriched Planner Advisory Proposals
 
-- add safe config-derived flow metadata where current snapshots are sparse
-- improve planner visibility before `3-VM` tests
-
-### Option `A9/100`: Macro Checkpoint at `100/100`
-
-- close the current planning phase
-- define the live distributed execution window
-- record the required safety and environment prerequisites
+- represent candidate reconfiguration proposals as structured advisory output
+- do not execute placement or reconfiguration
+- retain deterministic warning and safety metadata
 
 Recommendation:
 
-- prefer `I26/100` next if live VM configs are not ready
-- prefer `I27/100` only if both VMs and the `dserver` backend are ready
+- prefer `C43/130` next because the main remaining semantic gap is that metadata-only module health is still `unknown`
+- follow with `I32/130` once the observed-health contract is stable
 
 ## Practical Summary
 
-The project is ready for a first live distributed dry-run once real `fog-01` and `fog-02` configs exist and both nodes can publish to the same `dserver` project. The missing work is now mostly environmental and reproducibility-oriented rather than architectural.
+C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node, two-flow continuum across two physical hosts while remaining metadata-only and non-executing. The final persisted baseline is clean and ready.
 
-The `3-VM` path is planned but not yet operational. It still needs stronger flow metadata, repeatable degraded-node sequencing, and a clearer multi-host execution procedure before a live orchestration dry-run should be required.
+The next architecture boundary is no longer basic distributed publication or materialization. It is converting safe local observations into trustworthy health semantics while preserving the distinction between unknown and unhealthy state. Executed orchestration remains deliberately out of scope.
