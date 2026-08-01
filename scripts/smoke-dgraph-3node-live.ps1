@@ -91,13 +91,20 @@ function Invoke-LocalDatumJson([string[]]$Arguments, [string]$Step) {
     }
 }
 
+function Invoke-LocalDatumPublication([string[]]$Arguments, [string]$Step) {
+    # The CLI overrides make the requested smoke context authoritative, even when a
+    # local config contains a stale outputs.http URL or project ID.
+    $publicationArguments = @($Arguments + @("--url", $ServerUrl, "--project-id", $ProjectId))
+    return Invoke-LocalDatum $publicationArguments $Step
+}
+
 function Assert-Output([string]$Output, [string]$Pattern, [string]$Step) {
     if ($Output -notmatch $Pattern) { throw "${Step}: expected output matching '$Pattern'." }
 }
 
 function Publish-Fixture([string]$NodeId, [string]$Config, [string]$Scenario, [string]$Step) {
     $args = @("run", "--quiet", "--", "dgraph-snapshot", "--config", $Config, "--fixture", $Scenario, "--publish")
-    $output = Invoke-LocalDatum $args $Step
+    $output = Invoke-LocalDatumPublication $args $Step
     Assert-Output $output "Published local d-graph fixture snapshot" $Step
     Assert-Output $output "scenario:\s*$([regex]::Escape($Scenario))" $Step
     Assert-Output $output "safe to auto execute:\s*false" $Step
@@ -161,7 +168,7 @@ function Assert-ObservedHealth() {
     if ($health.Count -lt 1) { throw "Observed-health local read: expected at least one persisted health observation." }
     foreach ($item in $health) { Assert-False $item "metadata.checks_executed" "Observed-health local read" }
 
-    $published = Invoke-LocalDatum @("run", "--quiet", "--", "dgraph-snapshot", "--config", $ResolvedFog02Config, "--observed-health", "--publish") "Observed-health publish"
+    $published = Invoke-LocalDatumPublication @("run", "--quiet", "--", "dgraph-snapshot", "--config", $ResolvedFog02Config, "--observed-health", "--publish") "Observed-health publish"
     Assert-Output $published "Published local d-graph snapshot" "Observed-health publish"
     Assert-Output $published "published health derived read-only from the persisted local snapshot" "Observed-health publish"
     Assert-Output $published "safe to auto execute:\s*false" "Observed-health publish"

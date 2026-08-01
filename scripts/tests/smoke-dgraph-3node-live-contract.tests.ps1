@@ -26,6 +26,27 @@ Assert-Contains $source 'Cargo.toml'
 Assert-Contains $source 'snapshot-fog-02.json'
 Assert-Contains $source 'Publish-Fixture \$CloudId \$ResolvedCloudConfig "baseline" "Publish cloud-01 baseline"'
 
+$publicationBlock = [regex]::Match($source, 'function Invoke-LocalDatumPublication\(\[string\[\]\]\$Arguments, \[string\]\$Step\) \{(?<body>[\s\S]*?)^\}', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+if (-not $publicationBlock.Success) { throw "Expected Invoke-LocalDatumPublication function." }
+$publicationSource = $publicationBlock.Groups['body'].Value
+Assert-Contains $publicationSource '--url", \$ServerUrl'
+Assert-Contains $publicationSource '--project-id", \$ProjectId'
+Assert-Contains $publicationSource 'Invoke-LocalDatum \$publicationArguments \$Step'
+
+$fixturePublishBlock = [regex]::Match($source, 'function Publish-Fixture\([\s\S]*?\) \{(?<body>[\s\S]*?)^\}', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+if (-not $fixturePublishBlock.Success) { throw "Expected Publish-Fixture function." }
+Assert-Contains $fixturePublishBlock.Groups['body'].Value 'Invoke-LocalDatumPublication \$args \$Step'
+
+# A local config may contain a divergent URL or project ID. The publication overrides
+# below must remain authoritative for each of the three valid node configs.
+foreach ($configName in @("Fog01Config", "Fog02Config", "CloudConfig")) {
+    Assert-Contains $source ("\[string\]\$" + $configName)
+}
+Assert-Contains $source 'Invoke-LocalDatumPublication @\("run", "--quiet", "--", "dgraph-snapshot", "--config", \$ResolvedFog02Config, "--observed-health", "--publish"\) "Observed-health publish"'
+if ($source -match 'Invoke-LocalDatum @\("run", "--quiet", "--", "dgraph-snapshot", "--config", \$ResolvedFog02Config, "--observed-health", "--publish"\)') {
+    throw "Observed-health publication must use requested URL/project overrides."
+}
+
 $observedHealthBlock = [regex]::Match($source, 'function Assert-ObservedHealth\(\) \{(?<body>[\s\S]*?)^\}', [System.Text.RegularExpressions.RegexOptions]::Multiline)
 if (-not $observedHealthBlock.Success) { throw "Expected Assert-ObservedHealth function." }
 $observedHealthSource = $observedHealthBlock.Groups['body'].Value

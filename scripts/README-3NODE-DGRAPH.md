@@ -29,6 +29,11 @@ writes are explicit reporting-only D-Graph snapshot publications to `dserver`.
 - All three configs use the same `project_id`, point to the same `dserver`, and
   retain disabled automatic recovery/assisted execution settings.
 
+The command passes `-ServerUrl` and `-ProjectId` to every D-Graph publication as
+the CLI `--url` and `--project-id` overrides. Those requested values are therefore
+authoritative for baseline, degraded-flow, observed-health, and restoration
+publication; a stale local `outputs.http` destination cannot redirect the smoke.
+
 Do not put credentials, addresses, service-account paths, or generated snapshots in
 the command or Git. `.gitignore` excludes the expected local config and smoke-output
 patterns.
