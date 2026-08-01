@@ -37,7 +37,9 @@ The example reflects only entities present in the materialized graph. Candidate
 nodes are sorted observations, not selected destinations. A healthy baseline has
 an empty proposal collection. Missing modules, unknown health, or absent candidates
 are limitations; they are never converted into claimed availability, compatibility,
-or health facts.
+or health facts. Proposal summaries and reasons preserve the flow status observed in
+the graph (for example, `warning` remains `warning` rather than being stated as
+`degraded`).
 
 ## Determinism and safety
 

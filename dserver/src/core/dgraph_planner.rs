@@ -356,6 +356,7 @@ fn build_advisory_proposals(graph: &DGraph) -> Vec<DGraphPlannerAdvisoryProposal
         if !is_degraded_status(flow.status.as_deref().unwrap_or("unknown")) {
             continue;
         }
+        let observed_flow_status = flow.status.as_deref().unwrap_or("unknown");
 
         let mut related_nodes = BTreeSet::new();
         let mut candidate_nodes = BTreeSet::new();
@@ -454,14 +455,14 @@ fn build_advisory_proposals(graph: &DGraph) -> Vec<DGraphPlannerAdvisoryProposal
                 proposal_id,
                 category: "degraded_flow_observation".to_string(),
                 summary: format!(
-                    "Observed degraded flow '{}' requires operator review",
-                    flow.flow_id
+                    "Observed flow '{}' with status '{}' requires operator review",
+                    flow.flow_id, observed_flow_status
                 ),
                 reason: DGraphPlannerAdvisoryReason {
                     code: "degraded_flow_observed".to_string(),
                     message: format!(
-                        "flow '{}' is reported as degraded in the materialized D-Graph",
-                        flow.flow_id
+                        "flow '{}' is reported with status '{}' in the materialized D-Graph",
+                        flow.flow_id, observed_flow_status
                     ),
                 },
                 evidence,
@@ -1273,6 +1274,8 @@ mod tests {
             proposal.proposal_id,
             "advisory:degraded-flow:flow-chirpstack-to-mqtt-adapter"
         );
+        assert!(proposal.summary.contains("status 'degraded'"));
+        assert!(proposal.reason.message.contains("status 'degraded'"));
         assert_eq!(
             proposal.related_flow_ids,
             vec!["flow-chirpstack-to-mqtt-adapter"]
@@ -1306,6 +1309,24 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    fn warning_flow_preserves_its_observed_status_in_the_advisory() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].status = Some("warning".to_string());
+
+        let proposal = build_advisory_proposals(&graph)
+            .pop()
+            .expect("warning flow should have an advisory");
+
+        assert_eq!(
+            proposal.evidence[0].observed_status.as_deref(),
+            Some("warning")
+        );
+        assert!(proposal.summary.contains("status 'warning'"));
+        assert!(proposal.reason.message.contains("status 'warning'"));
+        assert!(!proposal.executable);
     }
 
     #[test]
