@@ -66,6 +66,16 @@ dry-run planner with no side effects. Next it reads and explicitly publishes
 `--observed-health` from the persisted `fog-02` snapshot, asserting
 `checks_executed=false` for every health entry and both safety flags false.
 
+## Live validation status
+
+I32 passed live validation on Windows `192.168.10.101`: all three logical nodes
+were published from local configs, the advisory degraded-flow and read-only
+observed-health steps passed, and mandatory baseline restoration returned the graph
+to 3 snapshots/nodes/runtimes/modules, 2 flows, 14 relationships, 3 unknown targets,
+zero unhealthy or unavailable targets, and readiness `ready`. No SSH or use of
+`192.168.10.106` occurred. See
+[the validation record](../docs/LIVE_I32_REPEATABLE_3NODE_SMOKE_VALIDATION.md).
+
 ## Safety and restoration
 
 The script enters a `try/finally` after baseline publication starts. Its `finally`
