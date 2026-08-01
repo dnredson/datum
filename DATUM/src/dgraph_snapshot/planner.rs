@@ -36,7 +36,11 @@ pub struct DGraphPlannerDryRun {
     #[serde(default)]
     pub warnings: Vec<DGraphPlannerWarning>,
     #[serde(default)]
+    pub advisory_proposals: Vec<DGraphPlannerAdvisoryProposal>,
+    #[serde(default)]
     pub summary: Option<DGraphPlannerSummary>,
+    #[serde(default)]
+    pub safe_to_auto_execute: Option<bool>,
     #[serde(default)]
     pub side_effects_performed: Option<bool>,
     #[serde(default)]
@@ -106,6 +110,50 @@ pub struct DGraphPlannerWarning {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DGraphPlannerAdvisoryReason {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DGraphPlannerAdvisoryEvidence {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub observed_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DGraphPlannerAdvisoryProposal {
+    #[serde(default)]
+    pub proposal_id: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub reason: Option<DGraphPlannerAdvisoryReason>,
+    #[serde(default)]
+    pub evidence: Vec<DGraphPlannerAdvisoryEvidence>,
+    #[serde(default)]
+    pub related_flow_ids: Vec<String>,
+    #[serde(default)]
+    pub related_node_ids: Vec<String>,
+    #[serde(default)]
+    pub candidate_node_ids: Vec<String>,
+    #[serde(default)]
+    pub limitations: Vec<String>,
+    #[serde(default)]
+    pub advisory_only: Option<bool>,
+    #[serde(default)]
+    pub executable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DGraphPlannerSummary {
     #[serde(default)]
     pub placement_count: Option<u64>,
@@ -169,7 +217,9 @@ mod tests {
                 "reconfigurations":[{"reconfiguration_id":"r1","flow_id":"flow-a","affected_module_id":"broker","from_node_id":"fog-01","to_node_id":"fog-02","reason":"failover","status":"proposed"}],
                 "blocked":[{"item_id":"b1","target_kind":"module","target_id":"broker","reason":"no candidate"}],
                 "warnings":[{"warning_id":"w1","reason":"runtime fallback"}],
+                "advisory_proposals":[{"proposal_id":"advisory:degraded-flow:flow-a","category":"degraded_flow","summary":"Observed degraded flow flow-a.","reason":{"code":"degraded_flow_observed","message":"The flow is marked degraded in the D-Graph."},"evidence":[{"kind":"flow","entity_id":"flow-a","observed_status":"degraded"}],"related_flow_ids":["flow-a"],"related_node_ids":["fog-01"],"candidate_node_ids":["fog-02"],"limitations":["advisory only"],"advisory_only":true,"executable":false}],
                 "summary":{"placement_count":1,"reconfiguration_count":1,"blocked_count":1,"warning_count":1,"candidate_node_count":2,"unhealthy_node_count":0,"degraded_flow_count":0},
+                "safe_to_auto_execute":false,
                 "side_effects_performed":false
             },
             "side_effects_performed":false,
@@ -189,6 +239,15 @@ mod tests {
                 .and_then(|planner| planner.status.as_deref()),
             Some("planned")
         );
+        let planner = parsed.planner.as_ref().expect("planner should be present");
+        assert_eq!(planner.advisory_proposals.len(), 1);
+        assert_eq!(
+            planner.advisory_proposals[0].proposal_id,
+            Some("advisory:degraded-flow:flow-a".to_owned())
+        );
+        assert_eq!(planner.advisory_proposals[0].advisory_only, Some(true));
+        assert_eq!(planner.advisory_proposals[0].executable, Some(false));
+        assert_eq!(planner.safe_to_auto_execute, Some(false));
     }
 
     #[test]

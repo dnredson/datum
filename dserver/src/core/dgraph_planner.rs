@@ -3,6 +3,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::dgraph::{
     validate_dgraph, DGraph, DGraphModule, DGraphNode, DGraphPlacementDecision,
@@ -30,7 +31,11 @@ pub struct DGraphPlannerDryRun {
     #[serde(default)]
     pub warnings: Vec<DGraphPlannerWarning>,
     #[serde(default)]
+    pub advisory_proposals: Vec<DGraphPlannerAdvisoryProposal>,
+    #[serde(default)]
     pub summary: DGraphPlannerSummary,
+    #[serde(default)]
+    pub safe_to_auto_execute: bool,
     #[serde(default)]
     pub side_effects_performed: bool,
     #[serde(default)]
@@ -59,6 +64,50 @@ pub struct DGraphPlannerWarning {
     pub reason: String,
     #[serde(default)]
     pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DGraphPlannerAdvisoryReason {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DGraphPlannerAdvisoryEvidence {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub entity_id: String,
+    #[serde(default)]
+    pub observed_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DGraphPlannerAdvisoryProposal {
+    #[serde(default)]
+    pub proposal_id: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub reason: DGraphPlannerAdvisoryReason,
+    #[serde(default)]
+    pub evidence: Vec<DGraphPlannerAdvisoryEvidence>,
+    #[serde(default)]
+    pub related_flow_ids: Vec<String>,
+    #[serde(default)]
+    pub related_node_ids: Vec<String>,
+    #[serde(default)]
+    pub candidate_node_ids: Vec<String>,
+    #[serde(default)]
+    pub limitations: Vec<String>,
+    #[serde(default)]
+    pub advisory_only: bool,
+    #[serde(default)]
+    pub executable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -239,7 +288,9 @@ pub fn plan_dgraph_dry_run(graph: &DGraph) -> DGraphPlannerDryRun {
             reconfigurations: Vec::new(),
             blocked,
             warnings: Vec::new(),
+            advisory_proposals: Vec::new(),
             summary,
+            safe_to_auto_execute: false,
             side_effects_performed: false,
             metadata: None,
         };
@@ -254,6 +305,7 @@ pub fn plan_dgraph_dry_run(graph: &DGraph) -> DGraphPlannerDryRun {
     let mut warnings = placement_result.warnings;
     append_unique_warnings(&mut warnings, reconfiguration_result.warnings);
     append_degraded_flow_advisories(graph, &mut warnings);
+    let advisory_proposals = build_advisory_proposals(graph);
 
     let placements = placement_result.placements;
     let reconfigurations = reconfiguration_result.reconfigurations;
@@ -287,10 +339,142 @@ pub fn plan_dgraph_dry_run(graph: &DGraph) -> DGraphPlannerDryRun {
         reconfigurations,
         blocked,
         warnings,
+        advisory_proposals,
         summary,
+        safe_to_auto_execute: false,
         side_effects_performed: false,
         metadata: None,
     }
+}
+
+fn build_advisory_proposals(graph: &DGraph) -> Vec<DGraphPlannerAdvisoryProposal> {
+    let mut by_id = BTreeMap::new();
+    let mut flows = graph.flows.iter().collect::<Vec<_>>();
+    flows.sort_by(|left, right| left.flow_id.cmp(&right.flow_id));
+
+    for flow in flows {
+        if !is_degraded_status(flow.status.as_deref().unwrap_or("unknown")) {
+            continue;
+        }
+
+        let mut related_nodes = BTreeSet::new();
+        let mut candidate_nodes = BTreeSet::new();
+        let mut limitations = BTreeSet::new();
+        let mut evidence = vec![DGraphPlannerAdvisoryEvidence {
+            kind: "flow".to_string(),
+            entity_id: flow.flow_id.clone(),
+            observed_status: flow.status.clone(),
+        }];
+        let mut module_ids = flow.modules.iter().collect::<Vec<_>>();
+        module_ids.sort();
+        module_ids.dedup();
+
+        for module_id in module_ids {
+            let Some(module) = graph
+                .modules
+                .iter()
+                .find(|module| module.module_id == *module_id)
+            else {
+                limitations.insert(format!(
+                    "flow references module '{}' that is absent from the materialized graph",
+                    module_id
+                ));
+                continue;
+            };
+            evidence.push(DGraphPlannerAdvisoryEvidence {
+                kind: "module".to_string(),
+                entity_id: module.module_id.clone(),
+                observed_status: module.observed_state.clone(),
+            });
+
+            for placement in graph
+                .placements
+                .iter()
+                .filter(|placement| placement.module_id == module.module_id)
+            {
+                if graph
+                    .nodes
+                    .iter()
+                    .any(|node| node.node_id == placement.selected_node_id)
+                {
+                    related_nodes.insert(placement.selected_node_id.clone());
+                }
+            }
+            for candidate in candidate_nodes_for_module(graph, module) {
+                candidate_nodes.insert(candidate.node_id);
+            }
+            for report in graph.health_reports.iter().filter(|report| {
+                report.target_kind.eq_ignore_ascii_case("module")
+                    && report.target_id == module.module_id
+                    && report.status.eq_ignore_ascii_case("unknown")
+            }) {
+                evidence.push(DGraphPlannerAdvisoryEvidence {
+                    kind: "health_report".to_string(),
+                    entity_id: report.report_id.clone(),
+                    observed_status: Some(report.status.clone()),
+                });
+                limitations.insert(format!(
+                    "module '{}' health is unknown and is not treated as availability evidence",
+                    module.module_id
+                ));
+            }
+        }
+
+        if candidate_nodes.is_empty() {
+            limitations.insert(
+                "no available candidate nodes are present in current graph evidence".to_string(),
+            );
+        } else {
+            limitations.insert(
+                "candidate nodes are observations only; no destination is selected".to_string(),
+            );
+        }
+        limitations.insert(
+            "advisory only; it does not authorize placement, recovery, migration, or reconfiguration"
+                .to_string(),
+        );
+        evidence.sort_by(|left, right| {
+            (
+                left.kind.as_str(),
+                left.entity_id.as_str(),
+                left.observed_status.as_deref(),
+            )
+                .cmp(&(
+                    right.kind.as_str(),
+                    right.entity_id.as_str(),
+                    right.observed_status.as_deref(),
+                ))
+        });
+        evidence.dedup();
+
+        let proposal_id = format!("advisory:degraded-flow:{}", flow.flow_id);
+        by_id
+            .entry(proposal_id.clone())
+            .or_insert(DGraphPlannerAdvisoryProposal {
+                proposal_id,
+                category: "degraded_flow_observation".to_string(),
+                summary: format!(
+                    "Observed degraded flow '{}' requires operator review",
+                    flow.flow_id
+                ),
+                reason: DGraphPlannerAdvisoryReason {
+                    code: "degraded_flow_observed".to_string(),
+                    message: format!(
+                        "flow '{}' is reported as degraded in the materialized D-Graph",
+                        flow.flow_id
+                    ),
+                },
+                evidence,
+                related_flow_ids: vec![flow.flow_id.clone()],
+                related_node_ids: related_nodes.into_iter().collect(),
+                candidate_node_ids: candidate_nodes.into_iter().collect(),
+                limitations: limitations.into_iter().collect(),
+                advisory_only: true,
+                executable: false,
+            });
+    }
+
+    by_id.into_values().collect()
 }
 
 pub fn build_project_dgraph_planner_dry_run_response(
@@ -1064,6 +1248,8 @@ mod tests {
         assert_eq!(dry_run.summary.degraded_flow_count, 0);
         assert_eq!(dry_run.summary.warning_count, 0);
         assert_eq!(dry_run.summary.blocked_count, 0);
+        assert!(dry_run.advisory_proposals.is_empty());
+        assert!(!dry_run.safe_to_auto_execute);
         assert!(!dry_run.side_effects_performed);
     }
 
@@ -1081,6 +1267,20 @@ mod tests {
         assert!(dry_run.summary.warning_count >= 1);
         assert_eq!(dry_run.status, "planned");
         assert!(dry_run.reconfigurations.is_empty());
+        assert_eq!(dry_run.advisory_proposals.len(), 1);
+        let proposal = &dry_run.advisory_proposals[0];
+        assert_eq!(
+            proposal.proposal_id,
+            "advisory:degraded-flow:flow-chirpstack-to-mqtt-adapter"
+        );
+        assert_eq!(
+            proposal.related_flow_ids,
+            vec!["flow-chirpstack-to-mqtt-adapter"]
+        );
+        assert!(proposal.advisory_only);
+        assert!(!proposal.executable);
+        assert!(!proposal.evidence.is_empty());
+        assert!(!dry_run.safe_to_auto_execute);
         assert!(!dry_run.side_effects_performed);
         let warning = dry_run
             .warnings
@@ -1143,6 +1343,116 @@ mod tests {
             blocked_first.blocked[0].item_id,
             blocked_second.blocked[0].item_id
         );
+    }
+
+    #[test]
+    fn advisory_proposals_are_sorted_deduplicated_and_reference_graph_entities() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].flow_id = "flow-z".to_string();
+        graph.flows[0].status = Some("degraded".to_string());
+        let mut second = graph.flows[0].clone();
+        second.flow_id = "flow-a".to_string();
+        graph.flows.push(second);
+
+        let first = build_advisory_proposals(&graph);
+        let second = build_advisory_proposals(&graph);
+        let ids = first
+            .iter()
+            .map(|proposal| proposal.proposal_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "advisory:degraded-flow:flow-a",
+                "advisory:degraded-flow:flow-z"
+            ]
+        );
+        assert_eq!(first, second);
+
+        for proposal in &first {
+            assert_eq!(proposal.candidate_node_ids, vec!["fog-01", "fog-02"]);
+            for flow_id in &proposal.related_flow_ids {
+                assert!(graph.flows.iter().any(|flow| &flow.flow_id == flow_id));
+            }
+            for node_id in &proposal.candidate_node_ids {
+                assert!(graph.nodes.iter().any(|node| &node.node_id == node_id));
+            }
+            for evidence in &proposal.evidence {
+                assert!(
+                    (evidence.kind == "flow"
+                        && graph
+                            .flows
+                            .iter()
+                            .any(|flow| flow.flow_id == evidence.entity_id))
+                        || (evidence.kind == "module"
+                            && graph
+                                .modules
+                                .iter()
+                                .any(|module| module.module_id == evidence.entity_id))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn incomplete_inputs_are_conservative_and_dry_run_does_not_mutate_graph() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].status = Some("degraded".to_string());
+        graph.flows[0].modules = vec!["missing-module".to_string()];
+        let before = graph.clone();
+        let proposals = build_advisory_proposals(&graph);
+
+        assert_eq!(graph, before);
+        assert_eq!(proposals.len(), 1);
+        assert!(proposals[0].candidate_node_ids.is_empty());
+        assert!(proposals[0]
+            .limitations
+            .iter()
+            .any(|item| item.contains("absent from the materialized graph")));
+        assert!(proposals[0].advisory_only);
+        assert!(!proposals[0].executable);
+    }
+
+    #[test]
+    fn unknown_health_is_a_limitation_not_availability_evidence() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].status = Some("degraded".to_string());
+        graph.health_reports.push(DGraphHealthReport {
+            report_id: "health-module-missing".to_string(),
+            target_kind: "module".to_string(),
+            target_id: "module-missing".to_string(),
+            status: "unknown".to_string(),
+            reason: None,
+            metadata: None,
+        });
+
+        let proposal = build_advisory_proposals(&graph)
+            .pop()
+            .expect("degraded flow should have an advisory");
+        assert!(proposal
+            .limitations
+            .iter()
+            .any(|item| item.contains("unknown and is not treated as availability")));
+        assert!(proposal.evidence.iter().any(|item| {
+            item.kind == "health_report"
+                && item.entity_id == "health-module-missing"
+                && item.observed_status.as_deref() == Some("unknown")
+        }));
+        assert!(!proposal.executable);
+    }
+
+    #[test]
+    fn advisory_proposals_serialize_additively_with_safety_flags_false() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].status = Some("degraded".to_string());
+        let value =
+            serde_json::to_value(plan_dgraph_dry_run(&graph)).expect("planner should serialize");
+
+        assert!(value.get("placements").is_some());
+        assert!(value.get("warnings").is_some());
+        assert!(value.get("advisory_proposals").is_some());
+        assert_eq!(value["safe_to_auto_execute"], false);
+        assert_eq!(value["side_effects_performed"], false);
     }
 
     #[test]

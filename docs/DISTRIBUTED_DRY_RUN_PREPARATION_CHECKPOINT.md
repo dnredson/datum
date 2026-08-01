@@ -26,6 +26,7 @@ Status notes:
 - `C43/130` completed read-only health normalization and live validation. The same restored C42 baseline now reports `unknown_targets=3` and `unhealthy_targets=0`, with `readiness_status=ready`, zero warnings or blockers, and no execution or side effects. See [the C43 implementation record](C43_READ_ONLY_HEALTH_NORMALIZATION.md) and [live validation record](LIVE_C43_READ_ONLY_HEALTH_NORMALIZATION_VALIDATION.md).
 - `C44/130` completed read-only observed-health derivation and live validation. A fresh persisted `fog-02/mqtt-adapter` observation was preserved as `unavailable` with source, raw status, age, TTL, and freshness metadata while `checks_executed=false`, `safe_to_auto_execute=false`, and `side_effects_performed=false`. Explicit publication materialized one unavailable and two unknown targets; the final restored baseline returned to 3 nodes, 3 node-scoped runtimes, 3 modules, 2 flows, 14 relationships, 3 unknown targets, zero unavailable or unhealthy targets, zero validation errors, and no side effects. Progress is `114/130`. See [the C44 implementation record](C44_READ_ONLY_OBSERVED_HEALTH.md) and [live validation record](LIVE_C44_READ_ONLY_OBSERVED_HEALTH_VALIDATION.md).
 - `I32/130` completed the repeatable live three-node smoke locally on Windows `192.168.10.101`. `fog-01`, `fog-02`, and logical metadata-only `cloud-01` were all published with local DATUM configurations; no SSH or use of `192.168.10.106` occurred. Baseline, degraded-flow advisory, persisted observed-health publication, mandatory restoration, and final baseline checks passed with `checks_executed=false`, `safe_to_auto_execute=false`, and `side_effects_performed=false`. Progress is `115/130`. See [the I32 live validation record](LIVE_I32_REPEATABLE_3NODE_SMOKE_VALIDATION.md).
+- `C45/130` adds deterministic structured advisory proposals to the full planner dry-run response. Degraded flows can now carry graph-backed evidence, related IDs, candidate observations, and explicit limitations while remaining non-executable. The summary contract is unchanged, no graph mutation occurs, and no placement, recovery, migration, or reconfiguration is executed. Progress is `116/130`. See [the C45 contract](C45_ENRICHED_PLANNER_ADVISORY_PROPOSALS.md).
 
 ## Completed Readiness Scope
 
@@ -55,6 +56,7 @@ The project now has:
 - live confirmation that observed-health translation executes no checks and preserves explicit failure classes
 - explicit reporting-only publication of observed health with final three-node baseline restoration
 - a repeatable live three-node smoke executed entirely from local Windows DATUM configurations
+- structured, deterministic, graph-backed planner advisory proposals with no execution path
 
 ## Current Safety Guarantees
 
@@ -103,17 +105,10 @@ Optional:
 
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- richer advisory reconfiguration proposal semantics
 - broader live observed-health coverage for healthy, degraded, stale, absent, and clock-skewed states
 - a separate safety contract before any placement, recovery, migration, or reconfiguration execution
 
 ## Recommended Next Milestone Options
-
-### Option `C45/130`: Enriched Planner Advisory Proposals
-
-- produce structured candidate proposals as advisory output only
-- do not execute placement, recovery, migration, or reconfiguration
-- retain deterministic warning and safety metadata
 
 ### Option `I33/130`: Observed-Health Scenario Matrix
 
@@ -123,8 +118,7 @@ Optional:
 
 Recommendation:
 
-- prefer `C45/130` next for enriched planner advisory proposals
-- retain `I33/130` as the subsequent focused observed-health scenario matrix
+- prefer `I33/130` next as the focused observed-health scenario matrix
 
 ## Practical Summary
 
@@ -135,5 +129,5 @@ persisted service observation can be translated and explicitly published as cano
 without running checks or performing operational side effects. I32 makes that sequence repeatable
 and validates it locally for all three logical nodes, including restoration.
 
-The next practical step is C45's structured advisory proposals. Executed orchestration remains
+The next practical step is I33's observed-health scenario matrix. Executed orchestration remains
 deliberately out of scope.
