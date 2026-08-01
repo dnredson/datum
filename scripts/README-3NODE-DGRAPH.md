@@ -16,13 +16,16 @@ writes are explicit reporting-only D-Graph snapshot publications to `dserver`.
 - Run from the `PD` repository root with PowerShell 7+ (`pwsh`). The script
   preflight rejects Windows PowerShell 5.1.
 - `dserver` is running and reachable at `ServerUrl`, with its configured backend available.
-- `cargo` is available locally and on `cloud-01`.
-- OpenSSH client is available locally and non-interactive SSH to `cloud-01` works
-  (key-based authentication; no password prompt).
-- Create untracked local configs from the templates in `scripts/templates/` for
-  `fog-01`, `fog-02`, and `cloud-01`. The local `fog-02` config must already point
+- `cargo` is available locally, and `DATUM/Cargo.toml` is present.
+- Create an untracked local `cloud-01` config from
+  `scripts/templates/datum-config-cloud-01.example.toml`. This checkout currently
+  has no operator-local `cloud-01` config, so use its real local path for
+  `-CloudConfig`; do not refer to `192.168.10.106`.
+- The three local configs for `fog-01`, `fog-02`, and `cloud-01` declare their
+  respective node IDs. The local `fog-02` config must already point
   at a current persisted DATUM snapshot containing its service observation; the
   script never runs a collection cycle to create or refresh it.
+- `DATUM/snapshot-fog-02.json` exists for the read-only observed-health step.
 - All three configs use the same `project_id`, point to the same `dserver`, and
   retain disabled automatic recovery/assisted execution settings.
 
@@ -32,8 +35,9 @@ patterns.
 
 ## Exact command
 
-Replace only the three cloud connection/path values with your local values. The cloud
-paths must be absolute POSIX paths on the remote host.
+Set `-CloudConfig` to the real local `cloud-01` configuration path. `cloud-01` is a
+third logical metadata-only node executed locally on Windows; it has no SSH target,
+remote DATUM directory, or separate physical-machine requirement.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-dgraph-3node-live.ps1 `
@@ -41,9 +45,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-dgraph-3node-live.
   -ProjectId smart-city-campinas `
   -Fog01Config .\DATUM\config-fog-01.local.toml `
   -Fog02Config .\DATUM\config-fog-02.local.toml `
-  -CloudSshTarget operator@192.168.10.106 `
-  -CloudDatumDir /opt/DATUM `
-  -CloudConfig /opt/DATUM/config-cloud-01.local.toml
+  -CloudConfig .\DATUM\config-cloud-01.local.toml
 ```
 
 ## Expected results
@@ -70,7 +72,7 @@ The script enters a `try/finally` after baseline publication starts. Its `finall
 block always republishes the `fog-02` baseline, including after a degraded-flow or
 observed-health failure, then rechecks the complete restored baseline. A restoration
 failure is reported prominently and makes the command fail. This is intentionally
-fail-fast: any unmet endpoint, schema, count, safety flag, or remote-command
+fail-fast: any unmet local file, config, endpoint, schema, count, or safety-flag
 precondition stops the run.
 
 If the command is interrupted before PowerShell can run `finally` (for example a

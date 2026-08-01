@@ -4,8 +4,9 @@
 
 The repeatable Windows smoke script, its safety boundaries, exact command, expected
 counts, and manual restoration procedure are documented in
-[README-3NODE-DGRAPH.md](README-3NODE-DGRAPH.md). It remains metadata-only and
-restores the `fog-02` baseline in a `finally` block.
+[README-3NODE-DGRAPH.md](README-3NODE-DGRAPH.md). It publishes every logical node
+from local Windows configs without SSH, remains metadata-only, and restores the
+`fog-02` baseline in a `finally` block.
 
 ## Contract Smoke Test
 

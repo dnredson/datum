@@ -7,8 +7,11 @@ function Assert-Contains([string]$Text, [string]$Pattern) {
     if ($Text -notmatch $Pattern) { throw "Expected script contract matching: $Pattern" }
 }
 
-foreach ($parameter in @("CloudSshTarget", "CloudDatumDir", "CloudConfig", "Fog01Config", "Fog02Config")) {
+foreach ($parameter in @("CloudConfig", "Fog01Config", "Fog02Config")) {
     Assert-Contains $source ("\[string\]\$" + $parameter)
+}
+foreach ($removed in @("CloudSshTarget", "CloudDatumDir", "Invoke-CloudDatum", "ConvertTo-PosixSingleQuoted", "& ssh", "remote cargo")) {
+    if ($source -match [regex]::Escape($removed)) { throw "I32 must not require remote cloud execution: found '$removed'." }
 }
 foreach ($required in @(
     'Publish-Fixture \$Fog01Id', 'Publish-Fixture \$Fog02Id', 'Publish-Fixture \$CloudId',
@@ -17,6 +20,11 @@ foreach ($required in @(
     'PSVersionTable\.PSVersion\.Major -lt 7', "PowerShell 7 or later is required", "Invoke-LocalDatumJson",
     'cargo @Arguments 2> \$stderrPath', 'Stdout = \$stdout', 'Stderr = \$stderr', 'stdout:', 'stderr:'
 )) { Assert-Contains $source $required }
+
+Assert-Contains $source '\$ResolvedCloudConfig = Resolve-RepoPath \$CloudConfig'
+Assert-Contains $source 'Cargo.toml'
+Assert-Contains $source 'snapshot-fog-02.json'
+Assert-Contains $source 'Publish-Fixture \$CloudId \$ResolvedCloudConfig "baseline" "Publish cloud-01 baseline"'
 
 $observedHealthBlock = [regex]::Match($source, 'function Assert-ObservedHealth\(\) \{(?<body>[\s\S]*?)^\}', [System.Text.RegularExpressions.RegexOptions]::Multiline)
 if (-not $observedHealthBlock.Success) { throw "Expected Assert-ObservedHealth function." }

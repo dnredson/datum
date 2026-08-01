@@ -6,10 +6,6 @@ param(
     [string]$Fog01Config = ".\DATUM\config-fog-01.local.toml",
     [string]$Fog02Config = ".\DATUM\config-fog-02.local.toml",
     [Parameter(Mandatory = $true)]
-    [string]$CloudSshTarget,
-    [Parameter(Mandatory = $true)]
-    [string]$CloudDatumDir,
-    [Parameter(Mandatory = $true)]
     [string]$CloudConfig,
     [string]$Fog01Id = "fog-01",
     [string]$Fog02Id = "fog-02",
@@ -95,27 +91,13 @@ function Invoke-LocalDatumJson([string[]]$Arguments, [string]$Step) {
     }
 }
 
-function ConvertTo-PosixSingleQuoted([string]$Value) {
-    $escapedQuote = [string]::Concat("'", '"', "'", '"', "'")
-    return "'" + $Value.Replace("'", $escapedQuote) + "'"
-}
-
-function Invoke-CloudDatum([string[]]$Arguments, [string]$Step) {
-    $joined = ($Arguments | ForEach-Object { ConvertTo-PosixSingleQuoted $_ }) -join ' '
-    $command = "cd $(ConvertTo-PosixSingleQuoted $CloudDatumDir) && cargo $joined"
-    Write-Host "[$Step] ssh $CloudSshTarget cargo $($Arguments -join ' ')"
-    $output = & ssh $CloudSshTarget $command 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "${Step}: remote cargo exited with $LASTEXITCODE.`n$($output.Trim())" }
-    return $output
-}
-
 function Assert-Output([string]$Output, [string]$Pattern, [string]$Step) {
     if ($Output -notmatch $Pattern) { throw "${Step}: expected output matching '$Pattern'." }
 }
 
-function Publish-Fixture([string]$NodeId, [string]$Config, [bool]$Cloud, [string]$Scenario, [string]$Step) {
+function Publish-Fixture([string]$NodeId, [string]$Config, [string]$Scenario, [string]$Step) {
     $args = @("run", "--quiet", "--", "dgraph-snapshot", "--config", $Config, "--fixture", $Scenario, "--publish")
-    $output = if ($Cloud) { Invoke-CloudDatum $args $Step } else { Invoke-LocalDatum $args $Step }
+    $output = Invoke-LocalDatum $args $Step
     Assert-Output $output "Published local d-graph fixture snapshot" $Step
     Assert-Output $output "scenario:\s*$([regex]::Escape($Scenario))" $Step
     Assert-Output $output "safe to auto execute:\s*false" $Step
@@ -189,30 +171,34 @@ function Assert-ObservedHealth() {
 $ResolvedDatumDir = Resolve-RepoPath $DatumDir
 $ResolvedFog01Config = Resolve-RepoPath $Fog01Config
 $ResolvedFog02Config = Resolve-RepoPath $Fog02Config
+$ResolvedCloudConfig = Resolve-RepoPath $CloudConfig
+$ObservedHealthSnapshot = Join-Path $ResolvedDatumDir "snapshot-fog-02.json"
 
 Write-Step "I32 live three-node metadata-only smoke preflight"
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw "Preflight: PowerShell 7 or later is required; run this script with pwsh." }
-foreach ($path in @($ResolvedDatumDir, $ResolvedFog01Config, $ResolvedFog02Config)) {
+foreach ($path in @($ResolvedDatumDir, (Join-Path $ResolvedDatumDir "Cargo.toml"), $ResolvedFog01Config, $ResolvedFog02Config, $ResolvedCloudConfig, $ObservedHealthSnapshot)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Preflight: required local path does not exist: $path" }
 }
-if ([string]::IsNullOrWhiteSpace($CloudDatumDir) -or [string]::IsNullOrWhiteSpace($CloudConfig)) { throw "Preflight: CloudDatumDir and CloudConfig are required." }
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw "Preflight: cargo is not available on this Windows host." }
-if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { throw "Preflight: ssh is not available on this Windows host." }
-& ssh -o BatchMode=yes -o ConnectTimeout=10 $CloudSshTarget "test -d $(ConvertTo-PosixSingleQuoted $CloudDatumDir) -a -f $(ConvertTo-PosixSingleQuoted $CloudConfig) -a -x `$(command -v cargo)" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Preflight: cloud SSH/config/cargo check failed for '$CloudSshTarget'." }
+foreach ($config in @(@($ResolvedFog01Config, $Fog01Id), @($ResolvedFog02Config, $Fog02Id), @($ResolvedCloudConfig, $CloudId))) {
+    $configText = Get-Content -LiteralPath $config[0] -Raw
+    if ($configText -notmatch ('(?m)^\s*node_id\s*=\s*"' + [regex]::Escape($config[1]) + '"\s*$')) {
+        throw "Preflight: local config '$($config[0])' must declare node_id '$($config[1])'."
+    }
+}
 $null = Invoke-JsonGet "$ServerUrl/health" "Server health"
 
 try {
     Write-Step "Publish three-node baseline"
-    Publish-Fixture $Fog01Id $ResolvedFog01Config $false "baseline" "Publish fog-01 baseline"
+    Publish-Fixture $Fog01Id $ResolvedFog01Config "baseline" "Publish fog-01 baseline"
     $script:RestoreRequired = $true
-    Publish-Fixture $Fog02Id $ResolvedFog02Config $false "baseline" "Publish fog-02 baseline"
-    Publish-Fixture $CloudId $CloudConfig $true "baseline" "Publish cloud-01 baseline"
+    Publish-Fixture $Fog02Id $ResolvedFog02Config "baseline" "Publish fog-02 baseline"
+    Publish-Fixture $CloudId $ResolvedCloudConfig "baseline" "Publish cloud-01 baseline"
     Assert-LatestSnapshot $Fog01Id; Assert-LatestSnapshot $Fog02Id; Assert-LatestSnapshot $CloudId
     Assert-Baseline "Baseline"
 
     Write-Step "Run degraded-flow advisory scenario"
-    Publish-Fixture $Fog02Id $ResolvedFog02Config $false "degraded-flow" "Publish fog-02 degraded-flow"
+    Publish-Fixture $Fog02Id $ResolvedFog02Config "degraded-flow" "Publish fog-02 degraded-flow"
     Assert-DegradedFlow
 
     Write-Step "Read and publish persisted observed health"
@@ -221,7 +207,7 @@ try {
     if ($script:RestoreRequired) {
         Write-Step "Mandatory fog-02 baseline restoration"
         try {
-            Publish-Fixture $Fog02Id $ResolvedFog02Config $false "baseline" "Restore fog-02 baseline"
+            Publish-Fixture $Fog02Id $ResolvedFog02Config "baseline" "Restore fog-02 baseline"
             Assert-LatestSnapshot $Fog02Id
             Assert-Baseline "Restored baseline"
             $script:RestoreSucceeded = $true
