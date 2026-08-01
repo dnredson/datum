@@ -13,8 +13,17 @@ foreach ($parameter in @("CloudSshTarget", "CloudDatumDir", "CloudConfig", "Fog0
 foreach ($required in @(
     'Publish-Fixture \$Fog01Id', 'Publish-Fixture \$Fog02Id', 'Publish-Fixture \$CloudId',
     "degraded-flow", "--observed-health", "Mandatory fog-02 baseline restoration",
-    'Assert-Baseline "Restored baseline"', "checks_executed", "relationship_count", "unhealthy_targets"
+    'Assert-Baseline "Restored baseline"', "checks_executed", "relationship_count", "unhealthy_targets",
+    'PSVersionTable\.PSVersion\.Major -lt 7', "PowerShell 7 or later is required", "Invoke-LocalDatumJson",
+    'cargo @Arguments 2> \$stderrPath', 'Stdout = \$stdout', 'Stderr = \$stderr', 'stdout:', 'stderr:'
 )) { Assert-Contains $source $required }
+
+$observedHealthBlock = [regex]::Match($source, 'function Assert-ObservedHealth\(\) \{(?<body>[\s\S]*?)^\}', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+if (-not $observedHealthBlock.Success) { throw "Expected Assert-ObservedHealth function." }
+$observedHealthSource = $observedHealthBlock.Groups['body'].Value
+Assert-Contains $observedHealthSource 'Invoke-LocalDatumJson \$args "Observed-health local read"'
+Assert-Contains $observedHealthSource '\$local\.Stdout \| ConvertFrom-Json'
+Assert-Contains $observedHealthSource '\$local\.Stderr\.Trim\(\)'
 
 $tokens = $null; $parseErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)

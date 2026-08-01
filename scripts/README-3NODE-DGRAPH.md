@@ -13,7 +13,8 @@ writes are explicit reporting-only D-Graph snapshot publications to `dserver`.
 
 ## Prerequisites
 
-- Run from the `PD` repository root on Windows PowerShell 7+.
+- Run from the `PD` repository root with PowerShell 7+ (`pwsh`). The script
+  preflight rejects Windows PowerShell 5.1.
 - `dserver` is running and reachable at `ServerUrl`, with its configured backend available.
 - `cargo` is available locally and on `cloud-01`.
 - OpenSSH client is available locally and non-interactive SSH to `cloud-01` works
@@ -35,7 +36,7 @@ Replace only the three cloud connection/path values with your local values. The 
 paths must be absolute POSIX paths on the remote host.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-dgraph-3node-live.ps1 `
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-dgraph-3node-live.ps1 `
   -ServerUrl http://192.168.10.101:8080 `
   -ProjectId smart-city-campinas `
   -Fog01Config .\DATUM\config-fog-01.local.toml `
@@ -90,5 +91,5 @@ baseline restoration branch, degraded-flow scenario, observed-health path, and c
 assertions without contacting a server:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\smoke-dgraph-3node-live-contract.tests.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\tests\smoke-dgraph-3node-live-contract.tests.ps1
 ```

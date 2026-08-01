@@ -74,6 +74,27 @@ function Invoke-LocalDatum([string[]]$Arguments, [string]$Step) {
     } finally { Pop-Location }
 }
 
+function Invoke-LocalDatumJson([string[]]$Arguments, [string]$Step) {
+    Write-Host "[$Step] cargo $($Arguments -join ' ')"
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    Push-Location $ResolvedDatumDir
+    try {
+        $stdout = & cargo @Arguments 2> $stderrPath | Out-String
+        $exitCode = $LASTEXITCODE
+        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        if ($exitCode -ne 0) {
+            throw "${Step}: cargo exited with $exitCode.`nstdout:`n$($stdout.Trim())`nstderr:`n$($stderr.Trim())"
+        }
+        return [pscustomobject]@{
+            Stdout = $stdout
+            Stderr = $stderr
+        }
+    } finally {
+        Pop-Location
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function ConvertTo-PosixSingleQuoted([string]$Value) {
     $escapedQuote = [string]::Concat("'", '"', "'", '"', "'")
     return "'" + $Value.Replace("'", $escapedQuote) + "'"
@@ -147,9 +168,11 @@ function Assert-DegradedFlow() {
 
 function Assert-ObservedHealth() {
     $args = @("run", "--quiet", "--", "dgraph-snapshot", "--config", $ResolvedFog02Config, "--observed-health", "--json")
-    $local = Invoke-LocalDatum $args "Observed-health local read"
-    try { $payload = $local | ConvertFrom-Json -Depth 100 }
-    catch { throw "Observed-health local read: expected JSON from DATUM. $($_.Exception.Message)" }
+    $local = Invoke-LocalDatumJson $args "Observed-health local read"
+    try { $payload = $local.Stdout | ConvertFrom-Json -Depth 100 }
+    catch {
+        throw "Observed-health local read: expected JSON from DATUM. $($_.Exception.Message)`nstdout:`n$($local.Stdout.Trim())`nstderr:`n$($local.Stderr.Trim())"
+    }
     Assert-False $payload "safe_to_auto_execute" "Observed-health local read"
     Assert-False $payload "side_effects_performed" "Observed-health local read"
     $health = @(Get-Field $payload "health" "Observed-health local read")
@@ -168,6 +191,7 @@ $ResolvedFog01Config = Resolve-RepoPath $Fog01Config
 $ResolvedFog02Config = Resolve-RepoPath $Fog02Config
 
 Write-Step "I32 live three-node metadata-only smoke preflight"
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw "Preflight: PowerShell 7 or later is required; run this script with pwsh." }
 foreach ($path in @($ResolvedDatumDir, $ResolvedFog01Config, $ResolvedFog02Config)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Preflight: required local path does not exist: $path" }
 }
