@@ -421,6 +421,15 @@ fn build_advisory_proposals(graph: &DGraph) -> Vec<DGraphPlannerAdvisoryProposal
             }
         }
 
+        for candidate_node_id in &candidate_nodes {
+            if node_health_is_unknown_or_unestablished(graph, candidate_node_id) {
+                limitations.insert(format!(
+                    "candidate node '{}' has unknown or unestablished observed health; availability, suitability, and safety for placement are not established, and its presence in candidate_node_ids is observational only, not a selected destination, recommendation, or execution authorization",
+                    candidate_node_id
+                ));
+            }
+        }
+
         if candidate_nodes.is_empty() {
             limitations.insert(
                 "no available candidate nodes are present in current graph evidence".to_string(),
@@ -476,6 +485,23 @@ fn build_advisory_proposals(graph: &DGraph) -> Vec<DGraphPlannerAdvisoryProposal
     }
 
     by_id.into_values().collect()
+}
+
+fn node_health_is_unknown_or_unestablished(graph: &DGraph, node_id: &str) -> bool {
+    let node_status_is_unknown_or_missing = graph
+        .nodes
+        .iter()
+        .find(|node| node.node_id == node_id)
+        .and_then(|node| node.status.as_deref())
+        .map(|status| status.eq_ignore_ascii_case("unknown"))
+        .unwrap_or(true);
+
+    node_status_is_unknown_or_missing
+        || graph.health_reports.iter().any(|report| {
+            report.target_kind.eq_ignore_ascii_case("node")
+                && report.target_id == node_id
+                && report.status.eq_ignore_ascii_case("unknown")
+        })
 }
 
 pub fn build_project_dgraph_planner_dry_run_response(
@@ -1460,6 +1486,47 @@ mod tests {
                 && item.observed_status.as_deref() == Some("unknown")
         }));
         assert!(!proposal.executable);
+    }
+
+    #[test]
+    fn unknown_candidate_health_is_explicitly_limited_without_selecting_a_destination() {
+        let mut graph = sample_two_node_dgraph("smart-city-campinas");
+        graph.flows[0].status = Some("degraded".to_string());
+        graph.health_reports.push(DGraphHealthReport {
+            report_id: "health-fog-02-unknown".to_string(),
+            target_kind: "node".to_string(),
+            target_id: "fog-02".to_string(),
+            status: "unknown".to_string(),
+            reason: None,
+            metadata: None,
+        });
+        let before = graph.clone();
+
+        let first = build_advisory_proposals(&graph);
+        let second = build_advisory_proposals(&graph);
+        let proposal = first
+            .first()
+            .expect("degraded flow should have an advisory proposal");
+        let unknown_node_limitation = "candidate node 'fog-02' has unknown or unestablished observed health; availability, suitability, and safety for placement are not established, and its presence in candidate_node_ids is observational only, not a selected destination, recommendation, or execution authorization";
+
+        assert_eq!(graph, before);
+        assert_eq!(first, second);
+        assert_eq!(proposal.related_flow_ids, vec!["flow-one"]);
+        assert!(proposal.candidate_node_ids.contains(&"fog-02".to_string()));
+        assert!(proposal
+            .limitations
+            .contains(&unknown_node_limitation.to_string()));
+        assert!(proposal
+            .limitations
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert!(proposal.advisory_only);
+        assert!(!proposal.executable);
+
+        let dry_run = plan_dgraph_dry_run(&graph);
+        assert!(!dry_run.safe_to_auto_execute);
+        assert!(!dry_run.side_effects_performed);
+        assert!(dry_run.reconfigurations.is_empty());
     }
 
     #[test]
