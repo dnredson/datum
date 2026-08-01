@@ -20,6 +20,7 @@ $script:RestoreSucceeded = $false
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PdRoot = Split-Path -Parent $ScriptRoot
+$DGraphApiUrl = "$($ServerUrl.TrimEnd('/'))/api/v1/snapshots"
 
 function Resolve-RepoPath([string]$PathValue) {
     if ([System.IO.Path]::IsPathRooted($PathValue)) { return [System.IO.Path]::GetFullPath($PathValue) }
@@ -94,7 +95,7 @@ function Invoke-LocalDatumJson([string[]]$Arguments, [string]$Step) {
 function Invoke-LocalDatumPublication([string[]]$Arguments, [string]$Step) {
     # The CLI overrides make the requested smoke context authoritative, even when a
     # local config contains a stale outputs.http URL or project ID.
-    $publicationArguments = @($Arguments + @("--url", $ServerUrl, "--project-id", $ProjectId))
+    $publicationArguments = @($Arguments + @("--url", $DGraphApiUrl, "--project-id", $ProjectId))
     return Invoke-LocalDatum $publicationArguments $Step
 }
 

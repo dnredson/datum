@@ -29,10 +29,14 @@ writes are explicit reporting-only D-Graph snapshot publications to `dserver`.
 - All three configs use the same `project_id`, point to the same `dserver`, and
   retain disabled automatic recovery/assisted execution settings.
 
-The command passes `-ServerUrl` and `-ProjectId` to every D-Graph publication as
-the CLI `--url` and `--project-id` overrides. Those requested values are therefore
-authoritative for baseline, degraded-flow, observed-health, and restoration
-publication; a stale local `outputs.http` destination cannot redirect the smoke.
+`ServerUrl` is the dserver origin used for `/health` and the script's HTTP read-back
+paths (for example `http://192.168.10.101:8080`). For DATUM publication, the script
+derives `DGraphApiUrl` as `ServerUrl` without a trailing slash plus
+`/api/v1/snapshots`; this is the API base expected by the CLI endpoint builder.
+Every publication receives `DGraphApiUrl` and `ProjectId` as CLI `--url` and
+`--project-id` overrides. Those requested values are therefore authoritative for
+baseline, degraded-flow, observed-health, and restoration publication; a stale local
+`outputs.http` destination cannot redirect the smoke.
 
 Do not put credentials, addresses, service-account paths, or generated snapshots in
 the command or Git. `.gitignore` excludes the expected local config and smoke-output
