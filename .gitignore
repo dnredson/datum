@@ -4,3 +4,9 @@ target/
 **/target/
 DATUM/target/
 dserver/target/
+
+# Operator-local DATUM inputs and smoke evidence. Keep credentials, local endpoints,
+# persisted observations, and generated live-run output out of version control.
+DATUM/config-*.local.toml
+DATUM/snapshot-*.json
+scripts/.smoke-output/
