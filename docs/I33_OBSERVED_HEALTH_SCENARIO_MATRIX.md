@@ -2,9 +2,8 @@
 
 ## Status
 
-The repeatable I33 live-validation script and its offline contract test are prepared.
-Live execution against the three-node environment is still required before I33 can be
-closed and the project checkpoint can advance beyond `116/130`.
+The repeatable I33 live-validation script and its offline contract test are complete.
+The successful third live run closes I33 at checkpoint `117/130`.
 
 The first live run published the initial baseline, then failed in the first
 `Assert-Baseline` because the smoke incorrectly read materialized graph counts from the
@@ -18,6 +17,46 @@ not part of the readiness contract, so no matrix scenario was started. The emerg
 restoration republished `fog-02`, and its materialized validation passed, but its full
 validation did not finish after reaching the same readiness assertion. This run is also
 not approval evidence for I33.
+
+## Live validation — PASS (2026-08-04)
+
+The third live run, executed from the Windows operator environment against
+`http://192.168.10.101:8080` for project `smart-city-campinas`, passed in full and is
+the only approval evidence for I33. It used:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\smoke-dgraph-observed-health-matrix.ps1 `
+  -ServerUrl http://192.168.10.101:8080 `
+  -ProjectId smart-city-campinas `
+  -Fog01Config .\DATUM\config-fog-01.local.toml `
+  -Fog02Config .\DATUM\config-fog-02.local.toml `
+  -CloudConfig .\DATUM\config-cloud-01.local.toml `
+  -ObservedSnapshot .\DATUM\snapshot-fog-02.json
+```
+
+The dserver preflight and the initial three-node materialized and readiness baselines
+passed. All six scenarios passed their local read, publication, materialized summary,
+and readiness summary checks:
+
+- `healthy`
+- `degraded`
+- `stale`
+- `absent`
+- `unrecognized`
+- `future-skewed`
+
+After every scenario, the smoke republished `fog-02` and validated both the
+materialized and readiness views of the restored three-node baseline. At completion it
+confirmed the source config and persisted snapshot SHA-256 hashes were unchanged, and
+that `checks_executed=false`, `safe_to_auto_execute=false`, and
+`side_effects_performed=false` remained true in their respective contracts. No
+collection cycle, service check, placement, recovery, dispatch, deployment,
+installation, Docker, WASM, migration, or reconfiguration was invoked.
+
+Final result: **PASS**. The first and second runs remain recorded above solely as
+non-qualifying troubleshooting attempts; neither executed a scenario nor supports the
+I33 conclusion.
 
 ## Objective
 
@@ -137,5 +176,5 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File `
 ```
 
 Do not commit the local configs, persisted snapshot, temporary scenario copies, or live
-output. After a successful live run, record the exact evidence in a separate validation
-document and only then advance the checkpoint from `116/130` to `117/130`.
+output. The successful third run is recorded above; I33 is complete at checkpoint
+`117/130`.

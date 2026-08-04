@@ -29,6 +29,7 @@ Status notes:
 - `C45/130` adds deterministic structured advisory proposals to the full planner dry-run response. Degraded flows can now carry graph-backed evidence, related IDs, candidate observations, and explicit limitations while remaining non-executable. The summary contract is unchanged, no graph mutation occurs, and no placement, recovery, migration, or reconfiguration is executed. Progress is `116/130`. See [the C45 contract](C45_ENRICHED_PLANNER_ADVISORY_PROPOSALS.md).
 - The first I33 live attempt published the initial baseline but failed in its first `Assert-Baseline` before any scenario because the smoke read materialized graph counts from obsolete top-level paths. The final emergency restoration published the `fog-02` baseline. It is not I33 approval evidence; progress remains `116/130` pending a corrected live matrix run.
 - The second I33 live attempt published and materialized the initial baseline, then received a valid readiness response but failed its obsolete readiness `safe_to_auto_execute` assertion before any scenario. Emergency restoration republished `fog-02` and passed materialized validation, but full restoration validation encountered the same readiness assertion. It is not I33 approval evidence; progress remains `116/130`.
+- `I33/130` completed live observed-health scenario validation on the third run. The initial three-node baseline and all six scenarios (`healthy`, `degraded`, `stale`, `absent`, `unrecognized`, and `future-skewed`) passed local, publication, materialized, readiness, and per-scenario baseline-restoration checks. Source config and persisted snapshot hashes were preserved, and no operational side effects occurred. The first two runs remain non-qualifying troubleshooting attempts. Progress is `117/130`. See [the I33 validation record](I33_OBSERVED_HEALTH_SCENARIO_MATRIX.md).
 
 ## Completed Readiness Scope
 
@@ -59,6 +60,7 @@ The project now has:
 - explicit reporting-only publication of observed health with final three-node baseline restoration
 - a repeatable live three-node smoke executed entirely from local Windows DATUM configurations
 - structured, deterministic, graph-backed planner advisory proposals with no execution path
+- live observed-health coverage for healthy, degraded, stale, absent, unrecognized, and future-skewed states with validated restoration after every scenario
 
 ## Current Safety Guarantees
 
@@ -107,20 +109,17 @@ Optional:
 
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- broader live observed-health coverage for healthy, degraded, stale, absent, and clock-skewed states
 - a separate safety contract before any placement, recovery, migration, or reconfiguration execution
 
 ## Recommended Next Milestone Options
 
-### Option `I33/130`: Observed-Health Scenario Matrix
+### Completed `I33/130`: Observed-Health Scenario Matrix
 
 - exercise healthy, degraded, stale, absent, unrecognized, and future-skewed observations live
 - preserve the read-only and reporting-only boundary
 - restore the three-node baseline after every scenario
 
-Recommendation:
-
-- prefer `I33/130` next as the focused observed-health scenario matrix
+Completed at `117/130`; no follow-on increment is started by this record.
 
 ## Practical Summary
 
@@ -131,5 +130,6 @@ persisted service observation can be translated and explicitly published as cano
 without running checks or performing operational side effects. I32 makes that sequence repeatable
 and validates it locally for all three logical nodes, including restoration.
 
-The next practical step is I33's observed-health scenario matrix. Executed orchestration remains
-deliberately out of scope.
+I33 completes the six-state observed-health scenario matrix with validated restoration after every
+publication. Executed orchestration remains deliberately out of scope; no next increment is
+started by this checkpoint record.
