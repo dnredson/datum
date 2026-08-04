@@ -40,6 +40,56 @@ foreach ($required in @(
     'PowerShell 7 or later is required'
 )) { Assert-Contains $source $required }
 
+foreach ($requiredMaterializedPath in @(
+    '"source_snapshot_count"',
+    '"summary\.node_count"', '"summary\.runtime_count"', '"summary\.module_count"',
+    '"summary\.flow_count"', '"summary\.relationship_count"',
+    '"summary\.healthy_targets"', '"summary\.unknown_targets"', '"summary\.degraded_targets"',
+    '"summary\.unavailable_targets"', '"summary\.unhealthy_targets"',
+    'Assert-CollectionCount \$materialized "validation_errors" 0',
+    '"side_effects_performed"'
+)) { Assert-Contains $source $requiredMaterializedPath }
+
+function Get-FunctionBody([string]$Name) {
+    $match = [regex]::Match(
+        $source,
+        ('(?ms)^function ' + [regex]::Escape($Name) + '\([^\)]*\) \{(?<body>.*?)^\}')
+    )
+    if (-not $match.Success) { throw "Expected $Name function." }
+    return $match.Groups['body'].Value
+}
+
+$baselineAssertions = Get-FunctionBody "Assert-Baseline"
+foreach ($path in @(
+    '"source_snapshot_count"',
+    '"summary\.node_count"', '"summary\.runtime_count"', '"summary\.module_count"',
+    '"summary\.flow_count"', '"summary\.relationship_count"',
+    '"summary\.healthy_targets"', '"summary\.unknown_targets"', '"summary\.degraded_targets"',
+    '"summary\.unavailable_targets"', '"summary\.unhealthy_targets"',
+    'Assert-CollectionCount \$materialized "validation_errors" 0',
+    'Assert-False \$materialized "side_effects_performed"'
+)) { Assert-Contains $baselineAssertions $path }
+
+$publishedAssertions = Get-FunctionBody "Assert-PublishedScenario"
+foreach ($path in @(
+    '"source_snapshot_count"', '"summary\.node_count"',
+    '"summary\.healthy_targets"', '"summary\.unknown_targets"', '"summary\.degraded_targets"',
+    '"summary\.unavailable_targets"', '"summary\.unhealthy_targets"',
+    'Assert-CollectionCount \$materialized "validation_errors" 0',
+    'Assert-False \$materialized "side_effects_performed"'
+)) { Assert-Contains $publishedAssertions $path }
+
+foreach ($legacyTopLevelPath in @(
+    '"node_count"', '"runtime_count"', '"module_count"', '"flow_count"',
+    '"relationship_count"', '"healthy_targets"', '"unknown_targets"',
+    '"degraded_targets"', '"unavailable_targets"', '"unhealthy_targets"',
+    '"validation_error_count"'
+)) {
+    if ($source -match ('Assert-Number \$materialized ' + $legacyTopLevelPath)) {
+        throw "I33 must not assert materialized field at the legacy top-level path: $legacyTopLevelPath"
+    }
+}
+
 $snapshotWriter = [regex]::Match(
     $source,
     'function New-ScenarioSnapshot\([\s\S]*?\) \{(?<body>[\s\S]*?)^\}',

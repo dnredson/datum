@@ -6,6 +6,11 @@ The repeatable I33 live-validation script and its offline contract test are prep
 Live execution against the three-node environment is still required before I33 can be
 closed and the project checkpoint can advance beyond `116/130`.
 
+The first live run published the initial baseline, then failed in the first
+`Assert-Baseline` because the smoke incorrectly read materialized graph counts from the
+top-level response. It did not enter the scenario matrix. Its emergency restoration
+published the `fog-02` baseline. This run is not approval evidence for I33.
+
 ## Objective
 
 I33 expands the live evidence for C44's read-only persisted-health translation. It
@@ -44,22 +49,25 @@ its own `try/finally` block. The `finally` block republishes the `fog-02` baseli
 requires the complete restored state:
 
 ```text
-source_snapshot_count=3
-node_count=3
-runtime_count=3
-module_count=3
-flow_count=2
-relationship_count=14
-healthy_targets=0
-unknown_targets=3
-degraded_targets=0
-unavailable_targets=0
-unhealthy_targets=0
-validation_error_count=0
+source_snapshot_count=3                 (top-level)
+summary.node_count=3
+summary.runtime_count=3
+summary.module_count=3
+summary.flow_count=2
+summary.relationship_count=14
+summary.healthy_targets=0
+summary.unknown_targets=3
+summary.degraded_targets=0
+summary.unavailable_targets=0
+summary.unhealthy_targets=0
+validation_errors.Count=0               (top-level collection)
 readiness_status=ready
 safe_to_auto_execute=false
-side_effects_performed=false
+side_effects_performed=false             (top-level)
 ```
+
+`GET /api/v1/dgraph/materialized/summary` is validated only against this nested
+contract. The smoke deliberately does not accept a flattened fallback.
 
 An additional emergency restoration runs if a failure occurs before a scenario's normal
 restoration is confirmed.
@@ -90,8 +98,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File `
 ```
 
 The contract test parses the script and verifies all six scenarios, source-copy-only
-writes, URL/project overrides, per-scenario restoration, emergency restoration, source
-hash checks, safety flags, and the absence of operational execution paths.
+writes, URL/project overrides, the nested materialized-summary paths, deterministic
+`validation_errors` counting, rejection of legacy top-level count assertions,
+per-scenario and emergency restoration, source hash checks, safety flags, and the
+absence of operational execution paths.
 
 ## Live command
 

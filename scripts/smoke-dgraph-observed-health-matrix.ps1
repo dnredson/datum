@@ -36,12 +36,23 @@ function Resolve-RepoPath([string]$PathValue) {
 
 function Write-Step([string]$Message) { Write-Host "`n==> $Message" }
 
+function Get-AvailableJsonFields($Json) {
+    if ($null -eq $Json) { return "response was null" }
+    $fields = @($Json.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($fields.Count -gt 0) { return "available fields: " + ($fields -join ", ") }
+    try {
+        return "JSON: " + ($Json | ConvertTo-Json -Depth 10 -Compress)
+    } catch {
+        return "response type: $($Json.GetType().FullName)"
+    }
+}
+
 function Get-Field($Json, [string]$Path, [string]$Step) {
     $value = $Json
     foreach ($part in $Path.Split('.')) {
-        if ($null -eq $value) { throw "${Step}: missing JSON field '$Path'." }
+        if ($null -eq $value) { throw "${Step}: missing JSON field '$Path' ($((Get-AvailableJsonFields $value)))." }
         $property = $value.PSObject.Properties[$part]
-        if ($null -eq $property) { throw "${Step}: missing JSON field '$Path'." }
+        if ($null -eq $property) { throw "${Step}: missing JSON field '$Path' ($((Get-AvailableJsonFields $value)))." }
         $value = $property.Value
     }
     return $value
@@ -59,6 +70,10 @@ function Assert-False($Json, [string]$Path, [string]$Step) {
 
 function Assert-Number($Json, [string]$Path, [int]$Expected, [string]$Step) {
     Assert-Equal ([int](Get-Field $Json $Path $Step)) $Expected $Step $Path
+}
+
+function Assert-CollectionCount($Json, [string]$Path, [int]$Expected, [string]$Step) {
+    Assert-Equal (@(Get-Field $Json $Path $Step).Count) $Expected $Step $Path
 }
 
 function Invoke-JsonGet([string]$Url, [string]$Step) {
@@ -129,11 +144,12 @@ function Publish-Fixture([string]$Config, [string]$Scenario, [string]$Step) {
 function Assert-Baseline([string]$Step) {
     $materialized = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/materialized/summary" "$Step materialized"
     foreach ($item in @(
-        @("source_snapshot_count", 3), @("node_count", 3), @("runtime_count", 3),
-        @("module_count", 3), @("flow_count", 2), @("relationship_count", 14),
-        @("healthy_targets", 0), @("unknown_targets", 3), @("degraded_targets", 0),
-        @("unavailable_targets", 0), @("unhealthy_targets", 0), @("validation_error_count", 0)
+        @("source_snapshot_count", 3), @("summary.node_count", 3), @("summary.runtime_count", 3),
+        @("summary.module_count", 3), @("summary.flow_count", 2), @("summary.relationship_count", 14),
+        @("summary.healthy_targets", 0), @("summary.unknown_targets", 3), @("summary.degraded_targets", 0),
+        @("summary.unavailable_targets", 0), @("summary.unhealthy_targets", 0)
     )) { Assert-Number $materialized $item[0] $item[1] "$Step materialized" }
+    Assert-CollectionCount $materialized "validation_errors" 0 "$Step materialized"
     Assert-False $materialized "side_effects_performed" "$Step materialized"
 
     $readiness = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/readiness/summary" "$Step readiness"
@@ -249,13 +265,13 @@ function Assert-PublishedScenario([pscustomobject]$Scenario, [string]$ScenarioCo
 
     $materialized = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/materialized/summary" "I33 $($Scenario.Name) materialized"
     Assert-Number $materialized "source_snapshot_count" 3 "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "node_count" 3 "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "validation_error_count" 0 "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "healthy_targets" $Scenario.HealthyTargets "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "unknown_targets" $Scenario.UnknownTargets "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "degraded_targets" $Scenario.DegradedTargets "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "unavailable_targets" 0 "I33 $($Scenario.Name) materialized"
-    Assert-Number $materialized "unhealthy_targets" $Scenario.UnhealthyTargets "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.node_count" 3 "I33 $($Scenario.Name) materialized"
+    Assert-CollectionCount $materialized "validation_errors" 0 "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.healthy_targets" $Scenario.HealthyTargets "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.unknown_targets" $Scenario.UnknownTargets "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.degraded_targets" $Scenario.DegradedTargets "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.unavailable_targets" 0 "I33 $($Scenario.Name) materialized"
+    Assert-Number $materialized "summary.unhealthy_targets" $Scenario.UnhealthyTargets "I33 $($Scenario.Name) materialized"
     Assert-False $materialized "side_effects_performed" "I33 $($Scenario.Name) materialized"
 
     $readiness = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/readiness/summary" "I33 $($Scenario.Name) readiness"
