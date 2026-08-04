@@ -71,10 +71,7 @@ pub fn build_project_dgraph_execution_safety_contract(
         blocked_count: readiness.blocked_count,
         degraded_flow_count: readiness.degraded_flow_count,
         placement_proposal_count: readiness.planner_summary.summary.placement_count,
-        reconfiguration_proposal_count: readiness
-            .planner_summary
-            .summary
-            .reconfiguration_count,
+        reconfiguration_proposal_count: readiness.planner_summary.summary.reconfiguration_count,
         planner_output_is_advisory: true,
         side_effects_performed: readiness.side_effects_performed,
     };
