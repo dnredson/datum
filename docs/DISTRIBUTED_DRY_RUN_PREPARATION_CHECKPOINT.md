@@ -30,6 +30,7 @@ Status notes:
 - The first I33 live attempt published the initial baseline but failed in its first `Assert-Baseline` before any scenario because the smoke read materialized graph counts from obsolete top-level paths. The final emergency restoration published the `fog-02` baseline. It is not I33 approval evidence; progress remains `116/130` pending a corrected live matrix run.
 - The second I33 live attempt published and materialized the initial baseline, then received a valid readiness response but failed its obsolete readiness `safe_to_auto_execute` assertion before any scenario. Emergency restoration republished `fog-02` and passed materialized validation, but full restoration validation encountered the same readiness assertion. It is not I33 approval evidence; progress remains `116/130`.
 - `I33/130` completed live observed-health scenario validation on the third run. The initial three-node baseline and all six scenarios (`healthy`, `degraded`, `stale`, `absent`, `unrecognized`, and `future-skewed`) passed local, publication, materialized, readiness, and per-scenario baseline-restoration checks. Source config and persisted snapshot hashes were preserved, and no operational side effects occurred. The first two runs remain non-qualifying troubleshooting attempts. Progress is `117/130`. See [the I33 validation record](I33_OBSERVED_HEALTH_SCENARIO_MATRIX.md).
+- `C46/130` is the proposed `118/130` increment: a separate, fail-closed execution safety contract. Its read-only endpoint denies placement, recovery, migration, reconfiguration, deployment, installation, dispatch execution, and WASM execution even when D-Graph readiness is `ready`. The implementation remains a draft until Rust and endpoint validation pass; progress therefore remains `117/130`. See [the C46 contract](C46_EXECUTION_SAFETY_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -61,6 +62,7 @@ The project now has:
 - a repeatable live three-node smoke executed entirely from local Windows DATUM configurations
 - structured, deterministic, graph-backed planner advisory proposals with no execution path
 - live observed-health coverage for healthy, degraded, stale, absent, unrecognized, and future-skewed states with validated restoration after every scenario
+- a draft fail-closed execution safety contract that keeps readiness and planner evidence non-authoritative pending validation
 
 ## Current Safety Guarantees
 
@@ -83,6 +85,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - observed-health translation reads persisted observations without executing checks
 - planner dry-run is advisory and read-only
 - `side_effects_performed` remains `false` in the relevant snapshot, materialization, and planner contracts
+- the draft C46 endpoint is read-only and always denies execution authority; it does not create an execution path
 
 ## Live 2-VM Readiness Checklist
 
@@ -109,7 +112,8 @@ Optional:
 
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- a separate safety contract before any placement, recovery, migration, or reconfiguration execution
+- validate and complete C46 before any placement, recovery, migration, or reconfiguration execution
+- implement every explicit execution gate in a later authorized phase before considering any allow decision
 
 ## Recommended Next Milestone Options
 
@@ -120,6 +124,17 @@ Optional:
 - restore the three-node baseline after every scenario
 
 Completed at `117/130`; no follow-on increment is started by this record.
+
+### Proposed `C46/130`: Execution Safety Contract
+
+- expose a separate read-only contract for the execution authorization boundary
+- treat readiness and planner proposals as observational evidence only
+- deny every in-scope operation fail-closed
+- report missing policy, approval, integrity, allowlist, capability, resource-limit, rollback, and audit gates
+- perform no writes and invoke no executor
+
+Implementation is drafted on a separate branch. Progress remains `117/130` until Rust and endpoint
+validation pass; no later increment is started by this record.
 
 ## Practical Summary
 
@@ -132,4 +147,5 @@ and validates it locally for all three logical nodes, including restoration.
 
 I33 completes the six-state observed-health scenario matrix with validated restoration after every
 publication. Executed orchestration remains deliberately out of scope; no next increment is
-started by this checkpoint record.
+started beyond the proposed C46 safety-contract draft. C46 must remain fail-closed and pass its
+offline and endpoint validation before progress can advance to `118/130`.
