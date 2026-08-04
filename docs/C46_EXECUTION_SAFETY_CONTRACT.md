@@ -2,8 +2,10 @@
 
 ## Status
 
-Implementation draft for the `118/130` increment. The project checkpoint remains `117/130`
-until the Rust test suite and contract validation pass on a checkout with the Rust toolchain.
+Completed and validated as the `118/130` increment on 2026-08-04. The Rust formatting check,
+the seven focused execution-safety tests, the complete 381-test dserver suite, the live restored
+three-node baseline check, and the repository checks passed. The contract remains fail-closed and
+does not authorize or execute any operation.
 
 ## Purpose
 
@@ -83,15 +85,63 @@ C46 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - run health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Validation Required Before `118/130`
+## Validation Evidence
 
-- run the dserver Rust tests for `dgraph_execution_safety`;
-- run the complete dserver test suite;
-- run `cargo fmt --check`;
-- run `git diff --check`;
-- inspect the endpoint JSON for both an empty project and the restored three-node baseline;
-- confirm `decision=denied`, `authorization_granted=false`, every operation `authorized=false`,
-  every gate `satisfied=false`, and `side_effects_performed=false`;
-- confirm no state changes before and after each read.
+The final validated branch head was:
 
-Only after those checks pass should the checkpoint advance from `117/130` to `118/130`.
+```text
+5eea32d3d3cde0b7e64ad65c3a1348e8614b6d1d
+```
+
+Offline validation on Windows from the `dserver` crate passed:
+
+- `cargo fmt --check`;
+- `cargo test dgraph_execution_safety -- --nocapture`: 7 passed, 0 failed;
+- `cargo test`: 381 passed, 0 failed;
+- `git diff --check origin/main...HEAD`;
+- `git status --short`: clean worktree.
+
+The focused tests covered the empty-project fail-closed case, explicit denial of every operation
+class, preservation of the non-authoritative readiness/planner semantics, and source guards against
+execution or mutation paths.
+
+The endpoint was then checked live against the restored `smart-city-campinas` three-node baseline:
+
+```powershell
+$headers = @{ "X-Datum-Project" = "smart-city-campinas" }
+$c = Invoke-RestMethod `
+  -Uri "http://192.168.10.101:8080/api/v1/dgraph/execution-safety" `
+  -Headers $headers
+```
+
+The response reported `readiness_status=ready`, `source_snapshot_count=3`, three placement
+proposals, zero warnings, blockers, degraded flows, or reconfiguration proposals, while still
+returning:
+
+- `decision=denied`;
+- `authorization_granted=false`;
+- all seven gates with `satisfied=false`;
+- all eight operations with `authorized=false`;
+- `evidence.planner_output_is_advisory=true`;
+- `side_effects_performed=false`;
+- `metadata.execution_performed=false`;
+- `metadata.readiness_is_authorization=false`;
+- `metadata.planner_proposals_are_authorization=false`.
+
+The PowerShell assertions completed with `Baseline C46 PASS`. The live response was collected on
+the immediately preceding implementation head; the final commit only applied the exact `rustfmt`
+layout change, and the full offline validation was repeated successfully on the final head above.
+
+## Completed Validation Checklist
+
+- dserver Rust tests for `dgraph_execution_safety`: passed;
+- complete dserver test suite: passed;
+- `cargo fmt --check`: passed;
+- `git diff --check`: passed;
+- empty-project fail-closed behavior: passed in the focused Rust test;
+- restored three-node baseline endpoint JSON: passed live;
+- every authorization, gate, operation, and side-effect invariant: passed;
+- source-level guards confirm that the read endpoint has no store, executor, or mutation path.
+
+This evidence advances the project checkpoint from `117/130` to `118/130`. No later increment is
+started by this record.
