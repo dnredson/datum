@@ -196,7 +196,7 @@ function New-ScenarioSnapshot([pscustomobject]$Scenario, [string]$ScenarioSnapsh
             default { $now }
         }
         foreach ($entity in $matching) {
-            $entity.attrs.status = $Scenario.RawStatus
+            $entity.attrs | Add-Member -NotePropertyName "status" -NotePropertyValue $Scenario.RawStatus -Force
             $entity.observed_at_utc = $observedAt.ToString("o")
             $entity.ttl_s = 60
         }
@@ -223,6 +223,9 @@ function Assert-ScenarioHealth($Snapshot, [pscustomobject]$Scenario, [string]$St
     Assert-Equal (Get-Field $health "metadata.reporting_only" $Step) $true $Step "metadata.reporting_only"
     Assert-Equal (Get-Field $health "metadata.observation_present" $Step) $Scenario.ObservationPresent $Step "metadata.observation_present"
     Assert-Equal (Get-Field $health "metadata.observation_fresh" $Step) $Scenario.ObservationFresh $Step "metadata.observation_fresh"
+    if ($health.reason -notmatch $Scenario.ReasonPattern) {
+        throw "${Step}: health.reason '$($health.reason)' did not match '$($Scenario.ReasonPattern)'."
+    }
 
     if ($Scenario.ObservationPresent) {
         Assert-Equal (Get-Field $health "metadata.raw_status" $Step) $Scenario.RawStatus $Step "metadata.raw_status"
@@ -239,7 +242,10 @@ function Assert-PublishedScenario([pscustomobject]$Scenario, [string]$ScenarioCo
     ) $step
     Assert-Equal (Get-Field $published "published" $step) $true $step "published"
     Assert-False $published "side_effects_performed" $step
-    Assert-ScenarioHealth (Get-Field $published "local_snapshot" $step) $Scenario $step
+    $localSnapshot = Get-Field $published "local_snapshot" $step
+    Assert-ScenarioHealth $localSnapshot $Scenario $step
+    Assert-False $localSnapshot "safe_to_auto_execute" $step
+    Assert-False $localSnapshot "side_effects_performed" $step
 
     $materialized = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/materialized/summary" "I33 $($Scenario.Name) materialized"
     Assert-Number $materialized "source_snapshot_count" 3 "I33 $($Scenario.Name) materialized"
@@ -251,6 +257,11 @@ function Assert-PublishedScenario([pscustomobject]$Scenario, [string]$ScenarioCo
     Assert-Number $materialized "unavailable_targets" 0 "I33 $($Scenario.Name) materialized"
     Assert-Number $materialized "unhealthy_targets" $Scenario.UnhealthyTargets "I33 $($Scenario.Name) materialized"
     Assert-False $materialized "side_effects_performed" "I33 $($Scenario.Name) materialized"
+
+    $readiness = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/readiness/summary" "I33 $($Scenario.Name) readiness"
+    Assert-False $readiness "safe_to_auto_execute" "I33 $($Scenario.Name) readiness"
+    Assert-False $readiness "side_effects_performed" "I33 $($Scenario.Name) readiness"
+    Assert-False $readiness "metadata.execution_performed" "I33 $($Scenario.Name) readiness"
 }
 
 function Restore-Fog02Baseline([string]$Step) {
@@ -299,12 +310,12 @@ $originalHashes = @{
 New-Item -ItemType Directory -Path $ResolvedOutputDir -Force | Out-Null
 
 $scenarios = @(
-    [pscustomobject]@{ Name = "healthy"; RawStatus = "available"; ExpectedStatus = "healthy"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 1; UnknownTargets = 2; DegradedTargets = 0; UnhealthyTargets = 0 },
-    [pscustomobject]@{ Name = "degraded"; RawStatus = "warning"; ExpectedStatus = "degraded"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 2; DegradedTargets = 1; UnhealthyTargets = 1 },
-    [pscustomobject]@{ Name = "stale"; RawStatus = "unavailable"; ExpectedStatus = "unknown"; ObservationPresent = $true; ObservationFresh = $false; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
-    [pscustomobject]@{ Name = "absent"; RawStatus = $null; ExpectedStatus = "unknown"; ObservationPresent = $false; ObservationFresh = $false; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
-    [pscustomobject]@{ Name = "unrecognized"; RawStatus = "mystery-state"; ExpectedStatus = "unknown"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
-    [pscustomobject]@{ Name = "future-skewed"; RawStatus = "available"; ExpectedStatus = "unknown"; ObservationPresent = $true; ObservationFresh = $false; ClockSkewDetected = $true; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 }
+    [pscustomobject]@{ Name = "healthy"; RawStatus = "available"; ExpectedStatus = "healthy"; ReasonPattern = "derived from a fresh persisted service observation"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 1; UnknownTargets = 2; DegradedTargets = 0; UnhealthyTargets = 0 },
+    [pscustomobject]@{ Name = "degraded"; RawStatus = "warning"; ExpectedStatus = "degraded"; ReasonPattern = "derived from a fresh persisted service observation"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 2; DegradedTargets = 1; UnhealthyTargets = 1 },
+    [pscustomobject]@{ Name = "stale"; RawStatus = "unavailable"; ExpectedStatus = "unknown"; ReasonPattern = "exceeded its ttl_s"; ObservationPresent = $true; ObservationFresh = $false; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
+    [pscustomobject]@{ Name = "absent"; RawStatus = $null; ExpectedStatus = "unknown"; ReasonPattern = "no matching service observation"; ObservationPresent = $false; ObservationFresh = $false; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
+    [pscustomobject]@{ Name = "unrecognized"; RawStatus = "mystery-state"; ExpectedStatus = "unknown"; ReasonPattern = "did not report a recognized explicit health state"; ObservationPresent = $true; ObservationFresh = $true; ClockSkewDetected = $false; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 },
+    [pscustomobject]@{ Name = "future-skewed"; RawStatus = "available"; ExpectedStatus = "unknown"; ReasonPattern = "in the future beyond allowed clock skew"; ObservationPresent = $true; ObservationFresh = $false; ClockSkewDetected = $true; HealthyTargets = 0; UnknownTargets = 3; DegradedTargets = 0; UnhealthyTargets = 0 }
 )
 
 try {
