@@ -30,6 +30,8 @@ foreach ($required in @(
     'Get-FileHash -LiteralPath \$ResolvedObservedSnapshot',
     'source config and persisted snapshot hashes unchanged',
     'metadata\.checks_executed',
+    'ReasonPattern',
+    'health\.reason',
     'safe_to_auto_execute',
     'side_effects_performed',
     '--url", \$DGraphApiUrl',
@@ -46,6 +48,7 @@ $snapshotWriter = [regex]::Match(
 if (-not $snapshotWriter.Success) { throw "Expected New-ScenarioSnapshot function." }
 Assert-Contains $snapshotWriter.Groups['body'].Value 'Get-Content -LiteralPath \$ResolvedObservedSnapshot'
 Assert-Contains $snapshotWriter.Groups['body'].Value 'Set-Content -LiteralPath \$ScenarioSnapshotPath'
+Assert-Contains $snapshotWriter.Groups['body'].Value 'Add-Member -NotePropertyName "status"'
 if ($snapshotWriter.Groups['body'].Value -match 'Set-Content -LiteralPath \$ResolvedObservedSnapshot') {
     throw "I33 must never write the source persisted snapshot."
 }
