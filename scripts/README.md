@@ -1,5 +1,13 @@
 # Scripts
 
+## I33 Observed-Health Scenario Matrix
+
+The Windows matrix script and its live/offline validation commands are documented in
+[the I33 scenario-matrix record](../docs/I33_OBSERVED_HEALTH_SCENARIO_MATRIX.md). It
+uses ignored copies of the operator's persisted `fog-02` observation to exercise
+healthy, degraded, stale, absent, unrecognized, and future-skewed inputs, restoring
+the three-node baseline after every scenario.
+
 ## I32 Live Three-Node D-Graph Smoke
 
 The repeatable Windows smoke script, its safety boundaries, exact command, expected
