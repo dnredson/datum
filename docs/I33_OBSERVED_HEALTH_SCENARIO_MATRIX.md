@@ -11,6 +11,14 @@ The first live run published the initial baseline, then failed in the first
 top-level response. It did not enter the scenario matrix. Its emergency restoration
 published the `fog-02` baseline. This run is not approval evidence for I33.
 
+The second live run published the initial baseline and validated
+`materialized/summary`; `readiness/summary` also returned valid JSON. The initial
+baseline did not complete because its obsolete `safe_to_auto_execute` assertion was
+not part of the readiness contract, so no matrix scenario was started. The emergency
+restoration republished `fog-02`, and its materialized validation passed, but its full
+validation did not finish after reaching the same readiness assertion. This run is also
+not approval evidence for I33.
+
 ## Objective
 
 I33 expands the live evidence for C44's read-only persisted-health translation. It
@@ -62,12 +70,19 @@ summary.unavailable_targets=0
 summary.unhealthy_targets=0
 validation_errors.Count=0               (top-level collection)
 readiness_status=ready
-safe_to_auto_execute=false
-side_effects_performed=false             (top-level)
+readiness.checks.side_effects_performed=false
+readiness.side_effects_performed=false
+readiness.metadata.execution_performed=false
 ```
 
 `GET /api/v1/dgraph/materialized/summary` is validated only against this nested
 contract. The smoke deliberately does not accept a flattened fallback.
+
+`checks_executed=false` is validated in each observed-health entry's metadata.
+`safe_to_auto_execute=false` belongs to the local snapshot and publication response
+contracts, where the smoke continues to validate it. Readiness has no such field;
+non-execution there is established only by `checks.side_effects_performed=false`,
+`side_effects_performed=false`, and `metadata.execution_performed=false`.
 
 An additional emergency restoration runs if a failure occurs before a scenario's normal
 restoration is confirmed.
@@ -85,8 +100,10 @@ I33 performs only:
 
 It does not run a DATUM collection cycle or service check and does not invoke placement,
 recovery, dispatch, deployment, installation, Docker, WASM, migration, reconfiguration,
-or planner execution. Every scenario requires `checks_executed=false`,
-`safe_to_auto_execute=false`, and `side_effects_performed=false`.
+or planner execution. Every scenario requires `checks_executed=false` in health
+metadata, `safe_to_auto_execute=false` in local snapshot/publication contracts, and
+the readiness non-execution triplet: `checks.side_effects_performed=false`,
+`side_effects_performed=false`, and `metadata.execution_performed=false`.
 
 ## Offline validation
 

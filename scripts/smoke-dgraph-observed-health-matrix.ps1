@@ -157,7 +157,7 @@ function Assert-Baseline([string]$Step) {
     Assert-Number $readiness "warning_count" 0 "$Step readiness"
     Assert-Number $readiness "blocked_count" 0 "$Step readiness"
     Assert-Number $readiness "degraded_flow_count" 0 "$Step readiness"
-    Assert-False $readiness "safe_to_auto_execute" "$Step readiness"
+    Assert-False $readiness "checks.side_effects_performed" "$Step readiness"
     Assert-False $readiness "side_effects_performed" "$Step readiness"
     Assert-False $readiness "metadata.execution_performed" "$Step readiness"
 }
@@ -275,7 +275,7 @@ function Assert-PublishedScenario([pscustomobject]$Scenario, [string]$ScenarioCo
     Assert-False $materialized "side_effects_performed" "I33 $($Scenario.Name) materialized"
 
     $readiness = Invoke-JsonGet "$ServerUrl/api/v1/dgraph/readiness/summary" "I33 $($Scenario.Name) readiness"
-    Assert-False $readiness "safe_to_auto_execute" "I33 $($Scenario.Name) readiness"
+    Assert-False $readiness "checks.side_effects_performed" "I33 $($Scenario.Name) readiness"
     Assert-False $readiness "side_effects_performed" "I33 $($Scenario.Name) readiness"
     Assert-False $readiness "metadata.execution_performed" "I33 $($Scenario.Name) readiness"
 }

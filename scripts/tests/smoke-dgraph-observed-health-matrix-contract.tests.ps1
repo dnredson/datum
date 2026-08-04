@@ -67,8 +67,14 @@ foreach ($path in @(
     '"summary\.healthy_targets"', '"summary\.unknown_targets"', '"summary\.degraded_targets"',
     '"summary\.unavailable_targets"', '"summary\.unhealthy_targets"',
     'Assert-CollectionCount \$materialized "validation_errors" 0',
-    'Assert-False \$materialized "side_effects_performed"'
+    'Assert-False \$materialized "side_effects_performed"',
+    'Assert-False \$readiness "checks\.side_effects_performed"',
+    'Assert-False \$readiness "side_effects_performed"',
+    'Assert-False \$readiness "metadata\.execution_performed"'
 )) { Assert-Contains $baselineAssertions $path }
+if ($baselineAssertions -match 'Assert-False \$readiness "safe_to_auto_execute"') {
+    throw "I33 readiness must not assert safe_to_auto_execute."
+}
 
 $publishedAssertions = Get-FunctionBody "Assert-PublishedScenario"
 foreach ($path in @(
@@ -76,8 +82,21 @@ foreach ($path in @(
     '"summary\.healthy_targets"', '"summary\.unknown_targets"', '"summary\.degraded_targets"',
     '"summary\.unavailable_targets"', '"summary\.unhealthy_targets"',
     'Assert-CollectionCount \$materialized "validation_errors" 0',
-    'Assert-False \$materialized "side_effects_performed"'
+    'Assert-False \$materialized "side_effects_performed"',
+    'Assert-False \$readiness "checks\.side_effects_performed"',
+    'Assert-False \$readiness "side_effects_performed"',
+    'Assert-False \$readiness "metadata\.execution_performed"',
+    'Assert-False \$localSnapshot "safe_to_auto_execute"'
 )) { Assert-Contains $publishedAssertions $path }
+if ($publishedAssertions -match 'Assert-False \$readiness "safe_to_auto_execute"') {
+    throw "I33 readiness must not assert safe_to_auto_execute."
+}
+
+foreach ($localSnapshotSafetyAssertion in @(
+    'Assert-False \$local "safe_to_auto_execute"',
+    'Assert-False \$localSnapshot "safe_to_auto_execute"',
+    'safe to auto execute:\\s\*false'
+)) { Assert-Contains $source $localSnapshotSafetyAssertion }
 
 foreach ($legacyTopLevelPath in @(
     '"node_count"', '"runtime_count"', '"module_count"', '"flow_count"',
