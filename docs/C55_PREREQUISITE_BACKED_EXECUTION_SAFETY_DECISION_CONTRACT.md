@@ -2,9 +2,7 @@
 
 ## Status
 
-Candidate increment at `126/130`. Implementation and documentation are prepared for formatting,
-focused Rust tests, the complete dserver suite, repository checks, and strict live validation. This
-record does not advance the validated checkpoint before those checks pass.
+Completed and validated increment at `127/130`. Formatting, focused Rust tests, the complete dserver suite, repository checks, and strict live validation all passed while prerequisite aggregation remained incomplete and non-authoritative, the execution decision remained denied, all eight operations remained unauthorized, and no side effects occurred.
 
 ## Purpose
 
@@ -28,7 +26,7 @@ evidence. C55 additionally calls the pure C54 prerequisite builder for the same 
 It does not load external policy, approval, artifact, allowlist, capability, limit, rollback, or
 audit state.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
 The C46 response keeps its existing fields and adds:
 
@@ -76,17 +74,19 @@ C55 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
   dispatch, or WASM;
 - invoke Docker, WASM engines, health checks, collection cycles, AI, or LLM orchestration.
 
-## Pending Validation
+## Validation Record
 
-Validate the candidate implementation head with:
+Validation completed successfully on implementation head `7aa959e5ae08bf88c2640d83223792782bf40ce2`:
 
-- `cargo fmt --check`;
-- `cargo test c55_ -- --nocapture`: expected 5 focused C55 tests;
-- `cargo test dgraph_execution_prerequisites -- --nocapture`: expected 5 C54 tests;
-- `cargo test dgraph_execution_safety -- --nocapture`: expected 12 C46/C55 tests;
-- `cargo test`: expected 426 total dserver tests;
-- `git diff --check origin/main...HEAD`;
-- `git status --short`;
-- strict live assertions against both `execution-prerequisites` and `execution-safety`.
+- `cargo fmt --check` passed;
+- all 5 focused C55 tests passed;
+- all 5 focused C54 execution-prerequisite tests passed;
+- all 12 focused C46/C55 execution-safety tests passed;
+- the complete dserver suite passed: 426 passed, 0 failed, 0 ignored, 0 measured, and 0 filtered out;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` produced no output;
+- strict live assertions against both `execution-prerequisites` and `execution-safety` for `smart-city-campinas` ended with `C55 live validation PASS`.
 
-The validated checkpoint remains `126/130` until all offline, repository, and live checks pass.
+The live C54 response reported `aggregation_status=incomplete`, exactly seven prerequisites, zero satisfied gates, `all_prerequisites_satisfied=false`, `authorization_granted=false`, and no execution or side effects. The live C55 response projected the same seven gate names, satisfied flags, and blocking reasons in order; its summary matched the C54 counts and status, `decision=denied`, all eight operations remained unauthorized, `execution_allow_transition_implemented=false`, and no execution or side effects occurred.
+
+The validated checkpoint is `127/130`.
