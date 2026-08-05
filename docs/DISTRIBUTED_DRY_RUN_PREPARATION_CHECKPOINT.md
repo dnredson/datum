@@ -32,7 +32,7 @@ Status notes:
 - `I33/130` completed live observed-health scenario validation on the third run. The initial three-node baseline and all six scenarios (`healthy`, `degraded`, `stale`, `absent`, `unrecognized`, and `future-skewed`) passed local, publication, materialized, readiness, and per-scenario baseline-restoration checks. Source config and persisted snapshot hashes were preserved, and no operational side effects occurred. The first two runs remain non-qualifying troubleshooting attempts. Progress is `117/130`. See [the I33 validation record](I33_OBSERVED_HEALTH_SCENARIO_MATRIX.md).
 - `C46/130` completed the separate, fail-closed execution safety contract and its validation. Its read-only endpoint denies placement, recovery, migration, reconfiguration, deployment, installation, dispatch execution, and WASM execution even when D-Graph readiness is `ready`. On the final branch head, `cargo fmt --check`, all 7 focused tests, all 381 dserver tests, `git diff --check`, and the clean-worktree check passed. Live validation against the restored three-node baseline returned `decision=denied`, seven unsatisfied gates, eight unauthorized operations, and no execution or side effects. Progress is `118/130`. See [the C46 contract and validation record](C46_EXECUTION_SAFETY_CONTRACT.md).
 - `C47/130` completed the default-deny execution policy contract and its validation. The read-only endpoint exposed only the built-in fail-closed fallback with `policy_configured=false`, `deny_all`, eight deny rules, execution disabled, no authorization, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C47 tests, all 7 focused C46 tests, all 386 dserver tests, `git diff --check`, the clean-worktree check, and live policy/safety assertions passed. Progress is `119/130`. See [the C47 contract and validation record](C47_DEFAULT_DENY_EXECUTION_POLICY_CONTRACT.md).
-- `C48/130` is a candidate fail-closed operator approval contract. Its read-only endpoint reports that no operator identity was authenticated and no valid project-scoped execution approval exists. It explicitly excludes legacy installation-task approvals from D-Graph authorization, leaves the C46 approval gate unsatisfied, performs no write or execution, and does not advance progress pending Rust and live validation. See [the C48 candidate contract](C48_FAIL_CLOSED_OPERATOR_APPROVAL_CONTRACT.md).
+- `C48/130` completed the fail-closed operator approval contract and its validation. The read-only endpoint reported no evaluated authentication, authenticated identity, approval, scope, authorization, persistence, execution, or side effects, and explicitly excluded legacy installation-task approvals from D-Graph authorization. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C48 tests, all 7 focused C46 tests, all 391 dserver tests, `git diff --check`, the clean-worktree check, and live approval/safety assertions passed. Progress is `120/130`. See [the C48 contract and validation record](C48_FAIL_CLOSED_OPERATOR_APPROVAL_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -66,6 +66,7 @@ The project now has:
 - live observed-health coverage for healthy, degraded, stale, absent, unrecognized, and future-skewed states with validated restoration after every scenario
 - a validated fail-closed execution safety contract that keeps readiness and planner evidence non-authoritative
 - a validated read-only default-deny policy contract with a canonical eight-operation taxonomy
+- a validated fail-closed operator approval contract that keeps legacy task approvals outside D-Graph authorization
 
 ## Current Safety Guarantees
 
@@ -90,7 +91,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - `side_effects_performed` remains `false` in the relevant snapshot, materialization, and planner contracts
 - the validated C46 endpoint is read-only and always denies execution authority; it does not create an execution path
 - the validated C47 endpoint exposes only a built-in deny-all fallback; it cannot load, persist, enable, or authorize a project policy
-- the candidate C48 endpoint is read-only and reports no authenticated identity or valid project-scoped approval; it cannot reuse legacy installation-task approvals as D-Graph authorization
+- the validated C48 endpoint is read-only and reports no authenticated identity or valid project-scoped approval; it cannot reuse legacy installation-task approvals as D-Graph authorization
 
 ## Live 2-VM Readiness Checklist
 
@@ -118,7 +119,7 @@ Optional:
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
 - implement an authenticated, project-scoped explicit policy in a later authorized phase before the C46 policy gate can be satisfied
-- implement authenticated operator identity and a valid project-scoped execution approval before the C46 approval gate can be satisfied; the C48 candidate only exposes their absence
+- implement authenticated operator identity and a valid project-scoped execution approval before the C46 approval gate can be satisfied; the validated C48 contract only exposes their absence
 - implement the remaining integrity, allowlist, capability, resource-limit, rollback, and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
@@ -155,7 +156,7 @@ Completed and validated at `119/130`. The 5 focused C47 tests, 7 focused C46 tes
 tests, formatting and repository checks, and live policy/safety endpoint assertions passed. No later
 increment is started by this record.
 
-### Candidate `C48/130`: Fail-Closed Operator Approval Contract
+### Completed `C48/130`: Fail-Closed Operator Approval Contract
 
 - expose the absence of authenticated, project-scoped approval through a separate read-only endpoint
 - keep identity authentication, approval presence, approval validity, and authorization false
@@ -163,8 +164,9 @@ increment is started by this record.
 - leave the C46 `authenticated_operator_approval` gate unsatisfied
 - perform no approval write, authentication, authorization, or execution
 
-Candidate only. Progress remains `119/130` until focused and full Rust tests, formatting and
-repository checks, and live operator-approval/safety endpoint assertions pass.
+Completed and validated at `120/130`. The 5 focused C48 tests, 7 focused C46 tests, all 391 dserver
+tests, formatting and repository checks, and live operator-approval/safety endpoint assertions
+passed. No later increment is started by this record.
 
 ## Practical Summary
 
@@ -178,6 +180,6 @@ and validates it locally for all three logical nodes, including restoration.
 I33 completes the six-state observed-health scenario matrix with validated restoration after every
 publication. C46 establishes and validates a separate fail-closed authorization boundary: even a
 ready graph and concrete planner proposals do not authorize execution. C47 completes and validates the read-only built-in deny-all fallback while leaving the project-scoped
-policy gate unsatisfied. C48 is a candidate read-only operator-approval boundary that exposes the
-absence of authenticated project-scoped approval and does not reuse legacy task approvals. Progress
-remains `119/130` pending validation. Executed orchestration remains deliberately out of scope.
+policy gate unsatisfied. C48 completes and validates the read-only operator-approval boundary that
+exposes the absence of authenticated project-scoped approval and does not reuse legacy task
+approvals. Progress is `120/130`. Executed orchestration remains deliberately out of scope.
