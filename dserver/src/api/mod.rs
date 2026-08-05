@@ -6,6 +6,7 @@ pub mod deployment_planning;
 pub mod dgraph_artifact_integrity;
 pub mod dgraph_capability_negotiation;
 pub mod dgraph_execution_allowlist;
+pub mod dgraph_resource_limits;
 pub mod dgraph_execution_policy;
 pub mod dgraph_execution_safety;
 pub mod dgraph_materialized;
