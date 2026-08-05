@@ -2,8 +2,11 @@
 
 ## Status
 
-Implemented as the candidate `119/130` increment. Validation is pending, so the project checkpoint
-remains `118/130` and this increment must remain draft and unmerged.
+Completed and validated as increment `119/130`.
+
+The final implementation head `884d2e460bc716af4ef675a2f578eafe44fe71b0` passed formatting,
+focused and full Rust tests, repository checks, and live validation. The subsequent record update changes
+documentation only and does not alter runtime semantics.
 
 ## Purpose
 
@@ -42,7 +45,7 @@ The response contains:
   and the C46 explicit-policy gate remains unsatisfied.
 
 The shared operation classes are placement, recovery, migration, reconfiguration, deployment,
-installation, dispatch, and WASM execution. C46 now imports this canonical list so the safety and
+installation, dispatch, and WASM execution. C46 imports this canonical list so the safety and
 policy contracts cannot silently diverge.
 
 ## C46 Relationship
@@ -56,8 +59,8 @@ no explicit, authenticated, project-scoped policy is configured. C46 therefore r
 - all eight operations unauthorized;
 - evaluation-only and side-effect-free.
 
-The C46 gate reason now distinguishes the implemented built-in deny-all fallback from a future
-explicit project policy.
+The C46 gate reason distinguishes the implemented built-in deny-all fallback from a future explicit
+project policy.
 
 ## Safety Boundary
 
@@ -73,25 +76,22 @@ C47 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Required Validation
+## Validation Evidence
 
-From the `dserver` crate on the final branch head:
+Validation on the final implementation head passed:
 
-```text
-cargo fmt --check
-cargo test dgraph_execution_policy -- --nocapture
-cargo test dgraph_execution_safety -- --nocapture
-cargo test
-git diff --check origin/main...HEAD
-git status --short
-```
+- `cargo fmt --check`;
+- all 5 focused C47 execution-policy tests;
+- all 7 focused C46 execution-safety tests;
+- all 386 dserver tests;
+- `git diff --check origin/main...HEAD`;
+- clean `git status --short`.
 
-Live validation must confirm both the new policy endpoint and the unchanged C46 denial:
+Live validation used project `smart-city-campinas` against the restored three-node baseline. The
+policy endpoint returned the built-in fallback with `policy_configured=false`, `deny_all`,
+`default_decision=deny`, execution disabled, eight deny rules, no authorization, and no side
+effects. The safety endpoint remained `decision=denied`, with all seven gates unsatisfied, all
+eight operations unauthorized, and no reported execution or side effects. The PowerShell
+assertions completed with `C47 live validation PASS`.
 
-- policy endpoint: fallback source, unconfigured policy, deny-all mode, eight deny rules, execution
-  disabled, no authorization, persistence, execution, or side effects;
-- safety endpoint: explicit-policy gate still unsatisfied, decision denied, eight unauthorized
-  operations, and no execution or side effects.
-
-Only after these checks pass may C47 be recorded as completed and the checkpoint advance from
-`118/130` to `119/130`.
+C47 is therefore complete at `119/130`. No later increment is started by this record.
