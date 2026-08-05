@@ -3,16 +3,12 @@ use serde_json::{json, Value};
 
 use crate::core::{
     dgraph_execution_policy::EXECUTION_OPERATION_CLASSES,
-    dgraph_execution_prerequisites::{
-        build_fail_closed_execution_prerequisites_contract, EXECUTION_PREREQUISITE_GATE_NAMES,
-    },
+    dgraph_execution_prerequisites::build_fail_closed_execution_prerequisites_contract,
     dgraph_readiness::build_project_dgraph_readiness_summary,
     local_dgraph_snapshot::LocalDGraphSnapshot,
 };
 
 const EXECUTION_SAFETY_CONTRACT_VERSION: &str = "0.1.0";
-
-pub const EXECUTION_SAFETY_GATE_NAMES: [&str; 7] = EXECUTION_PREREQUISITE_GATE_NAMES;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphExecutionSafetyEvidence {
@@ -312,12 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn c55_source_uses_the_prerequisite_builder_without_a_parallel_gate_table() {
+    fn c55_source_has_no_parallel_gate_table_or_authorization_path() {
         let source = include_str!("dgraph_execution_safety.rs");
         let implementation = source.split("#[cfg(test)]").next().unwrap_or(source);
 
         assert!(implementation.contains("build_fail_closed_execution_prerequisites_contract"));
-        assert!(implementation.contains("prerequisites.prerequisites"));
+        assert!(!implementation.contains("EXECUTION_SAFETY_GATE_NAMES"));
+        assert!(!implementation.contains("EXECUTION_PREREQUISITE_GATE_NAMES"));
         assert!(!implementation.contains("fn required_execution_gates"));
         assert!(!implementation.contains("authorization_granted: true"));
     }
