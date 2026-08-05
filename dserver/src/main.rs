@@ -23,6 +23,7 @@ use api::dgraph_execution_allowlist::get_dgraph_execution_allowlist_contract;
 use api::dgraph_resource_limits::get_dgraph_resource_limits_contract;
 use api::dgraph_rollback_audit::get_dgraph_rollback_audit_contract;
 use api::dgraph_execution_policy::get_dgraph_execution_policy_contract;
+use api::dgraph_execution_prerequisites::get_dgraph_execution_prerequisites_contract;
 use api::dgraph_execution_safety::get_dgraph_execution_safety_contract;
 use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
 use api::dgraph_operator_approval::get_dgraph_operator_approval_contract;
