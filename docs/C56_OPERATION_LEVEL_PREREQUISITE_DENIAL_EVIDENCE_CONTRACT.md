@@ -2,8 +2,8 @@
 
 ## Status
 
-Candidate increment at `127/130`. Formatting, focused Rust tests, the complete dserver suite,
-repository checks, and strict live validation remain pending on the final branch head.
+Completed and validated at `128/130` on final implementation head
+`b0878cbaa5ad4f0ccbc808e0e914f089a31f5d2b`.
 
 ## Purpose
 
@@ -24,7 +24,7 @@ X-Datum-Project: <project-id>
 No new endpoint or state source is introduced. The endpoint continues to build readiness evidence,
 the C54 prerequisite aggregation, and the C55 prerequisite-backed safety decision in memory.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
 Each item in `operations` keeps its existing `operation`, `authorized`, and `reason` fields and
 adds:
@@ -83,21 +83,24 @@ C56 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
   dispatch, or WASM;
 - invoke Docker, WASM engines, health checks, collection cycles, AI, or LLM orchestration.
 
-## Planned Validation
+## Validation Evidence
 
-Validate the final implementation head with:
+The final implementation head `b0878cbaa5ad4f0ccbc808e0e914f089a31f5d2b` passed:
 
 - `cargo fmt --check`;
 - all 5 focused C56 tests;
-- all focused C46/C55/C56 execution-safety tests;
-- the complete dserver suite, expected to contain 431 tests;
+- all 5 focused C54 prerequisite-aggregation tests;
+- all 17 focused C46/C55/C56 execution-safety tests;
+- the complete dserver suite with 431 passing tests;
 - `git diff --check origin/main...HEAD`;
-- `git status --short`;
-- strict live assertions against `execution-prerequisites` and `execution-safety` for
-  `smart-city-campinas`.
+- the clean-worktree check;
+- strict live C54/C55/C56 assertions for `smart-city-campinas`.
 
-The live validation must prove that all eight operations remain unauthorized, each reports
-`required_gate_count=7`, `satisfied_gate_count=0`, and the same seven ordered blockers projected
-from C54/C55, while authorization and all side-effect flags remain false.
+The live response reported `readiness_status=ready`, seven canonical unsatisfied prerequisites,
+and eight unauthorized operations. Every operation reported `required_gate_count=7`,
+`satisfied_gate_count=0`, and the same seven ordered blockers projected from C54/C55.
+`authorization_granted`, `side_effects_performed`, and
+`metadata.execution_performed` remained false, while the allow transition remained
+unimplemented. The campaign ended with `C56 live validation PASS`.
 
-The checkpoint remains `127/130` until all validations pass and their evidence is recorded.
+The validated checkpoint advances to `128/130`.
