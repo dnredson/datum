@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment `121/130`. Implementation is ready for local, full-suite, repository, and live validation. Progress remains `120/130` until that evidence is complete.
+Completed and validated increment `121/130`. Local, full-suite, repository, and live validation passed on the final implementation head. Progress is `121/130`.
 
 ## Purpose
 
@@ -21,7 +21,7 @@ The project header only scopes and labels the response. The endpoint does not re
 
 ## Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `verification_status=not_evaluated`;
@@ -69,16 +69,17 @@ C49 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Pending Validation
+## Validation Evidence
 
-Before this increment can advance progress to `121/130`, validate:
+Validation passed on implementation head `3c551da79173699dcfddad45c0e7b54558cd757c`:
 
-- `cargo fmt --check`;
-- all focused C49 artifact-integrity tests;
-- all focused C46 execution-safety tests;
-- the complete dserver test suite;
-- `git diff --check origin/main...HEAD`;
-- a clean `git status --short`;
-- live artifact-integrity and execution-safety assertions.
+- `cargo fmt --check` passed;
+- all 5 focused C49 artifact-integrity tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- all 396 dserver tests passed;
+- `git diff --check origin/main...HEAD` passed;
+- `git status --short` was clean;
+- live artifact-integrity assertions returned `verification_status=not_evaluated`, zero artifacts, no digest algorithm, no verified digests, signatures, provenance, or integrity, no authorization, and no side effects;
+- live execution-safety assertions returned `decision=denied`, the integrity gate unsatisfied, all seven gates unsatisfied, all eight operations unauthorized, and no execution or side effects.
 
-No later increment is started by this candidate.
+No later increment is started by this completion record.
