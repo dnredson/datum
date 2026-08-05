@@ -3,6 +3,7 @@ pub mod analysis;
 pub mod capabilities;
 pub mod dashboard;
 pub mod deployment_planning;
+pub mod dgraph_execution_safety;
 pub mod dgraph_materialized;
 pub mod dgraph_planner;
 pub mod dgraph_readiness;
