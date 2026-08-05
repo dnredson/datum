@@ -2,10 +2,11 @@
 
 ## Status
 
-Candidate implementation for increment `120/130`.
+Completed and validated increment `120/130`.
 
-The repository checkpoint remains `119/130` until formatting, focused and full Rust tests,
-repository checks, and live endpoint validation pass on the final implementation head.
+On the final implementation head `5f7cdd7a446d6c25e3785aec480068de4f302a8e`,
+formatting, focused and full Rust tests, repository checks, and live endpoint validation passed.
+The contract remains fail-closed, read-only, evaluation-only, and side-effect-free.
 
 ## Purpose
 
@@ -85,16 +86,23 @@ C48 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Required Validation
+## Completed Validation
 
-Before C48 can advance the checkpoint to `120/130`, the final implementation head must pass:
+The final implementation head `5f7cdd7a446d6c25e3785aec480068de4f302a8e` passed:
 
 - `cargo fmt --check`;
-- all focused C48 operator-approval tests;
-- all focused C46 execution-safety tests;
-- the full dserver test suite;
+- all 5 focused C48 operator-approval tests;
+- all 7 focused C46 execution-safety tests;
+- all 391 dserver tests;
 - `git diff --check origin/main...HEAD`;
 - a clean `git status --short`;
-- live assertions for both operator-approval and execution-safety endpoints.
+- live operator-approval and execution-safety assertions, ending with
+  `C48 live validation PASS`.
 
-No later increment is started by this candidate record.
+The live C48 response reported no evaluated authentication, no authenticated identity, no
+operator or approval identifier, no approval presence or validity, an empty approval scope, no
+authorization, no persisted state, and no side effects. The live C46 response remained
+`decision=denied`; all seven gates were unsatisfied, all eight operations were unauthorized, and
+no execution or side effects were reported.
+
+Progress is `120/130`. No later increment is started by this validation record.
