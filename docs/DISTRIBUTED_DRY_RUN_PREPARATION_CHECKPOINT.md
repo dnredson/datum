@@ -31,6 +31,7 @@ Status notes:
 - The second I33 live attempt published and materialized the initial baseline, then received a valid readiness response but failed its obsolete readiness `safe_to_auto_execute` assertion before any scenario. Emergency restoration republished `fog-02` and passed materialized validation, but full restoration validation encountered the same readiness assertion. It is not I33 approval evidence; progress remains `116/130`.
 - `I33/130` completed live observed-health scenario validation on the third run. The initial three-node baseline and all six scenarios (`healthy`, `degraded`, `stale`, `absent`, `unrecognized`, and `future-skewed`) passed local, publication, materialized, readiness, and per-scenario baseline-restoration checks. Source config and persisted snapshot hashes were preserved, and no operational side effects occurred. The first two runs remain non-qualifying troubleshooting attempts. Progress is `117/130`. See [the I33 validation record](I33_OBSERVED_HEALTH_SCENARIO_MATRIX.md).
 - `C46/130` completed the separate, fail-closed execution safety contract and its validation. Its read-only endpoint denies placement, recovery, migration, reconfiguration, deployment, installation, dispatch execution, and WASM execution even when D-Graph readiness is `ready`. On the final branch head, `cargo fmt --check`, all 7 focused tests, all 381 dserver tests, `git diff --check`, and the clean-worktree check passed. Live validation against the restored three-node baseline returned `decision=denied`, seven unsatisfied gates, eight unauthorized operations, and no execution or side effects. Progress is `118/130`. See [the C46 contract and validation record](C46_EXECUTION_SAFETY_CONTRACT.md).
+- `C47/130` is the candidate default-deny execution policy contract. It exposes the built-in fail-closed fallback through a read-only endpoint and centralizes the eight operation classes shared with C46. It does not load or persist a project policy, does not support an allow rule, and leaves the C46 explicit-policy gate unsatisfied. Validation is pending; progress remains `118/130`. See [the C47 contract](C47_DEFAULT_DENY_EXECUTION_POLICY_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -63,6 +64,7 @@ The project now has:
 - structured, deterministic, graph-backed planner advisory proposals with no execution path
 - live observed-health coverage for healthy, degraded, stale, absent, unrecognized, and future-skewed states with validated restoration after every scenario
 - a validated fail-closed execution safety contract that keeps readiness and planner evidence non-authoritative
+- a candidate read-only default-deny policy contract with a canonical eight-operation taxonomy, pending validation
 
 ## Current Safety Guarantees
 
@@ -86,6 +88,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - planner dry-run is advisory and read-only
 - `side_effects_performed` remains `false` in the relevant snapshot, materialization, and planner contracts
 - the validated C46 endpoint is read-only and always denies execution authority; it does not create an execution path
+- the candidate C47 endpoint exposes only a built-in deny-all fallback; it cannot load, persist, enable, or authorize a project policy
 
 ## Live 2-VM Readiness Checklist
 
@@ -112,7 +115,9 @@ Optional:
 
 ## Remaining Gaps Before Executed Multi-Node Orchestration
 
-- implement every explicit execution gate in a later authorized phase before considering any allow decision
+- validate the candidate C47 default-deny policy contract
+- implement an authenticated, project-scoped explicit policy in a later authorized phase before the C46 policy gate can be satisfied
+- implement the remaining approval, integrity, allowlist, capability, resource-limit, rollback, and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
 
@@ -136,6 +141,17 @@ Completed and validated at `118/130`. The focused and full Rust suites, formatti
 checks, and the restored three-node live endpoint assertions passed. No later increment is started
 by this record.
 
+### Candidate `C47/130`: Default-Deny Execution Policy Contract
+
+- expose the effective built-in fallback policy through a separate read-only endpoint
+- centralize the eight execution operation classes shared with C46
+- keep `policy_configured=false`, `execution_enabled=false`, and every rule set to `deny`
+- leave the C46 `explicit_execution_policy` gate unsatisfied
+- perform no policy write, approval, authorization, or execution
+
+Implemented as a draft candidate. Progress remains `118/130` until the focused and full Rust
+suites, formatting, repository checks, and live policy/safety endpoint assertions pass.
+
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
@@ -147,6 +163,7 @@ and validates it locally for all three logical nodes, including restoration.
 
 I33 completes the six-state observed-health scenario matrix with validated restoration after every
 publication. C46 establishes and validates a separate fail-closed authorization boundary: even a
-ready graph and concrete planner proposals do not authorize execution. Progress is `118/130`.
-Executed orchestration remains deliberately out of scope, and no later increment is started by
-this record.
+ready graph and concrete planner proposals do not authorize execution. C47 now exists as a draft
+candidate that makes the built-in deny-all fallback explicit while leaving the project-scoped
+policy gate unsatisfied. Progress remains `118/130` pending validation. Executed orchestration
+remains deliberately out of scope.
