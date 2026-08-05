@@ -20,6 +20,7 @@ use api::deployment_planning::{get_deployment_planning_for_node, get_latest_depl
 use api::dgraph_execution_policy::get_dgraph_execution_policy_contract;
 use api::dgraph_execution_safety::get_dgraph_execution_safety_contract;
 use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
+use api::dgraph_operator_approval::get_dgraph_operator_approval_contract;
 use api::dgraph_planner::{get_dgraph_planner_dry_run, get_dgraph_planner_dry_run_summary};
 use api::dgraph_readiness::get_dgraph_readiness_summary;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
@@ -237,6 +238,10 @@ async fn main() {
         .route(
             "/api/v1/dgraph/execution-policy",
             get(get_dgraph_execution_policy_contract),
+        )
+        .route(
+            "/api/v1/dgraph/operator-approval",
+            get(get_dgraph_operator_approval_contract),
         )
         .route(
             "/api/v1/installation-tasks/for-node/:node_id",
