@@ -39,7 +39,7 @@ Status notes:
 - `C52/130` completed the fail-closed resource limits contract and its validation. The read-only endpoint reported no configured or loaded fuel, timeout, memory, or host-capability limits; no enforcement, resource reservation, authorization, persistence, execution, or side effects occurred. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C52 tests, all 7 focused C46 tests, all 411 dserver tests, `git diff --check`, the clean-worktree check, and strict live resource-limits/safety assertions passed. Progress is `124/130`. See [the C52 contract and validation record](C52_FAIL_CLOSED_RESOURCE_LIMITS_CONTRACT.md).
 - `C53/130` completed the fail-closed rollback and audit contract and its validation. The read-only endpoint reported no loaded rollback plan or checkpoints, no rollback guarantee, no loaded audit policy, configured sink, records, or complete audit trail; no rollback, audit write, authorization, persistence, execution, or side effects occurred. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C53 tests, all 7 focused C46 tests, all 416 dserver tests, `git diff --check`, the clean-worktree check, and strict live rollback-audit/safety assertions passed. Progress is `125/130`. See [the C53 contract and validation record](C53_FAIL_CLOSED_ROLLBACK_AUDIT_CONTRACT.md).
 - `C54/130` completed the fail-closed execution prerequisite aggregation contract and its validation. The read-only endpoint aggregated exactly the seven C47–C53 source contracts in canonical C46 gate order; every prerequisite remained unsatisfied, the aggregate remained incomplete, authorization remained denied, and no persistence, execution, or side effects occurred. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C54 tests, all 7 focused C46 tests, all 421 dserver tests, `git diff --check`, the clean-worktree check, and strict live prerequisite-aggregation/safety assertions passed. Progress is `126/130`. See [the C54 contract and validation record](C54_FAIL_CLOSED_EXECUTION_PREREQUISITE_AGGREGATION_CONTRACT.md).
-- `C55/130` is a candidate prerequisite-backed execution-safety decision contract. C46 projects its seven gates directly from the C54 aggregation and exposes an explicit prerequisite summary, while the allow transition remains unimplemented, authorization remains denied, and all eight operations remain unauthorized. Formatting, focused tests, the complete suite, repository checks, and strict live validation are pending; validated progress remains `126/130`. See [the C55 candidate contract](C55_PREREQUISITE_BACKED_EXECUTION_SAFETY_DECISION_CONTRACT.md).
+- `C55/130` completed the prerequisite-backed execution-safety decision contract and its validation. C46 now projects its seven gates directly from the C54 aggregation and exposes an explicit prerequisite summary; the allow transition remains unimplemented, authorization remains denied, and all eight operations remain unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C55 tests, all 5 focused C54 tests, all 12 focused C46/C55 tests, all 426 dserver tests, `git diff --check`, the clean-worktree check, and strict live C54/C55 assertions passed. Progress is `127/130`. See [the C55 contract and validation record](C55_PREREQUISITE_BACKED_EXECUTION_SAFETY_DECISION_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -80,6 +80,7 @@ The project now has:
 - a validated fail-closed resource limits contract that keeps fuel, timeout, memory, and host-capability limits absent or empty and performs no enforcement
 - a validated fail-closed rollback and audit contract that keeps rollback plans, checkpoints, guarantees, audit policy, sink, records, and completeness absent or false
 - a validated fail-closed execution prerequisite aggregation that binds all seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied
+- a validated prerequisite-backed execution-safety decision that projects the seven C54 prerequisite results into C46 while keeping aggregation non-authoritative, the allow transition unimplemented, and every operation denied
 
 ## Current Safety Guarantees
 
@@ -111,7 +112,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - the validated C52 endpoint is read-only and reports no configured or loaded resource limits and no enforcement; it cannot derive enforceable limits from planner, runtime, D-Graph, or capability metadata, reserve resources, authorize, or execute
 - the validated C53 endpoint is read-only and reports no rollback guarantee or complete audit trail; it cannot derive rollback authority from planner or action-result metadata, restore state, write audit records, authorize, or execute
 - the validated C54 endpoint is read-only and aggregates only the seven existing fail-closed contracts; it cannot treat aggregation, readiness, or planner proposals as authorization, persist state, authorize, or execute
-- the candidate C55 decision projects C46 gates from C54 evidence without implementing an allow transition; it remains denied, read-only, non-authoritative, and side-effect-free pending validation
+- the validated C55 decision projects C46 gates from C54 evidence without implementing an allow transition; it remains denied, read-only, non-authoritative, and side-effect-free
 
 ## Live 2-VM Readiness Checklist
 
@@ -256,7 +257,7 @@ Completed and validated at `125/130`. The 5 focused C53 tests, 7 focused C46 tes
 
 Completed and validated at `126/130`. The 5 focused C54 tests, 7 focused C46 tests, all 421 dserver tests, formatting and repository checks, and strict live prerequisite-aggregation/safety endpoint assertions passed. No later increment is started by this record.
 
-### Candidate `C55/130`: Prerequisite-Backed Execution Safety Decision
+### Completed `C55/130`: Prerequisite-Backed Execution Safety Decision
 
 - project the seven C46 gates directly from the C54 prerequisite aggregation
 - expose the incomplete prerequisite summary alongside readiness and planner evidence
@@ -264,9 +265,9 @@ Completed and validated at `126/130`. The 5 focused C54 tests, 7 focused C46 tes
 - keep prerequisite aggregation non-authoritative and the allow transition unimplemented
 - preserve the denied decision, eight operation denials, and zero side effects
 
-Candidate only at `126/130`. Formatting, 5 focused C55 tests, 5 focused C54 tests, 12 focused
-C46/C55 tests, the expected 426-test dserver suite, repository checks, and strict live assertions
-remain required before validation can advance the checkpoint.
+Completed and validated at `127/130`. The 5 focused C55 tests, 5 focused C54 tests, 12 focused
+C46/C55 tests, all 426 dserver tests, formatting and repository checks, and strict live C54/C55
+assertions passed. No later increment is started by this record.
 
 ## Practical Summary
 
@@ -284,4 +285,4 @@ policy gate unsatisfied. C48 completes and validates the read-only operator-appr
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
 approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
 references non-authoritative and exposes the absence of verified digests, signatures, provenance,
-and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 completes and validates the read-only resource-limit boundary, exposing the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. C53 completes and validates the read-only rollback-and-audit boundary, exposing the absence of rollback guarantees and a complete execution audit trail without restoring state or writing records. C54 completes and validates the read-only prerequisite aggregation boundary, binding the seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied. C55 is the candidate decision-integration step that projects those prerequisites into C46 without implementing an allow transition. Validated progress remains `126/130`. Executed orchestration remains deliberately out of scope.
+and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 completes and validates the read-only resource-limit boundary, exposing the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. C53 completes and validates the read-only rollback-and-audit boundary, exposing the absence of rollback guarantees and a complete execution audit trail without restoring state or writing records. C54 completes and validates the read-only prerequisite aggregation boundary, binding the seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied. C55 completes and validates the decision-integration step that projects those prerequisites into C46 without implementing an allow transition. Validated progress is `127/130`. Executed orchestration remains deliberately out of scope.
