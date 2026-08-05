@@ -101,7 +101,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "authenticated_operator_approval",
-            "no authenticated project-scoped execution approval is evaluated",
+            "the fail-closed operator approval contract reports no authenticated project-scoped execution approval",
         ),
         (
             "artifact_integrity_and_provenance",
