@@ -3,21 +3,16 @@ use serde_json::{json, Value};
 
 use crate::core::{
     dgraph_execution_policy::EXECUTION_OPERATION_CLASSES,
+    dgraph_execution_prerequisites::{
+        build_fail_closed_execution_prerequisites_contract, EXECUTION_PREREQUISITE_GATE_NAMES,
+    },
     dgraph_readiness::build_project_dgraph_readiness_summary,
     local_dgraph_snapshot::LocalDGraphSnapshot,
 };
 
 const EXECUTION_SAFETY_CONTRACT_VERSION: &str = "0.1.0";
 
-pub const EXECUTION_SAFETY_GATE_NAMES: [&str; 7] = [
-    "explicit_execution_policy",
-    "authenticated_operator_approval",
-    "artifact_integrity_and_provenance",
-    "target_and_function_allowlists",
-    "capability_negotiation",
-    "resource_limits",
-    "rollback_and_audit",
-];
+pub const EXECUTION_SAFETY_GATE_NAMES: [&str; 7] = EXECUTION_PREREQUISITE_GATE_NAMES;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphExecutionSafetyEvidence {
@@ -40,6 +35,15 @@ pub struct DGraphExecutionSafetyGate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DGraphExecutionPrerequisiteSummary {
+    pub aggregation_status: String,
+    pub required_gate_count: u64,
+    pub satisfied_gate_count: u64,
+    pub all_prerequisites_satisfied: bool,
+    pub aggregation_is_authorization: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphOperationAuthorization {
     pub operation: String,
     pub authorized: bool,
@@ -53,6 +57,7 @@ pub struct ProjectDGraphExecutionSafetyContractResponse {
     pub decision: String,
     pub authorization_granted: bool,
     pub evidence: DGraphExecutionSafetyEvidence,
+    pub prerequisite_summary: DGraphExecutionPrerequisiteSummary,
     pub gates: Vec<DGraphExecutionSafetyGate>,
     pub operations: Vec<DGraphOperationAuthorization>,
     pub side_effects_performed: bool,
@@ -75,6 +80,23 @@ pub fn build_project_dgraph_execution_safety_contract(
         planner_output_is_advisory: true,
         side_effects_performed: readiness.side_effects_performed,
     };
+    let prerequisites = build_fail_closed_execution_prerequisites_contract(project_id);
+    let prerequisite_summary = DGraphExecutionPrerequisiteSummary {
+        aggregation_status: prerequisites.aggregation_status.clone(),
+        required_gate_count: prerequisites.required_gate_count,
+        satisfied_gate_count: prerequisites.satisfied_gate_count,
+        all_prerequisites_satisfied: prerequisites.all_prerequisites_satisfied,
+        aggregation_is_authorization: false,
+    };
+    let gates = prerequisites
+        .prerequisites
+        .iter()
+        .map(|prerequisite| DGraphExecutionSafetyGate {
+            gate: prerequisite.gate.clone(),
+            satisfied: prerequisite.satisfied,
+            reason: prerequisite.reason.clone(),
+        })
+        .collect();
 
     ProjectDGraphExecutionSafetyContractResponse {
         project_id: project_id.to_string(),
@@ -82,13 +104,14 @@ pub fn build_project_dgraph_execution_safety_contract(
         decision: "denied".to_string(),
         authorization_granted: false,
         evidence,
-        gates: required_execution_gates(),
+        prerequisite_summary,
+        gates,
         operations: EXECUTION_OPERATION_CLASSES
             .into_iter()
             .map(|operation| DGraphOperationAuthorization {
                 operation: operation.to_string(),
                 authorized: false,
-                reason: "execution authority is not implemented; readiness and planner output are advisory evidence only"
+                reason: "execution authority and the allow transition are not implemented; prerequisite aggregation, readiness, and planner output are advisory evidence only"
                     .to_string(),
             })
             .collect(),
@@ -98,31 +121,11 @@ pub fn build_project_dgraph_execution_safety_contract(
             "contract_scope": "execution_authorization_boundary",
             "readiness_is_authorization": false,
             "planner_proposals_are_authorization": false,
+            "prerequisite_aggregation_is_authorization": false,
+            "execution_allow_transition_implemented": false,
             "execution_performed": false,
         })),
     }
-}
-
-fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
-    let reasons = [
-        "only the built-in deny-all fallback is active; no explicit project-scoped execution policy is configured",
-        "the fail-closed operator approval contract reports no authenticated project-scoped execution approval",
-        "the fail-closed artifact integrity contract reports no verified digests, signatures, or provenance for execution",
-        "the fail-closed execution allowlist contract reports no project-scoped target, module, runtime, or function allowlist entries",
-        "the fail-closed capability negotiation contract reports no loaded requirements or advertisements and no successful compatibility negotiation",
-        "the fail-closed resource limits contract reports no configured or loaded fuel, timeout, memory, or host-capability limits and no enforcement",
-        "the fail-closed rollback and audit contract reports no loaded rollback plan or checkpoints, no rollback guarantee, and no complete execution audit trail",
-    ];
-
-    EXECUTION_SAFETY_GATE_NAMES
-        .into_iter()
-        .zip(reasons)
-        .map(|(gate, reason)| DGraphExecutionSafetyGate {
-            gate: gate.to_string(),
-            satisfied: false,
-            reason: reason.to_string(),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -233,6 +236,90 @@ mod tests {
         );
         assert_eq!(value["metadata"]["execution_performed"], false);
         assert_eq!(value["side_effects_performed"], false);
+    }
+
+    #[test]
+    fn c55_projects_all_prerequisites_into_execution_gates() {
+        let prerequisites = build_fail_closed_execution_prerequisites_contract("project-a");
+        let contract = build_project_dgraph_execution_safety_contract("project-a", &[]);
+
+        assert_eq!(contract.gates.len(), prerequisites.prerequisites.len());
+        for (gate, prerequisite) in contract.gates.iter().zip(&prerequisites.prerequisites) {
+            assert_eq!(gate.gate, prerequisite.gate);
+            assert_eq!(gate.satisfied, prerequisite.satisfied);
+            assert_eq!(gate.reason, prerequisite.reason);
+        }
+    }
+
+    #[test]
+    fn c55_exposes_the_incomplete_prerequisite_summary() {
+        let contract = build_project_dgraph_execution_safety_contract("project-a", &[]);
+
+        assert_eq!(
+            contract.prerequisite_summary.aggregation_status,
+            "incomplete"
+        );
+        assert_eq!(contract.prerequisite_summary.required_gate_count, 7);
+        assert_eq!(contract.prerequisite_summary.satisfied_gate_count, 0);
+        assert!(!contract.prerequisite_summary.all_prerequisites_satisfied);
+        assert!(!contract.prerequisite_summary.aggregation_is_authorization);
+    }
+
+    #[test]
+    fn c55_ready_graph_and_prerequisite_evidence_still_deny_every_operation() {
+        let contract = build_project_dgraph_execution_safety_contract(
+            "smart-city-campinas",
+            &[snapshot("fog-01"), snapshot("fog-02")],
+        );
+
+        assert_eq!(contract.evidence.readiness_status, "ready");
+        assert_eq!(
+            contract.prerequisite_summary.aggregation_status,
+            "incomplete"
+        );
+        assert_eq!(contract.decision, "denied");
+        assert!(!contract.authorization_granted);
+        assert!(contract.gates.iter().all(|gate| !gate.satisfied));
+        assert!(contract.operations.iter().all(|item| !item.authorized));
+    }
+
+    #[test]
+    fn c55_serialized_contract_marks_aggregation_and_allow_transition_non_authoritative() {
+        let value = serde_json::to_value(build_project_dgraph_execution_safety_contract(
+            "project-a",
+            &[],
+        ))
+        .expect("contract should serialize");
+
+        assert_eq!(
+            value["prerequisite_summary"]["aggregation_status"],
+            "incomplete"
+        );
+        assert_eq!(value["prerequisite_summary"]["required_gate_count"], 7);
+        assert_eq!(value["prerequisite_summary"]["satisfied_gate_count"], 0);
+        assert_eq!(
+            value["prerequisite_summary"]["all_prerequisites_satisfied"],
+            false
+        );
+        assert_eq!(
+            value["metadata"]["prerequisite_aggregation_is_authorization"],
+            false
+        );
+        assert_eq!(
+            value["metadata"]["execution_allow_transition_implemented"],
+            false
+        );
+    }
+
+    #[test]
+    fn c55_source_uses_the_prerequisite_builder_without_a_parallel_gate_table() {
+        let source = include_str!("dgraph_execution_safety.rs");
+        let implementation = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        assert!(implementation.contains("build_fail_closed_execution_prerequisites_contract"));
+        assert!(implementation.contains("prerequisites.prerequisites"));
+        assert!(!implementation.contains("fn required_execution_gates"));
+        assert!(!implementation.contains("authorization_granted: true"));
     }
 
     #[test]
