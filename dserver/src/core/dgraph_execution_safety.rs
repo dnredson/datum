@@ -2,22 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::core::{
+    dgraph_execution_policy::EXECUTION_OPERATION_CLASSES,
     dgraph_readiness::build_project_dgraph_readiness_summary,
     local_dgraph_snapshot::LocalDGraphSnapshot,
 };
 
 const EXECUTION_SAFETY_CONTRACT_VERSION: &str = "0.1.0";
-
-const DENIED_OPERATIONS: [&str; 8] = [
-    "placement",
-    "recovery",
-    "migration",
-    "reconfiguration",
-    "deployment",
-    "installation",
-    "dispatch",
-    "wasm_execution",
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphExecutionSafetyEvidence {
@@ -71,7 +61,10 @@ pub fn build_project_dgraph_execution_safety_contract(
         blocked_count: readiness.blocked_count,
         degraded_flow_count: readiness.degraded_flow_count,
         placement_proposal_count: readiness.planner_summary.summary.placement_count,
-        reconfiguration_proposal_count: readiness.planner_summary.summary.reconfiguration_count,
+        reconfiguration_proposal_count: readiness
+            .planner_summary
+            .summary
+            .reconfiguration_count,
         planner_output_is_advisory: true,
         side_effects_performed: readiness.side_effects_performed,
     };
@@ -83,7 +76,7 @@ pub fn build_project_dgraph_execution_safety_contract(
         authorization_granted: false,
         evidence,
         gates: required_execution_gates(),
-        operations: DENIED_OPERATIONS
+        operations: EXECUTION_OPERATION_CLASSES
             .into_iter()
             .map(|operation| DGraphOperationAuthorization {
                 operation: operation.to_string(),
@@ -107,7 +100,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
     [
         (
             "explicit_execution_policy",
-            "no explicit execution policy is implemented",
+            "only the built-in deny-all fallback is active; no explicit project-scoped execution policy is configured",
         ),
         (
             "authenticated_operator_approval",
@@ -229,7 +222,7 @@ mod tests {
             .map(|item| item.operation.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(operations, DENIED_OPERATIONS);
+        assert_eq!(operations, EXECUTION_OPERATION_CLASSES);
         assert!(contract.operations.iter().all(|item| !item.authorized));
     }
 
