@@ -258,6 +258,10 @@ async fn main() {
             get(get_dgraph_rollback_audit_contract),
         )
         .route(
+            "/api/v1/dgraph/execution-prerequisites",
+            get(get_dgraph_execution_prerequisites_contract),
+        )
+        .route(
             "/api/v1/dgraph/execution-safety",
             get(get_dgraph_execution_safety_contract),
         )
