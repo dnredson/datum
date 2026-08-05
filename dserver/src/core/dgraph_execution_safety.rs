@@ -121,7 +121,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "rollback_and_audit",
-            "rollback guarantees and an execution audit trail are not implemented",
+            "the fail-closed rollback and audit contract reports no loaded rollback plan or checkpoints, no rollback guarantee, and no complete execution audit trail",
         ),
     ]
     .into_iter()
