@@ -90,4 +90,3 @@ Validate the candidate implementation head with:
 - strict live assertions against both `execution-prerequisites` and `execution-safety`.
 
 The validated checkpoint remains `126/130` until all offline, repository, and live checks pass.
-
