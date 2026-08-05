@@ -117,7 +117,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "resource_limits",
-            "execution fuel, timeout, and host-capability limits are not enforced",
+            "the fail-closed resource limits contract reports no configured or loaded fuel, timeout, memory, or host-capability limits and no enforcement",
         ),
         (
             "rollback_and_audit",
