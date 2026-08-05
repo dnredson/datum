@@ -113,7 +113,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "capability_negotiation",
-            "execution capability negotiation is not implemented",
+            "the fail-closed capability negotiation contract reports no loaded requirements or advertisements and no successful compatibility negotiation",
         ),
         (
             "resource_limits",
