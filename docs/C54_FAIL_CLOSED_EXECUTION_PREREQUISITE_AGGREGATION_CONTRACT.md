@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment at `125/130`. The implementation is published for local Rust and strict live validation. No test result, live result, or checkpoint advancement is claimed by this record.
+Completed and validated increment at `126/130`. The implementation, repository checks, Rust tests, and strict live validation all passed while every prerequisite remained unsatisfied, authorization remained denied, and no side effects occurred.
 
 ## Purpose
 
@@ -19,9 +19,9 @@ X-Datum-Project: <project-id>
 
 The project header only scopes and labels the response. The endpoint does not read Firebase, snapshots, planner output, policies, approvals, artifact bytes, allowlist files, capability advertisements, resource configuration, rollback state, audit records, local files, or remote resources.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `aggregation_status=incomplete`;
@@ -76,16 +76,18 @@ C54 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Candidate Validation Checklist
+## Validation Record
 
-The candidate requires:
+Validation completed successfully on implementation head `8412b00b1adc1dbda05adc315fe67dd44bc3f6da`:
 
-- `cargo fmt --check`;
-- all 5 focused `dgraph_execution_prerequisites` tests;
-- all 7 focused `dgraph_execution_safety` tests;
-- the complete dserver test suite;
-- `git diff --check origin/main...HEAD`;
-- a clean `git status --short`;
-- strict live assertions for the prerequisite aggregation and C46 execution-safety endpoints.
+- `cargo fmt --check` passed;
+- all 5 focused C54 execution-prerequisite tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- the complete dserver suite passed: 421 passed, 0 failed, 0 ignored, 0 measured, and 0 filtered out;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` produced no output;
+- strict live execution-prerequisite and execution-safety assertions against `smart-city-campinas` ended with `C54 live validation PASS`.
 
-Until those checks pass, progress remains `125/130`.
+The live prerequisite response reported `aggregation_status=incomplete`, exactly seven required prerequisites in canonical C46 order, zero satisfied prerequisites, one C47–C53 source contract and version per gate, `all_prerequisites_satisfied=false`, `authorization_granted=false`, and no persistence, execution, or side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized.
+
+The validated checkpoint is `126/130`.
