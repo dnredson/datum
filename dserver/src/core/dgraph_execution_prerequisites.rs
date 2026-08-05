@@ -6,7 +6,6 @@ use crate::core::{
     dgraph_capability_negotiation::build_fail_closed_capability_negotiation_contract,
     dgraph_execution_allowlist::build_fail_closed_execution_allowlist_contract,
     dgraph_execution_policy::build_default_deny_execution_policy_contract,
-    dgraph_execution_safety::EXECUTION_SAFETY_GATE_NAMES,
     dgraph_operator_approval::build_fail_closed_operator_approval_contract,
     dgraph_resource_limits::build_fail_closed_resource_limits_contract,
     dgraph_rollback_audit::build_fail_closed_rollback_audit_contract,
@@ -14,6 +13,16 @@ use crate::core::{
 
 const EXECUTION_PREREQUISITES_CONTRACT_VERSION: &str = "0.1.0";
 const REQUIRED_GATE_COUNT: u64 = 7;
+
+pub const EXECUTION_PREREQUISITE_GATE_NAMES: [&str; 7] = [
+    "explicit_execution_policy",
+    "authenticated_operator_approval",
+    "artifact_integrity_and_provenance",
+    "target_and_function_allowlists",
+    "capability_negotiation",
+    "resource_limits",
+    "rollback_and_audit",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphExecutionPrerequisiteEvidence {
@@ -233,7 +242,10 @@ mod tests {
             .map(|item| item["gate"].as_str().expect("gate should be a string"))
             .collect::<Vec<_>>();
 
-        assert_eq!(gates.as_slice(), EXECUTION_SAFETY_GATE_NAMES.as_slice());
+        assert_eq!(
+            gates.as_slice(),
+            EXECUTION_PREREQUISITE_GATE_NAMES.as_slice()
+        );
         assert_eq!(value["contract_version"], "0.1.0");
         assert_eq!(value["aggregation_status"], "incomplete");
         assert_eq!(value["required_gate_count"], 7);
