@@ -20,6 +20,7 @@ use api::deployment_planning::{get_deployment_planning_for_node, get_latest_depl
 use api::dgraph_artifact_integrity::get_dgraph_artifact_integrity_contract;
 use api::dgraph_capability_negotiation::get_dgraph_capability_negotiation_contract;
 use api::dgraph_execution_allowlist::get_dgraph_execution_allowlist_contract;
+use api::dgraph_resource_limits::get_dgraph_resource_limits_contract;
 use api::dgraph_execution_policy::get_dgraph_execution_policy_contract;
 use api::dgraph_execution_safety::get_dgraph_execution_safety_contract;
 use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
@@ -245,6 +246,10 @@ async fn main() {
         .route(
             "/api/v1/dgraph/execution-allowlists",
             get(get_dgraph_execution_allowlist_contract),
+        )
+        .route(
+            "/api/v1/dgraph/resource-limits",
+            get(get_dgraph_resource_limits_contract),
         )
         .route(
             "/api/v1/dgraph/execution-safety",
