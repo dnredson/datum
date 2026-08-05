@@ -5,6 +5,7 @@ pub mod capabilities;
 pub mod deployment_plan;
 pub mod dgraph;
 pub mod dgraph_artifact_integrity;
+pub mod dgraph_execution_allowlist;
 pub mod dgraph_execution_policy;
 pub mod dgraph_execution_safety;
 pub mod dgraph_materializer;

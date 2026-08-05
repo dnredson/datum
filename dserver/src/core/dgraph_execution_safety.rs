@@ -109,7 +109,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "target_and_function_allowlists",
-            "target, module, runtime, and function allowlists are not enforced",
+            "the fail-closed execution allowlist contract reports no project-scoped target, module, runtime, or function allowlist entries",
         ),
         (
             "capability_negotiation",
