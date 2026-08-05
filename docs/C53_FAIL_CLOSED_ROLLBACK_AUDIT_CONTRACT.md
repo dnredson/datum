@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment at `124/130`. The implementation is prepared for local repository checks, Rust tests, and strict live validation. This record does not advance the validated checkpoint.
+Completed and validated increment at `125/130`. The implementation, repository checks, Rust tests, and strict live validation all passed without guaranteeing rollback, creating an audit trail, authorizing execution, or producing side effects.
 
 ## Purpose
 
@@ -19,9 +19,9 @@ X-Datum-Project: <project-id>
 
 The project header only scopes and labels the response. The endpoint does not read or write Firebase, snapshots, action results, planner output, local files, network resources, executor state, rollback state, or audit state.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `rollback_status=not_guaranteed`;
@@ -67,16 +67,18 @@ C53 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Candidate Validation Checklist
+## Validation Record
 
-The checkpoint remains `124/130` until all of the following complete:
+Validation completed successfully on implementation head `ae164d69b48c26ac4ad4b7294297177b72f088f2`:
 
-- `cargo fmt --check`;
-- all 5 focused C53 rollback-and-audit tests;
-- all 7 focused C46 execution-safety tests;
-- the complete dserver suite;
-- `git diff --check origin/main...HEAD`;
-- a clean `git status --short`;
-- strict live rollback-audit and execution-safety assertions against `smart-city-campinas` ending with `C53 live validation PASS`.
+- `cargo fmt --check` passed;
+- all 5 focused C53 rollback-and-audit tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- the complete dserver suite passed: 416 passed, 0 failed, 0 ignored, 0 measured, and 0 filtered out;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` produced no output;
+- strict live rollback-audit and execution-safety assertions against `smart-city-campinas` ended with `C53 live validation PASS`.
 
-No test or live result is claimed by this candidate record.
+The live response reported no loaded rollback plan or checkpoints, no rollback guarantee, no loaded audit policy, configured sink, records, or complete audit trail, no authorization, no persistence, no execution, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized.
+
+The validated checkpoint is `125/130`.
