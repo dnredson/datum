@@ -7,6 +7,7 @@ pub mod dgraph;
 pub mod dgraph_execution_policy;
 pub mod dgraph_execution_safety;
 pub mod dgraph_materializer;
+pub mod dgraph_operator_approval;
 pub mod dgraph_planner;
 pub mod dgraph_readiness;
 pub mod dispatch_policy;
