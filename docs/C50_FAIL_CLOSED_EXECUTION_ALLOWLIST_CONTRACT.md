@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment `122/130`. Implementation is published for local and live validation. Progress remains `121/130` until the complete validation evidence is recorded.
+Completed increment `122/130`. The implementation, repository checks, Rust suites, and live fail-closed assertions passed on the final implementation head. Progress is `122/130`.
 
 ## Purpose
 
@@ -21,7 +21,7 @@ The project header only scopes and labels the response. The endpoint does not re
 
 ## Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `evaluation_status=not_evaluated`;
@@ -63,17 +63,19 @@ C50 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Planned Validation
+## Validation Evidence
 
-Validate on the final implementation head with:
+Validated on implementation head `50ab4413fd1f7d935c346c40e2ac929e2a6905de`:
 
-- `cargo fmt --check`;
-- all 5 focused C50 execution-allowlist tests;
-- all 7 focused C46 execution-safety tests;
-- the complete dserver suite;
-- `git diff --check origin/main...HEAD`;
-- a clean `git status --short`;
-- live execution-allowlist assertions confirming empty lists, no configuration, no authorization, persistence, execution, or side effects;
-- live execution-safety assertions confirming `decision=denied`, the allowlist gate unsatisfied, all seven gates unsatisfied, all eight operations unauthorized, and no execution or side effects.
+- `cargo fmt --check` passed;
+- all 5 focused C50 execution-allowlist tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- the complete dserver suite passed with 401/401 tests;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` confirmed a clean worktree.
 
-No completion or progress advancement is claimed before this evidence passes.
+Live validation against project `smart-city-campinas` passed through a strict PowerShell block that cleared prior response variables and stopped on request or assertion errors. The allowlist endpoint returned `contract_version=0.1.0`, `evaluation_status=not_evaluated`, `allowlist_configured=false`, all four loaded flags false, all four lists empty, no authorization, no persistence, no execution, and no side effects. D-Graph entities remained non-authoritative and wildcard entries remained disabled.
+
+The paired execution-safety response remained `decision=denied`. Exactly one `target_and_function_allowlists` gate was present and unsatisfied, no gate was satisfied, no operation was authorized, and no execution or side effect was reported.
+
+C50 therefore completes the read-only fail-closed allowlist boundary without adding allowlist enforcement or any execution path. Progress advances to `122/130`.
