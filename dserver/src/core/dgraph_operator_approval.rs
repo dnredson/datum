@@ -91,10 +91,7 @@ mod tests {
         );
         assert_eq!(value["metadata"]["persisted"], false);
         assert_eq!(value["metadata"]["execution_performed"], false);
-        assert_eq!(
-            value["metadata"]["execution_safety_gate_satisfied"],
-            false
-        );
+        assert_eq!(value["metadata"]["execution_safety_gate_satisfied"], false);
     }
 
     #[test]
