@@ -221,9 +221,9 @@ mod tests {
 
     #[test]
     fn serialized_aggregation_preserves_gate_order_and_non_authoritative_semantics() {
-        let value = serde_json::to_value(
-            build_fail_closed_execution_prerequisites_contract("project-a"),
-        )
+        let value = serde_json::to_value(build_fail_closed_execution_prerequisites_contract(
+            "project-a",
+        ))
         .expect("execution prerequisites contract should serialize");
 
         let gates = value["prerequisites"]
@@ -233,10 +233,7 @@ mod tests {
             .map(|item| item["gate"].as_str().expect("gate should be a string"))
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            gates.as_slice(),
-            EXECUTION_SAFETY_GATE_NAMES.as_slice()
-        );
+        assert_eq!(gates.as_slice(), EXECUTION_SAFETY_GATE_NAMES.as_slice());
         assert_eq!(value["contract_version"], "0.1.0");
         assert_eq!(value["aggregation_status"], "incomplete");
         assert_eq!(value["required_gate_count"], 7);
