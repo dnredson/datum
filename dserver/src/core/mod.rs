@@ -10,6 +10,7 @@ pub mod dgraph_execution_allowlist;
 pub mod dgraph_resource_limits;
 pub mod dgraph_rollback_audit;
 pub mod dgraph_execution_policy;
+pub mod dgraph_execution_prerequisites;
 pub mod dgraph_execution_safety;
 pub mod dgraph_materializer;
 pub mod dgraph_operator_approval;
