@@ -89,10 +89,8 @@ mod tests {
 
     #[test]
     fn serialized_policy_cannot_be_mistaken_for_authorization() {
-        let value = serde_json::to_value(build_default_deny_execution_policy_contract(
-            "project-a",
-        ))
-        .expect("policy contract should serialize");
+        let value = serde_json::to_value(build_default_deny_execution_policy_contract("project-a"))
+            .expect("policy contract should serialize");
 
         assert_eq!(value["contract_version"], "0.1.0");
         assert_eq!(value["policy_source"], "builtin_fail_closed_fallback");
@@ -102,10 +100,7 @@ mod tests {
         assert_eq!(value["metadata"]["project_scoped_policy_loaded"], false);
         assert_eq!(value["metadata"]["persisted"], false);
         assert_eq!(value["metadata"]["execution_performed"], false);
-        assert_eq!(
-            value["metadata"]["execution_safety_gate_satisfied"],
-            false
-        );
+        assert_eq!(value["metadata"]["execution_safety_gate_satisfied"], false);
     }
 
     #[test]
