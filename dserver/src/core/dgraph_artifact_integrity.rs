@@ -75,10 +75,9 @@ mod tests {
 
     #[test]
     fn serialized_contract_keeps_artifact_references_non_authoritative() {
-        let value = serde_json::to_value(build_fail_closed_artifact_integrity_contract(
-            "project-a",
-        ))
-        .expect("artifact integrity contract should serialize");
+        let value =
+            serde_json::to_value(build_fail_closed_artifact_integrity_contract("project-a"))
+                .expect("artifact integrity contract should serialize");
 
         assert_eq!(value["contract_version"], "0.1.0");
         assert_eq!(value["verification_status"], "not_evaluated");
@@ -99,10 +98,7 @@ mod tests {
         assert_eq!(value["metadata"]["artifact_transfer_performed"], false);
         assert_eq!(value["metadata"]["persisted"], false);
         assert_eq!(value["metadata"]["execution_performed"], false);
-        assert_eq!(
-            value["metadata"]["execution_safety_gate_satisfied"],
-            false
-        );
+        assert_eq!(value["metadata"]["execution_safety_gate_satisfied"], false);
     }
 
     #[test]
