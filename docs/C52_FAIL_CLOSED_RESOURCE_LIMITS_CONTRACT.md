@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment at `123/130`. The implementation is prepared for local repository checks, Rust tests, and strict live validation. This record does not advance the validated checkpoint.
+Completed and validated increment at `124/130`. The implementation, repository checks, Rust tests, and strict live validation all passed without authorizing execution, enforcing limits, reserving resources, or producing side effects.
 
 ## Purpose
 
@@ -19,9 +19,9 @@ X-Datum-Project: <project-id>
 
 The project header only scopes and labels the response. The endpoint does not read or write Firebase, snapshots, runtime reports, planner output, local files, network resources, executor state, or host-resource state.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `limits_status=not_enforced`;
@@ -66,16 +66,18 @@ C52 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Candidate Validation Checklist
+## Validation Record
 
-The checkpoint remains `123/130` until all of the following complete:
+Validation completed successfully on implementation head `4f2779ef00dc6d69f5af6dee14f76445e30191ed`:
 
-- `cargo fmt --check`;
-- all 5 focused C52 resource-limits tests;
-- all 7 focused C46 execution-safety tests;
-- the complete dserver suite;
-- `git diff --check origin/main...HEAD`;
-- a clean `git status --short`;
-- strict live resource-limits and execution-safety assertions against `smart-city-campinas` ending with `C52 live validation PASS`.
+- `cargo fmt --check` passed;
+- all 5 focused C52 resource-limits tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- the complete dserver suite passed: 411 passed, 0 failed, 0 ignored, 0 measured, and 0 filtered out;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` produced no output;
+- strict live resource-limits and execution-safety assertions against `smart-city-campinas` ended with `C52 live validation PASS`.
 
-No test or live result is claimed by this candidate record.
+The live response reported no configured or loaded fuel, timeout, memory, or host-capability limits, no enforcement, no host-resource reservation, no authorization, no persistence, no execution, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized.
+
+The validated checkpoint is `124/130`.
