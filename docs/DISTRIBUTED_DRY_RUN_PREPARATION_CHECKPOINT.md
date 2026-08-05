@@ -35,6 +35,7 @@ Status notes:
 - `C48/130` completed the fail-closed operator approval contract and its validation. The read-only endpoint reported no evaluated authentication, authenticated identity, approval, scope, authorization, persistence, execution, or side effects, and explicitly excluded legacy installation-task approvals from D-Graph authorization. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C48 tests, all 7 focused C46 tests, all 391 dserver tests, `git diff --check`, the clean-worktree check, and live approval/safety assertions passed. Progress is `120/130`. See [the C48 contract and validation record](C48_FAIL_CLOSED_OPERATOR_APPROVAL_CONTRACT.md).
 - `C49/130` completed the fail-closed artifact integrity and provenance contract and its validation. The read-only endpoint reported no loaded artifact inventory, artifact bytes, digest algorithm, verified digests, signatures, provenance, trusted source, integrity, authorization, persistence, execution, transfer, or side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C49 tests, all 7 focused C46 tests, all 396 dserver tests, `git diff --check`, the clean-worktree check, and live artifact-integrity/safety assertions passed. Progress is `121/130`. See [the C49 contract and validation record](C49_FAIL_CLOSED_ARTIFACT_INTEGRITY_PROVENANCE_CONTRACT.md).
 - `C50/130` completed the fail-closed execution allowlist contract and its validation. The read-only endpoint reported no configured or loaded target, module, runtime, or function allowlist entries; D-Graph entities remained non-authoritative, wildcard entries remained disabled, and authorization remained denied. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C50 tests, all 7 focused C46 tests, all 401 dserver tests, `git diff --check`, the clean-worktree check, and strict live allowlist/safety assertions passed. Progress is `122/130`. See [the C50 contract and validation record](C50_FAIL_CLOSED_EXECUTION_ALLOWLIST_CONTRACT.md).
+- `C51/130` is a candidate fail-closed capability negotiation contract. It exposes no loaded requirements or advertisements, no compatibility evaluation, no successful negotiation, no authorization, and no side effects; existing D-Graph and legacy node capability metadata remain non-authoritative. Validation is pending, so progress remains `122/130`. See [the C51 candidate contract](C51_FAIL_CLOSED_CAPABILITY_NEGOTIATION_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -128,7 +129,8 @@ Optional:
 - implement authenticated operator identity and a valid project-scoped execution approval before the C46 approval gate can be satisfied; the validated C48 contract only exposes their absence
 - implement canonical artifact inventory, digest, signature, trust-root, and provenance verification before the C46 integrity gate can be satisfied; the validated C49 contract only exposes their absence
 - implement explicit project-scoped target, module, runtime, and function allowlist enforcement in a later authorized phase before the C46 allowlist gate can be satisfied; the validated C50 contract only exposes their absence
-- implement the remaining capability, resource-limit, rollback, and audit gates before considering any allow decision
+- validate the candidate fail-closed capability negotiation contract; explicit project-scoped requirement loading, trusted advertisements, compatibility evaluation, and operation-bound negotiation remain for a later authorized phase
+- implement the remaining resource-limit, rollback, and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
 
@@ -200,6 +202,16 @@ Completed and validated at `122/130`. The 5 focused C50 tests, 7 focused C46 tes
 tests, formatting and repository checks, and strict live allowlist/safety endpoint assertions
 passed. No later increment is started by this record.
 
+### Candidate `C51/130`: Fail-Closed Capability Negotiation Contract
+
+- expose the absence of project-scoped capability requirements, advertisements, matches, and negotiation through a separate read-only endpoint
+- keep requirement and advertisement loading, compatibility evaluation, negotiation success, and authorization false
+- keep D-Graph and legacy node capability metadata non-authoritative
+- leave the C46 `capability_negotiation` gate unsatisfied
+- perform no capability load, discovery, exchange, matching, persistence, authorization, or execution
+
+Candidate only. Repository, Rust, and strict live validation are pending. The validated checkpoint remains `122/130`.
+
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
@@ -216,4 +228,4 @@ policy gate unsatisfied. C48 completes and validates the read-only operator-appr
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
 approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
 references non-authoritative and exposes the absence of verified digests, signatures, provenance,
-and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. Progress is `122/130`. Executed orchestration remains deliberately out of scope.
+and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 is now a candidate read-only capability-negotiation boundary; it does not yet advance the validated checkpoint. Progress remains `122/130`. Executed orchestration remains deliberately out of scope.
