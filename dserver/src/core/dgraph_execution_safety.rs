@@ -9,6 +9,16 @@ use crate::core::{
 
 const EXECUTION_SAFETY_CONTRACT_VERSION: &str = "0.1.0";
 
+pub const EXECUTION_SAFETY_GATE_NAMES: [&str; 7] = [
+    "explicit_execution_policy",
+    "authenticated_operator_approval",
+    "artifact_integrity_and_provenance",
+    "target_and_function_allowlists",
+    "capability_negotiation",
+    "resource_limits",
+    "rollback_and_audit",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DGraphExecutionSafetyEvidence {
     pub readiness_status: String,
@@ -94,43 +104,25 @@ pub fn build_project_dgraph_execution_safety_contract(
 }
 
 fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
-    [
-        (
-            "explicit_execution_policy",
-            "only the built-in deny-all fallback is active; no explicit project-scoped execution policy is configured",
-        ),
-        (
-            "authenticated_operator_approval",
-            "the fail-closed operator approval contract reports no authenticated project-scoped execution approval",
-        ),
-        (
-            "artifact_integrity_and_provenance",
-            "the fail-closed artifact integrity contract reports no verified digests, signatures, or provenance for execution",
-        ),
-        (
-            "target_and_function_allowlists",
-            "the fail-closed execution allowlist contract reports no project-scoped target, module, runtime, or function allowlist entries",
-        ),
-        (
-            "capability_negotiation",
-            "the fail-closed capability negotiation contract reports no loaded requirements or advertisements and no successful compatibility negotiation",
-        ),
-        (
-            "resource_limits",
-            "the fail-closed resource limits contract reports no configured or loaded fuel, timeout, memory, or host-capability limits and no enforcement",
-        ),
-        (
-            "rollback_and_audit",
-            "the fail-closed rollback and audit contract reports no loaded rollback plan or checkpoints, no rollback guarantee, and no complete execution audit trail",
-        ),
-    ]
-    .into_iter()
-    .map(|(gate, reason)| DGraphExecutionSafetyGate {
-        gate: gate.to_string(),
-        satisfied: false,
-        reason: reason.to_string(),
-    })
-    .collect()
+    let reasons = [
+        "only the built-in deny-all fallback is active; no explicit project-scoped execution policy is configured",
+        "the fail-closed operator approval contract reports no authenticated project-scoped execution approval",
+        "the fail-closed artifact integrity contract reports no verified digests, signatures, or provenance for execution",
+        "the fail-closed execution allowlist contract reports no project-scoped target, module, runtime, or function allowlist entries",
+        "the fail-closed capability negotiation contract reports no loaded requirements or advertisements and no successful compatibility negotiation",
+        "the fail-closed resource limits contract reports no configured or loaded fuel, timeout, memory, or host-capability limits and no enforcement",
+        "the fail-closed rollback and audit contract reports no loaded rollback plan or checkpoints, no rollback guarantee, and no complete execution audit trail",
+    ];
+
+    EXECUTION_SAFETY_GATE_NAMES
+        .into_iter()
+        .zip(reasons)
+        .map(|(gate, reason)| DGraphExecutionSafetyGate {
+            gate: gate.to_string(),
+            satisfied: false,
+            reason: reason.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
