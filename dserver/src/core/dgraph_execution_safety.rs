@@ -105,7 +105,7 @@ fn required_execution_gates() -> Vec<DGraphExecutionSafetyGate> {
         ),
         (
             "artifact_integrity_and_provenance",
-            "artifact signatures, hashes, and provenance are not verified for execution",
+            "the fail-closed artifact integrity contract reports no verified digests, signatures, or provenance for execution",
         ),
         (
             "target_and_function_allowlists",

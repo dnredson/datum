@@ -33,6 +33,7 @@ Status notes:
 - `C46/130` completed the separate, fail-closed execution safety contract and its validation. Its read-only endpoint denies placement, recovery, migration, reconfiguration, deployment, installation, dispatch execution, and WASM execution even when D-Graph readiness is `ready`. On the final branch head, `cargo fmt --check`, all 7 focused tests, all 381 dserver tests, `git diff --check`, and the clean-worktree check passed. Live validation against the restored three-node baseline returned `decision=denied`, seven unsatisfied gates, eight unauthorized operations, and no execution or side effects. Progress is `118/130`. See [the C46 contract and validation record](C46_EXECUTION_SAFETY_CONTRACT.md).
 - `C47/130` completed the default-deny execution policy contract and its validation. The read-only endpoint exposed only the built-in fail-closed fallback with `policy_configured=false`, `deny_all`, eight deny rules, execution disabled, no authorization, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C47 tests, all 7 focused C46 tests, all 386 dserver tests, `git diff --check`, the clean-worktree check, and live policy/safety assertions passed. Progress is `119/130`. See [the C47 contract and validation record](C47_DEFAULT_DENY_EXECUTION_POLICY_CONTRACT.md).
 - `C48/130` completed the fail-closed operator approval contract and its validation. The read-only endpoint reported no evaluated authentication, authenticated identity, approval, scope, authorization, persistence, execution, or side effects, and explicitly excluded legacy installation-task approvals from D-Graph authorization. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C48 tests, all 7 focused C46 tests, all 391 dserver tests, `git diff --check`, the clean-worktree check, and live approval/safety assertions passed. Progress is `120/130`. See [the C48 contract and validation record](C48_FAIL_CLOSED_OPERATOR_APPROVAL_CONTRACT.md).
+- `C49/130` completed the fail-closed artifact integrity and provenance contract and its validation. The read-only endpoint reported no loaded artifact inventory, artifact bytes, digest algorithm, verified digests, signatures, provenance, trusted source, integrity, authorization, persistence, execution, transfer, or side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C49 tests, all 7 focused C46 tests, all 396 dserver tests, `git diff --check`, the clean-worktree check, and live artifact-integrity/safety assertions passed. Progress is `121/130`. See [the C49 contract and validation record](C49_FAIL_CLOSED_ARTIFACT_INTEGRITY_PROVENANCE_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -67,6 +68,7 @@ The project now has:
 - a validated fail-closed execution safety contract that keeps readiness and planner evidence non-authoritative
 - a validated read-only default-deny policy contract with a canonical eight-operation taxonomy
 - a validated fail-closed operator approval contract that keeps legacy task approvals outside D-Graph authorization
+- a validated fail-closed artifact integrity and provenance contract that keeps artifact references non-authoritative and performs no byte reads or transfers
 
 ## Current Safety Guarantees
 
@@ -92,6 +94,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - the validated C46 endpoint is read-only and always denies execution authority; it does not create an execution path
 - the validated C47 endpoint exposes only a built-in deny-all fallback; it cannot load, persist, enable, or authorize a project policy
 - the validated C48 endpoint is read-only and reports no authenticated identity or valid project-scoped approval; it cannot reuse legacy installation-task approvals as D-Graph authorization
+- the validated C49 endpoint is read-only and reports no verified artifact digest, signature, provenance, or integrity; it cannot read, transfer, trust, authorize, or execute artifact references
 
 ## Live 2-VM Readiness Checklist
 
@@ -120,7 +123,8 @@ Optional:
 
 - implement an authenticated, project-scoped explicit policy in a later authorized phase before the C46 policy gate can be satisfied
 - implement authenticated operator identity and a valid project-scoped execution approval before the C46 approval gate can be satisfied; the validated C48 contract only exposes their absence
-- implement the remaining integrity, allowlist, capability, resource-limit, rollback, and audit gates before considering any allow decision
+- implement canonical artifact inventory, digest, signature, trust-root, and provenance verification before the C46 integrity gate can be satisfied; the validated C49 contract only exposes their absence
+- implement the remaining allowlist, capability, resource-limit, rollback, and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
 
@@ -168,6 +172,18 @@ Completed and validated at `120/130`. The 5 focused C48 tests, 7 focused C46 tes
 tests, formatting and repository checks, and live operator-approval/safety endpoint assertions
 passed. No later increment is started by this record.
 
+### Completed `C49/130`: Fail-Closed Artifact Integrity and Provenance Contract
+
+- expose the absence of verified digests, signatures, and provenance through a separate read-only endpoint
+- keep artifact inventory, byte reads, verification, integrity, and authorization false or empty
+- keep artifact references non-authoritative and do not dereference or transfer them
+- leave the C46 `artifact_integrity_and_provenance` gate unsatisfied
+- perform no artifact read, hash, signature check, transfer, persistence, authorization, or execution
+
+Completed and validated at `121/130`. The 5 focused C49 tests, 7 focused C46 tests, all 396 dserver
+tests, formatting and repository checks, and live artifact-integrity/safety endpoint assertions
+passed. No later increment is started by this record.
+
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
@@ -182,4 +198,6 @@ publication. C46 establishes and validates a separate fail-closed authorization 
 ready graph and concrete planner proposals do not authorize execution. C47 completes and validates the read-only built-in deny-all fallback while leaving the project-scoped
 policy gate unsatisfied. C48 completes and validates the read-only operator-approval boundary that
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
-approvals. Progress is `120/130`. Executed orchestration remains deliberately out of scope.
+approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
+references non-authoritative and exposes the absence of verified digests, signatures, provenance,
+and integrity. Progress is `121/130`. Executed orchestration remains deliberately out of scope.
