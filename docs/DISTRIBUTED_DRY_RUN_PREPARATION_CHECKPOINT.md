@@ -34,7 +34,7 @@ Status notes:
 - `C47/130` completed the default-deny execution policy contract and its validation. The read-only endpoint exposed only the built-in fail-closed fallback with `policy_configured=false`, `deny_all`, eight deny rules, execution disabled, no authorization, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C47 tests, all 7 focused C46 tests, all 386 dserver tests, `git diff --check`, the clean-worktree check, and live policy/safety assertions passed. Progress is `119/130`. See [the C47 contract and validation record](C47_DEFAULT_DENY_EXECUTION_POLICY_CONTRACT.md).
 - `C48/130` completed the fail-closed operator approval contract and its validation. The read-only endpoint reported no evaluated authentication, authenticated identity, approval, scope, authorization, persistence, execution, or side effects, and explicitly excluded legacy installation-task approvals from D-Graph authorization. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C48 tests, all 7 focused C46 tests, all 391 dserver tests, `git diff --check`, the clean-worktree check, and live approval/safety assertions passed. Progress is `120/130`. See [the C48 contract and validation record](C48_FAIL_CLOSED_OPERATOR_APPROVAL_CONTRACT.md).
 - `C49/130` completed the fail-closed artifact integrity and provenance contract and its validation. The read-only endpoint reported no loaded artifact inventory, artifact bytes, digest algorithm, verified digests, signatures, provenance, trusted source, integrity, authorization, persistence, execution, transfer, or side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C49 tests, all 7 focused C46 tests, all 396 dserver tests, `git diff --check`, the clean-worktree check, and live artifact-integrity/safety assertions passed. Progress is `121/130`. See [the C49 contract and validation record](C49_FAIL_CLOSED_ARTIFACT_INTEGRITY_PROVENANCE_CONTRACT.md).
-- `C50/130` is the candidate fail-closed execution allowlist contract. Its read-only endpoint exposes no configured or loaded target, module, runtime, or function allowlist entries; D-Graph entities are explicitly non-authoritative, wildcard entries are disabled, and authorization remains denied. The checkpoint remains `121/130` pending local, full-suite, repository, and live validation. See [the C50 candidate contract](C50_FAIL_CLOSED_EXECUTION_ALLOWLIST_CONTRACT.md).
+- `C50/130` completed the fail-closed execution allowlist contract and its validation. The read-only endpoint reported no configured or loaded target, module, runtime, or function allowlist entries; D-Graph entities remained non-authoritative, wildcard entries remained disabled, and authorization remained denied. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C50 tests, all 7 focused C46 tests, all 401 dserver tests, `git diff --check`, the clean-worktree check, and strict live allowlist/safety assertions passed. Progress is `122/130`. See [the C50 contract and validation record](C50_FAIL_CLOSED_EXECUTION_ALLOWLIST_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -70,6 +70,7 @@ The project now has:
 - a validated read-only default-deny policy contract with a canonical eight-operation taxonomy
 - a validated fail-closed operator approval contract that keeps legacy task approvals outside D-Graph authorization
 - a validated fail-closed artifact integrity and provenance contract that keeps artifact references non-authoritative and performs no byte reads or transfers
+- a validated fail-closed execution allowlist contract that keeps D-Graph entities non-authoritative and all target, module, runtime, and function lists empty
 
 ## Current Safety Guarantees
 
@@ -96,7 +97,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - the validated C47 endpoint exposes only a built-in deny-all fallback; it cannot load, persist, enable, or authorize a project policy
 - the validated C48 endpoint is read-only and reports no authenticated identity or valid project-scoped approval; it cannot reuse legacy installation-task approvals as D-Graph authorization
 - the validated C49 endpoint is read-only and reports no verified artifact digest, signature, provenance, or integrity; it cannot read, transfer, trust, authorize, or execute artifact references
-- the candidate C50 endpoint is read-only and reports no configured or loaded target, module, runtime, or function allowlists; it cannot derive permission from D-Graph metadata, accept wildcards, authorize, or execute
+- the validated C50 endpoint is read-only and reports no configured or loaded target, module, runtime, or function allowlists; it cannot derive permission from D-Graph metadata, accept wildcards, authorize, or execute
 
 ## Live 2-VM Readiness Checklist
 
@@ -126,7 +127,7 @@ Optional:
 - implement an authenticated, project-scoped explicit policy in a later authorized phase before the C46 policy gate can be satisfied
 - implement authenticated operator identity and a valid project-scoped execution approval before the C46 approval gate can be satisfied; the validated C48 contract only exposes their absence
 - implement canonical artifact inventory, digest, signature, trust-root, and provenance verification before the C46 integrity gate can be satisfied; the validated C49 contract only exposes their absence
-- validate the candidate C50 fail-closed allowlist boundary, then implement explicit project-scoped target, module, runtime, and function allowlist enforcement in a later authorized phase before the C46 allowlist gate can be satisfied
+- implement explicit project-scoped target, module, runtime, and function allowlist enforcement in a later authorized phase before the C46 allowlist gate can be satisfied; the validated C50 contract only exposes their absence
 - implement the remaining capability, resource-limit, rollback, and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
@@ -187,7 +188,7 @@ Completed and validated at `121/130`. The 5 focused C49 tests, 7 focused C46 tes
 tests, formatting and repository checks, and live artifact-integrity/safety endpoint assertions
 passed. No later increment is started by this record.
 
-### Candidate `C50/130`: Fail-Closed Execution Allowlist Contract
+### Completed `C50/130`: Fail-Closed Execution Allowlist Contract
 
 - expose the absence of project-scoped target, module, runtime, and function allowlists through a separate read-only endpoint
 - keep every allowlist unloaded and empty, with authorization false
@@ -195,9 +196,9 @@ passed. No later increment is started by this record.
 - leave the C46 `target_and_function_allowlists` gate unsatisfied
 - perform no allowlist load, matching, persistence, authorization, or execution
 
-Candidate for `122/130`. Progress remains `121/130` pending the 5 focused C50 tests, 7 focused
-C46 tests, complete dserver suite, formatting and repository checks, and live allowlist/safety
-endpoint assertions.
+Completed and validated at `122/130`. The 5 focused C50 tests, 7 focused C46 tests, all 401 dserver
+tests, formatting and repository checks, and strict live allowlist/safety endpoint assertions
+passed. No later increment is started by this record.
 
 ## Practical Summary
 
@@ -215,4 +216,4 @@ policy gate unsatisfied. C48 completes and validates the read-only operator-appr
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
 approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
 references non-authoritative and exposes the absence of verified digests, signatures, provenance,
-and integrity. C50 is the candidate read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. Progress remains `121/130` pending validation. Executed orchestration remains deliberately out of scope.
+and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. Progress is `122/130`. Executed orchestration remains deliberately out of scope.
