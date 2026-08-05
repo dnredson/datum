@@ -36,7 +36,7 @@ Status notes:
 - `C49/130` completed the fail-closed artifact integrity and provenance contract and its validation. The read-only endpoint reported no loaded artifact inventory, artifact bytes, digest algorithm, verified digests, signatures, provenance, trusted source, integrity, authorization, persistence, execution, transfer, or side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C49 tests, all 7 focused C46 tests, all 396 dserver tests, `git diff --check`, the clean-worktree check, and live artifact-integrity/safety assertions passed. Progress is `121/130`. See [the C49 contract and validation record](C49_FAIL_CLOSED_ARTIFACT_INTEGRITY_PROVENANCE_CONTRACT.md).
 - `C50/130` completed the fail-closed execution allowlist contract and its validation. The read-only endpoint reported no configured or loaded target, module, runtime, or function allowlist entries; D-Graph entities remained non-authoritative, wildcard entries remained disabled, and authorization remained denied. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C50 tests, all 7 focused C46 tests, all 401 dserver tests, `git diff --check`, the clean-worktree check, and strict live allowlist/safety assertions passed. Progress is `122/130`. See [the C50 contract and validation record](C50_FAIL_CLOSED_EXECUTION_ALLOWLIST_CONTRACT.md).
 - `C51/130` completed the fail-closed capability negotiation contract and its validation. The read-only endpoint reported no loaded requirements or advertisements, empty required, advertised, and matched capability collections, no compatibility evaluation, no successful negotiation, no authorization, and no side effects; existing D-Graph and legacy node capability metadata remained non-authoritative. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C51 tests, all 7 focused C46 tests, all 406 dserver tests, `git diff --check`, the clean-worktree check, and strict live capability-negotiation/safety assertions passed. Progress is `123/130`. See [the C51 contract and validation record](C51_FAIL_CLOSED_CAPABILITY_NEGOTIATION_CONTRACT.md).
-- `C52/130` is a candidate fail-closed resource limits contract. The read-only endpoint reports no configured or loaded fuel, timeout, memory, or host-capability limits, performs no enforcement, reserves no resources, and grants no authorization. C46 remains `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. Local Rust, repository, and strict live validation remain pending. Progress remains `123/130`. See [the C52 candidate contract](C52_FAIL_CLOSED_RESOURCE_LIMITS_CONTRACT.md).
+- `C52/130` completed the fail-closed resource limits contract and its validation. The read-only endpoint reported no configured or loaded fuel, timeout, memory, or host-capability limits; no enforcement, resource reservation, authorization, persistence, execution, or side effects occurred. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C52 tests, all 7 focused C46 tests, all 411 dserver tests, `git diff --check`, the clean-worktree check, and strict live resource-limits/safety assertions passed. Progress is `124/130`. See [the C52 contract and validation record](C52_FAIL_CLOSED_RESOURCE_LIMITS_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -74,7 +74,7 @@ The project now has:
 - a validated fail-closed artifact integrity and provenance contract that keeps artifact references non-authoritative and performs no byte reads or transfers
 - a validated fail-closed execution allowlist contract that keeps D-Graph entities non-authoritative and all target, module, runtime, and function lists empty
 - a validated fail-closed capability negotiation contract that keeps requirements, advertisements, and matches unloaded or empty while preserving all execution denials
-- a candidate fail-closed resource limits contract that keeps fuel, timeout, memory, and host-capability limits absent or empty and performs no enforcement
+- a validated fail-closed resource limits contract that keeps fuel, timeout, memory, and host-capability limits absent or empty and performs no enforcement
 
 ## Current Safety Guarantees
 
@@ -103,7 +103,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - the validated C49 endpoint is read-only and reports no verified artifact digest, signature, provenance, or integrity; it cannot read, transfer, trust, authorize, or execute artifact references
 - the validated C50 endpoint is read-only and reports no configured or loaded target, module, runtime, or function allowlists; it cannot derive permission from D-Graph metadata, accept wildcards, authorize, or execute
 - the validated C51 endpoint is read-only and reports no loaded capability requirements or advertisements, no compatibility result, and no successful negotiation; it cannot derive authority from D-Graph or legacy capability metadata, authorize, or execute
-- the candidate C52 endpoint is read-only and reports no configured or loaded resource limits and no enforcement; it cannot derive enforceable limits from planner, runtime, D-Graph, or capability metadata, reserve resources, authorize, or execute
+- the validated C52 endpoint is read-only and reports no configured or loaded resource limits and no enforcement; it cannot derive enforceable limits from planner, runtime, D-Graph, or capability metadata, reserve resources, authorize, or execute
 
 ## Live 2-VM Readiness Checklist
 
@@ -135,7 +135,7 @@ Optional:
 - implement canonical artifact inventory, digest, signature, trust-root, and provenance verification before the C46 integrity gate can be satisfied; the validated C49 contract only exposes their absence
 - implement explicit project-scoped target, module, runtime, and function allowlist enforcement in a later authorized phase before the C46 allowlist gate can be satisfied; the validated C50 contract only exposes their absence
 - implement explicit project-scoped requirement loading, trusted advertisements, compatibility evaluation, and operation-bound negotiation in a later authorized phase before the C46 capability gate can be satisfied; the validated C51 contract only exposes their absence
-- implement explicit project-scoped fuel, timeout, memory, and host-capability limit enforcement in a later authorized phase before the C46 resource-limit gate can be satisfied; the candidate C52 contract only exposes their absence
+- implement explicit project-scoped fuel, timeout, memory, and host-capability limit enforcement in a later authorized phase before the C46 resource-limit gate can be satisfied; the validated C52 contract only exposes their absence
 - implement the remaining rollback and audit gates before considering any allow decision
 
 ## Recommended Next Milestone Options
@@ -218,7 +218,7 @@ passed. No later increment is started by this record.
 
 Completed and validated at `123/130`. The 5 focused C51 tests, 7 focused C46 tests, all 406 dserver tests, formatting and repository checks, and strict live capability-negotiation/safety endpoint assertions passed. No later increment is started by this record.
 
-### Candidate `C52/130`: Fail-Closed Resource Limits Contract
+### Completed `C52/130`: Fail-Closed Resource Limits Contract
 
 - expose the absence of project-scoped fuel, timeout, memory, and host-capability limits through a separate read-only endpoint
 - keep limit configuration, loading, enforcement, resource reservation, and authorization false
@@ -226,7 +226,7 @@ Completed and validated at `123/130`. The 5 focused C51 tests, 7 focused C46 tes
 - leave the C46 `resource_limits` gate unsatisfied
 - perform no limit load, instrumentation, reservation, enforcement, persistence, authorization, or execution
 
-Candidate only at `123/130`. The 5 focused C52 tests, 7 focused C46 tests, complete dserver suite, formatting and repository checks, and strict live resource-limits/safety endpoint assertions remain pending. The validated checkpoint is not advanced by this record.
+Completed and validated at `124/130`. The 5 focused C52 tests, 7 focused C46 tests, all 411 dserver tests, formatting and repository checks, and strict live resource-limits/safety endpoint assertions passed. No later increment is started by this record.
 
 ## Practical Summary
 
@@ -244,4 +244,4 @@ policy gate unsatisfied. C48 completes and validates the read-only operator-appr
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
 approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
 references non-authoritative and exposes the absence of verified digests, signatures, provenance,
-and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 is now a candidate read-only resource-limit boundary that exposes the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. Validated progress remains `123/130`. Executed orchestration remains deliberately out of scope.
+and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 completes and validates the read-only resource-limit boundary, exposing the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. Validated progress is `124/130`. Executed orchestration remains deliberately out of scope.
