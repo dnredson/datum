@@ -2,7 +2,7 @@
 
 ## Status
 
-Candidate increment for `123/130`. Implementation and validation are pending on the candidate branch. The validated checkpoint remains `122/130`.
+Completed and validated increment at `123/130`. The implementation, repository checks, Rust tests, and strict live validation all passed without authorizing execution or producing side effects.
 
 ## Purpose
 
@@ -19,9 +19,9 @@ X-Datum-Project: <project-id>
 
 The project header only scopes and labels the response. The endpoint does not read or write Firebase, snapshots, node capability reports, module descriptors, runtime reports, planner output, local files, network resources, or executor state.
 
-## Candidate Contract Semantics
+## Validated Contract Semantics
 
-The candidate response contains:
+The validated response contains:
 
 - `contract_version=0.1.0`;
 - `negotiation_status=not_negotiated`;
@@ -64,16 +64,18 @@ C51 remains metadata-only, read-only, evaluation-only, and dry-run. It does not:
 - invoke health checks or collection cycles;
 - add AI or LLM orchestration.
 
-## Validation Plan
+## Validation Record
 
-Validation must confirm:
+Validation completed successfully on implementation head `a6f1d4e098394bf79ae8075ca98a116eb65fecdd`:
 
-- `cargo fmt --check`;
-- all 5 focused C51 capability-negotiation tests;
-- all 7 focused C46 execution-safety tests;
-- the complete dserver suite;
-- `git diff --check origin/main...HEAD` with no output;
-- clean `git status --short`;
-- strict live capability-negotiation and execution-safety assertions against `smart-city-campinas`.
+- `cargo fmt --check` passed;
+- all 5 focused C51 capability-negotiation tests passed;
+- all 7 focused C46 execution-safety tests passed;
+- the complete dserver suite passed: 406 passed, 0 failed, 0 ignored, 0 measured, and 0 filtered out;
+- `git diff --check origin/main...HEAD` produced no output;
+- `git status --short` produced no output;
+- strict live capability-negotiation and execution-safety assertions against `smart-city-campinas` ended with `C51 live validation PASS`.
 
-The checkpoint advances to `123/130` only after repository, Rust, and strict live validation complete successfully.
+The live response reported no loaded requirements or advertisements, empty required, advertised, and matched capability collections, no compatibility evaluation, no successful negotiation, no authorization, no persistence, no network exchange, no execution, and no side effects. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized.
+
+The validated checkpoint is `123/130`.
