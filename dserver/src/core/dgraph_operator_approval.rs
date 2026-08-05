@@ -72,9 +72,8 @@ mod tests {
 
     #[test]
     fn serialized_contract_excludes_legacy_approvals_from_authorization() {
-        let value =
-            serde_json::to_value(build_fail_closed_operator_approval_contract("project-a"))
-                .expect("operator approval contract should serialize");
+        let value = serde_json::to_value(build_fail_closed_operator_approval_contract("project-a"))
+            .expect("operator approval contract should serialize");
 
         assert_eq!(value["contract_version"], "0.1.0");
         assert_eq!(value["identity_authenticated"], false);
