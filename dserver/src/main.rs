@@ -17,6 +17,7 @@ use api::action_results::{
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
 use api::dashboard::get_dashboard;
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
+use api::dgraph_artifact_integrity::get_dgraph_artifact_integrity_contract;
 use api::dgraph_execution_policy::get_dgraph_execution_policy_contract;
 use api::dgraph_execution_safety::get_dgraph_execution_safety_contract;
 use api::dgraph_materialized::{get_materialized_dgraph, get_materialized_dgraph_summary};
@@ -230,6 +231,10 @@ async fn main() {
         .route(
             "/api/v1/dgraph/readiness/summary",
             get(get_dgraph_readiness_summary),
+        )
+        .route(
+            "/api/v1/dgraph/artifact-integrity",
+            get(get_dgraph_artifact_integrity_contract),
         )
         .route(
             "/api/v1/dgraph/execution-safety",
