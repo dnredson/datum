@@ -4,8 +4,7 @@ use axum::{
 };
 
 use crate::core::dgraph_execution_prerequisites::{
-    build_fail_closed_execution_prerequisites_contract,
-    ProjectDGraphExecutionPrerequisitesResponse,
+    build_fail_closed_execution_prerequisites_contract, ProjectDGraphExecutionPrerequisitesResponse,
 };
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
@@ -25,9 +24,9 @@ pub async fn get_dgraph_execution_prerequisites_contract(
     headers: HeaderMap,
 ) -> Result<Json<ProjectDGraphExecutionPrerequisitesResponse>, (StatusCode, String)> {
     let project_id = extract_project_id(&headers)?;
-    Ok(Json(
-        build_fail_closed_execution_prerequisites_contract(&project_id),
-    ))
+    Ok(Json(build_fail_closed_execution_prerequisites_contract(
+        &project_id,
+    )))
 }
 
 #[cfg(test)]
