@@ -168,6 +168,17 @@ Completed and validated at `120/130`. The 5 focused C48 tests, 7 focused C46 tes
 tests, formatting and repository checks, and live operator-approval/safety endpoint assertions
 passed. No later increment is started by this record.
 
+### Candidate `C49/130`: Fail-Closed Artifact Integrity and Provenance Contract
+
+- expose the absence of verified digests, signatures, and provenance through a separate read-only endpoint
+- keep artifact inventory, byte reads, verification, integrity, and authorization false or empty
+- keep artifact references non-authoritative and do not dereference or transfer them
+- leave the C46 `artifact_integrity_and_provenance` gate unsatisfied
+- perform no artifact read, hash, signature check, transfer, persistence, authorization, or execution
+
+Candidate only. Progress remains `120/130` until focused and full tests, formatting, repository
+checks, and live artifact-integrity/safety endpoint assertions pass.
+
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
