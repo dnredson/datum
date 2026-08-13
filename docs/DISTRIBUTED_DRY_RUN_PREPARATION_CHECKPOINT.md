@@ -41,6 +41,7 @@ Status notes:
 - `C54/130` completed the fail-closed execution prerequisite aggregation contract and its validation. The read-only endpoint aggregated exactly the seven C47–C53 source contracts in canonical C46 gate order; every prerequisite remained unsatisfied, the aggregate remained incomplete, authorization remained denied, and no persistence, execution, or side effects occurred. C46 remained `decision=denied`, with all seven gates unsatisfied and all eight operations unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C54 tests, all 7 focused C46 tests, all 421 dserver tests, `git diff --check`, the clean-worktree check, and strict live prerequisite-aggregation/safety assertions passed. Progress is `126/130`. See [the C54 contract and validation record](C54_FAIL_CLOSED_EXECUTION_PREREQUISITE_AGGREGATION_CONTRACT.md).
 - `C55/130` completed the prerequisite-backed execution-safety decision contract and its validation. C46 now projects its seven gates directly from the C54 aggregation and exposes an explicit prerequisite summary; the allow transition remains unimplemented, authorization remains denied, and all eight operations remain unauthorized. On the final implementation head, `cargo fmt --check`, all 5 focused C55 tests, all 5 focused C54 tests, all 12 focused C46/C55 tests, all 426 dserver tests, `git diff --check`, the clean-worktree check, and strict live C54/C55 assertions passed. Progress is `127/130`. See [the C55 contract and validation record](C55_PREREQUISITE_BACKED_EXECUTION_SAFETY_DECISION_CONTRACT.md).
 - `C56/130` completed the operation-level prerequisite denial evidence contract and its validation. Each of the eight unauthorized operations now reports `required_gate_count=7`, `satisfied_gate_count=0`, and the same seven ordered blockers projected from C54/C55; the allow transition remains unimplemented and no authorization, persistence, execution, or side effects occurred. On the final implementation head, `cargo fmt --check`, all 5 focused C56 tests, all 5 focused C54 tests, all 17 focused C46/C55/C56 tests, all 431 dserver tests, `git diff --check`, the clean-worktree check, and strict live C54/C55/C56 assertions passed. Progress is `128/130`. See [the C56 contract and validation record](C56_OPERATION_LEVEL_PREREQUISITE_DENIAL_EVIDENCE_CONTRACT.md).
+- `C57/130` completed the canonical execution denial summary contract and its validation. The execution-safety endpoint now exposes a derived `denial_summary` consistent with the C54 prerequisite aggregation, C55 projected gates, C56 operation blockers, and the canonical operation taxonomy. Strict live validation against the restored `smart-city-campinas` three-snapshot baseline returned `readiness_status=ready`, seven unsatisfied gates, eight denied operations, `all_prerequisites_blocking=true`, `all_operations_denied=true`, `all_operation_blockers_match_unsatisfied_gates=true`, and no authorization, execution, or side effects. Progress is `129/130`. See [the C57 contract and validation record](C57_CANONICAL_EXECUTION_DENIAL_SUMMARY_CONTRACT.md).
 
 ## Completed Readiness Scope
 
@@ -83,6 +84,7 @@ The project now has:
 - a validated fail-closed execution prerequisite aggregation that binds all seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied
 - a validated prerequisite-backed execution-safety decision that projects the seven C54 prerequisite results into C46 while keeping aggregation non-authoritative, the allow transition unimplemented, and every operation denied
 - validated operation-level prerequisite denial evidence that gives all eight unauthorized operations the same seven ordered C54/C55 blockers and prerequisite counts without creating an allow path
+- a validated canonical execution denial summary derived from the existing prerequisite, gate, operation, and blocker projections without introducing an allow path
 
 ## Current Safety Guarantees
 
@@ -116,6 +118,7 @@ The current distributed dry-run preparation remains intentionally non-destructiv
 - the validated C54 endpoint is read-only and aggregates only the seven existing fail-closed contracts; it cannot treat aggregation, readiness, or planner proposals as authorization, persist state, authorize, or execute
 - the validated C55 decision projects C46 gates from C54 evidence without implementing an allow transition; it remains denied, read-only, non-authoritative, and side-effect-free
 - the validated C56 operation denials expose prerequisite counts and the seven canonical blockers without treating blocker evidence as authorization; all eight operations remain denied and side-effect-free
+- the validated C57 denial summary only consolidates and cross-checks existing denial evidence; it cannot infer permission, implement the allow transition, authorize, persist, or execute
 
 ## Live 2-VM Readiness Checklist
 
@@ -284,6 +287,20 @@ Completed and validated at `128/130`. The 5 focused C56 tests, 5 focused C54 tes
 C46/C55/C56 tests, all 431 dserver tests, formatting and repository checks, and strict live
 C54/C55/C56 assertions passed. No later increment is started by this record.
 
+### Completed `C57/130`: Canonical Execution Denial Summary
+
+- expose an additive machine-readable denial summary on the existing execution-safety response
+- derive gate and operation counts from the existing C54/C55/C56 projections and canonical operation taxonomy
+- cross-check that all C56 operation blockers match the ordered unsatisfied-gate sequence
+- keep the summary explanatory and non-authoritative
+- preserve the denied decision, unavailable allow transition, and zero execution or side effects
+
+Completed and validated at `129/130`. The 5 focused C57, C56, C55, and C54 test groups passed,
+the combined C46/C54/C55/C56/C57 execution-safety suite passed 20/20, all 436 dserver tests passed,
+and strict live localhost validation returned the restored three-snapshot baseline with seven
+blocking gates, eight denied operations, and a fully consistent denial summary. `C57 live
+validation PASS`. `C58/130` has not started.
+
 ## Practical Summary
 
 C42 proves that the current D-Graph pipeline can represent and validate a three-logical-node,
@@ -300,4 +317,4 @@ policy gate unsatisfied. C48 completes and validates the read-only operator-appr
 exposes the absence of authenticated project-scoped approval and does not reuse legacy task
 approvals. C49 completes and validates the read-only artifact-integrity boundary that keeps artifact
 references non-authoritative and exposes the absence of verified digests, signatures, provenance,
-and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 completes and validates the read-only resource-limit boundary, exposing the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. C53 completes and validates the read-only rollback-and-audit boundary, exposing the absence of rollback guarantees and a complete execution audit trail without restoring state or writing records. C54 completes and validates the read-only prerequisite aggregation boundary, binding the seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied. C55 completes and validates the decision-integration step that projects those prerequisites into C46 without implementing an allow transition. C56 completes and validates operation-level denial evidence: each denied operation enumerates the same seven ordered prerequisite blockers and their counts without granting authority. Validated progress is `128/130`. Executed orchestration remains deliberately out of scope.
+and integrity. C50 completes and validates the read-only execution-allowlist boundary that exposes empty target, module, runtime, and function allowlists without deriving permissions from D-Graph metadata. C51 completes and validates the read-only capability-negotiation boundary, exposing the absence of requirements, advertisements, matches, compatibility evaluation, and successful negotiation without deriving authority from existing capability metadata. C52 completes and validates the read-only resource-limit boundary, exposing the absence of configured or loaded fuel, timeout, memory, and host-capability limits without enforcing or reserving resources. C53 completes and validates the read-only rollback-and-audit boundary, exposing the absence of rollback guarantees and a complete execution audit trail without restoring state or writing records. C54 completes and validates the read-only prerequisite aggregation boundary, binding the seven C47–C53 source contracts to the canonical C46 gate taxonomy while keeping every prerequisite unsatisfied and authorization denied. C55 completes and validates the decision-integration step that projects those prerequisites into C46 without implementing an allow transition. C56 completes and validates operation-level denial evidence: each denied operation enumerates the same seven ordered prerequisite blockers and their counts without granting authority. C57 completes and validates the canonical denial summary that derives and cross-checks those prerequisite, gate, operation, and blocker projections without granting authority. Validated progress is `129/130`. `C58/130` has not started, and executed orchestration remains deliberately out of scope.

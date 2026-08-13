@@ -50,6 +50,22 @@ pub struct DGraphOperationAuthorization {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct DGraphExecutionDenialSummary {
+    pub required_gate_count: u64,
+    pub satisfied_gate_count: u64,
+    pub blocking_gate_count: u64,
+    pub operation_count: u64,
+    pub denied_operation_count: u64,
+    pub all_prerequisites_blocking: bool,
+    pub all_operations_denied: bool,
+    pub all_operation_blockers_match_unsatisfied_gates: bool,
+    pub authorization_granted: bool,
+    pub allow_transition_available: bool,
+    pub execution_performed: bool,
+    pub side_effects_performed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ProjectDGraphExecutionSafetyContractResponse {
     pub project_id: String,
     pub contract_version: String,
@@ -59,8 +75,40 @@ pub struct ProjectDGraphExecutionSafetyContractResponse {
     pub prerequisite_summary: DGraphExecutionPrerequisiteSummary,
     pub gates: Vec<DGraphExecutionSafetyGate>,
     pub operations: Vec<DGraphOperationAuthorization>,
+    pub denial_summary: DGraphExecutionDenialSummary,
     pub side_effects_performed: bool,
     pub metadata: Option<Value>,
+}
+
+fn build_canonical_execution_denial_summary(
+    prerequisite_summary: &DGraphExecutionPrerequisiteSummary,
+    blocking_gates: &[String],
+    operations: &[DGraphOperationAuthorization],
+) -> DGraphExecutionDenialSummary {
+    let operation_count = operations.len() as u64;
+    let denied_operation_count = operations
+        .iter()
+        .filter(|operation| !operation.authorized)
+        .count() as u64;
+
+    DGraphExecutionDenialSummary {
+        required_gate_count: prerequisite_summary.required_gate_count,
+        satisfied_gate_count: prerequisite_summary.satisfied_gate_count,
+        blocking_gate_count: blocking_gates.len() as u64,
+        operation_count,
+        denied_operation_count,
+        all_prerequisites_blocking: prerequisite_summary.required_gate_count > 0
+            && prerequisite_summary.satisfied_gate_count == 0
+            && blocking_gates.len() as u64 == prerequisite_summary.required_gate_count,
+        all_operations_denied: operation_count > 0 && denied_operation_count == operation_count,
+        all_operation_blockers_match_unsatisfied_gates: operations
+            .iter()
+            .all(|operation| operation.blocking_gates == blocking_gates),
+        authorization_granted: false,
+        allow_transition_available: false,
+        execution_performed: false,
+        side_effects_performed: false,
+    }
 }
 
 pub fn build_project_dgraph_execution_safety_contract(
@@ -104,6 +152,24 @@ pub fn build_project_dgraph_execution_safety_contract(
     let required_gate_count = prerequisite_summary.required_gate_count;
     let satisfied_gate_count = prerequisite_summary.satisfied_gate_count;
 
+    let operations = EXECUTION_OPERATION_CLASSES
+        .into_iter()
+        .map(|operation| DGraphOperationAuthorization {
+            operation: operation.to_string(),
+            authorized: false,
+            required_gate_count,
+            satisfied_gate_count,
+            blocking_gates: blocking_gates.clone(),
+            reason: "execution authority and the allow transition are not implemented; prerequisite aggregation, readiness, and planner output are advisory evidence only"
+                .to_string(),
+        })
+        .collect::<Vec<_>>();
+    let denial_summary = build_canonical_execution_denial_summary(
+        &prerequisite_summary,
+        &blocking_gates,
+        &operations,
+    );
+
     ProjectDGraphExecutionSafetyContractResponse {
         project_id: project_id.to_string(),
         contract_version: EXECUTION_SAFETY_CONTRACT_VERSION.to_string(),
@@ -112,18 +178,8 @@ pub fn build_project_dgraph_execution_safety_contract(
         evidence,
         prerequisite_summary,
         gates,
-        operations: EXECUTION_OPERATION_CLASSES
-            .into_iter()
-            .map(|operation| DGraphOperationAuthorization {
-                operation: operation.to_string(),
-                authorized: false,
-                required_gate_count,
-                satisfied_gate_count,
-                blocking_gates: blocking_gates.clone(),
-                reason: "execution authority and the allow transition are not implemented; prerequisite aggregation, readiness, and planner output are advisory evidence only"
-                    .to_string(),
-            })
-            .collect(),
+        operations,
+        denial_summary,
         side_effects_performed: false,
         metadata: Some(json!({
             "mode": "evaluation_only",
@@ -422,6 +478,121 @@ mod tests {
         assert!(implementation.contains("blocking_gates: blocking_gates.clone()"));
         assert!(!implementation.contains("authorized: true"));
         assert!(!implementation.contains("execution_allow_transition_implemented\": true"));
+    }
+
+    #[test]
+    fn c57_empty_project_has_a_consistent_canonical_denial_summary() {
+        let contract = build_project_dgraph_execution_safety_contract("project-a", &[]);
+        let summary = &contract.denial_summary;
+
+        assert_eq!(
+            summary.required_gate_count,
+            contract.prerequisite_summary.required_gate_count
+        );
+        assert_eq!(
+            summary.satisfied_gate_count,
+            contract.prerequisite_summary.satisfied_gate_count
+        );
+        assert_eq!(summary.blocking_gate_count, 7);
+        assert_eq!(
+            summary.operation_count,
+            EXECUTION_OPERATION_CLASSES.len() as u64
+        );
+        assert_eq!(summary.denied_operation_count, 8);
+        assert!(summary.all_prerequisites_blocking);
+        assert!(summary.all_operations_denied);
+        assert!(summary.all_operation_blockers_match_unsatisfied_gates);
+        assert!(!summary.authorization_granted);
+        assert!(!summary.allow_transition_available);
+        assert!(!summary.execution_performed);
+        assert!(!summary.side_effects_performed);
+    }
+
+    #[test]
+    fn c57_ready_graph_remains_fully_denied_in_the_summary() {
+        let contract = build_project_dgraph_execution_safety_contract(
+            "smart-city-campinas",
+            &[snapshot("fog-01"), snapshot("fog-02")],
+        );
+
+        assert_eq!(contract.evidence.readiness_status, "ready");
+        assert_eq!(contract.denial_summary.operation_count, 8);
+        assert_eq!(contract.denial_summary.denied_operation_count, 8);
+        assert!(contract.denial_summary.all_operations_denied);
+        assert!(
+            contract
+                .denial_summary
+                .all_operation_blockers_match_unsatisfied_gates
+        );
+        assert!(!contract.denial_summary.authorization_granted);
+    }
+
+    #[test]
+    fn c57_summary_counts_and_blockers_are_derived_from_existing_projections() {
+        let contract = build_project_dgraph_execution_safety_contract("project-a", &[]);
+        let unsatisfied_gates = contract
+            .gates
+            .iter()
+            .filter(|gate| !gate.satisfied)
+            .map(|gate| gate.gate.clone())
+            .collect::<Vec<_>>();
+        let unauthorized_operations = contract
+            .operations
+            .iter()
+            .filter(|operation| !operation.authorized)
+            .count() as u64;
+
+        assert_eq!(
+            contract.denial_summary.blocking_gate_count,
+            unsatisfied_gates.len() as u64
+        );
+        assert_eq!(
+            contract.denial_summary.denied_operation_count,
+            unauthorized_operations
+        );
+        assert!(contract
+            .operations
+            .iter()
+            .all(|operation| operation.blocking_gates == unsatisfied_gates));
+        assert!(
+            contract
+                .denial_summary
+                .all_operation_blockers_match_unsatisfied_gates
+        );
+    }
+
+    #[test]
+    fn c57_serialized_summary_keeps_authorization_and_execution_false() {
+        let value = serde_json::to_value(build_project_dgraph_execution_safety_contract(
+            "project-a",
+            &[],
+        ))
+        .expect("contract should serialize");
+        let summary = &value["denial_summary"];
+
+        assert_eq!(summary["required_gate_count"], 7);
+        assert_eq!(summary["satisfied_gate_count"], 0);
+        assert_eq!(summary["blocking_gate_count"], 7);
+        assert_eq!(summary["operation_count"], 8);
+        assert_eq!(summary["denied_operation_count"], 8);
+        assert_eq!(summary["authorization_granted"], false);
+        assert_eq!(summary["allow_transition_available"], false);
+        assert_eq!(summary["execution_performed"], false);
+        assert_eq!(summary["side_effects_performed"], false);
+    }
+
+    #[test]
+    fn c57_source_uses_existing_gate_and_operation_projections_without_an_allow_path() {
+        let source = include_str!("dgraph_execution_safety.rs");
+        let implementation = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        assert!(implementation.contains("build_canonical_execution_denial_summary"));
+        assert!(implementation.contains("EXECUTION_OPERATION_CLASSES"));
+        assert!(implementation.contains("blocking_gates: blocking_gates.clone()"));
+        assert!(!implementation.contains("C57_GATE"));
+        assert!(!implementation.contains("C57_OPERATION"));
+        assert!(!implementation.contains("authorization_granted: true"));
+        assert!(!implementation.contains("allow_transition_available: true"));
     }
 
     #[test]
