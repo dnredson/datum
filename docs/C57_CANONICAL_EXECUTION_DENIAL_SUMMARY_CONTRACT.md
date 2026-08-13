@@ -2,8 +2,8 @@
 
 ## Status
 
-Candidate contract. Validation evidence and checkpoint advancement are intentionally deferred until
-the focused, complete, and live validation campaign passes.
+Completed and validated at `129/130` on final implementation head
+`101d8a7d71b4efd1d8d51c710a3df9697b18240e`.
 
 ## Purpose
 
@@ -59,11 +59,63 @@ checkpoints; roll back, restore, or audit; or perform deployment, installation, 
 migration, recovery, reconfiguration, placement, WASM, Docker, health-check, AI, or LLM work.
 No persistence or operational side effects occur.
 
-## Validation Plan
+## Validation Evidence
 
-Validation will cover empty and ready metadata-only graphs, derived gate and operation counts,
-canonical blocker order, serialization, absence of a parallel C57 gate or operation table, and
-absence of execution or mutation paths. The campaign will run focused C57 through C54 tests, the
-combined C46/C54/C55/C56/C57 tests, formatting, the complete dserver suite, build, diff checks,
-and strict non-mutating live validation against the restored `smart-city-campinas` three-node
-baseline.
+The final implementation head `101d8a7d71b4efd1d8d51c710a3df9697b18240e` passed:
+
+- all 5 focused C57 tests;
+- all 5 focused C56 tests;
+- all 5 focused C55 tests;
+- all 5 focused C54 tests;
+- all 20 combined C46/C54/C55/C56/C57 execution-safety tests;
+- the complete dserver suite with 436 passing tests;
+- `cargo build`, with only two pre-existing dead-code warnings;
+- the C57 source `rustfmt --check`;
+- `git diff --check`;
+- the clean-worktree and intended-file checks.
+
+Repository-wide `cargo fmt --check` was not used as approval evidence because the installed
+`rustfmt 1.8.0` reformats five pre-existing files outside C57. Those files were deliberately kept
+out of the branch diff, and the changed C57 Rust source itself passed the formatting check.
+
+Strict live validation was then completed locally against the existing `smart-city-campinas`
+three-snapshot restored baseline through `http://localhost:8080`. The execution-safety response
+reported:
+
+- `readiness_status=ready`;
+- `source_snapshot_count=3`;
+- `warning_count=0`;
+- `blocked_count=0`;
+- `degraded_flow_count=0`;
+- `decision=denied`;
+- `authorization_granted=false`;
+- prerequisite aggregation `incomplete` with `required_gate_count=7` and
+  `satisfied_gate_count=0`;
+- all seven canonical C47-C53 gates unsatisfied in canonical order;
+- all eight canonical operations unauthorized;
+- every operation carrying the same seven ordered blockers;
+- `side_effects_performed=false`;
+- `metadata.execution_allow_transition_implemented=false`;
+- `metadata.execution_performed=false`.
+
+The live C57 `denial_summary` reported:
+
+- `required_gate_count=7`;
+- `satisfied_gate_count=0`;
+- `blocking_gate_count=7`;
+- `operation_count=8`;
+- `denied_operation_count=8`;
+- `all_prerequisites_blocking=true`;
+- `all_operations_denied=true`;
+- `all_operation_blockers_match_unsatisfied_gates=true`;
+- `authorization_granted=false`;
+- `allow_transition_available=false`;
+- `execution_performed=false`;
+- `side_effects_performed=false`.
+
+The summary counts and consistency flags matched the prerequisite summary, projected unsatisfied
+gates, generated operation entries, and C56 blocker sequences. No snapshots were republished and
+no operational mutation or execution path was invoked during this read-only validation. The
+campaign ended with `C57 live validation PASS`.
+
+The validated checkpoint advances to `129/130`. `C58/130` is not started by this record.
