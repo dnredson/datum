@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod client;
 pub mod registry;
 pub mod report;
