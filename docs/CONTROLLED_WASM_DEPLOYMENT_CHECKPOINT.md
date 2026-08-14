@@ -1,13 +1,26 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `131/150`
-- latest_checkpoint: `C59`
+- progress: `132/150`
+- latest_checkpoint: `C60`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
-- runtime_changes_in_c59: none
+- phase_entry_checkpoint: `C59/150`
+- external_wasm_artifact_loader: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `C60/150`
+- next_checkpoint: `C61/150`
+- next_scope: artifact identity and SHA-256 integrity verification
 
-C59 defines the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and a controlled artifact-backed WASM sandbox corridor that remains separate from governed D-Graph execution.
+C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
-Next: C60 introduces the first runtime increment of this phase: an external `.wasm` artifact representation and loader while preserving the C46–C57 fail-closed execution boundary.
+C60 validates the first runtime increment of that corridor: DATUM can explicitly load and execute an external local `.wasm` artifact in Wasmtime while rejecting guest host imports and preserving the fail-closed safety boundary.
+
+Validation evidence on `2026-08-14`:
+
+- formatting check completed without a reported failure;
+- DATUM tests: `360 passed; 0 failed`;
+- DATUM build: PASS;
+- 7 non-blocking `dead_code` warnings;
+- no governed execution allow transition;
+- no deployment automation introduced.
+
+Next: C61 binds artifact identity to integrity metadata and verifies SHA-256 before the artifact can enter the controlled runtime corridor.
