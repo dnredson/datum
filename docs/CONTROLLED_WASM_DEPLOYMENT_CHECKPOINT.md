@@ -1,17 +1,17 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `134/150`
-- latest_checkpoint: `C62`
+- progress: `135/150`
+- latest_checkpoint: `C63`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
 - artifact_sha256_integrity: validated
 - generic_verified_wasm_runner: validated
-- typed_deployment_manifest: implementation_ready_for_validation
+- typed_deployment_manifest: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `C63/150`
-- next_scope: validate typed Deployment Manifest semantics for centralized/full and distributed/node_slice
+- next_checkpoint: `C64/150`
+- next_scope: node-scoped deployment assignment for centralized/full and distributed/node_slice
 
 C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
@@ -32,10 +32,18 @@ C62 Linux validation evidence on `2026-08-14`:
 
 C62 is complete at `134/150`.
 
-C63 implementation adds the dserver-owned typed Deployment Manifest contract. It binds project, module, function, artifact URI, SHA-256/content identity, target node, runtime limits, strategy, and graph-distribution semantics while remaining non-executable evidence.
+C63 adds the dserver-owned typed Deployment Manifest contract. It binds project, module, function, artifact URI, SHA-256/content identity, target node, runtime limits, strategy, and graph-distribution semantics while remaining non-executable evidence.
 
 C63 accepts only `centralized/full` and `distributed/node_slice`. Centralized assignments must share one target node. Artifact `content_id` must match the normalized SHA-256 digest. The manifest execution boundary requires explicit invocation and forbids both automatic execution and any claim of governed authorization.
 
-The checkpoint remains at `134/150` until dserver formatting, full tests, and build pass on the C63 branch.
+C63 Linux validation evidence on `2026-08-15`:
 
-Next after validation: close C63 at `135/150` and proceed to C64 node-scoped deployment assignment.
+- `cargo fmt --manifest-path dserver/Cargo.toml -- --check`: PASS;
+- dserver tests: `452 passed; 0 failed`;
+- `cargo build --manifest-path dserver/Cargo.toml`: PASS;
+- no governed execution allow transition;
+- no execution or deployment side effects introduced.
+
+C63 is complete at `135/150`.
+
+Next: C64 consumes the typed Deployment Manifest to produce node-scoped assignment views while preserving `centralized/full` and `distributed/node_slice` semantics without triggering execution.
