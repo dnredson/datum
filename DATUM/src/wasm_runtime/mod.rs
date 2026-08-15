@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod client;
+pub mod integrity;
 pub mod registry;
 pub mod report;
 pub mod runner;
