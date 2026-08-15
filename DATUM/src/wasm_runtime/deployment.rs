@@ -1,24 +1,20 @@
 use std::{
     collections::HashSet,
+    fs,
     io::Read,
     path::PathBuf,
     time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::{
-    blocking::Client,
-    redirect::Policy as RedirectPolicy,
-    Url,
-};
+use reqwest::{blocking::Client, redirect::Policy as RedirectPolicy, Url};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use wasmtime::{Config, Engine, ExternType, Module};
 
-use crate::wasm_runtime::{
-    artifact::{load_local_wasm_artifact, load_unpersisted_wasm_artifact, LoadedWasmArtifact},
-    integrity::{verify_loaded_wasm_artifact_sha256, WasmArtifactIdentity},
-};
+use crate::wasm_runtime::integrity::WasmArtifactIdentity;
 
+const WASM_MAGIC: &[u8; 4] = b"\0asm";
 const SHA256_HEX_LEN: usize = 64;
 const DEFAULT_MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 10_000;
@@ -126,6 +122,19 @@ pub struct WasmArtifactPreflightEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcquiredWasmArtifact {
+    pub display_name: String,
+    pub size_bytes: usize,
+    bytes: Vec<u8>,
+}
+
+impl AcquiredWasmArtifact {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploymentArtifact {
     pub assignment_id: String,
     pub module_id: String,
@@ -135,7 +144,7 @@ pub struct PreparedDeploymentArtifact {
     pub identity: WasmArtifactIdentity,
     pub acquisition: ArtifactAcquisitionEvidence,
     pub preflight: WasmArtifactPreflightEvidence,
-    pub artifact: LoadedWasmArtifact,
+    pub artifact: AcquiredWasmArtifact,
 }
 
 pub fn prepare_node_scoped_deployment(
@@ -214,8 +223,7 @@ fn prepare_deployment_assignment(
     policy: &ArtifactAcquisitionPolicy,
 ) -> Result<PreparedDeploymentArtifact> {
     let (artifact, acquisition) = acquire_artifact(assignment, policy)?;
-
-    let identity = verify_loaded_wasm_artifact_sha256(&artifact, &assignment.artifact.sha256)
+    let identity = verify_acquired_artifact_sha256(&artifact, &assignment.artifact.sha256)
         .with_context(|| {
             format!(
                 "verify deployment artifact integrity for assignment '{}'",
@@ -259,7 +267,7 @@ fn prepare_deployment_assignment(
 fn acquire_artifact(
     assignment: &DatumDeploymentAssignment,
     policy: &ArtifactAcquisitionPolicy,
-) -> Result<(LoadedWasmArtifact, ArtifactAcquisitionEvidence)> {
+) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
     let uri = assignment.artifact.artifact_uri.trim();
     let parsed = Url::parse(uri)
         .with_context(|| format!("parse artifact_uri '{}'", assignment.artifact.artifact_uri))?;
@@ -278,7 +286,7 @@ fn acquire_artifact(
 fn acquire_local_file(
     url: &Url,
     policy: &ArtifactAcquisitionPolicy,
-) -> Result<(LoadedWasmArtifact, ArtifactAcquisitionEvidence)> {
+) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
     if !policy.allow_local_file {
         return Err(anyhow!("local file artifact acquisition is disabled by policy"));
     }
@@ -286,8 +294,20 @@ fn acquire_local_file(
     let path = url
         .to_file_path()
         .map_err(|_| anyhow!("file artifact_uri is not a valid local file path: {url}"))?;
-    let artifact = load_local_wasm_artifact(&path)?;
-    enforce_size_limit(artifact.size_bytes, policy.max_artifact_bytes)?;
+    ensure_wasm_extension(&path)?;
+    let metadata = fs::metadata(&path)
+        .with_context(|| format!("read deployment artifact metadata from {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "deployment artifact path is not a regular file: {}",
+            path.display()
+        ));
+    }
+    enforce_size_limit(metadata.len() as usize, policy.max_artifact_bytes)?;
+    let bytes = fs::read(&path)
+        .with_context(|| format!("read deployment artifact from {}", path.display()))?;
+    enforce_size_limit(bytes.len(), policy.max_artifact_bytes)?;
+    let artifact = build_acquired_artifact(path.display().to_string(), bytes)?;
 
     let evidence = ArtifactAcquisitionEvidence {
         source_kind: ArtifactSourceKind::LocalFile,
@@ -307,7 +327,7 @@ fn acquire_http_artifact(
     url: &Url,
     policy: &ArtifactAcquisitionPolicy,
     source_kind: ArtifactSourceKind,
-) -> Result<(LoadedWasmArtifact, ArtifactAcquisitionEvidence)> {
+) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
     match source_kind {
         ArtifactSourceKind::Https if !policy.allow_https => {
             return Err(anyhow!("HTTPS artifact acquisition is disabled by policy"));
@@ -322,7 +342,7 @@ fn acquire_http_artifact(
 
     let extension_is_wasm = url
         .path_segments()
-        .and_then(|mut segments| segments.next_back())
+        .and_then(|segments| segments.last())
         .map(|segment| segment.to_ascii_lowercase().ends_with(".wasm"))
         .unwrap_or(false);
     if !extension_is_wasm {
@@ -365,11 +385,13 @@ fn acquire_http_artifact(
         .with_context(|| format!("read deployment artifact body from {url}"))?;
     enforce_size_limit(bytes.len(), policy.max_artifact_bytes)?;
 
-    let display_path = PathBuf::from(format!(
-        "acquired-{}.wasm",
-        sanitize_artifact_id(&assignment.artifact.artifact_id)
-    ));
-    let artifact = load_unpersisted_wasm_artifact(display_path, bytes)?;
+    let artifact = build_acquired_artifact(
+        format!(
+            "acquired-{}.wasm",
+            sanitize_artifact_id(&assignment.artifact.artifact_id)
+        ),
+        bytes,
+    )?;
 
     let evidence = ArtifactAcquisitionEvidence {
         source_kind,
@@ -384,7 +406,40 @@ fn acquire_http_artifact(
     Ok((artifact, evidence))
 }
 
-fn compile_wasm_preflight(artifact: &LoadedWasmArtifact, function_name: &str) -> Result<()> {
+fn build_acquired_artifact(display_name: String, bytes: Vec<u8>) -> Result<AcquiredWasmArtifact> {
+    if !bytes.starts_with(WASM_MAGIC) {
+        return Err(anyhow!(
+            "deployment artifact does not contain the WebAssembly binary magic header"
+        ));
+    }
+    Ok(AcquiredWasmArtifact {
+        display_name,
+        size_bytes: bytes.len(),
+        bytes,
+    })
+}
+
+fn verify_acquired_artifact_sha256(
+    artifact: &AcquiredWasmArtifact,
+    expected_sha256: &str,
+) -> Result<WasmArtifactIdentity> {
+    let expected = normalize_sha256(expected_sha256)?;
+    let observed = sha256_hex(artifact.bytes());
+    if observed != expected {
+        return Err(anyhow!(
+            "external WASM artifact SHA-256 mismatch: expected {expected}, calculated {observed}"
+        ));
+    }
+
+    Ok(WasmArtifactIdentity {
+        algorithm: "sha256".to_string(),
+        content_id: format!("sha256:{observed}"),
+        sha256: observed,
+        size_bytes: artifact.size_bytes,
+    })
+}
+
+fn compile_wasm_preflight(artifact: &AcquiredWasmArtifact, function_name: &str) -> Result<()> {
     let mut config = Config::new();
     config.consume_fuel(true);
     let engine = Engine::new(&config).context("build Wasmtime engine for deployment preflight")?;
@@ -484,6 +539,25 @@ fn normalize_sha256(value: &str) -> Result<String> {
     Ok(digest.to_ascii_lowercase())
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn ensure_wasm_extension(path: &PathBuf) -> Result<()> {
+    let extension_is_wasm = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("wasm"))
+        .unwrap_or(false);
+    if !extension_is_wasm {
+        return Err(anyhow!("deployment artifact must use the .wasm extension"));
+    }
+    Ok(())
+}
+
 fn enforce_size_limit(size_bytes: usize, max_artifact_bytes: usize) -> Result<()> {
     if size_bytes > max_artifact_bytes {
         return Err(anyhow!(
@@ -518,7 +592,6 @@ mod tests {
         thread,
     };
 
-    use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
     use super::*;
@@ -533,13 +606,6 @@ mod tests {
 
     fn wasm_bytes(source: &str) -> Vec<u8> {
         wat::parse_str(source).expect("test WAT should compile")
-    }
-
-    fn sha256_hex(bytes: &[u8]) -> String {
-        Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
     }
 
     fn write_artifact(bytes: &[u8]) -> PathBuf {
@@ -607,7 +673,10 @@ mod tests {
         assert!(!prepared[0].preflight.wasmtime_instantiated);
         assert!(!prepared[0].preflight.guest_execution_performed);
         assert!(!prepared[0].preflight.governed_execution_performed);
-        assert_eq!(prepared[0].acquisition.source_kind, ArtifactSourceKind::LocalFile);
+        assert_eq!(
+            prepared[0].acquisition.source_kind,
+            ArtifactSourceKind::LocalFile
+        );
         assert!(prepared[0].acquisition.host_filesystem_read_performed);
         assert!(!prepared[0].acquisition.host_mutation_performed);
 
@@ -688,8 +757,8 @@ mod tests {
             &ArtifactAcquisitionPolicy::default(),
         )
         .expect_err("integrity mismatch must fail before compilation");
-        assert!(error.to_string().contains("SHA-256 mismatch"));
-        assert!(!error.to_string().contains("compile verified deployment artifact"));
+        assert!(format!("{error:#}").contains("SHA-256 mismatch"));
+        assert!(!format!("{error:#}").contains("compile verified deployment artifact"));
         let _ = fs::remove_file(path);
     }
 
@@ -740,7 +809,9 @@ mod tests {
             &ArtifactAcquisitionPolicy::default(),
         )
         .expect_err("missing export must fail");
-        assert!(error.to_string().contains("does not export requested function"));
+        assert!(error
+            .to_string()
+            .contains("does not export requested function"));
         let _ = fs::remove_file(path);
     }
 
@@ -834,7 +905,10 @@ mod tests {
     fn unsupported_artifact_scheme_is_rejected() {
         let bytes = wasm_bytes(ADD_WAT);
         let error = prepare_node_scoped_deployment(
-            &view(assignment("ftp://example.test/artifact.wasm".to_string(), &bytes)),
+            &view(assignment(
+                "ftp://example.test/artifact.wasm".to_string(),
+                &bytes,
+            )),
             "fog-01",
             &ArtifactAcquisitionPolicy::default(),
         )
@@ -894,6 +968,9 @@ mod tests {
             serde_json::from_value(value).expect("C64 JSON shape should deserialize");
         assert_eq!(parsed.node_id, "fog-01");
         assert_eq!(parsed.assignments.len(), 1);
-        assert_eq!(parsed.delivery_scope, DatumNodeDeploymentScope::NodeSlice);
+        assert_eq!(
+            parsed.delivery_scope,
+            DatumNodeDeploymentScope::NodeSlice
+        );
     }
 }
