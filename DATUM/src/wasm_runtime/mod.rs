@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod client;
+pub mod generic_runner;
 pub mod integrity;
 pub mod registry;
 pub mod report;
