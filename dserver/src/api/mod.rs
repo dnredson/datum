@@ -1,6 +1,7 @@
 pub mod action_results;
 pub mod analysis;
 pub mod capabilities;
+pub mod controlled_wasm_deployment;
 pub mod dashboard;
 pub mod deployment_planning;
 pub mod dgraph_artifact_integrity;
