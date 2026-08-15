@@ -8,4 +8,5 @@ pub mod installation_tasks;
 pub mod show;
 pub mod snapshot_reader;
 pub mod top;
+pub mod wasm_deploy_live;
 pub mod wasm_runtime;

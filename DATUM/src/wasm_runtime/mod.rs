@@ -3,6 +3,7 @@ pub mod client;
 pub mod deployment;
 pub mod generic_runner;
 pub mod integrity;
+pub mod live_deployment;
 pub mod registry;
 pub mod report;
 pub mod runner;
