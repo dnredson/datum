@@ -9,9 +9,10 @@
 - artifact_sha256_integrity: validated
 - generic_verified_wasm_runner: validated
 - typed_deployment_manifest: validated
+- node_scoped_deployment_assignment: implementation_ready_for_validation
 - governed_allow_transition_available: false
 - next_checkpoint: `C64/150`
-- next_scope: node-scoped deployment assignment for centralized/full and distributed/node_slice
+- next_scope: validate node-scoped deployment assignment for centralized/full and distributed/node_slice
 
 C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
@@ -46,4 +47,10 @@ C63 Linux validation evidence on `2026-08-15`:
 
 C63 is complete at `135/150`.
 
-Next: C64 consumes the typed Deployment Manifest to produce node-scoped assignment views while preserving `centralized/full` and `distributed/node_slice` semantics without triggering execution.
+C64 implementation derives typed node-scoped deployment views from a validated C63 manifest. Distributed/node_slice views contain only assignments whose `target_node` matches the requested node; centralized/full returns the complete assignment set only to the central target. Non-target nodes receive an explicit empty view. Source/selected assignment counts make the scoping visible and auditable.
+
+C64 independently validates the derived view, rejects cross-node assignment leakage, preserves artifact identity and runtime limits, and keeps `explicit_invocation_required=true`, `automatic_execution_allowed=false`, and `governed_execution_authorized=false`.
+
+The checkpoint remains at `135/150` until dserver formatting, full tests, and build pass on the C64 branch. Expected dserver target: `464 passed; 0 failed`.
+
+Next after validation: close C64 at `136/150` and proceed to C65 DATUM artifact acquisition/instantiation corridor.
