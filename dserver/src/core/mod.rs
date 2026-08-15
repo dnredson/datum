@@ -2,6 +2,7 @@ pub mod action_feedback;
 pub mod action_results;
 pub mod analyzer;
 pub mod capabilities;
+pub mod deployment_manifest;
 pub mod deployment_plan;
 pub mod dgraph;
 pub mod dgraph_artifact_integrity;
