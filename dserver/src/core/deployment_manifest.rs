@@ -326,7 +326,8 @@ mod tests {
     #[test]
     fn duplicate_assignment_id_is_rejected() {
         let mut manifest = distributed_manifest();
-        manifest.assignments[1].assignment_id = manifest.assignments[0].assignment_id.clone();
+        let duplicate_id = manifest.assignments[0].assignment_id.clone();
+        manifest.assignments[1].assignment_id = duplicate_id;
         let error = validate_deployment_manifest(&manifest)
             .expect_err("duplicate assignment id must fail");
         assert!(error.contains("duplicate assignment_id"));
