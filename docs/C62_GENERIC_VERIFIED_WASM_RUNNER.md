@@ -1,10 +1,10 @@
 # C62 — Generic Verified Artifact-Backed WASM Runner
 
 - checkpoint: `C62/150`
-- target_progress_after_validation: `134/150`
+- progress_after_validation: `134/150`
 - predecessor: `C61/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: validated_complete
 
 ## Objective
 
@@ -51,7 +51,7 @@ Its order is:
 9. invoke through Wasmtime's dynamic `Func::call` path;
 10. return scalar results and fuel outcome.
 
-The underlying unverified generic runner is crate-visible only (`pub(crate)`). The new external API is the integrity-gated path.
+The underlying unverified generic runner is crate-visible only (`pub(crate)`). The external C62 API is the integrity-gated path.
 
 ## Result semantics
 
@@ -101,9 +101,9 @@ C62 adds coverage for:
 13. generic integrity mismatch before runtime compilation;
 14. proof that an integrity-valid artifact can still be blocked by signature policy.
 
-## Validation required before checkpoint advancement
+## Linux validation — 2026-08-14
 
-Run from the repository root on the C62 branch:
+Executed from the repository root on the C62 branch:
 
 ```bash
 cargo fmt --manifest-path DATUM/Cargo.toml -- --check
@@ -111,8 +111,16 @@ cargo test --manifest-path DATUM/Cargo.toml
 cargo build --manifest-path DATUM/Cargo.toml
 ```
 
-Do not advance the phase checkpoint to `134/150` and do not merge until these checks pass.
+Observed:
+
+- formatting check: PASS;
+- DATUM tests: `389 passed; 0 failed`;
+- DATUM build: PASS;
+- no formatting fix was required;
+- no new dependency or lockfile change was introduced by C62.
+
+C62 is therefore complete at `134/150`.
 
 ## Next intended increment
 
-After C62 is validated and integrated, C63 introduces the typed Deployment Manifest that binds project/module/function/artifact identity to deployment strategy and graph-distribution semantics (`centralized/full` or `distributed/node_slice`) without yet auto-executing governed deployment actions.
+C63 introduces the typed Deployment Manifest that binds project/module/function/artifact identity to deployment strategy and graph-distribution semantics (`centralized/full` or `distributed/node_slice`) without yet auto-executing governed deployment actions.
