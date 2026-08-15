@@ -15,6 +15,11 @@ use api::action_results::{
     post_action_execution_report,
 };
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
+use api::controlled_wasm_deployment::{
+    get_controlled_wasm_deployment_for_node, get_controlled_wasm_deployment_manifest,
+    list_controlled_wasm_live_reports, post_controlled_wasm_deployment_manifest,
+    post_controlled_wasm_live_report,
+};
 use api::dashboard::get_dashboard;
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
 use api::dgraph_artifact_integrity::get_dgraph_artifact_integrity_contract;
@@ -103,6 +108,19 @@ async fn main() {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
+        .route(
+            "/api/v1/controlled-wasm/deployment-manifest",
+            post(post_controlled_wasm_deployment_manifest)
+                .get(get_controlled_wasm_deployment_manifest),
+        )
+        .route(
+            "/api/v1/controlled-wasm/deployment/for-node/:node_id",
+            get(get_controlled_wasm_deployment_for_node),
+        )
+        .route(
+            "/api/v1/controlled-wasm/live-reports",
+            post(post_controlled_wasm_live_report).get(list_controlled_wasm_live_reports),
+        )
         .route("/api/v1/snapshots", post(ingest_snapshot))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/:node_id/latest", get(get_latest))
