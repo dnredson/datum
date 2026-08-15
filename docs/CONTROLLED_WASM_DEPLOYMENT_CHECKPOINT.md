@@ -11,9 +11,10 @@
 - typed_deployment_manifest: validated
 - node_scoped_deployment_assignment: validated
 - datum_artifact_acquisition_preflight: validated
+- live_single_node_wasm_execution: implementation_ready_for_validation
 - governed_allow_transition_available: false
 - next_checkpoint: `C66/150`
-- next_scope: explicit live single-node instantiation/invocation and runtime evidence from a verified node-scoped assignment
+- next_scope: validate explicit live single-node Wasmtime instantiation/invocation and runtime evidence from a verified node-scoped assignment
 
 C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
@@ -55,6 +56,14 @@ C65 Linux validation evidence on `2026-08-15`:
 
 C65 is complete at `137/150`.
 
+C66 implementation introduces the explicit `wasm-deploy-live` DATUM command. It validates the complete local node-scoped view, selects one requested assignment before artifact acquisition, reuses the C65 acquisition/SHA-256/preflight corridor, validates the scalar function signature, requires `--execute`, applies the configured fuel budget, and then crosses the Wasmtime instantiation/invocation boundary.
+
+C66 runtime evidence distinguishes successful instantiation/function execution from the conservative possibility that a WebAssembly start function executed during an instantiation attempt. It keeps guest host imports forbidden, `safe_to_auto_execute=false`, `wasm_guest_side_effects=false`, and `governed_execution_performed=false`. `timeout_ms` remains reported but `timeout_enforced=false`.
+
+C66 adds 11 DATUM tests, so the expected regression target from the validated C65 baseline is `412 passed; 0 failed`. The reproducible `scripts/c66_prepare_live_fixture.py` fixture must also produce a real successful live invocation with result `i32=5` before the checkpoint advances.
+
 The distributed demo target is recorded in `docs/DISTRIBUTED_DEMO_PREDICTIVE_DGRAPH_TARGET.md`, including Raspberry Pi + local PC + VM, optional AWS bootstrap via Ansible, a live D-Graph dashboard, and a read-only predictive what-if layer with a GNN candidate and LLM natural-language interface.
 
-Next: C66 performs the first explicit live single-node instantiation/invocation from a real node-scoped assignment and verified artifact, with bounded runtime evidence and canonical governed `wasm_execution` still fail-closed.
+The checkpoint remains at `137/150` until DATUM formatting, full tests, build, and the C66 live single-node invocation all pass.
+
+Next after validation: close C66 at `138/150` and proceed to C67 real multi-node distributed deployment with distinct node-scoped assignments/artifacts.
