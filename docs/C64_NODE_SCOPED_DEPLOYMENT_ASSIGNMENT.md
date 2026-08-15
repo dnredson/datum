@@ -1,10 +1,10 @@
 # C64 — Node-Scoped Deployment Assignment
 
 - checkpoint: `C64/150`
-- target_progress_after_validation: `136/150`
+- progress: `136/150`
 - predecessor: `C63/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: complete
 
 ## Objective
 
@@ -21,36 +21,18 @@ C64 does not acquire artifacts, contact DATUM, instantiate WASM, execute functio
 - `derive_node_scoped_deployment(...)`;
 - `validate_node_scoped_deployment(...)`.
 
-Each node-scoped view preserves:
-
-- source manifest version and ID;
-- project ID;
-- requested `node_id`;
-- deployment strategy;
-- graph-distribution semantics;
-- source D-Graph identity when present;
-- source assignment count;
-- selected assignment count;
-- the selected typed assignments;
-- the fail-closed execution boundary from C63.
+Each node-scoped view preserves source manifest/version/project context, requested node ID, deployment strategy, graph-distribution semantics, source D-Graph identity when present, source/selected assignment counts, selected typed assignments, artifact identity and limits, and the fail-closed execution boundary from C63.
 
 ## Distributed semantics
 
-For:
-
-```text
-strategy=distributed
-graph_distribution=node_slice
-```
-
-only assignments whose `target_node` equals the requested node are included.
+For `strategy=distributed` and `graph_distribution=node_slice`, only assignments whose `target_node` equals the requested node are included.
 
 Example source manifest:
 
 ```text
-sensor-monitor -> fog-01
-mqtt-adapter  -> fog-02
-weather-filter -> fog-01
+sensor-monitor  -> fog-01
+mqtt-adapter    -> fog-02
+weather-filter  -> fog-01
 ```
 
 Derived views:
@@ -65,31 +47,15 @@ The validator rejects a node-slice view containing an assignment for any other n
 
 ## Centralized semantics
 
-For:
-
-```text
-strategy=centralized
-graph_distribution=full
-```
-
-C63 already requires all assignments to target the same central node. C64 therefore derives:
-
-- `delivery_scope=full` with every assignment for that central node;
-- `delivery_scope=empty` for every other node.
-
-This preserves the C59 meaning of centralized/full without duplicating the full deployment payload to unrelated nodes.
+For `strategy=centralized` and `graph_distribution=full`, C63 already requires all assignments to target the same central node. C64 therefore derives `delivery_scope=full` with every assignment for that central node and `delivery_scope=empty` for every other node.
 
 ## Empty-view semantics
 
-A node that is not a target receives a valid `empty` view rather than an error. This is intentional: it gives distribution code an explicit, auditable answer that the node has no deployment assignment in the manifest.
-
-An empty view contains no assignments and has `selected_assignment_count=0`.
+A node that is not a target receives a valid `empty` view rather than an error. This provides an explicit, auditable answer that the node has no deployment assignment in the manifest. An empty view contains no assignments and has `selected_assignment_count=0`.
 
 ## Validation order and safety
 
-`derive_node_scoped_deployment(...)` first calls `validate_deployment_manifest(...)`. Invalid C63 manifests are therefore rejected before node scoping.
-
-The derived view is then validated independently. It must preserve:
+`derive_node_scoped_deployment(...)` first calls `validate_deployment_manifest(...)`; invalid C63 manifests are rejected before node scoping. The derived view is then validated independently and must preserve:
 
 ```text
 explicit_invocation_required=true
@@ -99,30 +65,11 @@ governed_execution_authorized=false
 
 C64 remains data selection only. A non-empty node view is not authorization to execute.
 
-Artifact identity, SHA-256, function selection, runtime limits, and assignment metadata are cloned from the validated C63 assignments without reinterpretation.
-
 ## Tests added
 
-C64 adds 12 dserver unit tests covering:
+C64 adds 12 dserver unit tests covering distributed node selection, non-target empty views, centralized full/empty behavior, invalid-source rejection, empty node IDs, artifact-identity preservation, fail-closed execution-boundary preservation, assignment-count consistency, cross-node leakage rejection, and serde representation/round-trip behavior.
 
-1. distributed `fog-01` receives only its assignments;
-2. distributed `fog-02` receives only its assignment;
-3. non-target distributed node receives an empty view;
-4. centralized target receives the full assignment set;
-5. centralized non-target receives an empty view;
-6. invalid source manifest is rejected before scoping;
-7. empty node ID is rejected;
-8. artifact identity is preserved;
-9. fail-closed execution boundary is preserved;
-10. selected-assignment count consistency;
-11. cross-node assignment leakage is rejected;
-12. reserved `node_slice` serde representation round-trip.
-
-With the validated C63 dserver baseline at `452/452`, the expected C64 dserver total is `464` tests.
-
-## Validation required before checkpoint advancement
-
-Run from the repository root on the C64 branch:
+## Linux validation — 2026-08-15
 
 ```bash
 cargo fmt --manifest-path dserver/Cargo.toml -- --check
@@ -130,8 +77,17 @@ cargo test --manifest-path dserver/Cargo.toml
 cargo build --manifest-path dserver/Cargo.toml
 ```
 
-Do not advance the phase checkpoint to `136/150` and do not merge until these checks pass.
+Observed:
+
+- formatting check: PASS;
+- dserver tests: `464 passed; 0 failed`;
+- dserver build: PASS;
+- no dependency or lockfile changes;
+- no governed execution allow transition;
+- no execution or deployment side effects introduced.
+
+C64 is complete at `136/150`.
 
 ## Next intended increment
 
-After C64 is validated and integrated, C65 introduces the DATUM-side artifact acquisition/instantiation corridor that consumes an explicit node-scoped assignment, resolves its artifact locally or through a deliberately bounded acquisition path, verifies SHA-256, and prepares bounded Wasmtime execution without opening the governed execution boundary.
+C65 introduces the DATUM-side artifact acquisition/instantiation corridor that consumes an explicit node-scoped assignment, resolves its artifact through a deliberately bounded acquisition path, verifies SHA-256, and prepares bounded Wasmtime execution without opening the governed execution boundary.
