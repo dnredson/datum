@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `136/150`
-- latest_checkpoint: `C64`
+- progress: `137/150`
+- latest_checkpoint: `C65`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -10,9 +10,10 @@
 - generic_verified_wasm_runner: validated
 - typed_deployment_manifest: validated
 - node_scoped_deployment_assignment: validated
+- datum_artifact_acquisition_preflight: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `C65/150`
-- next_scope: DATUM artifact acquisition and instantiation corridor from explicit node-scoped deployment assignments
+- next_checkpoint: `C66/150`
+- next_scope: explicit live single-node instantiation/invocation and runtime evidence from a verified node-scoped assignment
 
 C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
@@ -37,4 +38,23 @@ C64 Linux validation evidence on `2026-08-15`:
 
 C64 is complete at `136/150`.
 
-Next: C65 introduces the DATUM-side artifact acquisition/instantiation corridor from explicit node-scoped assignments, with SHA-256 verification and bounded Wasmtime handling while governed execution remains fail-closed.
+C65 adds a DATUM-side consumer for the C64 node-scoped JSON shape and a bounded artifact preparation corridor. DATUM validates the local-node address and assignment boundary before artifact access, supports `file://` and HTTPS acquisition, keeps insecure HTTP opt-in for trusted lab/LAN validation only, applies size and request-time bounds, disables redirects, and keeps network-delivered artifacts in memory without persistent writes.
+
+C65 computes SHA-256 over the exact acquired bytes and requires the assignment content identity to match. Only verified artifacts reach a compile-only Wasmtime preflight, which rejects guest host imports and missing/non-function exports.
+
+C65 deliberately records `wasmtime_instantiated=false` and `guest_execution_performed=false`. Instantiation is deferred because a WebAssembly start function can run automatically during instantiation. The first explicit instantiation/invocation remains C66.
+
+C65 Linux validation evidence on `2026-08-15`:
+
+- `cargo fmt --manifest-path DATUM/Cargo.toml -- --check`: PASS;
+- DATUM tests: `401 passed; 0 failed`;
+- `cargo build --manifest-path DATUM/Cargo.toml`: PASS;
+- no dependency or lockfile changes;
+- no governed execution allow transition;
+- no guest execution or Wasmtime instantiation introduced by C65.
+
+C65 is complete at `137/150`.
+
+The distributed demo target is recorded in `docs/DISTRIBUTED_DEMO_PREDICTIVE_DGRAPH_TARGET.md`, including Raspberry Pi + local PC + VM, optional AWS bootstrap via Ansible, a live D-Graph dashboard, and a read-only predictive what-if layer with a GNN candidate and LLM natural-language interface.
+
+Next: C66 performs the first explicit live single-node instantiation/invocation from a real node-scoped assignment and verified artifact, with bounded runtime evidence and canonical governed `wasm_execution` still fail-closed.
