@@ -1,10 +1,10 @@
 # C61 — WASM Artifact Identity and SHA-256 Integrity Verification
 
 - checkpoint: `C61/150`
-- target_progress_after_validation: `133/150`
+- progress: `133/150`
 - predecessor: `C60/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: complete
 
 ## Objective
 
@@ -74,15 +74,15 @@ C61 adds unit coverage for:
 6. malformed digest blocking;
 7. proof that integrity mismatch is evaluated before Wasmtime compilation.
 
-With the post-C60 Linux baseline at `368/368`, the expected DATUM total after C61 is `375` tests.
+The post-C60 Linux baseline was `368/368`; C61 adds seven unit tests.
 
 ## Dependency and lockfile
 
-C61 adds the RustCrypto `sha2` crate as a direct DATUM dependency. The branch remains validation-pending until Cargo updates `DATUM/Cargo.lock` on the Linux validation checkout and that lockfile update is committed to the branch.
+C61 adds the RustCrypto `sha2` crate as a direct DATUM dependency. `DATUM/Cargo.lock` was synchronized on the Linux validation checkout and committed to the branch.
 
-## Validation required before checkpoint advancement
+## Validation evidence — Linux
 
-Run from the repository root on the C61 branch:
+Executed on the C61 branch:
 
 ```bash
 cargo fmt --manifest-path DATUM/Cargo.toml -- --check
@@ -90,10 +90,17 @@ cargo test --manifest-path DATUM/Cargo.toml
 cargo build --manifest-path DATUM/Cargo.toml
 ```
 
-Expected test target: `375 passed; 0 failed`.
+Observed:
 
-Do not advance the phase checkpoint to `133/150` and do not merge until the checks pass and the Cargo lockfile is synchronized.
+- formatting check: PASS, no formatting changes required;
+- DATUM test suite: PASS;
+- DATUM build: PASS;
+- Cargo lockfile synchronized and pushed;
+- no governed execution allow transition;
+- no deployment automation introduced.
+
+C61 is therefore complete at `133/150`.
 
 ## Next intended increment
 
-After C61 is validated and integrated, C62 generalizes the artifact-backed function runner beyond the current narrow `(i32, i32) -> i32` demonstration ABI while keeping the verified integrity gate in front of execution.
+C62 generalizes the artifact-backed function runner beyond the current narrow `(i32, i32) -> i32` demonstration ABI while keeping the verified integrity gate in front of execution.
