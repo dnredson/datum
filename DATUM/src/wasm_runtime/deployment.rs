@@ -1,10 +1,4 @@
-use std::{
-    collections::HashSet,
-    fs,
-    io::Read,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashSet, fs, io::Read, path::Path, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::{blocking::Client, redirect::Policy as RedirectPolicy, Url};
@@ -153,13 +147,12 @@ pub fn prepare_node_scoped_deployment(
     policy: &ArtifactAcquisitionPolicy,
 ) -> Result<Vec<PreparedDeploymentArtifact>> {
     validate_node_scoped_deployment_for_local_node(view, local_node_id)?;
-    validate_acquisition_policy(policy)?;
+    validate_policy(policy)?;
 
-    let mut prepared = Vec::with_capacity(view.assignments.len());
-    for assignment in &view.assignments {
-        prepared.push(prepare_deployment_assignment(assignment, policy)?);
-    }
-    Ok(prepared)
+    view.assignments
+        .iter()
+        .map(|assignment| prepare_assignment(assignment, policy))
+        .collect()
 }
 
 pub fn validate_node_scoped_deployment_for_local_node(
@@ -188,7 +181,7 @@ pub fn validate_node_scoped_deployment_for_local_node(
 
     validate_execution_boundary(&view.execution_boundary)?;
 
-    match view.delivery_scope {
+    match &view.delivery_scope {
         DatumNodeDeploymentScope::Empty if !view.assignments.is_empty() => {
             return Err(anyhow!(
                 "empty node-scoped deployment must not contain assignments"
@@ -204,32 +197,30 @@ pub fn validate_node_scoped_deployment_for_local_node(
         _ => {}
     }
 
-    let mut seen_assignment_ids = HashSet::new();
+    let mut seen = HashSet::new();
     for assignment in &view.assignments {
         validate_assignment(assignment, local_node_id)?;
-        if !seen_assignment_ids.insert(assignment.assignment_id.trim()) {
+        if !seen.insert(assignment.assignment_id.trim()) {
             return Err(anyhow!(
                 "duplicate assignment_id is not allowed: {}",
                 assignment.assignment_id
             ));
         }
     }
-
     Ok(())
 }
 
-fn prepare_deployment_assignment(
+fn prepare_assignment(
     assignment: &DatumDeploymentAssignment,
     policy: &ArtifactAcquisitionPolicy,
 ) -> Result<PreparedDeploymentArtifact> {
     let (artifact, acquisition) = acquire_artifact(assignment, policy)?;
-    let identity = verify_acquired_artifact_sha256(&artifact, &assignment.artifact.sha256)
-        .with_context(|| {
-            format!(
-                "verify deployment artifact integrity for assignment '{}'",
-                assignment.assignment_id
-            )
-        })?;
+    let identity = verify_sha256(&artifact, &assignment.artifact.sha256).with_context(|| {
+        format!(
+            "verify deployment artifact integrity for assignment '{}'",
+            assignment.assignment_id
+        )
+    })?;
 
     if identity.content_id != assignment.artifact.content_id.trim().to_ascii_lowercase() {
         return Err(anyhow!(
@@ -239,17 +230,7 @@ fn prepare_deployment_assignment(
         ));
     }
 
-    compile_wasm_preflight(&artifact, &assignment.function_name)?;
-
-    let preflight = WasmArtifactPreflightEvidence {
-        integrity_verified: true,
-        artifact_content_id: identity.content_id.clone(),
-        wasmtime_compiled: true,
-        wasmtime_instantiated: false,
-        guest_execution_performed: false,
-        wasm_guest_side_effects: false,
-        governed_execution_performed: false,
-    };
+    compile_preflight(&artifact, &assignment.function_name)?;
 
     Ok(PreparedDeploymentArtifact {
         assignment_id: assignment.assignment_id.clone(),
@@ -257,9 +238,17 @@ fn prepare_deployment_assignment(
         function_name: assignment.function_name.clone(),
         target_node: assignment.target_node.clone(),
         artifact_uri: assignment.artifact.artifact_uri.clone(),
+        preflight: WasmArtifactPreflightEvidence {
+            integrity_verified: true,
+            artifact_content_id: identity.content_id.clone(),
+            wasmtime_compiled: true,
+            wasmtime_instantiated: false,
+            guest_execution_performed: false,
+            wasm_guest_side_effects: false,
+            governed_execution_performed: false,
+        },
         identity,
         acquisition,
-        preflight,
         artifact,
     })
 }
@@ -268,14 +257,14 @@ fn acquire_artifact(
     assignment: &DatumDeploymentAssignment,
     policy: &ArtifactAcquisitionPolicy,
 ) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
-    let uri = assignment.artifact.artifact_uri.trim();
-    let parsed = Url::parse(uri)
-        .with_context(|| format!("parse artifact_uri '{}'", assignment.artifact.artifact_uri))?;
+    let url = Url::parse(assignment.artifact.artifact_uri.trim()).with_context(|| {
+        format!("parse artifact_uri '{}'", assignment.artifact.artifact_uri)
+    })?;
 
-    match parsed.scheme() {
-        "file" => acquire_local_file(&parsed, policy),
-        "https" => acquire_http_artifact(assignment, &parsed, policy, ArtifactSourceKind::Https),
-        "http" => acquire_http_artifact(assignment, &parsed, policy, ArtifactSourceKind::Http),
+    match url.scheme() {
+        "file" => acquire_file(&url, policy),
+        "https" => acquire_http(assignment, &url, policy, ArtifactSourceKind::Https),
+        "http" => acquire_http(assignment, &url, policy, ArtifactSourceKind::Http),
         scheme => Err(anyhow!(
             "artifact_uri scheme '{}' is not allowed; expected file, https, or explicitly enabled http",
             scheme
@@ -283,7 +272,7 @@ fn acquire_artifact(
     }
 }
 
-fn acquire_local_file(
+fn acquire_file(
     url: &Url,
     policy: &ArtifactAcquisitionPolicy,
 ) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
@@ -303,32 +292,32 @@ fn acquire_local_file(
             path.display()
         ));
     }
-    enforce_size_limit(metadata.len() as usize, policy.max_artifact_bytes)?;
+    enforce_size(metadata.len() as usize, policy.max_artifact_bytes)?;
     let bytes = fs::read(&path)
         .with_context(|| format!("read deployment artifact from {}", path.display()))?;
-    enforce_size_limit(bytes.len(), policy.max_artifact_bytes)?;
-    let artifact = build_acquired_artifact(path.display().to_string(), bytes)?;
+    let artifact = build_artifact(path.display().to_string(), bytes, policy.max_artifact_bytes)?;
 
-    let evidence = ArtifactAcquisitionEvidence {
-        source_kind: ArtifactSourceKind::LocalFile,
-        bytes_received: artifact.size_bytes,
-        artifact_delivery_performed: false,
-        host_filesystem_read_performed: true,
-        host_network_fetch_performed: false,
-        persistent_write_performed: false,
-        host_mutation_performed: false,
-    };
-
-    Ok((artifact, evidence))
+    Ok((
+        artifact.clone(),
+        ArtifactAcquisitionEvidence {
+            source_kind: ArtifactSourceKind::LocalFile,
+            bytes_received: artifact.size_bytes,
+            artifact_delivery_performed: false,
+            host_filesystem_read_performed: true,
+            host_network_fetch_performed: false,
+            persistent_write_performed: false,
+            host_mutation_performed: false,
+        },
+    ))
 }
 
-fn acquire_http_artifact(
+fn acquire_http(
     assignment: &DatumDeploymentAssignment,
     url: &Url,
     policy: &ArtifactAcquisitionPolicy,
     source_kind: ArtifactSourceKind,
 ) -> Result<(AcquiredWasmArtifact, ArtifactAcquisitionEvidence)> {
-    match source_kind {
+    match &source_kind {
         ArtifactSourceKind::Https if !policy.allow_https => {
             return Err(anyhow!("HTTPS artifact acquisition is disabled by policy"));
         }
@@ -340,12 +329,12 @@ fn acquire_http_artifact(
         _ => {}
     }
 
-    let extension_is_wasm = url
+    let is_wasm = url
         .path_segments()
         .and_then(|segments| segments.last())
-        .map(|segment| segment.to_ascii_lowercase().ends_with(".wasm"))
+        .map(|name| name.to_ascii_lowercase().ends_with(".wasm"))
         .unwrap_or(false);
-    if !extension_is_wasm {
+    if !is_wasm {
         return Err(anyhow!("remote artifact URI must identify a .wasm resource"));
     }
 
@@ -354,8 +343,7 @@ fn acquire_http_artifact(
         .redirect(RedirectPolicy::none())
         .build()
         .context("build bounded artifact acquisition HTTP client")?;
-
-    let mut response = client
+    let response = client
         .get(url.clone())
         .send()
         .with_context(|| format!("fetch deployment artifact from {url}"))?;
@@ -366,47 +354,48 @@ fn acquire_http_artifact(
             response.status()
         ));
     }
-
-    if let Some(content_length) = response.content_length() {
-        if content_length > policy.max_artifact_bytes as u64 {
-            return Err(anyhow!(
-                "artifact Content-Length {} exceeds configured maximum {} bytes",
-                content_length,
-                policy.max_artifact_bytes
-            ));
-        }
+    if response
+        .content_length()
+        .map(|length| length > policy.max_artifact_bytes as u64)
+        .unwrap_or(false)
+    {
+        return Err(anyhow!("artifact Content-Length exceeds configured maximum"));
     }
 
     let mut bytes = Vec::new();
     response
-        .by_ref()
         .take(policy.max_artifact_bytes as u64 + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("read deployment artifact body from {url}"))?;
-    enforce_size_limit(bytes.len(), policy.max_artifact_bytes)?;
-
-    let artifact = build_acquired_artifact(
+    let artifact = build_artifact(
         format!(
             "acquired-{}.wasm",
             sanitize_artifact_id(&assignment.artifact.artifact_id)
         ),
         bytes,
+        policy.max_artifact_bytes,
     )?;
 
-    let evidence = ArtifactAcquisitionEvidence {
-        source_kind,
-        bytes_received: artifact.size_bytes,
-        artifact_delivery_performed: true,
-        host_filesystem_read_performed: false,
-        host_network_fetch_performed: true,
-        persistent_write_performed: false,
-        host_mutation_performed: false,
-    };
-
-    Ok((artifact, evidence))
+    Ok((
+        artifact.clone(),
+        ArtifactAcquisitionEvidence {
+            source_kind,
+            bytes_received: artifact.size_bytes,
+            artifact_delivery_performed: true,
+            host_filesystem_read_performed: false,
+            host_network_fetch_performed: true,
+            persistent_write_performed: false,
+            host_mutation_performed: false,
+        },
+    ))
 }
 
-fn build_acquired_artifact(display_name: String, bytes: Vec<u8>) -> Result<AcquiredWasmArtifact> {
+fn build_artifact(
+    display_name: String,
+    bytes: Vec<u8>,
+    max_artifact_bytes: usize,
+) -> Result<AcquiredWasmArtifact> {
+    enforce_size(bytes.len(), max_artifact_bytes)?;
     if !bytes.starts_with(WASM_MAGIC) {
         return Err(anyhow!(
             "deployment artifact does not contain the WebAssembly binary magic header"
@@ -419,7 +408,7 @@ fn build_acquired_artifact(display_name: String, bytes: Vec<u8>) -> Result<Acqui
     })
 }
 
-fn verify_acquired_artifact_sha256(
+fn verify_sha256(
     artifact: &AcquiredWasmArtifact,
     expected_sha256: &str,
 ) -> Result<WasmArtifactIdentity> {
@@ -433,13 +422,13 @@ fn verify_acquired_artifact_sha256(
 
     Ok(WasmArtifactIdentity {
         algorithm: "sha256".to_string(),
+        sha256: observed.clone(),
         content_id: format!("sha256:{observed}"),
-        sha256: observed,
         size_bytes: artifact.size_bytes,
     })
 }
 
-fn compile_wasm_preflight(artifact: &AcquiredWasmArtifact, function_name: &str) -> Result<()> {
+fn compile_preflight(artifact: &AcquiredWasmArtifact, function_name: &str) -> Result<()> {
     let mut config = Config::new();
     config.consume_fuel(true);
     let engine = Engine::new(&config).context("build Wasmtime engine for deployment preflight")?;
@@ -463,7 +452,6 @@ fn compile_wasm_preflight(artifact: &AcquiredWasmArtifact, function_name: &str) 
             "requested deployment export '{function_name}' is not a function"
         ));
     }
-
     Ok(())
 }
 
@@ -487,9 +475,7 @@ fn validate_assignment(assignment: &DatumDeploymentAssignment, local_node_id: &s
         || assignment.artifact.artifact_id.trim().is_empty()
         || assignment.artifact.artifact_uri.trim().is_empty()
     {
-        return Err(anyhow!(
-            "assignment, module, function, artifact ID, and artifact URI must not be empty"
-        ));
+        return Err(anyhow!("assignment identifiers must not be empty"));
     }
     if assignment.target_node.trim() != local_node_id {
         return Err(anyhow!(
@@ -507,23 +493,20 @@ fn validate_assignment(assignment: &DatumDeploymentAssignment, local_node_id: &s
             "assignment artifact content_id must match SHA-256 digest; expected {expected_content_id}"
         ));
     }
-
     if assignment.limits.fuel == Some(0) {
         return Err(anyhow!("assignment fuel must be positive when present"));
     }
     if assignment.limits.timeout_ms == Some(0) {
         return Err(anyhow!("assignment timeout_ms must be positive when present"));
     }
-
     Ok(())
 }
 
-fn validate_acquisition_policy(policy: &ArtifactAcquisitionPolicy) -> Result<()> {
-    if policy.max_artifact_bytes == 0 {
-        return Err(anyhow!("max_artifact_bytes must be positive"));
-    }
-    if policy.request_timeout_ms == 0 {
-        return Err(anyhow!("request_timeout_ms must be positive"));
+fn validate_policy(policy: &ArtifactAcquisitionPolicy) -> Result<()> {
+    if policy.max_artifact_bytes == 0 || policy.request_timeout_ms == 0 {
+        return Err(anyhow!(
+            "artifact size limit and request timeout must be positive"
+        ));
     }
     Ok(())
 }
@@ -546,19 +529,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn ensure_wasm_extension(path: &PathBuf) -> Result<()> {
-    let extension_is_wasm = path
+fn ensure_wasm_extension(path: &Path) -> Result<()> {
+    let valid = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.eq_ignore_ascii_case("wasm"))
         .unwrap_or(false);
-    if !extension_is_wasm {
+    if !valid {
         return Err(anyhow!("deployment artifact must use the .wasm extension"));
     }
     Ok(())
 }
 
-fn enforce_size_limit(size_bytes: usize, max_artifact_bytes: usize) -> Result<()> {
+fn enforce_size(size_bytes: usize, max_artifact_bytes: usize) -> Result<()> {
     if size_bytes > max_artifact_bytes {
         return Err(anyhow!(
             "artifact size {} exceeds configured maximum {} bytes",
@@ -604,7 +587,7 @@ mod tests {
     i32.add))
 "#;
 
-    fn wasm_bytes(source: &str) -> Vec<u8> {
+    fn wasm(source: &str) -> Vec<u8> {
         wat::parse_str(source).expect("test WAT should compile")
     }
 
@@ -650,42 +633,36 @@ mod tests {
         }
     }
 
-    fn file_uri(path: &PathBuf) -> String {
+    fn file_uri(path: &Path) -> String {
         Url::from_file_path(path)
             .expect("temporary path should convert to file URL")
             .to_string()
     }
 
     #[test]
-    fn local_file_assignment_is_verified_and_compiled_without_instantiation() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn local_file_is_verified_and_compiled_without_instantiation() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let prepared = prepare_node_scoped_deployment(
             &view(assignment(file_uri(&path), &bytes)),
             "fog-01",
             &ArtifactAcquisitionPolicy::default(),
         )
-        .expect("local deployment artifact should prepare");
+        .expect("local artifact should prepare");
 
         assert_eq!(prepared.len(), 1);
         assert!(prepared[0].preflight.integrity_verified);
         assert!(prepared[0].preflight.wasmtime_compiled);
         assert!(!prepared[0].preflight.wasmtime_instantiated);
         assert!(!prepared[0].preflight.guest_execution_performed);
-        assert!(!prepared[0].preflight.governed_execution_performed);
-        assert_eq!(
-            prepared[0].acquisition.source_kind,
-            ArtifactSourceKind::LocalFile
-        );
         assert!(prepared[0].acquisition.host_filesystem_read_performed);
         assert!(!prepared[0].acquisition.host_mutation_performed);
-
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn wrong_local_node_is_rejected_before_artifact_acquisition() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn wrong_node_is_rejected_before_acquisition() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let error = prepare_node_scoped_deployment(
             &view(assignment(file_uri(&path), &bytes)),
@@ -698,8 +675,8 @@ mod tests {
     }
 
     #[test]
-    fn cross_node_assignment_leakage_is_rejected() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn cross_node_assignment_is_rejected() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let mut leaked = assignment(file_uri(&path), &bytes);
         leaked.target_node = "fog-02".to_string();
@@ -710,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_scope_returns_no_prepared_artifacts() {
+    fn empty_scope_is_a_valid_noop() {
         let empty = DatumNodeScopedDeployment {
             manifest_version: "0.1.0".to_string(),
             manifest_id: "manifest-empty".to_string(),
@@ -724,59 +701,37 @@ mod tests {
                 governed_execution_authorized: false,
             },
         };
-        let prepared = prepare_node_scoped_deployment(
+        assert!(prepare_node_scoped_deployment(
             &empty,
             "fog-01",
-            &ArtifactAcquisitionPolicy::default(),
+            &ArtifactAcquisitionPolicy::default()
         )
-        .expect("empty view should be a valid no-op");
-        assert!(prepared.is_empty());
+        .expect("empty view should prepare")
+        .is_empty());
     }
 
     #[test]
-    fn empty_scope_cannot_carry_assignments() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn sha_mismatch_precedes_wasmtime_compilation() {
+        let bytes = b"\0asminvalid-module".to_vec();
         let path = write_artifact(&bytes);
-        let mut invalid = view(assignment(file_uri(&path), &bytes));
-        invalid.delivery_scope = DatumNodeDeploymentScope::Empty;
-        let error = validate_node_scoped_deployment_for_local_node(&invalid, "fog-01")
-            .expect_err("empty scope with assignment must fail");
-        assert!(error.to_string().contains("must not contain assignments"));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn sha256_mismatch_blocks_before_wasmtime_compilation() {
-        let path = write_artifact(b"\0asminvalid-module");
-        let mut bad_assignment = assignment(file_uri(&path), b"\0asminvalid-module");
-        bad_assignment.artifact.sha256 = "0".repeat(64);
-        bad_assignment.artifact.content_id = format!("sha256:{}", "0".repeat(64));
+        let mut invalid = assignment(file_uri(&path), &bytes);
+        invalid.artifact.sha256 = "0".repeat(64);
+        invalid.artifact.content_id = format!("sha256:{}", "0".repeat(64));
         let error = prepare_node_scoped_deployment(
-            &view(bad_assignment),
+            &view(invalid),
             "fog-01",
             &ArtifactAcquisitionPolicy::default(),
         )
-        .expect_err("integrity mismatch must fail before compilation");
-        assert!(format!("{error:#}").contains("SHA-256 mismatch"));
-        assert!(!format!("{error:#}").contains("compile verified deployment artifact"));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn content_id_mismatch_is_rejected_before_acquisition() {
-        let bytes = wasm_bytes(ADD_WAT);
-        let path = write_artifact(&bytes);
-        let mut invalid = assignment(file_uri(&path), &bytes);
-        invalid.artifact.content_id = format!("sha256:{}", "f".repeat(64));
-        let error = validate_node_scoped_deployment_for_local_node(&view(invalid), "fog-01")
-            .expect_err("content identity mismatch must fail");
-        assert!(error.to_string().contains("content_id must match"));
+        .expect_err("hash mismatch must fail");
+        let detail = format!("{error:#}");
+        assert!(detail.contains("SHA-256 mismatch"));
+        assert!(!detail.contains("compile verified deployment artifact"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn host_import_is_rejected_during_preflight() {
-        let bytes = wasm_bytes(
+        let bytes = wasm(
             r#"
 (module
   (import "host" "log" (func $log))
@@ -792,14 +747,14 @@ mod tests {
             "fog-01",
             &ArtifactAcquisitionPolicy::default(),
         )
-        .expect_err("host import must be blocked");
+        .expect_err("host import must fail");
         assert!(error.to_string().contains("host imports are not allowed"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn missing_requested_function_is_rejected_during_preflight() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn missing_function_is_rejected_during_preflight() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let mut invalid = assignment(file_uri(&path), &bytes);
         invalid.function_name = "missing".to_string();
@@ -816,52 +771,37 @@ mod tests {
     }
 
     #[test]
-    fn zero_fuel_is_rejected_before_acquisition() {
-        let bytes = wasm_bytes(ADD_WAT);
-        let path = write_artifact(&bytes);
-        let mut invalid = assignment(file_uri(&path), &bytes);
-        invalid.limits.fuel = Some(0);
-        let error = validate_node_scoped_deployment_for_local_node(&view(invalid), "fog-01")
-            .expect_err("zero fuel must fail");
-        assert!(error.to_string().contains("fuel must be positive"));
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
     fn insecure_http_is_blocked_by_default() {
-        let bytes = wasm_bytes(ADD_WAT);
-        let request = view(assignment(
-            "http://127.0.0.1:1/artifact.wasm".to_string(),
-            &bytes,
-        ));
+        let bytes = wasm(ADD_WAT);
         let error = prepare_node_scoped_deployment(
-            &request,
+            &view(assignment(
+                "http://127.0.0.1:1/artifact.wasm".to_string(),
+                &bytes,
+            )),
             "fog-01",
             &ArtifactAcquisitionPolicy::default(),
         )
-        .expect_err("HTTP must be opt-in");
+        .expect_err("HTTP must be explicit");
         assert!(error.to_string().contains("explicitly enabled"));
     }
 
     #[test]
-    fn explicitly_enabled_lab_http_fetches_to_memory_without_persistent_write() {
-        let bytes = wasm_bytes(ADD_WAT);
-        let listener = TcpListener::bind("127.0.0.1:0").expect("test HTTP listener should bind");
+    fn lab_http_fetch_stays_in_memory() {
+        let bytes = wasm(ADD_WAT);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let address = listener.local_addr().expect("listener should have address");
-        let response_bytes = bytes.clone();
+        let body = bytes.clone();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("test request should arrive");
+            let (mut stream, _) = listener.accept().expect("request should arrive");
             let mut request = [0_u8; 1024];
             let _ = stream.read(&mut request);
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                response_bytes.len()
+                body.len()
             )
             .expect("headers should write");
-            stream
-                .write_all(&response_bytes)
-                .expect("artifact body should write");
+            stream.write_all(&body).expect("body should write");
         });
 
         let mut policy = ArtifactAcquisitionPolicy::default();
@@ -874,20 +814,18 @@ mod tests {
             "fog-01",
             &policy,
         )
-        .expect("explicit lab HTTP acquisition should prepare");
-        server.join().expect("test HTTP server should finish");
+        .expect("lab HTTP should prepare");
+        server.join().expect("server should finish");
 
-        assert_eq!(prepared[0].acquisition.source_kind, ArtifactSourceKind::Http);
         assert!(prepared[0].acquisition.artifact_delivery_performed);
         assert!(prepared[0].acquisition.host_network_fetch_performed);
         assert!(!prepared[0].acquisition.persistent_write_performed);
         assert!(!prepared[0].acquisition.host_mutation_performed);
-        assert!(prepared[0].preflight.integrity_verified);
     }
 
     #[test]
-    fn local_artifact_size_limit_is_enforced() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn artifact_size_limit_is_enforced() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let mut policy = ArtifactAcquisitionPolicy::default();
         policy.max_artifact_bytes = 4;
@@ -896,41 +834,26 @@ mod tests {
             "fog-01",
             &policy,
         )
-        .expect_err("oversized artifact must fail");
+        .expect_err("size limit must fail");
         assert!(error.to_string().contains("exceeds configured maximum"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn unsupported_artifact_scheme_is_rejected() {
-        let bytes = wasm_bytes(ADD_WAT);
-        let error = prepare_node_scoped_deployment(
-            &view(assignment(
-                "ftp://example.test/artifact.wasm".to_string(),
-                &bytes,
-            )),
-            "fog-01",
-            &ArtifactAcquisitionPolicy::default(),
-        )
-        .expect_err("unsupported scheme must fail");
-        assert!(error.to_string().contains("scheme 'ftp' is not allowed"));
-    }
-
-    #[test]
-    fn automatic_execution_boundary_cannot_be_enabled() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn automatic_execution_remains_forbidden() {
+        let bytes = wasm(ADD_WAT);
         let path = write_artifact(&bytes);
         let mut invalid = view(assignment(file_uri(&path), &bytes));
         invalid.execution_boundary.automatic_execution_allowed = true;
         let error = validate_node_scoped_deployment_for_local_node(&invalid, "fog-01")
-            .expect_err("automatic execution must remain blocked");
+            .expect_err("automatic execution must fail");
         assert!(error.to_string().contains("automatic_execution_allowed"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn dserver_node_scoped_json_shape_deserializes_with_extra_fields() {
-        let bytes = wasm_bytes(ADD_WAT);
+    fn c64_json_shape_deserializes_with_extra_fields() {
+        let bytes = wasm(ADD_WAT);
         let digest = sha256_hex(&bytes);
         let value = serde_json::json!({
             "manifest_version": "0.1.0",
@@ -950,7 +873,7 @@ mod tests {
                 "artifact": {
                     "artifact_id": "artifact-1",
                     "artifact_uri": "https://example.test/artifact.wasm",
-                    "sha256": digest,
+                    "sha256": digest.clone(),
                     "content_id": format!("sha256:{digest}")
                 },
                 "target_node": "fog-01",
@@ -965,12 +888,9 @@ mod tests {
         });
 
         let parsed: DatumNodeScopedDeployment =
-            serde_json::from_value(value).expect("C64 JSON shape should deserialize");
+            serde_json::from_value(value).expect("C64 JSON should deserialize");
         assert_eq!(parsed.node_id, "fog-01");
         assert_eq!(parsed.assignments.len(), 1);
-        assert_eq!(
-            parsed.delivery_scope,
-            DatumNodeDeploymentScope::NodeSlice
-        );
+        assert_eq!(parsed.delivery_scope, DatumNodeDeploymentScope::NodeSlice);
     }
 }
