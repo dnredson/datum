@@ -1,10 +1,10 @@
 # C63 — Typed Deployment Manifest
 
 - checkpoint: `C63/150`
-- target_progress_after_validation: `135/150`
+- progress: `135/150`
 - predecessor: `C62/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: complete
 
 ## Objective
 
@@ -121,9 +121,9 @@ C63 rejects at least:
 
 C63 adds 16 dserver unit tests covering valid centralized/distributed manifests, deployment-mode pairing, centralized target consistency, assignment uniqueness, artifact identity, limit validation, fail-closed execution-boundary invariants, empty assignments, and serde representation/round-trip behavior.
 
-## Validation required before checkpoint advancement
+## Linux validation
 
-Run from the repository root on the C63 branch:
+Validated on `2026-08-15` with:
 
 ```bash
 cargo fmt --manifest-path dserver/Cargo.toml -- --check
@@ -131,8 +131,16 @@ cargo test --manifest-path dserver/Cargo.toml
 cargo build --manifest-path dserver/Cargo.toml
 ```
 
-Do not advance the phase checkpoint to `135/150` and do not merge until these checks pass.
+Observed:
+
+- formatting check: PASS;
+- dserver tests: `452 passed; 0 failed`;
+- dserver build: PASS;
+- no governed execution allow transition;
+- no execution or deployment side effects introduced.
+
+C63 is complete at `135/150`.
 
 ## Next intended increment
 
-After C63 is validated and integrated, C64 consumes this typed contract to create node-scoped deployment assignments for `distributed/node_slice` while preserving `centralized/full` semantics and without triggering execution.
+C64 consumes this typed contract to create node-scoped deployment assignments for `distributed/node_slice` while preserving `centralized/full` semantics and without triggering execution.
