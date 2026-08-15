@@ -25,6 +25,7 @@ use cli::installation_plan::run_installation_plan_command;
 use cli::installation_tasks::run_installation_tasks_command;
 use cli::show::show_command;
 use cli::top::top_command;
+use cli::wasm_deploy_live::run_wasm_deploy_live_command;
 use cli::wasm_runtime::run_wasm_test_command;
 use core::cycle::run_cycle;
 use outputs::file_json::FileJsonOutput;
@@ -50,7 +51,8 @@ fn main() -> Result<()> {
             | "install-plan"
             | "installation-tasks"
             | "install-tasks"
-            | "wasm-test" => {
+            | "wasm-test"
+            | "wasm-deploy-live" => {
                 let cli = Cli::parse();
                 return dispatch_cli(cli);
             }
@@ -172,6 +174,19 @@ fn dispatch_cli(cli: Cli) -> Result<()> {
             args.module.as_deref(),
             args.json,
         ),
+        Command::WasmDeployLive(args) => run_wasm_deploy_live_command(
+            &args.config,
+            args.node_id.as_deref(),
+            &args.deployment,
+            &args.assignment,
+            &args.args,
+            args.execute,
+            &args.invoked_by,
+            args.allow_insecure_http,
+            args.max_artifact_bytes,
+            args.acquisition_timeout_ms,
+            args.json,
+        ),
         Command::Top(args) => top_command(&args.config, args.refresh_ms),
         Command::Show(args) => show_command(&args.config, args.target),
     }
@@ -201,6 +216,8 @@ enum Command {
     InstallationTasks(InstallationTasksArgs),
     #[command(name = "wasm-test")]
     WasmTest(WasmTestArgs),
+    #[command(name = "wasm-deploy-live")]
+    WasmDeployLive(WasmDeployLiveArgs),
     Top(TopArgs),
     Show(ShowArgs),
 }
@@ -242,6 +259,42 @@ struct WasmTestArgs {
 
     #[arg(long)]
     module: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct WasmDeployLiveArgs {
+    #[arg(long, default_value = "config.toml")]
+    config: String,
+
+    #[arg(long)]
+    node_id: Option<String>,
+
+    #[arg(long)]
+    deployment: String,
+
+    #[arg(long)]
+    assignment: String,
+
+    #[arg(long = "arg", value_name = "TYPE:VALUE")]
+    args: Vec<String>,
+
+    #[arg(long, default_value_t = false)]
+    execute: bool,
+
+    #[arg(long, default_value = "operator-cli")]
+    invoked_by: String,
+
+    #[arg(long, default_value_t = false)]
+    allow_insecure_http: bool,
+
+    #[arg(long)]
+    max_artifact_bytes: Option<usize>,
+
+    #[arg(long)]
+    acquisition_timeout_ms: Option<u64>,
 
     #[arg(long, default_value_t = false)]
     json: bool,
