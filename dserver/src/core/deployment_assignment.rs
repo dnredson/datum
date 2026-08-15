@@ -41,7 +41,7 @@ pub fn derive_node_scoped_deployment(
         return Err("node_id must not be empty".to_string());
     }
 
-    let (delivery_scope, assignments) = match manifest.strategy {
+    let (delivery_scope, assignments) = match &manifest.strategy {
         DeploymentStrategy::Centralized => {
             let central_node = manifest.assignments[0].target_node.trim();
             if central_node == node_id {
