@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 
 use crate::wasm_runtime::{
     artifact::{run_local_wasm_artifact, LoadedWasmArtifact},
+    generic_runner::{
+        blocked_generic_integrity_result, run_generic_local_wasm_artifact,
+        GenericWasmRuntimeInput, GenericWasmRuntimeResult,
+    },
     report::{build_wasm_runtime_report_from_result, WasmRuntimeReport},
     WasmRuntimeInput, WasmRuntimeLimitOutcome, WasmRuntimeLimits, WasmRuntimeResult,
 };
@@ -85,6 +89,40 @@ pub fn run_verified_local_wasm_artifact_report(
     Ok(build_wasm_runtime_report_from_result(&result))
 }
 
+pub fn run_verified_generic_local_wasm_artifact(
+    artifact: &LoadedWasmArtifact,
+    expected_sha256: &str,
+    input: &GenericWasmRuntimeInput,
+    limits: &WasmRuntimeLimits,
+) -> Result<GenericWasmRuntimeResult> {
+    let identity = match verify_loaded_wasm_artifact_sha256(artifact, expected_sha256) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Ok(blocked_generic_integrity_result(
+                input,
+                format!(
+                    "artifact integrity verification failed before generic execution: {error}"
+                ),
+                limits.clone(),
+            ));
+        }
+    };
+
+    let mut result = run_generic_local_wasm_artifact(artifact, input, limits)?;
+    result.integrity_verified = true;
+    result.artifact_content_id = Some(identity.content_id.clone());
+    let runtime_message = result
+        .message
+        .take()
+        .unwrap_or_else(|| "generic runtime evaluation completed".to_string());
+    result.message = Some(format!(
+        "verified {} before generic runtime evaluation; {runtime_message}",
+        identity.content_id
+    ));
+
+    Ok(result)
+}
+
 fn normalize_expected_sha256(value: &str) -> Result<String> {
     let trimmed = value.trim();
     let digest = trimmed.strip_prefix("sha256:").unwrap_or(trimmed);
@@ -142,11 +180,13 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        identify_loaded_wasm_artifact, run_verified_local_wasm_artifact, sha256_hex,
-        verify_loaded_wasm_artifact_sha256,
+        identify_loaded_wasm_artifact, run_verified_generic_local_wasm_artifact,
+        run_verified_local_wasm_artifact, sha256_hex, verify_loaded_wasm_artifact_sha256,
     };
     use crate::wasm_runtime::{
-        artifact::load_local_wasm_artifact, WasmRuntimeInput, WasmRuntimeLimits,
+        artifact::load_local_wasm_artifact,
+        generic_runner::{GenericWasmRuntimeInput, WasmScalarValue},
+        WasmRuntimeInput, WasmRuntimeLimits,
     };
 
     const ADD_WAT: &str = r#"
@@ -169,6 +209,14 @@ mod tests {
             module_name: "external:add".to_string(),
             function_name: "add".to_string(),
             args: vec![2, 3],
+        }
+    }
+
+    fn generic_input(function_name: &str, args: Vec<WasmScalarValue>) -> GenericWasmRuntimeInput {
+        GenericWasmRuntimeInput {
+            module_name: "external:generic".to_string(),
+            function_name: function_name.to_string(),
+            args,
         }
     }
 
@@ -308,6 +356,107 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("compile external WASM artifact failed"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn matching_sha256_allows_verified_generic_i64_execution() {
+        let path = write_test_artifact(
+            r#"
+(module
+  (func (export "mul64") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.mul))
+"#,
+        );
+        let artifact = load_local_wasm_artifact(&path).expect("artifact should load");
+        let identity = identify_loaded_wasm_artifact(&artifact);
+        let result = run_verified_generic_local_wasm_artifact(
+            &artifact,
+            &identity.sha256,
+            &generic_input(
+                "mul64",
+                vec![WasmScalarValue::I64(6), WasmScalarValue::I64(7)],
+            ),
+            &WasmRuntimeLimits::default(),
+        )
+        .expect("verified generic execution should return a result");
+
+        assert_eq!(result.status, "executed");
+        assert_eq!(result.results, vec![WasmScalarValue::I64(42)]);
+        assert!(result.integrity_verified);
+        assert_eq!(result.artifact_content_id, Some(identity.content_id.clone()));
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains(&identity.content_id));
+        assert!(!result.safe_to_auto_execute);
+        assert!(!result.side_effects_performed);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn generic_integrity_mismatch_blocks_before_runtime() {
+        let path = std::env::temp_dir().join(format!("datum-c62-{}.wasm", Uuid::new_v4()));
+        fs::write(&path, b"\0asminvalid-module").expect("invalid artifact should be written");
+        let artifact = load_local_wasm_artifact(&path).expect("magic-only artifact should load");
+        let result = run_verified_generic_local_wasm_artifact(
+            &artifact,
+            &"0".repeat(64),
+            &generic_input("missing", Vec::new()),
+            &WasmRuntimeLimits::default(),
+        )
+        .expect("generic integrity mismatch should return a safe result");
+
+        assert_eq!(result.status, "blocked");
+        assert!(!result.integrity_verified);
+        assert_eq!(result.artifact_content_id, None);
+        assert_eq!(result.limit_outcome.fuel_consumed, None);
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("integrity verification failed before generic execution"));
+        assert!(!result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("compile generic external WASM artifact failed"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn verified_artifact_can_still_be_blocked_by_generic_signature_policy() {
+        let path = write_test_artifact(
+            r#"
+(module
+  (func (export "vector") (result v128)
+    v128.const i32x4 0 0 0 0))
+"#,
+        );
+        let artifact = load_local_wasm_artifact(&path).expect("artifact should load");
+        let identity = identify_loaded_wasm_artifact(&artifact);
+        let result = run_verified_generic_local_wasm_artifact(
+            &artifact,
+            &identity.sha256,
+            &generic_input("vector", Vec::new()),
+            &WasmRuntimeLimits::default(),
+        )
+        .expect("unsupported signature should return a safe result");
+
+        assert_eq!(result.status, "blocked");
+        assert!(result.integrity_verified);
+        assert_eq!(result.artifact_content_id, Some(identity.content_id));
+        assert!(result
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("unsupported type v128"));
 
         let _ = fs::remove_file(path);
     }
