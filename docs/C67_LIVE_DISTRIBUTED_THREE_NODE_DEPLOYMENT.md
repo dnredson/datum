@@ -4,28 +4,28 @@
 - target_progress_after_validation: `139/150`
 - predecessor: `C66/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: validated; see `C67_LIVE_DISTRIBUTED_THREE_NODE_DEPLOYMENT_FINAL.md`
 
 ## Experiment objective
 
-Validate a real distributed deployment from one dserver-owned typed Deployment Manifest across three DATUM execution nodes:
+Validate a real distributed deployment from one dserver-owned typed Deployment Manifest across three Sentinel/DATUM execution nodes:
 
 ```text
 local machine
   dserver
   artifact repository
-  DATUM node local-01
+  Sentinel/DATUM node local-01
 
 VM 1
-  DATUM node fog-01
+  Sentinel/DATUM node fog-01
 
 VM 2
-  DATUM node cloud-01
+  Sentinel/DATUM node cloud-01
 ```
 
 The local machine is the control point. The two VMs must reach the local machine on the dserver and artifact-repository ports.
 
-C67 proves distributed assignment, remote artifact delivery, independent SHA-256 verification, explicit Wasmtime execution, and centralized runtime-evidence collection. It does not yet claim that guest WASM modules communicate directly with one another or that dserver autonomously invokes DATUM. Those are later end-to-end orchestration concerns.
+C67 proves distributed assignment, remote artifact delivery, independent SHA-256 verification, explicit Wasmtime execution, and centralized runtime-evidence collection. It does not claim that guest WASM modules communicate directly with one another or that dserver autonomously invokes Sentinel/DATUM.
 
 ## Global manifest and C64 node slicing
 
@@ -51,72 +51,57 @@ local-01 -> local-aggregate only
 cloud-01 -> cloud-delta only
 ```
 
-A view containing another node's assignment remains invalid.
-
 ## Three distinct artifacts
 
-`scripts/c67_prepare_three_node_fixture.py` creates three independent WebAssembly binaries:
-
-### fog-01
+`scripts/c67_prepare_three_node_fixture.py` creates three independent WebAssembly binaries under `.c67-live/artifacts/`:
 
 ```text
 fog-scale.wasm
-fog_scale(i32 value, i32 factor) -> i32
-```
+  fog_scale(i32 value, i32 factor) -> i32
+  fog_scale(12, 2) = 24
 
-The implementation uses `i32.mul`.
-
-Validation input:
-
-```text
-fog_scale(12, 2) = 24
-```
-
-### local-01
-
-```text
 local-aggregate.wasm
-local_aggregate(i32 a, i32 b) -> i32
-```
+  local_aggregate(i32 a, i32 b) -> i32
+  local_aggregate(24, 6) = 30
 
-The implementation uses `i32.add`.
-
-Validation input:
-
-```text
-local_aggregate(24, 6) = 30
-```
-
-### cloud-01
-
-```text
 cloud-delta.wasm
-cloud_delta(i32 value, i32 reference) -> i32
+  cloud_delta(i32 value, i32 reference) -> i32
+  cloud_delta(30, 10) = 20
 ```
 
-The implementation uses `i32.sub`.
-
-Validation input:
-
-```text
-cloud_delta(30, 10) = 20
-```
-
-The values `24 -> 30 -> 20` make the intended fog -> local/mist -> cloud conceptual pipeline visible. C67 does not claim automatic runtime dataflow between the modules; the values are supplied explicitly during this deployment validation.
-
-The binaries differ by export name and instruction, therefore their SHA-256 content IDs must also be distinct.
+The values `24 -> 30 -> 20` make the intended fog -> local -> cloud conceptual sequence visible. C67 does not claim automatic runtime dataflow between the modules; the values are supplied explicitly during deployment validation.
 
 ## Artifact repository
 
-Artifacts are served from the local machine with a lab HTTP repository:
+Prepare artifacts and the manifest on the local machine:
+
+```bash
+python3 scripts/c67_prepare_three_node_fixture.py --artifact-host <LOCAL_IP>
+```
+
+Serve the `.c67-live` directory:
 
 ```bash
 python3 -m http.server 8090 --bind 0.0.0.0 --directory .c67-live
 ```
 
-All three DATUM executions use C65 network acquisition. For the trusted local laboratory, `--allow-insecure-http` is explicitly enabled.
+The generated manifest uses URLs such as:
 
-Successful C67 reports must therefore contain:
+```text
+http://<LOCAL_IP>:8090/artifacts/fog-scale.wasm
+http://<LOCAL_IP>:8090/artifacts/local-aggregate.wasm
+http://<LOCAL_IP>:8090/artifacts/cloud-delta.wasm
+```
+
+A connectivity check must therefore include `/artifacts/`, for example:
+
+```bash
+curl -I http://<LOCAL_IP>:8090/artifacts/fog-scale.wasm
+```
+
+All three Sentinel/DATUM executions use C65 network acquisition. Insecure HTTP is explicitly enabled only for the trusted laboratory campaign; production deployment should use HTTPS.
+
+Successful C67 reports contain:
 
 ```text
 artifact_delivery_performed=true
@@ -125,40 +110,22 @@ persistent_write_performed=false
 host_mutation_performed=false
 ```
 
-HTTP remains a laboratory-only opt-in. A production deployment should use HTTPS.
-
 ## Centralized report evidence
 
 `scripts/c67_run_distributed_node.py` performs one node run:
 
 1. fetches that node's C64 slice from dserver;
 2. verifies the requested assignment is present and no assignment targets another node;
-3. writes the temporary control-plane slice locally;
-4. invokes the existing C66 `wasm-deploy-live` command with explicit `--execute`;
-5. lets DATUM acquire the assigned artifact over the network and verify its SHA-256;
-6. parses the resulting `LiveWasmExecutionReport`;
-7. publishes the report to the local dserver;
-8. deletes the temporary node-slice file.
+3. writes a temporary control-plane slice locally;
+4. invokes the C66 `wasm-deploy-live` Sentinel/DATUM command with explicit `--execute`;
+5. Sentinel/DATUM acquires the assigned artifact over the network and verifies SHA-256;
+6. Sentinel/DATUM executes the assigned function in Wasmtime and emits `LiveWasmExecutionReport`;
+7. the runner publishes the report to dserver;
+8. the temporary slice file is deleted.
 
-The dserver accepts a C67 report only when it matches the active manifest identity and assignment binding. It also requires successful controlled execution evidence, network artifact delivery, no persistent artifact write, no guest side effects, no host mutation, no governed execution, and `timeout_enforced=false`.
+The dserver accepts C67 success evidence only when it matches the active manifest identity and assignment binding and records successful controlled execution, network artifact delivery, no persistent artifact write, no guest side effects, no host mutation, no governed execution, and `timeout_enforced=false`.
 
-## Reproducible setup
-
-Choose an IP or hostname for the local machine that is reachable from both VMs. The examples below call it `<LOCAL_IP>`.
-
-Prepare artifacts and the global manifest on the local machine:
-
-```bash
-python3 scripts/c67_prepare_three_node_fixture.py --artifact-host <LOCAL_IP>
-```
-
-Start the artifact repository in a second terminal:
-
-```bash
-python3 -m http.server 8090 --bind 0.0.0.0 --directory .c67-live
-```
-
-Run dserver on the local machine with its existing configuration. The server must listen on an address reachable from both VMs, normally `0.0.0.0:8080`.
+## Reproducible live setup
 
 Publish the global manifest:
 
@@ -169,15 +136,13 @@ curl -sS -X POST \
   --data-binary '@.c67-live/c67-deployment-manifest.json'
 ```
 
-Inspect the C64-derived slices:
+Inspect the three C64-derived slices:
 
 ```bash
 curl -sS http://<LOCAL_IP>:8080/api/v1/controlled-wasm/deployment/for-node/fog-01
 curl -sS http://<LOCAL_IP>:8080/api/v1/controlled-wasm/deployment/for-node/local-01
 curl -sS http://<LOCAL_IP>:8080/api/v1/controlled-wasm/deployment/for-node/cloud-01
 ```
-
-## Live executions
 
 Run on VM 1:
 
@@ -187,10 +152,9 @@ python3 scripts/c67_run_distributed_node.py \
   --node-id fog-01 \
   --assignment fog-scale \
   --arg i32:12 \
-  --arg i32:2
+  --arg i32:2 \
+  --datum-bin DATUM/target/debug/datum
 ```
-
-Expected result: `24`.
 
 Run on the local machine:
 
@@ -200,10 +164,9 @@ python3 scripts/c67_run_distributed_node.py \
   --node-id local-01 \
   --assignment local-aggregate \
   --arg i32:24 \
-  --arg i32:6
+  --arg i32:6 \
+  --datum-bin DATUM/target/debug/datum
 ```
-
-Expected result: `30`.
 
 Run on VM 2:
 
@@ -213,58 +176,33 @@ python3 scripts/c67_run_distributed_node.py \
   --node-id cloud-01 \
   --assignment cloud-delta \
   --arg i32:30 \
-  --arg i32:10
+  --arg i32:10 \
+  --datum-bin DATUM/target/debug/datum
 ```
 
-Expected result: `20`.
-
-Then validate all distributed evidence from the local machine:
+Then validate all distributed evidence:
 
 ```bash
 python3 scripts/c67_validate_distributed_reports.py \
   --dserver http://<LOCAL_IP>:8080
 ```
 
-The validator requires:
+The validator requires exactly three reports; nodes `fog-01`, `local-01`, and `cloud-01`; three distinct artifact content IDs; three distinct execution IDs; expected assignments/results; verified integrity/Wasmtime/guest execution; network artifact acquisition; no persistent write; no guest side effects; no host mutation; no governed execution; and `timeout_enforced=false`.
 
-- exactly three reports;
-- exactly the nodes `fog-01`, `local-01`, and `cloud-01`;
-- exactly three distinct artifact content IDs;
-- exactly three distinct execution IDs;
-- expected assignments for each node;
-- expected results `24`, `30`, and `20`;
-- successful integrity/Wasmtime/guest-execution evidence;
-- network artifact acquisition on every node;
-- no persistent artifact write;
-- no guest side effects;
-- no host mutation;
-- no governed execution;
-- `timeout_enforced=false`.
+## Regression validation
 
-## Regression validation before live deployment
+C67 adds 10 dserver tests to the C64 baseline. The validated result was:
 
-C67 adds 10 dserver unit tests to the validated C64 dserver baseline of `464 passed; 0 failed`, so the expected dserver total is `474 passed; 0 failed`.
-
-Run:
-
-```bash
-cargo fmt --manifest-path dserver/Cargo.toml -- --check
-cargo test --manifest-path dserver/Cargo.toml
-cargo build --manifest-path dserver/Cargo.toml
-
-python3 -m py_compile \
-  scripts/c67_prepare_three_node_fixture.py \
-  scripts/c67_run_distributed_node.py \
-  scripts/c67_validate_distributed_reports.py
+```text
+cargo fmt --manifest-path dserver/Cargo.toml -- --check  PASS
+cargo test --manifest-path dserver/Cargo.toml           474 passed; 0 failed
+cargo build --manifest-path dserver/Cargo.toml          PASS
+Python syntax validation                                 PASS
 ```
-
-DATUM execution code is unchanged from validated C66, but each execution host must successfully build or already have a current C66-capable DATUM binary.
 
 ## Safety boundary
 
 C67 intentionally keeps the controlled deployment corridor separate from canonical governed `wasm_execution`.
-
-The live success path still requires:
 
 ```text
 explicit execution = true
@@ -278,6 +216,8 @@ timeout = reported but not enforced
 
 The node runner's network access and report publication are host-side experiment orchestration, not WASM guest capabilities.
 
-## Next intended increment
+## Final evidence and next increment
 
-After C67 proves the distributed three-node execution, I34/140 should close the end-to-end demonstration loop: external D-Graph -> dserver -> typed manifest -> node slices -> DATUM -> artifact acquisition -> runtime reports -> dserver materialized state, with less manual orchestration and evidence suitable for the live dashboard.
+The clean three-node live campaign passed. Full evidence and the node-identity hardening observation are recorded in `docs/C67_LIVE_DISTRIBUTED_THREE_NODE_DEPLOYMENT_FINAL.md`.
+
+Next: I34/140 should close the end-to-end external D-Graph -> dserver -> typed manifest -> node slices -> Sentinel/DATUM -> artifact acquisition/execution -> runtime reports -> dserver materialized observed state loop, with less temporary orchestration glue.
