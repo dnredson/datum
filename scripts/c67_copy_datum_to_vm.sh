@@ -3,17 +3,30 @@ set -euo pipefail
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
   echo "usage: $0 <ssh-target> [remote-dir]" >&2
-  echo "example: $0 dener@192.168.10.103 ~/datum-c67" >&2
+  echo "example: $0 dener@192.168.10.103 datum-c67" >&2
   exit 2
 fi
 
 SSH_TARGET="$1"
-REMOTE_DIR="${2:-~/datum-c67}"
+REMOTE_DIR="${2:-datum-c67}"
 
 if [ ! -f "DATUM/Cargo.toml" ] || [ ! -f "scripts/c67_run_distributed_node.py" ]; then
   echo "error: run this helper from the datum repository root" >&2
   exit 1
 fi
+
+case "$REMOTE_DIR" in
+  /*)
+    REMOTE_PREP="rm -rf -- '$REMOTE_DIR' && mkdir -p -- '$REMOTE_DIR'"
+    REMOTE_EXTRACT="tar -xzf - -C '$REMOTE_DIR'"
+    REMOTE_DISPLAY="$REMOTE_DIR"
+    ;;
+  *)
+    REMOTE_PREP="cd ~ && rm -rf -- '$REMOTE_DIR' && mkdir -p -- '$REMOTE_DIR'"
+    REMOTE_EXTRACT="cd ~ && tar -xzf - -C '$REMOTE_DIR'"
+    REMOTE_DISPLAY="~/$REMOTE_DIR"
+    ;;
+esac
 
 # Copy only the DATUM execution side plus the C67 node runner. This deliberately
 # excludes dserver configuration, Firebase material, .git, build output, and
@@ -24,11 +37,11 @@ tar \
   -czf - \
   DATUM \
   scripts/c67_run_distributed_node.py \
-| ssh "$SSH_TARGET" "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR' && tar -xzf - -C '$REMOTE_DIR'"
+| ssh "$SSH_TARGET" "$REMOTE_PREP && $REMOTE_EXTRACT"
 
 echo "C67 DATUM payload copied"
 echo "  target: $SSH_TARGET"
-echo "  remote_dir: $REMOTE_DIR"
+echo "  remote_dir: $REMOTE_DISPLAY"
 echo "Next on the VM:"
-echo "  cd $REMOTE_DIR"
+echo "  cd $REMOTE_DISPLAY"
 echo "  cargo build --manifest-path DATUM/Cargo.toml"
