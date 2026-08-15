@@ -1,10 +1,10 @@
 # C66 — Explicit Live Single-Node WASM Execution
 
 - checkpoint: `C66/150`
-- target_progress_after_validation: `138/150`
+- progress_after_validation: `138/150`
 - predecessor: `C65/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: completed
 
 ## Objective
 
@@ -20,9 +20,9 @@ C66 adds:
 datum wasm-deploy-live
 ```
 
-The command consumes a node-scoped deployment JSON file, selects one explicit assignment, acquires and verifies only that assignment's artifact through the C65 corridor, validates the requested scalar ABI, and then instantiates/invokes it only when `--execute` is present.
+The command consumes a node-scoped deployment JSON file, selects one explicit assignment, acquires and verifies only that assignment's artifact through the C65 corridor, validates the requested scalar ABI, and instantiates/invokes it only when `--execute` is present.
 
-Representative invocation:
+Validated invocation:
 
 ```bash
 cargo run --manifest-path DATUM/Cargo.toml -- \
@@ -51,7 +51,7 @@ The live path requires all of the following before `Instance::new`:
 6. C65 Wasmtime compile-only preflight succeeds;
 7. guest host imports remain absent;
 8. the assigned export remains a function;
-9. the supplied arguments match the scalar function signature;
+9. supplied arguments match the scalar function signature;
 10. a positive fuel budget is available;
 11. the operator supplied the explicit `--execute` flag.
 
@@ -59,86 +59,17 @@ A signature mismatch or missing explicit execution confirmation is blocked befor
 
 ## Scalar ABI
 
-Live invocation supports the C62 scalar ABI:
-
-- `i32`;
-- `i64`;
-- `f32`;
-- `f64`.
-
-CLI arguments use `TYPE:VALUE`, for example:
-
-```text
---arg i32:2
---arg i64:42
---arg f32:1.5
---arg f64:2.25
-```
-
-`v128` and reference values remain unsupported.
+Live invocation supports the C62 scalar ABI: `i32`, `i64`, `f32`, and `f64`. `v128` and reference values remain unsupported.
 
 ## Runtime evidence
 
-`LiveWasmExecutionReport` records:
+`LiveWasmExecutionReport` records execution UUID/time, manifest/project/node/assignment/module/function identity, artifact content identity/URI, invocation arguments/results, acquisition evidence, integrity/compile state, Wasmtime instantiation and function invocation state, fuel consumption, timeout metadata, and the controlled execution boundary.
 
-- execution UUID and UTC observation time;
-- manifest/project/node/assignment/module/function identity;
-- artifact content ID and URI;
-- invocation arguments and results;
-- acquisition evidence inherited from C65;
-- integrity and compile evidence;
-- Wasmtime instantiation attempted/completed;
-- function invocation attempted;
-- definite guest execution evidence for function calls;
-- conservative `guest_execution_may_have_occurred` evidence once instantiation is attempted because a module may contain a start function;
-- fuel configured/consumed/exhausted;
-- timeout metadata plus `timeout_enforced=false`;
-- `wasm_guest_side_effects=false`;
-- `host_mutation_performed=false` for the controlled execution itself;
-- `governed_execution_performed=false`;
-- `safe_to_auto_execute=false`.
-
-If instantiation fails, the report explicitly states that a module start function may have executed before the failure rather than claiming a stronger fact than the runtime can prove from this corridor.
+If instantiation fails, the report explicitly records that a module start function may have executed before failure rather than claiming a stronger fact than the runtime can prove.
 
 ## Resource-limit status
 
-Fuel remains the enforced execution budget.
-
-`timeout_ms` remains reported metadata only. C66 does not claim wall-clock timeout enforcement.
-
-## Reproducible live fixture
-
-`scripts/c66_prepare_live_fixture.py` creates a minimal real WebAssembly binary exporting:
-
-```text
-add(i32, i32) -> i32
-```
-
-The script:
-
-- writes the `.wasm` artifact;
-- calculates SHA-256 over the exact bytes;
-- creates a node-scoped deployment JSON with matching `content_id`;
-- prints the exact `cargo run` command for the live invocation.
-
-Prepare it with:
-
-```bash
-python3 scripts/c66_prepare_live_fixture.py --node-id fog-01
-```
-
-The live success criterion is an execution report containing at least:
-
-```text
-status=executed
-integrity_verified=true
-wasmtime_instantiated=true
-function_invocation_attempted=true
-guest_execution_performed=true
-governed_execution_performed=false
-timeout_enforced=false
-result i32 = 5
-```
+Fuel is the enforced execution budget. `timeout_ms` remains reported metadata only; C66 does not claim wall-clock timeout enforcement.
 
 ## Tests added
 
@@ -147,36 +78,52 @@ C66 adds 11 focused DATUM tests:
 - 8 runtime tests for explicit execution, signature gating, generic i64 execution, traps/start behavior, assignment selection, and node identity;
 - 3 CLI scalar parser tests.
 
-With the validated C65 DATUM baseline at `401 passed; 0 failed`, the expected unit-test target is `412 passed; 0 failed`.
+The validated C65 baseline was `401 passed; 0 failed`; the expected C66 total is `412 passed; 0 failed`.
 
-## Validation required before checkpoint advancement
+## Validation evidence — 2026-08-15
 
-First run regression validation:
+The user reported the complete DATUM formatting/test/build validation finished without errors. The exact numeric `cargo test` summary line was not pasted, so this checkpoint records regression PASS without fabricating an observed test count.
 
-```bash
-cargo fmt --manifest-path DATUM/Cargo.toml -- --check
-cargo test --manifest-path DATUM/Cargo.toml
-cargo build --manifest-path DATUM/Cargo.toml
+The real live invocation then completed successfully on Linux with:
+
+```text
+execution_id=0be7008e-7232-4f48-85bc-9be1b37030da
+manifest_id=c66-live-single-node
+project_id=c66-live-project
+node_id=fog-01
+assignment_id=c66-add-assignment
+module_id=c66-add-module
+function_name=add
+artifact_content_id=sha256:f61fd62f57c41269c3c23f360eeaf1090b1db9c38651106674d48bc65dba88ba
+status=executed
+result=i32:5
 ```
 
-Then perform the real live invocation:
+Observed runtime evidence:
 
-```bash
-python3 scripts/c66_prepare_live_fixture.py --node-id fog-01
-
-cargo run --manifest-path DATUM/Cargo.toml -- \
-  wasm-deploy-live \
-  --node-id fog-01 \
-  --deployment .c66-live/c66-node-deployment.json \
-  --assignment c66-add-assignment \
-  --arg i32:2 \
-  --arg i32:3 \
-  --execute \
-  --invoked-by c66-live-validation \
-  --json
+```text
+explicit_execute=true
+integrity_verified=true
+wasmtime_compiled=true
+wasmtime_instantiation_attempted=true
+wasmtime_instantiated=true
+function_invocation_attempted=true
+guest_execution_performed=true
+guest_execution_may_have_occurred=true
+wasm_guest_side_effects=false
+governed_execution_performed=false
+host_mutation_performed=false
+safe_to_auto_execute=false
+fuel_configured=1000000
+fuel_consumed=4
+fuel_exhausted=false
+timeout_ms=1000
+timeout_enforced=false
 ```
 
-Do not advance to `138/150` until both the full regression and the live execution succeed.
+Artifact acquisition was a local filesystem read of a 41-byte verified `.wasm`; no network fetch, persistent write, or host mutation was performed.
+
+This satisfies the C66 success criterion. C66 is complete at `138/150`.
 
 ## Next intended increment
 
