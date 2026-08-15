@@ -7,8 +7,8 @@ use wasmtime::{Config, Engine, ExternType, Instance, Module, Store, Val, ValType
 use crate::wasm_runtime::{
     deployment::{
         prepare_node_scoped_deployment, validate_node_scoped_deployment_for_local_node,
-        ArtifactAcquisitionEvidence, ArtifactAcquisitionPolicy, DatumDeploymentAssignment,
-        DatumDeploymentRuntimeLimits, DatumNodeScopedDeployment, PreparedDeploymentArtifact,
+        ArtifactAcquisitionEvidence, ArtifactAcquisitionPolicy, DatumDeploymentRuntimeLimits,
+        DatumNodeScopedDeployment, PreparedDeploymentArtifact,
     },
     generic_runner::WasmScalarValue,
     WasmRuntimeLimits,
@@ -155,7 +155,9 @@ pub fn execute_prepared_assignment_live(
         Ok(module) => module,
         Err(error) => {
             report.status = "failed".to_string();
-            report.message = Some(format!("compile verified live deployment artifact failed: {error}"));
+            report.message = Some(format!(
+                "compile verified live deployment artifact failed: {error}"
+            ));
             return Ok(report);
         }
     };
@@ -469,12 +471,14 @@ fn is_fuel_exhaustion(error: &anyhow::Error) -> bool {
 mod tests {
     use std::{fs, path::PathBuf};
 
+    use reqwest::Url;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
     use super::*;
     use crate::wasm_runtime::deployment::{
-        DatumDeploymentArtifact, DatumDeploymentExecutionBoundary, DatumNodeDeploymentScope,
+        DatumDeploymentArtifact, DatumDeploymentAssignment, DatumDeploymentExecutionBoundary,
+        DatumNodeDeploymentScope,
     };
 
     fn write_artifact(source: &str) -> (PathBuf, Vec<u8>) {
@@ -505,7 +509,7 @@ mod tests {
                 function_name: function_name.to_string(),
                 artifact: DatumDeploymentArtifact {
                     artifact_id: "artifact-1".to_string(),
-                    artifact_uri: url::Url::from_file_path(path)
+                    artifact_uri: Url::from_file_path(path)
                         .expect("test artifact path should become file URL")
                         .to_string(),
                     sha256: digest.clone(),
@@ -665,9 +669,7 @@ mod tests {
 
     #[test]
     fn trapping_function_records_guest_execution_and_failure() {
-        let (path, bytes) = write_artifact(
-            r#"(module (func (export "boom") unreachable))"#,
-        );
+        let (path, bytes) = write_artifact(r#"(module (func (export "boom") unreachable))"#);
         let deployment = view(&path, &bytes, "boom");
         let (prepared, limits) = prepare_single_assignment(
             &deployment,
@@ -732,9 +734,7 @@ mod tests {
 
     #[test]
     fn selection_rejects_assignment_not_in_node_view_before_acquisition() {
-        let (path, bytes) = write_artifact(
-            r#"(module (func (export "noop")))"#,
-        );
+        let (path, bytes) = write_artifact(r#"(module (func (export "noop")))"#);
         let deployment = view(&path, &bytes, "noop");
         let error = prepare_single_assignment(
             &deployment,
@@ -750,9 +750,7 @@ mod tests {
 
     #[test]
     fn live_context_cannot_change_target_node() {
-        let (path, bytes) = write_artifact(
-            r#"(module (func (export "noop")))"#,
-        );
+        let (path, bytes) = write_artifact(r#"(module (func (export "noop")))"#);
         let deployment = view(&path, &bytes, "noop");
         let (prepared, limits) = prepare_single_assignment(
             &deployment,
