@@ -1,10 +1,10 @@
 # C65 — DATUM Artifact Acquisition and Wasmtime Preflight
 
 - checkpoint: `C65/150`
-- target_progress_after_validation: `137/150`
+- progress: `137/150`
 - predecessor: `C64/150`
 - phase: Controlled WASM Deployment
-- status: implementation_ready_for_validation
+- status: complete
 
 ## Objective
 
@@ -132,9 +132,7 @@ C65 adds 12 DATUM unit tests covering:
 11. automatic execution boundary cannot be enabled;
 12. C64 dserver JSON shape deserializes with extra audit fields.
 
-The validated pre-C65 DATUM baseline is `389 passed; 0 failed`. With 12 new tests, the expected C65 total is `401 passed; 0 failed`.
-
-## Validation required before checkpoint advancement
+## Linux validation evidence — 2026-08-15
 
 Run on the C65 branch:
 
@@ -144,7 +142,16 @@ cargo test --manifest-path DATUM/Cargo.toml
 cargo build --manifest-path DATUM/Cargo.toml
 ```
 
-Do not advance to `137/150` and do not merge until these checks pass.
+Observed:
+
+- formatting check: PASS;
+- DATUM tests: `401 passed; 0 failed`;
+- DATUM build: PASS;
+- no dependency or lockfile changes;
+- no governed execution allow transition;
+- no guest execution or Wasmtime instantiation introduced by C65.
+
+C65 is complete at `137/150`.
 
 ## Next intended increment
 
