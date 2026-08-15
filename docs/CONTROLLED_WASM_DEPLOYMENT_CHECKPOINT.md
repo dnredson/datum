@@ -12,9 +12,10 @@
 - node_scoped_deployment_assignment: validated
 - datum_artifact_acquisition_preflight: validated
 - live_single_node_wasm_execution: validated
+- live_distributed_three_node_deployment: implementation_ready_for_validation
 - governed_allow_transition_available: false
 - next_checkpoint: `C67/150`
-- next_scope: real multi-node distributed deployment with distinct node-scoped assignments/artifacts
+- next_scope: validate one distributed manifest across local-01, fog-01, and cloud-01 with distinct remote artifacts and centralized live reports
 
 C59 defined the external D-Graph boundary, centralized/full and distributed/node_slice deployment semantics, and the controlled artifact-backed WASM sandbox corridor.
 
@@ -61,6 +62,30 @@ C66 Linux validation evidence on `2026-08-15`:
 
 C66 is complete at `138/150`.
 
-The distributed demo target is recorded in `docs/DISTRIBUTED_DEMO_PREDICTIVE_DGRAPH_TARGET.md`, including Raspberry Pi + local PC + VM, optional AWS bootstrap via Ansible, a live D-Graph dashboard, and a read-only predictive what-if layer with a GNN candidate and LLM natural-language interface.
+C67 implementation targets the initially selected live topology:
 
-Next: C67 real multi-node distributed deployment with distinct node-scoped assignments/artifacts. Canonical governed `wasm_execution` remains fail-closed.
+```text
+local machine: dserver + artifact repository + DATUM local-01
+VM 1:          DATUM fog-01
+VM 2:          DATUM cloud-01
+```
+
+A new controlled dserver API accepts one validated C63 Deployment Manifest, exposes C64-derived node slices, accepts live C66 execution reports, and lists the reports centrally. The experiment state is intentionally in memory and is reset when a new manifest is published.
+
+`scripts/c67_prepare_three_node_fixture.py` creates three distinct remote artifacts and a single distributed/node_slice manifest:
+
+- `fog-01 -> fog-scale.wasm -> fog_scale(12,2)=24`;
+- `local-01 -> local-aggregate.wasm -> local_aggregate(24,6)=30`;
+- `cloud-01 -> cloud-delta.wasm -> cloud_delta(30,10)=20`.
+
+`scripts/c67_run_distributed_node.py` fetches the C64 node slice from dserver, invokes the existing C66 DATUM corridor with explicit execution, and publishes the live report back to dserver.
+
+`scripts/c67_validate_distributed_reports.py` requires exactly three nodes, three distinct artifact identities, three distinct execution IDs, the expected `24 -> 30 -> 20` results, network artifact delivery, successful integrity/Wasmtime/guest execution, and the same fail-closed governance evidence.
+
+C67 adds 10 dserver tests. From the validated C64 dserver baseline of `464 passed; 0 failed`, the expected regression target is `474 passed; 0 failed`.
+
+The checkpoint remains at `138/150` until dserver formatting/tests/build, Python script compilation, and the live three-node distributed campaign all pass.
+
+The distributed demo target is recorded in `docs/DISTRIBUTED_DEMO_PREDICTIVE_DGRAPH_TARGET.md`, including the future Raspberry Pi + local PC + VM topology, optional AWS bootstrap via Ansible, a live D-Graph dashboard, and a read-only predictive what-if layer with a GNN candidate and LLM natural-language interface.
+
+Next after C67 validation: close C67 at `139/150` and proceed to I34/140 end-to-end external D-Graph -> dserver -> manifest -> node slices -> DATUM -> runtime reports -> dserver materialized evidence. Canonical governed `wasm_execution` remains fail-closed.
