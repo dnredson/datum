@@ -13,9 +13,10 @@
 - datum_artifact_acquisition_preflight: validated
 - live_single_node_wasm_execution: validated
 - live_distributed_three_node_deployment: validated
+- end_to_end_external_dgraph_observed_state: implementation_ready_for_validation
 - governed_allow_transition_available: false
 - next_checkpoint: `I34/140`
-- next_scope: end-to-end external D-Graph -> dserver -> Deployment Manifest -> node slices -> Sentinel/DATUM -> runtime reports -> dserver materialized observed deployment state
+- next_scope: validate external D-Graph -> derived Deployment Manifest -> node slices -> Sentinel/DATUM -> runtime reports -> materialized observed D-Graph
 
 ## Phase progression
 
@@ -122,19 +123,59 @@ Detailed evidence is recorded in `docs/C67_LIVE_DISTRIBUTED_THREE_NODE_DEPLOYMEN
 
 An exploratory accidental invocation demonstrated that the current C67 operator path can override logical node identity with `--node-id`. The final governed Sentinel path must instead bind node identity to the installed/authenticated agent and reject assignments for other nodes independently of command-line claims. The clean C67 campaign was reset and rerun correctly, so this observation is a follow-up hardening requirement rather than a validation failure.
 
+## I34 — implementation ready for validation
+
+I34 closes the controlled provenance and observation loop around the validated C67 execution corridor.
+
+A new dserver core bridge derives a typed C63 Deployment Manifest directly from an externally supplied canonical D-Graph by joining:
+
+```text
+DGraphWasmModuleRef
+  -> DGraphModule
+  -> DGraphArtifact
+  +  DGraphPlacementDecision
+  -> DeploymentAssignment
+```
+
+The external graph must provide `metadata.dgraph_id`; the derived manifest carries that value as `source_dgraph_id`. Artifact URI and SHA-256 come from the D-Graph artifact, target node comes from the placement decision, and function/runtime limits come from the WASM descriptor. The resulting manifest remains `distributed/node_slice` and fail-closed for automatic/governed execution.
+
+New controlled endpoints are:
+
+```text
+POST /api/v1/controlled-wasm/dgraph
+GET  /api/v1/controlled-wasm/dgraph
+GET  /api/v1/controlled-wasm/observed-dgraph
+```
+
+The existing C67 manifest/slice/live-report endpoints remain compatible.
+
+The observed-state materializer projects accepted live reports back into a clone of the source D-Graph as `DGraphWasmRuntimeReportRef` entries, updates each module's `observed_state`, rebuilds canonical `OBSERVES` relationships to the node and WASM descriptor, and revalidates/resummarizes the resulting graph.
+
+`scripts/i34_prepare_external_dgraph.py` builds an external source D-Graph independently from the Deployment Manifest, recomputing SHA-256 from the existing three `.wasm` files. `scripts/i34_validate_observed_dgraph.py` requires three materialized reports, results `24 -> 30 -> 20`, three executed module states, and six report `OBSERVES` relationships.
+
+I34 adds 8 focused dserver unit tests. From the validated C67 baseline of `474 passed; 0 failed`, the expected regression target is:
+
+```text
+482 passed; 0 failed
+```
+
+The checkpoint intentionally remains `139/150` until dserver formatting/tests/build, Python syntax validation, and the live external-D-Graph campaign all pass.
+
+Detailed implementation/validation procedure is recorded in `docs/I34_END_TO_END_DGRAPH_OBSERVED_STATE.md`.
+
 ## Next
 
-I34/140 should remove more of the temporary C67 orchestration glue and close the real end-to-end loop:
+Validate I34 end-to-end:
 
 ```text
 External D-Graph
   -> dserver
-  -> typed Deployment Manifest
+  -> derived typed Deployment Manifest
   -> node slices
   -> Sentinel/DATUM agents
   -> artifact acquisition/execution
   -> runtime reports
-  -> dserver materialized observed deployment state
+  -> dserver materialized observed D-Graph
 ```
 
-Canonical governed `wasm_execution` remains fail-closed. The seven governance prerequisites still block automatic execution.
+After a clean PASS, advance to `140/150`. Canonical governed `wasm_execution` remains fail-closed and the seven governance prerequisites still block automatic execution.
