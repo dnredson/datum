@@ -2,6 +2,7 @@ pub mod action_feedback;
 pub mod action_results;
 pub mod analyzer;
 pub mod capabilities;
+pub mod controlled_dgraph_deployment;
 pub mod controlled_wasm_deployment;
 pub mod deployment_assignment;
 pub mod deployment_manifest;
@@ -33,3 +34,6 @@ pub mod planner;
 pub mod topology;
 pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;
+
+#[cfg(test)]
+mod controlled_dgraph_deployment_tests;
