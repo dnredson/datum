@@ -8,25 +8,94 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::core::{
+    controlled_dgraph_deployment::{
+        build_controlled_dgraph_activation, materialize_controlled_observed_dgraph,
+        ControlledDGraphActivation, ControlledObservedDGraphState,
+    },
     controlled_wasm_deployment::{
         build_controlled_live_report_list, report_execution_id,
         validate_controlled_live_report_against_manifest, ControlledWasmLiveReportList,
     },
     deployment_assignment::{derive_node_scoped_deployment, NodeScopedDeployment},
     deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
+    dgraph::DGraph,
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
 
 static ACTIVE_MANIFEST: OnceLock<RwLock<Option<DeploymentManifest>>> = OnceLock::new();
+static SOURCE_DGRAPH: OnceLock<RwLock<Option<DGraph>>> = OnceLock::new();
 static LIVE_REPORTS: OnceLock<RwLock<Vec<Value>>> = OnceLock::new();
 
 fn manifest_store() -> &'static RwLock<Option<DeploymentManifest>> {
     ACTIVE_MANIFEST.get_or_init(|| RwLock::new(None))
 }
 
+fn source_dgraph_store() -> &'static RwLock<Option<DGraph>> {
+    SOURCE_DGRAPH.get_or_init(|| RwLock::new(None))
+}
+
 fn report_store() -> &'static RwLock<Vec<Value>> {
     LIVE_REPORTS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+pub async fn post_controlled_wasm_dgraph(
+    Json(payload): Json<DGraph>,
+) -> Result<JsonResponse<ControlledDGraphActivation>, ApiError> {
+    let activation = build_controlled_dgraph_activation(&payload).map_err(bad_request)?;
+
+    {
+        let mut active = manifest_store().write().map_err(lock_error)?;
+        *active = Some(activation.manifest.clone());
+    }
+    {
+        let mut source = source_dgraph_store().write().map_err(lock_error)?;
+        *source = Some(payload);
+    }
+    {
+        let mut reports = report_store().write().map_err(lock_error)?;
+        reports.clear();
+    }
+
+    Ok(JsonResponse(activation))
+}
+
+pub async fn get_controlled_wasm_dgraph() -> Result<JsonResponse<DGraph>, ApiError> {
+    let source = source_dgraph_store().read().map_err(lock_error)?;
+    source.clone().map(JsonResponse).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({"error": "no external controlled D-Graph has been published"})),
+        )
+    })
+}
+
+pub async fn get_controlled_wasm_observed_dgraph(
+) -> Result<JsonResponse<ControlledObservedDGraphState>, ApiError> {
+    let source = source_dgraph_store()
+        .read()
+        .map_err(lock_error)?
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({"error": "no external controlled D-Graph has been published"})),
+            )
+        })?;
+    let manifest = manifest_store()
+        .read()
+        .map_err(lock_error)?
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::PRECONDITION_FAILED,
+                JsonResponse(json!({"error": "no active manifest exists for the external D-Graph"})),
+            )
+        })?;
+    let reports = report_store().read().map_err(lock_error)?.clone();
+    let observed = materialize_controlled_observed_dgraph(&source, &manifest, &reports)
+        .map_err(bad_request)?;
+    Ok(JsonResponse(observed))
 }
 
 pub async fn post_controlled_wasm_deployment_manifest(
@@ -37,6 +106,10 @@ pub async fn post_controlled_wasm_deployment_manifest(
     {
         let mut active = manifest_store().write().map_err(lock_error)?;
         *active = Some(payload.clone());
+    }
+    {
+        let mut source = source_dgraph_store().write().map_err(lock_error)?;
+        *source = None;
     }
     {
         let mut reports = report_store().write().map_err(lock_error)?;
