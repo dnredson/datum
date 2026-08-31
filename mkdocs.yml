@@ -1,0 +1,43 @@
+site_name: DATUM
+site_description: Canonical documentation for DATUM and the IoTinuum runtime architecture
+
+docs_dir: documentation
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Concepts:
+      - DATUM: concepts/datum.md
+      - IoTinuum: concepts/iotinuum.md
+      - D-Graph: concepts/dgraph.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - dserver: architecture/dserver.md
+      - SmartSentinel: architecture/smartsentinel.md
+  - Data Models:
+      - Snapshot: reference/snapshot-model.md
+      - Capabilities: reference/capabilities-model.md
+  - API:
+      - Overview: api/overview.md
+  - Reference:
+      - Glossary: reference/glossary.md
