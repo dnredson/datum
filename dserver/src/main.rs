@@ -22,6 +22,10 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
+use api::deployment_lifecycle::{
+    get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
+    post_deployment_attempt_retry, post_deployment_attempt_transition,
+};
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
 use api::dgraph_artifact_integrity::get_dgraph_artifact_integrity_contract;
 use api::dgraph_capability_negotiation::get_dgraph_capability_negotiation_contract;
@@ -146,6 +150,22 @@ async fn main() {
         .route(
             "/api/v1/controlled-wasm/live-reports",
             post(post_controlled_wasm_live_report).get(list_controlled_wasm_live_reports),
+        )
+        .route(
+            "/api/v1/controlled-wasm/deployment-attempts",
+            post(post_deployment_attempt).get(list_deployment_attempts),
+        )
+        .route(
+            "/api/v1/controlled-wasm/deployment-attempts/:attempt_id",
+            get(get_deployment_attempt),
+        )
+        .route(
+            "/api/v1/controlled-wasm/deployment-attempts/:attempt_id/transition",
+            post(post_deployment_attempt_transition),
+        )
+        .route(
+            "/api/v1/controlled-wasm/deployment-attempts/:attempt_id/retry",
+            post(post_deployment_attempt_retry),
         )
         .route("/api/v1/snapshots", post(ingest_snapshot))
         .route("/api/v1/nodes", get(list_nodes))

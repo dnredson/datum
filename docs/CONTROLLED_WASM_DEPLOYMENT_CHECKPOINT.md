@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `146/150`
-- latest_checkpoint: `I40`
+- progress: `147/150`
+- latest_checkpoint: `I41`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -20,116 +20,75 @@
 - sentinel_deployment_inbox_discovery: validated
 - explicit_multi_assignment_scheduling: validated
 - dependency_aware_deployment_stages: validated
+- deployment_lifecycle_retry_evidence: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I41/147`
-- next_scope: retain explicit deployment lifecycle and retry lineage evidence without hidden automatic retries or governed automatic execution
+- next_checkpoint: `I42/148`
+- next_scope: join resource and capability observations with controlled deployment and lifecycle evidence without enabling automatic placement or governed automatic execution
 
 ## Phase progression
 
 ```text
-C59  external D-Graph boundary and deployment semantics
-C60  isolated external WASM loading/execution
-C61  SHA-256 content identity
-C62  generic scalar ABI
-C63  typed dserver Deployment Manifest
-C64  node-scoped deployment delivery
-C65  Sentinel bounded artifact acquisition/preflight
-C66  explicit live single-node execution
-C67  live distributed three-node deployment
-I34  external D-Graph -> manifest -> reports -> observed D-Graph
-I35  Sentinel-bound slice discovery/execution/report publication
-I36  persisted + revalidated controlled state across dserver restart
-I37  explicit Sentinel registration + heartbeat/lease presence state
-I38  read-only Sentinel deployment inbox discovery
-I39  explicit deterministic multi-assignment scheduling
-I40  D-Graph-derived deterministic dependency stages
+C59-C67  controlled external WASM deployment foundation
+I34      external D-Graph to observed runtime state
+I35      Sentinel-bound deployment cycle
+I36      persistent controlled deployment state
+I37      Sentinel registration and lease state
+I38      read-only Sentinel deployment inbox
+I39      explicit multi-assignment scheduling
+I40      D-Graph-derived dependency stages
+I41      explicit lifecycle attempts and retry lineage
 ```
 
-Detailed historical evidence remains in each checkpoint's final document.
+Detailed historical evidence remains in each checkpoint final document.
 
-## I34 — validated at 140/150
+## I34-I40 validated history
 
-External D-Graph -> derived manifest -> node slices -> controlled Sentinel execution -> runtime reports -> observed D-Graph. dserver regression: 482 passed, 0 failed. Three-node live results: fog=24, local=30, cloud=20; observed report_count=3 and six WASM-report OBSERVES relationships.
+- I34/140: external D-Graph to manifest, controlled execution reports and observed D-Graph; dserver 482 tests.
+- I35/141: config-bound Sentinel discovery/execution/report path; DATUM 419 tests.
+- I36/142: validated JSON persistence and restart/corruption gates; dserver 488 tests.
+- I37/143: Sentinel registration, heartbeat and lease state; dserver 495 tests.
+- I38/144: read-only deployment inbox, no artifact acquisition or execution; DATUM 426 tests.
+- I39/145: deterministic explicit batch execution with cross-node isolation; DATUM 431 tests.
+- I40/146: deterministic dependency stages from explicit D-Graph dependency semantics; dserver 500 tests; cycle and missing deployable dependency rejected.
 
-Evidence: `docs/I34_END_TO_END_DGRAPH_OBSERVED_STATE_FINAL.md`.
+Evidence remains in `docs/I34_*_FINAL.md` through `docs/I40_*_FINAL.md` and their checkpoint-specific plans.
 
-## I35 — validated at 141/150
+## I41 — validated at 147/150
 
-The Sentinel binds identity from `agent.node_id`, fetches its own node slice, executes only under explicit `--execute`, and publishes its own live report. DATUM regression: 419 passed, 0 failed. The successful three-node path no longer depends on temporary Python orchestration glue.
-
-Evidence: `docs/I35_SENTINEL_BOUND_DEPLOYMENT_CYCLE_FINAL.md`.
-
-## I36 — validated at 142/150
-
-Controlled source D-Graph, active manifest, and live reports persist in a versioned local JSON state. Candidate mutation is validate -> persist -> activate; restoration revalidates content and fails closed on corruption. dserver regression: 488 passed, 0 failed. Restart retained the same report/execution identity; corrupt state activated nothing and later valid POST recovered normally.
-
-Evidence: `docs/I36_PERSISTENT_CONTROLLED_STATE_FINAL.md`.
-
-## I37 — validated at 143/150
-
-Explicit logical Sentinel registration/heartbeat/lease state was added independently from deployment execution. dserver regression: 495 passed, 0 failed. fog/local/cloud registered independently; fog demonstrated active -> stale -> active; wrong instance heartbeat returned HTTP 409 and node path/payload mismatch returned HTTP 400. Registration is logical presence, not cryptographic attestation.
-
-Evidence: `docs/I37_SENTINEL_REGISTRATION_LEASE_FINAL.md`.
-
-## I38 — validated at 144/150
-
-`--assignment inbox` gives read-only Sentinel deployment discovery for the bound node. DATUM regression: 426 passed, 0 failed. local/fog/cloud saw only their own assignments; an unassigned probe saw no work. Artifact server was deliberately unavailable and discovery still succeeded; reports remained 0 -> 0.
-
-Evidence: `docs/I38_SENTINEL_DEPLOYMENT_INBOX_FINAL.md`.
-
-## I39 — validated at 145/150
-
-Explicit batch execution supports 2+ node-scoped assignments while retaining the I35 single-assignment and I38 read-only modes. DATUM regression: 431 passed, 0 failed. Scheduling is deterministic `assignment_id_ascending` with `stop_on_first_failure`; live batch executed `a-local-first` then `z-local-second`, both result 30, produced exactly two local reports, and never executed `cloud-untouched`.
-
-Evidence: `docs/I39_MULTI_ASSIGNMENT_SCHEDULING_FINAL.md`.
-
-## I40 — validated at 146/150
-
-I40 derives deployment ordering from explicit D-Graph dependency semantics rather than treating every flow as a deployment prerequisite. A dependency edge is used only when `flow_kind=deployment_dependency` or the edge explicitly carries `metadata.deployment_dependency=true`.
+I41 models controlled deployment attempts as explicit lifecycle evidence with states `discovered`, `prepared`, `executing`, `executed`, `failed`, and `blocked`.
 
 Regression:
 
 ```text
 dserver fmt: PASS
-dserver test: 500 passed; 0 failed
+dserver test: 508 passed; 0 failed
 dserver build: PASS
 ```
 
-Validated three-node plan:
+Live validation retained a failed first fog attempt and created an explicit retry with:
 
 ```text
-assignment_count=3
-dependency_edge_count=2
-stage_count=3
-stage 0 -> a-fog-scale       -> fog-01
-stage 1 -> m-local-aggregate -> local-01 -> depends_on a-fog-scale
-stage 2 -> z-cloud-delta     -> cloud-01 -> depends_on m-local-aggregate
+attempt_number=2
+retry_of_attempt_id=fog-attempt-1
+root_attempt_id=fog-attempt-1
+automatic_retry_performed=false
+governed_execution_performed=false
 ```
 
-The same dependency/stage evidence was materialized into observed D-Graph module metadata before execution. Observed report_count remained 0 and validation errors were 0.
+The retry executed through the real Sentinel path, produced result 24, published a controlled live report, and transitioned to `executed` only after binding to that real report's `execution_id`.
 
-Fail-closed gates:
+The observed D-Graph retained both attempts and materialized `fog-attempt-2` as the current `executed` lifecycle state for `fog-scale-module`. Reusing the same execution ID from another lifecycle attempt failed closed with HTTP 409 and did not promote that attempt to `executed`.
 
-```text
-cycle -> HTTP 400
-missing deployable upstream dependency -> HTTP 400
-live report count -> 0
-```
-
-No automatic stage execution or governed execution was introduced.
+No hidden retries or governed automatic execution were introduced. Lifecycle attempts remain intentionally in-memory in I41.
 
 Evidence:
 
-- `docs/I40_DEPENDENCY_AWARE_DEPLOYMENT_STAGES.md`
-- `docs/I40_DEPENDENCY_AWARE_DEPLOYMENT_STAGES_FINAL.md`
-- `scripts/fixtures/i40-dependency-three-node-dgraph.json`
-- `scripts/fixtures/i40-dependency-cycle-dgraph.json`
-- `scripts/fixtures/i40-dependency-missing-dgraph.json`
+- `docs/I41_DEPLOYMENT_LIFECYCLE_RETRY.md`
+- `docs/I41_DEPLOYMENT_LIFECYCLE_RETRY_FINAL.md`
 
 ## Remaining path to 150/150
 
 ```text
-I41/147 deployment lifecycle and retry evidence
 I42/148 resource-aware observed D-Graph join
 I43/149 deployment readiness and governance evidence
 I44/150 phase-final integration and reproducibility package
@@ -139,4 +98,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I41/147 models explicit deployment attempts through lifecycle states such as discovered/prepared/executing/executed/failed/blocked, retains attempt identifiers and prior evidence, and represents bounded retry lineage. Retries remain explicit; there are no hidden automatic side-effecting retries.
+I42/148 joins explicit node resource and capability observations with the controlled observed D-Graph and current deployment/lifecycle evidence. The join is evidence-only: it does not automatically replace placements, trigger retries, or authorize governed execution.

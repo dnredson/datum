@@ -25,6 +25,7 @@ use crate::core::{
         ControlledWasmPersistedState, CONTROLLED_WASM_PERSISTENCE_VERSION,
     },
     deployment_assignment::{derive_node_scoped_deployment, NodeScopedDeployment},
+    deployment_lifecycle_observed::materialize_lifecycle_evidence,
     deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
     dgraph::DGraph,
 };
@@ -122,6 +123,7 @@ pub async fn post_controlled_wasm_dgraph(
     };
     persist_candidate(&candidate)?;
     replace_in_memory_state(&candidate)?;
+    crate::api::deployment_lifecycle::clear_attempts().map_err(bad_request)?;
 
     Ok(JsonResponse(activation))
 }
@@ -161,8 +163,10 @@ pub async fn get_controlled_wasm_observed_dgraph(
             )
         })?;
     let reports = report_store().read().map_err(lock_error)?.clone();
-    let observed = materialize_controlled_observed_dgraph(&source, &manifest, &reports)
+    let mut observed = materialize_controlled_observed_dgraph(&source, &manifest, &reports)
         .map_err(bad_request)?;
+    let attempts = crate::api::deployment_lifecycle::attempts_snapshot().map_err(bad_request)?;
+    materialize_lifecycle_evidence(&mut observed, &manifest, &attempts).map_err(bad_request)?;
     Ok(JsonResponse(observed))
 }
 
@@ -181,6 +185,7 @@ pub async fn post_controlled_wasm_deployment_manifest(
     };
     persist_candidate(&candidate)?;
     replace_in_memory_state(&candidate)?;
+    crate::api::deployment_lifecycle::clear_attempts().map_err(bad_request)?;
 
     Ok(JsonResponse(payload))
 }
@@ -289,6 +294,30 @@ pub async fn list_controlled_wasm_live_reports(
         &manifest,
         &reports,
     )))
+}
+
+pub fn controlled_manifest_snapshot() -> Result<Option<DeploymentManifest>, String> {
+    ensure_controlled_wasm_persistence_initialized();
+    manifest_store()
+        .read()
+        .map(|guard| guard.clone())
+        .map_err(|error| format!("controlled WASM manifest lock poisoned: {error}"))
+}
+
+pub fn controlled_source_dgraph_snapshot() -> Result<Option<DGraph>, String> {
+    ensure_controlled_wasm_persistence_initialized();
+    source_dgraph_store()
+        .read()
+        .map(|guard| guard.clone())
+        .map_err(|error| format!("controlled WASM source D-Graph lock poisoned: {error}"))
+}
+
+pub fn controlled_live_reports_snapshot() -> Result<Vec<Value>, String> {
+    ensure_controlled_wasm_persistence_initialized();
+    report_store()
+        .read()
+        .map(|guard| guard.clone())
+        .map_err(|error| format!("controlled WASM report lock poisoned: {error}"))
 }
 
 fn persist_candidate(state: &ControlledWasmPersistedState) -> Result<(), ApiError> {
