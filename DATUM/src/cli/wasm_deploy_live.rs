@@ -707,7 +707,7 @@ mod tests {
     use crate::wasm_runtime::{
         deployment::{
             DatumDeploymentArtifact, DatumDeploymentAssignment, DatumDeploymentExecutionBoundary,
-            DatumDeploymentRuntimeLimits, DatumNodeDeploymentScope,
+            DatumDeploymentRuntimeLimits,
         },
         generic_runner::WasmScalarValue,
     };
@@ -907,6 +907,6 @@ mod tests {
         .unwrap();
         let error = build_inbox_result("fog-01", &url, Some(&view))
             .expect_err("cross-node assignment must fail discovery validation");
-        assert!(error.to_string().contains("target node"));
+        assert!(error.to_string().contains("targets 'cloud-01'"));
     }
 }
