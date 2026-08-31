@@ -147,7 +147,17 @@ Ctrl+C shutdown was then validated by running the binary directly with `--cycle-
 mode=smartsentinel event=shutdown reason=ctrl_c completed_collections=1 heartbeat_seq=11 ... side_effects=false
 ```
 
-The previous Windows `STATUS_CONTROL_C_EXIT` behavior was not observed. Local Windows evidence therefore validates independent lifecycle heartbeat and Ctrl+C graceful shutdown. Stop-file validation and the three-host >=10 minute run remain pending.
+The previous Windows `STATUS_CONTROL_C_EXIT` behavior was not observed.
+
+Stop-file shutdown was also validated while a slow Windows collection was in progress. Lifecycle heartbeat sequence reached 7, the collection completed successfully after `10699 ms`, and the process ended cleanly with:
+
+```text
+mode=smartsentinel event=shutdown reason=stop_file completed_collections=1 heartbeat_seq=7 ... side_effects=false
+```
+
+After shutdown, `Test-Path .smartsentinel-stop` returned `False`, confirming the acknowledged stop request was consumed and removed. A separate stale-stop-file startup test then correctly refused to launch and returned `SmartSentinel stop file already exists: .smartsentinel-stop. Remove it before starting the agent.`
+
+Local Windows evidence therefore validates independent lifecycle heartbeat, Ctrl+C graceful shutdown, active stop-file shutdown, and stale stop-file startup protection. Only the three-host >=10 minute acceptance run remains for O1.
 
 ## Three-host O1 acceptance run
 
