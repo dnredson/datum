@@ -36,11 +36,53 @@ fn get_hostname_fallback() -> Result<String> {
     Ok(s)
 }
 
+/// Historical DATUM cycle behavior: host entity identity is derived from the OS hostname.
+/// This remains unchanged for compatibility with the closed deployment baseline.
 pub fn run_cycle(
     node_id: &str,
     hostname_override: Option<&str>,
     schema_version: &str,
     cfg: &crate::config::Config,
+) -> Result<Snapshot> {
+    run_cycle_with_identity(
+        node_id,
+        hostname_override,
+        schema_version,
+        cfg,
+        HostIdentity::Hostname,
+    )
+}
+
+/// SmartSentinel service-mode cycle: host entity identity is derived from the logical
+/// node id while the real OS hostname remains observation metadata. This prevents two
+/// different nodes with the same hostname from collapsing into one D-Graph entity.
+pub fn run_cycle_for_node_identity(
+    node_id: &str,
+    hostname_override: Option<&str>,
+    schema_version: &str,
+    cfg: &crate::config::Config,
+) -> Result<Snapshot> {
+    run_cycle_with_identity(
+        node_id,
+        hostname_override,
+        schema_version,
+        cfg,
+        HostIdentity::NodeId,
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HostIdentity {
+    Hostname,
+    NodeId,
+}
+
+fn run_cycle_with_identity(
+    node_id: &str,
+    hostname_override: Option<&str>,
+    schema_version: &str,
+    cfg: &crate::config::Config,
+    identity: HostIdentity,
 ) -> Result<Snapshot> {
     let observed_at = time::now_utc();
     let cycle_id = Uuid::new_v4().to_string();
@@ -48,7 +90,11 @@ pub fn run_cycle(
         Some(h) => h.to_string(),
         None => get_hostname_fallback()?,
     };
-    let host_id = ids::host_id(&hostname);
+    let host_identity = match identity {
+        HostIdentity::Hostname => hostname.as_str(),
+        HostIdentity::NodeId => node_id,
+    };
+    let host_id = ids::host_id(host_identity);
     let host_entity = Entity {
         id: host_id.clone(),
         kind: "host".to_string(),
