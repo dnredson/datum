@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `142/150`
-- latest_checkpoint: `I36`
+- progress: `143/150`
+- latest_checkpoint: `I37`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -16,9 +16,10 @@
 - end_to_end_external_dgraph_observed_state: validated
 - sentinel_bound_deployment_cycle: validated
 - controlled_wasm_state_persistence: validated
+- sentinel_registration_lease: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I37/143`
-- next_scope: add Sentinel registration and lease/heartbeat state so dserver can distinguish active and stale logical agents without treating deployment requests as presence evidence
+- next_checkpoint: `I38/144`
+- next_scope: let a bound Sentinel discover whether dserver currently has work for its own node identity without executing it
 
 ## Phase progression
 
@@ -35,6 +36,7 @@ C67  live distributed three-node deployment
 I34  external D-Graph -> manifest -> reports -> observed D-Graph
 I35  Sentinel-bound slice discovery/execution/report publication
 I36  persisted + revalidated controlled state across dserver restart
+I37  explicit Sentinel registration + heartbeat/lease presence state
 ```
 
 Detailed evidence for every earlier checkpoint remains in the corresponding final/checkpoint documents.
@@ -74,15 +76,6 @@ Evidence:
 
 I35 removed the temporary Python orchestration glue from the successful deployment path. The Sentinel now reads bound `agent.node_id`, fetches its own node slice, accepts only the delivered single assignment, acquires/verifies/executes the WASM under explicit `--execute`, and publishes its own `LiveWasmExecutionReport` directly to dserver.
 
-The I35 control-plane path rejects:
-
-```text
-missing --execute
---node-id override
-manual assignment instead of auto
-HTTP control-plane access without explicit lab opt-in
-```
-
 Regression and live evidence:
 
 ```text
@@ -97,7 +90,7 @@ report_count=3
 wasm_report_observes_relationships=6
 ```
 
-This establishes configuration-bound logical identity, not cryptographic physical-agent attestation.
+The I35 control-plane path rejects missing `--execute`, `--node-id` override, manual assignment selection, and plain HTTP without explicit lab opt-in. This establishes configuration-bound logical identity, not cryptographic physical-agent attestation.
 
 Evidence:
 
@@ -107,25 +100,9 @@ Evidence:
 
 ## I36 — validated at 142/150
 
-I36 removes the dserver restart-state loss observed during I35. Controlled state is persisted in a versioned local JSON envelope containing:
+I36 persists controlled state in a versioned local JSON envelope containing `source_dgraph`, `active_manifest`, and `live_reports`. Candidate mutation ordering is `validate -> persist -> activate in memory`. Restoration revalidates the source D-Graph, freshly re-derives and compares the manifest, validates every report, and rejects duplicate execution IDs.
 
-```text
-source_dgraph
-active_manifest
-live_reports
-```
-
-Runtime storage is local-file based and defaults to `.datum-controlled-wasm-state.json`, with `DATUM_CONTROLLED_WASM_STATE_PATH` available for operator/lab isolation. WASM binaries are not embedded in the state file; their artifact URI/content identity remains referenced from the D-Graph/manifest/report evidence.
-
-Every candidate mutation follows:
-
-```text
-validate -> persist -> activate in memory
-```
-
-Restoration does not blindly trust the file. It revalidates the source D-Graph, freshly re-derives and compares the active manifest, validates every live report against that manifest, and rejects duplicate execution IDs before activation.
-
-### I36 regression
+Regression:
 
 ```text
 dserver fmt: PASS
@@ -133,55 +110,24 @@ dserver test: 488 passed; 0 failed
 dserver build: PASS
 ```
 
-Only the two existing non-blocking dead-code warnings remained:
+Restart gate:
 
 ```text
-EXECUTION_PREREQUISITE_GATE_NAMES
-default_embedded_add_module_descriptor
-```
-
-### I36 restart gate — PASS
-
-A fresh D-Graph/manifest state was persisted, followed by one direct I35 Sentinel execution:
-
-```text
-node_id=fog-01
-assignment_id=fog-scale
-result_i32=24
-fuel_consumed=4
+pre-restart report_count=1
 execution_id=d80622ca-f534-49c9-a10b-f0e33dc94998
+restart without D-Graph republish
+post-restart report_count=1
+same execution_id=True
+source D-Graph restored=True
 ```
 
-Before restart `live-reports count=1`. The dserver process was stopped and restarted without deleting the state file and without republishing the D-Graph. After restart the same state was restored:
+Corruption gate:
 
 ```text
-report_count=1
-execution_id=d80622ca-f534-49c9-a10b-f0e33dc94998
-node_id=fog-01
-result_i32=24
-```
-
-PowerShell equality checks for report count and execution ID both returned `True`. The full external D-Graph was also available by GET after restart without a new POST.
-
-### I36 corruption gate — PASS
-
-A separate disposable persisted-state file was replaced with deliberately invalid non-JSON content. On controlled-state initialization the dserver logged that the persisted state could not be parsed and explicitly started controlled state empty.
-
-`GET /api/v1/controlled-wasm/dgraph` returned:
-
-```text
-HTTP/1.1 404 Not Found
-{"error":"no external controlled D-Graph has been published"}
-```
-
-The invalid state was therefore not activated. The dserver remained operational, and a later valid D-Graph POST successfully established a new valid controlled state and replaced the corrupt runtime file.
-
-Validated persistence semantics are now:
-
-```text
-valid state -> persist -> restart -> revalidate -> restore
-corrupt state -> reject -> controlled state empty
-empty state -> accept valid D-Graph -> persist valid state
+invalid non-JSON state -> not activated
+controlled state -> empty
+GET controlled D-Graph -> 404
+later valid D-Graph POST -> accepted and persisted
 ```
 
 Evidence:
@@ -189,12 +135,75 @@ Evidence:
 - `docs/I36_PERSISTENT_CONTROLLED_STATE.md`
 - `docs/I36_PERSISTENT_CONTROLLED_STATE_FINAL.md`
 
+## I37 — validated at 143/150
+
+I37 adds explicit logical Sentinel presence independent from deployment execution.
+
+Validated endpoints:
+
+```text
+PUT  /api/v1/sentinels/:node_id/registration
+POST /api/v1/sentinels/:node_id/heartbeat
+GET  /api/v1/sentinels
+GET  /api/v1/sentinels/:node_id
+```
+
+The dserver derives `active` / `stale` from server time and `lease_seconds`; the client cannot submit status. `node_id`, `instance_id`, stage, capabilities, registration timestamp, last-seen timestamp, and lease duration are retained.
+
+Regression:
+
+```text
+dserver fmt: PASS
+dserver test: 495 passed; 0 failed
+dserver build: PASS
+```
+
+Live topology registration:
+
+```text
+local-01 instance=local-i37 stage=local lease=300s
+cloud-01 instance=cloud-i37 stage=cloud lease=300s
+fog-01   instance=fog-i37   stage=fog   lease=3s
+```
+
+The intentionally short fog lease demonstrated:
+
+```text
+registration -> active
+wait beyond lease -> stale
+heartbeat from same instance -> active
+registered_at_utc unchanged=True
+last_seen_at_utc changed=True
+```
+
+Fail-closed gates:
+
+```text
+heartbeat instance_id=IMPOSTOR -> HTTP 409
+path fog-01 + payload cloud-01 -> HTTP 400
+```
+
+Aggregate registration returned `count=3`; because the fog lease is only three seconds, snapshots legitimately alternate between `active_count=3/stale_count=0` immediately after refresh and `active_count=2/stale_count=1` after fog expiry. Active/stale is therefore a live time-derived status rather than a sticky flag.
+
+Materialized views explicitly state:
+
+```text
+deployment_side_effects_performed=false
+authenticated_identity_attested=false
+```
+
+I37 lease state remains intentionally in-memory so restart cannot falsely preserve an active presence lease. Registration is logical presence tracking only, not cryptographic host attestation.
+
+Evidence:
+
+- `docs/I37_SENTINEL_REGISTRATION_LEASE_PLAN.md`
+- `docs/I37_SENTINEL_REGISTRATION_LEASE_FINAL.md`
+
 ## Remaining path to 150/150
 
 The fixed roadmap is recorded in `docs/CONTROLLED_WASM_DEPLOYMENT_142_TO_150_ROADMAP.md`.
 
 ```text
-I37/143 Sentinel registration and lease state
 I38/144 Sentinel deployment inbox discovery
 I39/145 explicit multi-assignment scheduling
 I40/146 dependency-aware deployment stages
@@ -208,4 +217,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I37/143 should let each Sentinel establish explicit presence independently of deployment execution. dserver should retain a logical registration record with `node_id`, an instance identifier, capabilities/stage summary, last-seen timestamp, lease duration, and derived active/stale status. Node/path identity mismatch must fail closed. This is presence/lease tracking only and must not be described as cryptographic host attestation.
+I38/144 connects Sentinel presence with node-scoped deployment discovery. A bound Sentinel should be able to ask dserver whether work exists for its own `agent.node_id`, report explicit no-work/one-work/multiple-work discovery state, and perform no artifact acquisition or guest execution during discovery.
