@@ -4,6 +4,7 @@ pub mod analyzer;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
 pub mod controlled_wasm_deployment;
+pub mod controlled_wasm_persistence;
 pub mod deployment_assignment;
 pub mod deployment_manifest;
 pub mod deployment_plan;

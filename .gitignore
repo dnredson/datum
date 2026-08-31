@@ -10,3 +10,8 @@ dserver/target/
 DATUM/config-*.local.toml
 DATUM/snapshot-*.json
 scripts/.smoke-output/
+
+# I36 controlled WASM dserver persistence (operator-local runtime state).
+.datum-controlled-wasm-state.json
+.datum-controlled-wasm-state.json.tmp
+.datum-controlled-wasm-state.json.bak

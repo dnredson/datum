@@ -1,0 +1,1 @@
+I36 validation checkpoint: regression 488/488, build PASS, restart persistence PASS with execution_id d80622ca-f534-49c9-a10b-f0e33dc94998 preserved, corruption gate PASS, valid D-Graph recovery PASS.
