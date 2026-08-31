@@ -93,10 +93,20 @@ fn live_report() -> Value {
 fn derives_distributed_manifest_from_external_dgraph() {
     let manifest = derive_deployment_manifest_from_dgraph(&source_graph()).unwrap();
     assert_eq!(manifest.manifest_id, "manifest:i34-external-dgraph");
-    assert_eq!(manifest.source_dgraph_id.as_deref(), Some("i34-external-dgraph"));
+    assert_eq!(
+        manifest.source_dgraph_id.as_deref(),
+        Some("i34-external-dgraph")
+    );
     assert_eq!(manifest.strategy, DeploymentStrategy::Distributed);
     assert_eq!(manifest.graph_distribution, GraphDistribution::NodeSlice);
     assert_eq!(manifest.assignments.len(), 1);
+    let plan = manifest
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("dependency_plan"))
+        .expect("derived manifest should materialize dependency plan");
+    assert_eq!(plan["stage_count"].as_u64(), Some(1));
+    assert_eq!(plan["dependency_edge_count"].as_u64(), Some(0));
 }
 
 #[test]
@@ -107,7 +117,18 @@ fn derived_assignment_preserves_target_function_and_integrity() {
     assert_eq!(assignment.target_node, "fog-01");
     assert_eq!(assignment.function_name, "fog_scale");
     assert_eq!(assignment.artifact.sha256, SHA);
-    assert_eq!(assignment.artifact.content_id, format!("sha256:{SHA}"));
+    assert_eq!(
+        assignment.artifact.content_id,
+        format!("sha256:{SHA}")
+    );
+    assert_eq!(
+        assignment
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("deployment_stage"))
+            .and_then(Value::as_u64),
+        Some(0)
+    );
 }
 
 #[test]
@@ -147,13 +168,30 @@ fn ambiguous_placement_is_rejected() {
 fn live_report_materializes_observed_wasm_state() {
     let graph = source_graph();
     let manifest = derive_deployment_manifest_from_dgraph(&graph).unwrap();
-    let observed = materialize_controlled_observed_dgraph(&graph, &manifest, &[live_report()]).unwrap();
+    let observed =
+        materialize_controlled_observed_dgraph(&graph, &manifest, &[live_report()]).unwrap();
 
     assert_eq!(observed.report_count, 1);
     assert!(observed.validation_errors.is_empty());
     assert_eq!(observed.graph.wasm_reports.len(), 1);
     assert_eq!(observed.graph.wasm_reports[0].report_id, "exec-fog-1");
-    assert_eq!(observed.graph.modules[0].observed_state.as_deref(), Some("executed"));
+    assert_eq!(
+        observed.graph.modules[0].observed_state.as_deref(),
+        Some("executed")
+    );
+    assert_eq!(
+        observed.graph.modules[0]
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("deployment_stage"))
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(observed
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("dependency_plan"))
+        .is_some());
     assert!(!observed.side_effects_performed);
 }
 
@@ -161,7 +199,8 @@ fn live_report_materializes_observed_wasm_state() {
 fn observed_dgraph_links_report_to_node_and_wasm_descriptor() {
     let graph = source_graph();
     let manifest = derive_deployment_manifest_from_dgraph(&graph).unwrap();
-    let observed = materialize_controlled_observed_dgraph(&graph, &manifest, &[live_report()]).unwrap();
+    let observed =
+        materialize_controlled_observed_dgraph(&graph, &manifest, &[live_report()]).unwrap();
 
     let links = observed
         .graph
