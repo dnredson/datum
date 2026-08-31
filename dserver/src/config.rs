@@ -13,6 +13,8 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub bind: Option<String>,
     pub debug: Option<bool>,
+    #[serde(default)]
+    pub controlled_wasm_state_path: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
