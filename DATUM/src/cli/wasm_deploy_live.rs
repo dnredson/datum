@@ -9,7 +9,8 @@ use crate::{
     wasm_runtime::{
         deployment::{
             validate_node_scoped_deployment_for_local_node, ArtifactAcquisitionPolicy,
-            DatumNodeDeploymentScope, DatumNodeScopedDeployment,
+            DatumDeploymentRuntimeLimits, DatumNodeDeploymentScope, DatumNodeScopedDeployment,
+            PreparedDeploymentArtifact,
         },
         generic_runner::WasmScalarValue,
         live_deployment::{
@@ -21,6 +22,7 @@ use crate::{
 
 const CONTROL_PLANE_ASSIGNMENT_SELECTOR: &str = "auto";
 const CONTROL_PLANE_INBOX_SELECTOR: &str = "inbox";
+const CONTROL_PLANE_BATCH_SELECTOR: &str = "batch";
 const DEFAULT_CONTROL_PLANE_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Serialize)]
@@ -58,6 +60,37 @@ struct SentinelDeploymentInboxResult {
     deployment_side_effects_performed: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct SentinelBatchAssignmentResult {
+    ordinal: usize,
+    assignment_id: String,
+    status: String,
+    execution_id: String,
+    report_published: bool,
+    fuel_consumed: Option<u64>,
+    results: Vec<WasmScalarValue>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SentinelBatchDeploymentResult {
+    mode: &'static str,
+    node_id: String,
+    slice_url: String,
+    report_url: String,
+    scheduling_policy: &'static str,
+    failure_policy: &'static str,
+    assignment_count: usize,
+    attempted_count: usize,
+    executed_count: usize,
+    failed_or_blocked_count: usize,
+    status: &'static str,
+    assignments: Vec<SentinelBatchAssignmentResult>,
+    explicit_execute: bool,
+    automatic_execution_allowed: bool,
+    governed_execution_performed: bool,
+}
+
 pub fn run_wasm_deploy_live_command(
     config_path: &str,
     node_id_override: Option<&str>,
@@ -78,6 +111,21 @@ pub fn run_wasm_deploy_live_command(
             deployment_path,
             scalar_args,
             execute,
+            allow_insecure_http,
+            max_artifact_bytes,
+            acquisition_timeout_ms,
+            json_output,
+        );
+    }
+
+    if is_control_plane_mode(deployment_path) && is_batch_selector(assignment_id) {
+        return run_sentinel_bound_batch_mode(
+            config_path,
+            node_id_override,
+            deployment_path,
+            scalar_args,
+            execute,
+            invoked_by,
             allow_insecure_http,
             max_artifact_bytes,
             acquisition_timeout_ms,
@@ -260,28 +308,7 @@ fn run_sentinel_bound_control_plane_mode(
         ));
     }
 
-    let response = client
-        .post(report_url.clone())
-        .json(&report)
-        .send()
-        .with_context(|| format!("publish Sentinel live report to {report_url}"))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().unwrap_or_default();
-        return Err(anyhow!(
-            "publish Sentinel live report failed with HTTP {status}: {body}"
-        ));
-    }
-    let accepted: LiveWasmExecutionReport = response
-        .json()
-        .context("parse accepted Sentinel live report response")?;
-    if accepted.execution_id != report.execution_id {
-        return Err(anyhow!(
-            "dserver acknowledged execution_id '{}' but Sentinel published '{}'",
-            accepted.execution_id,
-            report.execution_id
-        ));
-    }
+    publish_live_report(&client, &report_url, &report)?;
 
     let result = SentinelBoundDeploymentResult {
         mode: "sentinel_bound_control_plane",
@@ -317,6 +344,204 @@ fn run_sentinel_bound_control_plane_mode(
     println!("  report_published: {}", result.report_published);
     println!("  execution_id: {}", result.execution_id);
     println!("  results: {:?}", result.results);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sentinel_bound_batch_mode(
+    config_path: &str,
+    node_id_override: Option<&str>,
+    dserver_base: &str,
+    scalar_args: &[String],
+    execute: bool,
+    invoked_by: &str,
+    allow_insecure_http: bool,
+    max_artifact_bytes: Option<usize>,
+    acquisition_timeout_ms: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
+    validate_batch_mode_cli(node_id_override, execute)?;
+
+    let cfg = config::load_config(config_path)?;
+    let local_node_id = normalize_bound_node_id(&cfg.agent.node_id)?;
+    let base_url = parse_control_plane_base_url(dserver_base, allow_insecure_http)?;
+    let timeout_ms = acquisition_timeout_ms.unwrap_or(DEFAULT_CONTROL_PLANE_TIMEOUT_MS);
+    if timeout_ms == 0 {
+        return Err(anyhow!("control-plane timeout must be positive"));
+    }
+    let client = build_control_plane_client(timeout_ms)?;
+    let slice_url = control_plane_endpoint(
+        &base_url,
+        &[
+            "api",
+            "v1",
+            "controlled-wasm",
+            "deployment",
+            "for-node",
+            &local_node_id,
+        ],
+    )?;
+    let report_url = control_plane_endpoint(
+        &base_url,
+        &["api", "v1", "controlled-wasm", "live-reports"],
+    )?;
+
+    let response = client
+        .get(slice_url.clone())
+        .send()
+        .with_context(|| format!("fetch Sentinel batch deployment slice from {slice_url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "fetch Sentinel batch deployment slice failed with HTTP {status}: {body}"
+        ));
+    }
+    let deployment: DatumNodeScopedDeployment = response
+        .json()
+        .context("parse Sentinel batch node-scoped deployment response")?;
+    validate_node_scoped_deployment_for_local_node(&deployment, &local_node_id)?;
+
+    let assignment_ids = deterministic_batch_assignment_ids(&deployment)?;
+    let policy = artifact_policy(
+        allow_insecure_http,
+        max_artifact_bytes,
+        acquisition_timeout_ms,
+    );
+    let args = parse_scalar_args(scalar_args)?;
+
+    // Fail closed before any guest execution: every selected assignment is acquired,
+    // integrity-checked and compile-preflighted before the first execution attempt.
+    let mut prepared_batch: Vec<(String, PreparedDeploymentArtifact, DatumDeploymentRuntimeLimits)> =
+        Vec::with_capacity(assignment_ids.len());
+    for assignment_id in &assignment_ids {
+        let (prepared, limits) =
+            prepare_single_assignment(&deployment, &local_node_id, assignment_id, &policy)
+                .with_context(|| format!("preflight batch assignment '{assignment_id}'"))?;
+        prepared_batch.push((assignment_id.clone(), prepared, limits));
+    }
+
+    let context = LiveDeploymentContext {
+        manifest_id: deployment.manifest_id.clone(),
+        project_id: deployment.project_id.clone(),
+        node_id: local_node_id.clone(),
+    };
+    let request = LiveWasmInvocationRequest {
+        invoked_by: invoked_by.to_string(),
+        explicit_execute: true,
+        args,
+    };
+
+    let mut assignment_results = Vec::with_capacity(prepared_batch.len());
+    for (index, (assignment_id, prepared, limits)) in prepared_batch.iter().enumerate() {
+        let report = execute_prepared_assignment_live(prepared, limits, &context, &request)
+            .with_context(|| format!("execute batch assignment '{assignment_id}'"))?;
+        publish_live_report(&client, &report_url, &report)?;
+
+        let executed = report.status == "executed";
+        assignment_results.push(SentinelBatchAssignmentResult {
+            ordinal: index + 1,
+            assignment_id: assignment_id.clone(),
+            status: report.status.clone(),
+            execution_id: report.execution_id.clone(),
+            report_published: true,
+            fuel_consumed: report.fuel_consumed,
+            results: report.results.clone(),
+            message: report.message.clone(),
+        });
+
+        if !executed {
+            break;
+        }
+    }
+
+    let executed_count = assignment_results
+        .iter()
+        .filter(|result| result.status == "executed")
+        .count();
+    let failed_or_blocked_count = assignment_results.len() - executed_count;
+    let status = if assignment_results.len() == assignment_ids.len() && failed_or_blocked_count == 0 {
+        "executed"
+    } else {
+        "stopped_on_failure"
+    };
+
+    let result = SentinelBatchDeploymentResult {
+        mode: "sentinel_bound_batch",
+        node_id: local_node_id,
+        slice_url: slice_url.to_string(),
+        report_url: report_url.to_string(),
+        scheduling_policy: "assignment_id_ascending",
+        failure_policy: "stop_on_first_failure",
+        assignment_count: assignment_ids.len(),
+        attempted_count: assignment_results.len(),
+        executed_count,
+        failed_or_blocked_count,
+        status,
+        assignments: assignment_results,
+        explicit_execute: true,
+        automatic_execution_allowed: false,
+        governed_execution_performed: false,
+    };
+
+    render_batch_result(result, json_output)
+}
+
+fn publish_live_report(client: &Client, report_url: &Url, report: &LiveWasmExecutionReport) -> Result<()> {
+    let response = client
+        .post(report_url.clone())
+        .json(report)
+        .send()
+        .with_context(|| format!("publish Sentinel live report to {report_url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "publish Sentinel live report failed with HTTP {status}: {body}"
+        ));
+    }
+    let accepted: LiveWasmExecutionReport = response
+        .json()
+        .context("parse accepted Sentinel live report response")?;
+    if accepted.execution_id != report.execution_id {
+        return Err(anyhow!(
+            "dserver acknowledged execution_id '{}' but Sentinel published '{}'",
+            accepted.execution_id,
+            report.execution_id
+        ));
+    }
+    Ok(())
+}
+
+fn render_batch_result(result: SentinelBatchDeploymentResult, json_output: bool) -> Result<()> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                "{\"error\":\"failed to render Sentinel batch deployment result\"}".to_string()
+            })
+        );
+        return Ok(());
+    }
+
+    println!("I39 Sentinel deterministic multi-assignment batch");
+    println!("  node_id: {}", result.node_id);
+    println!("  scheduling_policy: {}", result.scheduling_policy);
+    println!("  failure_policy: {}", result.failure_policy);
+    println!("  assignment_count: {}", result.assignment_count);
+    println!("  attempted_count: {}", result.attempted_count);
+    println!("  executed_count: {}", result.executed_count);
+    println!("  status: {}", result.status);
+    for assignment in &result.assignments {
+        println!(
+            "  [{}] {} -> {} -> report={} -> execution_id={}",
+            assignment.ordinal,
+            assignment.assignment_id,
+            assignment.status,
+            assignment.report_published,
+            assignment.execution_id
+        );
+    }
     Ok(())
 }
 
@@ -498,6 +723,10 @@ fn is_inbox_selector(assignment_selector: &str) -> bool {
     assignment_selector.trim() == CONTROL_PLANE_INBOX_SELECTOR
 }
 
+fn is_batch_selector(assignment_selector: &str) -> bool {
+    assignment_selector.trim() == CONTROL_PLANE_BATCH_SELECTOR
+}
+
 fn validate_bound_mode_cli(node_id_override: Option<&str>, assignment_selector: &str) -> Result<()> {
     if node_id_override.is_some() {
         return Err(anyhow!(
@@ -510,6 +739,39 @@ fn validate_bound_mode_cli(node_id_override: Option<&str>, assignment_selector: 
         ));
     }
     Ok(())
+}
+
+fn validate_batch_mode_cli(node_id_override: Option<&str>, execute: bool) -> Result<()> {
+    if node_id_override.is_some() {
+        return Err(anyhow!(
+            "--node-id is forbidden in Sentinel batch mode; identity comes only from agent.node_id"
+        ));
+    }
+    if !execute {
+        return Err(anyhow!(
+            "Sentinel batch mode is execution-capable; pass --execute to explicitly authorize the deterministic batch"
+        ));
+    }
+    Ok(())
+}
+
+fn deterministic_batch_assignment_ids(deployment: &DatumNodeScopedDeployment) -> Result<Vec<String>> {
+    if deployment.assignments.len() < 2 {
+        return Err(anyhow!(
+            "Sentinel batch mode requires at least two assignments in the node slice; received {}",
+            deployment.assignments.len()
+        ));
+    }
+    let mut assignment_ids = deployment
+        .assignments
+        .iter()
+        .map(|assignment| assignment.assignment_id.trim().to_string())
+        .collect::<Vec<_>>();
+    if assignment_ids.iter().any(|assignment_id| assignment_id.is_empty()) {
+        return Err(anyhow!("batch assignment_id must not be empty"));
+    }
+    assignment_ids.sort();
+    Ok(assignment_ids)
 }
 
 fn validate_inbox_mode_cli(
@@ -908,5 +1170,52 @@ mod tests {
         let error = build_inbox_result("fog-01", &url, Some(&view))
             .expect_err("cross-node assignment must fail discovery validation");
         assert!(error.to_string().contains("targets 'cloud-01'"));
+    }
+
+    #[test]
+    fn batch_selector_is_explicit_and_separate_from_auto_and_inbox() {
+        assert!(is_batch_selector("batch"));
+        assert!(is_batch_selector(" batch "));
+        assert!(!is_batch_selector("auto"));
+        assert!(!is_batch_selector("inbox"));
+    }
+
+    #[test]
+    fn batch_mode_requires_explicit_execute() {
+        let error = validate_batch_mode_cli(None, false)
+            .expect_err("batch execution must require --execute");
+        assert!(error.to_string().contains("pass --execute"));
+        assert!(validate_batch_mode_cli(None, true).is_ok());
+    }
+
+    #[test]
+    fn batch_mode_forbids_node_override() {
+        let error = validate_batch_mode_cli(Some("other-node"), true)
+            .expect_err("batch mode must bind node identity to config");
+        assert!(error.to_string().contains("--node-id is forbidden"));
+    }
+
+    #[test]
+    fn batch_mode_requires_multiple_assignments() {
+        assert!(deterministic_batch_assignment_ids(&test_view(0)).is_err());
+        assert!(deterministic_batch_assignment_ids(&test_view(1)).is_err());
+        assert!(deterministic_batch_assignment_ids(&test_view(2)).is_ok());
+    }
+
+    #[test]
+    fn batch_order_is_assignment_id_ascending() {
+        let mut view = test_view(3);
+        view.assignments[0].assignment_id = "z-last".to_string();
+        view.assignments[1].assignment_id = "a-first".to_string();
+        view.assignments[2].assignment_id = "m-middle".to_string();
+        let ordered = deterministic_batch_assignment_ids(&view).unwrap();
+        assert_eq!(
+            ordered,
+            vec![
+                "a-first".to_string(),
+                "m-middle".to_string(),
+                "z-last".to_string()
+            ]
+        );
     }
 }

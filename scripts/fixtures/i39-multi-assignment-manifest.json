@@ -1,0 +1,76 @@
+{
+  "manifest_version": "0.1.0",
+  "manifest_id": "manifest:i39-multi-assignment",
+  "project_id": "i39-live-project",
+  "strategy": "distributed",
+  "graph_distribution": "node_slice",
+  "source_dgraph_id": null,
+  "assignments": [
+    {
+      "assignment_id": "z-local-second",
+      "module_id": "local-aggregate",
+      "function_name": "local_aggregate",
+      "artifact": {
+        "artifact_id": "local-aggregate-wasm",
+        "artifact_uri": "http://192.168.10.101:8090/artifacts/local-aggregate.wasm",
+        "sha256": "27a26fecd3441a4525f4d0d3a8c71b4f8d1c685115a2a622b238257ac6ebd66d",
+        "content_id": "sha256:27a26fecd3441a4525f4d0d3a8c71b4f8d1c685115a2a622b238257ac6ebd66d"
+      },
+      "target_node": "local-01",
+      "limits": {
+        "fuel": 1000000,
+        "timeout_ms": 1000
+      },
+      "metadata": {
+        "fixture_role": "intentionally listed second lexicographically last"
+      }
+    },
+    {
+      "assignment_id": "a-local-first",
+      "module_id": "local-aggregate",
+      "function_name": "local_aggregate",
+      "artifact": {
+        "artifact_id": "local-aggregate-wasm",
+        "artifact_uri": "http://192.168.10.101:8090/artifacts/local-aggregate.wasm",
+        "sha256": "27a26fecd3441a4525f4d0d3a8c71b4f8d1c685115a2a622b238257ac6ebd66d",
+        "content_id": "sha256:27a26fecd3441a4525f4d0d3a8c71b4f8d1c685115a2a622b238257ac6ebd66d"
+      },
+      "target_node": "local-01",
+      "limits": {
+        "fuel": 1000000,
+        "timeout_ms": 1000
+      },
+      "metadata": {
+        "fixture_role": "intentionally listed after z-local-second in source manifest"
+      }
+    },
+    {
+      "assignment_id": "cloud-untouched",
+      "module_id": "cloud-delta",
+      "function_name": "cloud_delta",
+      "artifact": {
+        "artifact_id": "cloud-delta-wasm",
+        "artifact_uri": "http://192.168.10.101:8090/artifacts/cloud-delta.wasm",
+        "sha256": "919a114011eefd3e1b92d82cba2c6d15efc42c31206f4aff73658b7d72ce0a1a",
+        "content_id": "sha256:919a114011eefd3e1b92d82cba2c6d15efc42c31206f4aff73658b7d72ce0a1a"
+      },
+      "target_node": "cloud-01",
+      "limits": {
+        "fuel": 1000000,
+        "timeout_ms": 1000
+      },
+      "metadata": {
+        "fixture_role": "cross-node isolation sentinel"
+      }
+    }
+  ],
+  "execution_boundary": {
+    "explicit_invocation_required": true,
+    "automatic_execution_allowed": false,
+    "governed_execution_authorized": false
+  },
+  "metadata": {
+    "checkpoint": "I39/145",
+    "purpose": "deterministic local-01 multi-assignment scheduling live gate"
+  }
+}

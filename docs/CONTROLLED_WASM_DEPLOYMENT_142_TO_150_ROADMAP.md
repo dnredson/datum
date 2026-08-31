@@ -1,13 +1,13 @@
 # Controlled WASM Deployment — Roadmap 142 to 150
 
-- current validated checkpoint: `I35/141`
+- current validated checkpoint: `I39/145`
 - target: `150/150`
 - principle: small independently testable increments, preserving fail-closed governed execution
 - lab baseline: `.101` dserver/local Sentinel, `.103` fog Sentinel, `.108` cloud Sentinel
 
 ## Strategy
 
-The remaining nine checkpoints should close infrastructure gaps exposed by C67/I34/I35 rather than add unrelated functionality. Each increment must have a narrow contract, local regression, and a concrete live or fixture-based PASS gate.
+The remaining checkpoints close infrastructure gaps exposed by C67/I34/I35 rather than add unrelated functionality. Each increment must have a narrow contract, local regression, and a concrete live or fixture-based PASS gate.
 
 The sequence intentionally supports three research tracks around DATUM/SmartSentinel:
 
@@ -111,6 +111,8 @@ stable deterministic order
 one report per attempted assignment
 cross-node assignment remains rejected
 ```
+
+Status: VALIDATED. The live fixture executed `a-local-first` then `z-local-second` despite reverse source order, produced exactly two local reports, and left `cloud-untouched` unexecuted.
 
 Research relevance: deployment scheduling in heterogeneous continuum nodes.
 
