@@ -165,7 +165,15 @@ Host identity used for Linux smoke validation: `fog-01`.
 
 The agent was run with `config.linux`, `--cycle-s 1`, `--heartbeat-s 1`, and `--max-cycles 1`. Lifecycle liveness advanced from sequence 1 through 7 while the collection was in progress. The Linux collection completed successfully after `6124 ms` with `entities=6`, `edges=3`, `events=2`, `actions=0`, `file_json=ok`, `http_json=disabled`, and `side_effects=false`. Shutdown then completed cleanly with `reason=max_cycles`.
 
-This confirms that the same SmartSentinel lifecycle implementation runs on Linux while preserving heartbeat independence from collection duration. Ctrl+C shutdown and direct inspection of the Linux host snapshot remain to be checked on `fog-01` before the long acceptance run.
+Direct inspection of `snapshot.json` confirmed Linux host telemetry was actually collected for host `host:Xubuntu`: `os_name=Ubuntu`, `os_version=25.10`, `arch=x86_64`, `cpu_logical=4`, `mem_total_mb=7939`, and root filesystem capacity was reported. The same host entity contained the SmartSentinel annotation with `mode=continuous`, `heartbeat_sequence=7`, `service_uptime_ms=6124`, `safe_to_auto_execute=false`, and `side_effects_performed=false`.
+
+Ctrl+C shutdown was then validated by running the Linux binary directly with `--cycle-s 5 --heartbeat-s 1`. Liveness progressed through sequence 7, the first collection completed successfully after `6050 ms`, and Ctrl+C produced a clean controlled shutdown:
+
+```text
+mode=smartsentinel event=shutdown reason=ctrl_c completed_collections=1 heartbeat_seq=7 ... side_effects=false
+```
+
+This validates the same SmartSentinel lifecycle implementation on Linux, confirms real Linux collector output, preserves heartbeat independence from collection duration, and confirms graceful Ctrl+C behavior on `fog-01`.
 
 ## Three-host O1 acceptance run
 
