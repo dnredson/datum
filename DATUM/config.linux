@@ -41,8 +41,8 @@ enabled = true
 
 [[services.items]]
 name = "mosquitto"
-implemented_by = { container_name = "mosquitto" }
+implemented_by = [{ container_name = "mosquitto" }]
 
 [[services.items]]
 name = "datum-agent"
-implemented_by = { process_name = "datum" }
+implemented_by = [{ process_name = "datum" }]

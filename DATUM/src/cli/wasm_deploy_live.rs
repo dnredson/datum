@@ -1,18 +1,41 @@
-use std::fs;
+use std::{fs, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
+use reqwest::{blocking::Client, redirect::Policy as RedirectPolicy, Url};
+use serde::Serialize;
 
 use crate::{
     config,
     wasm_runtime::{
-        deployment::{ArtifactAcquisitionPolicy, DatumNodeScopedDeployment},
+        deployment::{
+            validate_node_scoped_deployment_for_local_node, ArtifactAcquisitionPolicy,
+            DatumNodeScopedDeployment,
+        },
         generic_runner::WasmScalarValue,
         live_deployment::{
             execute_prepared_assignment_live, prepare_single_assignment, LiveDeploymentContext,
-            LiveWasmInvocationRequest,
+            LiveWasmExecutionReport, LiveWasmInvocationRequest,
         },
     },
 };
+
+const CONTROL_PLANE_ASSIGNMENT_SELECTOR: &str = "auto";
+const DEFAULT_CONTROL_PLANE_TIMEOUT_MS: u64 = 10_000;
+
+#[derive(Debug, Serialize)]
+struct SentinelBoundDeploymentResult {
+    mode: &'static str,
+    node_id: String,
+    assignment_id: String,
+    slice_url: String,
+    report_url: String,
+    status: String,
+    artifact_content_id: String,
+    results: Vec<WasmScalarValue>,
+    fuel_consumed: Option<u64>,
+    report_published: bool,
+    execution_id: String,
+}
 
 pub fn run_wasm_deploy_live_command(
     config_path: &str,
@@ -33,26 +56,61 @@ pub fn run_wasm_deploy_live_command(
         ));
     }
 
-    let local_node_id = resolve_node_id(config_path, node_id_override)?;
+    if is_control_plane_mode(deployment_path) {
+        return run_sentinel_bound_control_plane_mode(
+            config_path,
+            node_id_override,
+            deployment_path,
+            assignment_id,
+            scalar_args,
+            invoked_by,
+            allow_insecure_http,
+            max_artifact_bytes,
+            acquisition_timeout_ms,
+            json_output,
+        );
+    }
+
+    run_legacy_file_mode(
+        config_path,
+        node_id_override,
+        deployment_path,
+        assignment_id,
+        scalar_args,
+        invoked_by,
+        allow_insecure_http,
+        max_artifact_bytes,
+        acquisition_timeout_ms,
+        json_output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_legacy_file_mode(
+    config_path: &str,
+    node_id_override: Option<&str>,
+    deployment_path: &str,
+    assignment_id: &str,
+    scalar_args: &[String],
+    invoked_by: &str,
+    allow_insecure_http: bool,
+    max_artifact_bytes: Option<usize>,
+    acquisition_timeout_ms: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
+    let local_node_id = resolve_legacy_node_id(config_path, node_id_override)?;
     let deployment_text = fs::read_to_string(deployment_path).with_context(|| {
         format!("read node-scoped deployment JSON from {deployment_path}")
     })?;
     let deployment: DatumNodeScopedDeployment = serde_json::from_str(&deployment_text)
         .with_context(|| format!("parse node-scoped deployment JSON from {deployment_path}"))?;
 
-    let mut policy = ArtifactAcquisitionPolicy::default();
-    policy.allow_insecure_http = allow_insecure_http;
-    if let Some(max_artifact_bytes) = max_artifact_bytes {
-        policy.max_artifact_bytes = max_artifact_bytes;
-    }
-    if let Some(acquisition_timeout_ms) = acquisition_timeout_ms {
-        policy.request_timeout_ms = acquisition_timeout_ms;
-    }
-
-    let args = scalar_args
-        .iter()
-        .map(|value| parse_scalar_arg(value))
-        .collect::<Result<Vec<_>>>()?;
+    let policy = artifact_policy(
+        allow_insecure_http,
+        max_artifact_bytes,
+        acquisition_timeout_ms,
+    );
+    let args = parse_scalar_args(scalar_args)?;
     let (prepared, limits) =
         prepare_single_assignment(&deployment, &local_node_id, assignment_id, &policy)?;
     let context = LiveDeploymentContext {
@@ -71,10 +129,292 @@ pub fn run_wasm_deploy_live_command(
         },
     )?;
 
+    render_legacy_report(&report, json_output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sentinel_bound_control_plane_mode(
+    config_path: &str,
+    node_id_override: Option<&str>,
+    dserver_base: &str,
+    assignment_selector: &str,
+    scalar_args: &[String],
+    invoked_by: &str,
+    allow_insecure_http: bool,
+    max_artifact_bytes: Option<usize>,
+    acquisition_timeout_ms: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
+    validate_bound_mode_cli(node_id_override, assignment_selector)?;
+
+    let cfg = config::load_config(config_path)?;
+    let local_node_id = normalize_bound_node_id(&cfg.agent.node_id)?;
+    let base_url = parse_control_plane_base_url(dserver_base, allow_insecure_http)?;
+    let timeout_ms = acquisition_timeout_ms.unwrap_or(DEFAULT_CONTROL_PLANE_TIMEOUT_MS);
+    if timeout_ms == 0 {
+        return Err(anyhow!("control-plane timeout must be positive"));
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .redirect(RedirectPolicy::none())
+        .build()
+        .context("build bounded Sentinel control-plane HTTP client")?;
+
+    let slice_url = control_plane_endpoint(
+        &base_url,
+        &[
+            "api",
+            "v1",
+            "controlled-wasm",
+            "deployment",
+            "for-node",
+            &local_node_id,
+        ],
+    )?;
+    let report_url = control_plane_endpoint(
+        &base_url,
+        &["api", "v1", "controlled-wasm", "live-reports"],
+    )?;
+
+    let response = client
+        .get(slice_url.clone())
+        .send()
+        .with_context(|| format!("fetch Sentinel-bound deployment slice from {slice_url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "fetch Sentinel-bound deployment slice failed with HTTP {status}: {body}"
+        ));
+    }
+    let deployment: DatumNodeScopedDeployment = response
+        .json()
+        .context("parse Sentinel-bound node-scoped deployment response")?;
+
+    validate_node_scoped_deployment_for_local_node(&deployment, &local_node_id)?;
+    let selected_assignment_id = select_single_assignment_id(&deployment)?;
+    let policy = artifact_policy(
+        allow_insecure_http,
+        max_artifact_bytes,
+        acquisition_timeout_ms,
+    );
+    let args = parse_scalar_args(scalar_args)?;
+    let (prepared, limits) = prepare_single_assignment(
+        &deployment,
+        &local_node_id,
+        &selected_assignment_id,
+        &policy,
+    )?;
+    let context = LiveDeploymentContext {
+        manifest_id: deployment.manifest_id.clone(),
+        project_id: deployment.project_id.clone(),
+        node_id: local_node_id.clone(),
+    };
+    let report = execute_prepared_assignment_live(
+        &prepared,
+        &limits,
+        &context,
+        &LiveWasmInvocationRequest {
+            invoked_by: invoked_by.to_string(),
+            explicit_execute: true,
+            args,
+        },
+    )?;
+
+    if report.status != "executed" {
+        let detail = serde_json::to_string(&report)
+            .unwrap_or_else(|_| "failed to serialize non-executed report".to_string());
+        return Err(anyhow!(
+            "Sentinel-bound live execution did not reach executed state; report={detail}"
+        ));
+    }
+
+    let response = client
+        .post(report_url.clone())
+        .json(&report)
+        .send()
+        .with_context(|| format!("publish Sentinel live report to {report_url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "publish Sentinel live report failed with HTTP {status}: {body}"
+        ));
+    }
+    let accepted: LiveWasmExecutionReport = response
+        .json()
+        .context("parse accepted Sentinel live report response")?;
+    if accepted.execution_id != report.execution_id {
+        return Err(anyhow!(
+            "dserver acknowledged execution_id '{}' but Sentinel published '{}'",
+            accepted.execution_id,
+            report.execution_id
+        ));
+    }
+
+    let result = SentinelBoundDeploymentResult {
+        mode: "sentinel_bound_control_plane",
+        node_id: local_node_id,
+        assignment_id: selected_assignment_id,
+        slice_url: slice_url.to_string(),
+        report_url: report_url.to_string(),
+        status: report.status.clone(),
+        artifact_content_id: report.artifact_content_id.clone(),
+        results: report.results.clone(),
+        fuel_consumed: report.fuel_consumed,
+        report_published: true,
+        execution_id: report.execution_id.clone(),
+    };
+
     if json_output {
         println!(
             "{}",
-            serde_json::to_string_pretty(&report)
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                "{\"error\":\"failed to render Sentinel-bound deployment result\"}".to_string()
+            })
+        );
+        return Ok(());
+    }
+
+    println!("I35 Sentinel-bound WASM deployment cycle");
+    println!("  node_id: {}", result.node_id);
+    println!("  assignment_id: {}", result.assignment_id);
+    println!("  slice_url: {}", result.slice_url);
+    println!("  status: {}", result.status);
+    println!("  artifact: {}", result.artifact_content_id);
+    println!("  fuel_consumed: {:?}", result.fuel_consumed);
+    println!("  report_published: {}", result.report_published);
+    println!("  execution_id: {}", result.execution_id);
+    println!("  results: {:?}", result.results);
+    Ok(())
+}
+
+fn artifact_policy(
+    allow_insecure_http: bool,
+    max_artifact_bytes: Option<usize>,
+    acquisition_timeout_ms: Option<u64>,
+) -> ArtifactAcquisitionPolicy {
+    let mut policy = ArtifactAcquisitionPolicy::default();
+    policy.allow_insecure_http = allow_insecure_http;
+    if let Some(max_artifact_bytes) = max_artifact_bytes {
+        policy.max_artifact_bytes = max_artifact_bytes;
+    }
+    if let Some(acquisition_timeout_ms) = acquisition_timeout_ms {
+        policy.request_timeout_ms = acquisition_timeout_ms;
+    }
+    policy
+}
+
+fn parse_scalar_args(values: &[String]) -> Result<Vec<WasmScalarValue>> {
+    values
+        .iter()
+        .map(|value| parse_scalar_arg(value))
+        .collect::<Result<Vec<_>>>()
+}
+
+fn is_control_plane_mode(deployment: &str) -> bool {
+    let deployment = deployment.trim().to_ascii_lowercase();
+    deployment.starts_with("http://") || deployment.starts_with("https://")
+}
+
+fn validate_bound_mode_cli(node_id_override: Option<&str>, assignment_selector: &str) -> Result<()> {
+    if node_id_override.is_some() {
+        return Err(anyhow!(
+            "--node-id is forbidden in Sentinel-bound control-plane mode; identity comes only from agent.node_id"
+        ));
+    }
+    if assignment_selector.trim() != CONTROL_PLANE_ASSIGNMENT_SELECTOR {
+        return Err(anyhow!(
+            "Sentinel-bound control-plane mode requires --assignment auto; the agent selects the single assignment delivered in its own node slice"
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_bound_node_id(node_id: &str) -> Result<String> {
+    let node_id = node_id.trim();
+    if node_id.is_empty() {
+        return Err(anyhow!(
+            "agent.node_id must not be empty in Sentinel-bound control-plane mode"
+        ));
+    }
+    Ok(node_id.to_string())
+}
+
+fn parse_control_plane_base_url(value: &str, allow_insecure_http: bool) -> Result<Url> {
+    let url = Url::parse(value.trim()).with_context(|| format!("parse dserver URL '{value}'"))?;
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_insecure_http => {}
+        "http" => {
+            return Err(anyhow!(
+                "insecure HTTP dserver access is disabled by default and must be explicitly enabled"
+            ));
+        }
+        scheme => {
+            return Err(anyhow!(
+                "dserver URL scheme '{scheme}' is not allowed; expected https or explicitly enabled http"
+            ));
+        }
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(anyhow!("dserver URL must not embed credentials"));
+    }
+    Ok(url)
+}
+
+fn control_plane_endpoint(base: &Url, segments: &[&str]) -> Result<Url> {
+    let mut url = base.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    {
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|_| anyhow!("dserver URL cannot be used as a hierarchical base URL"))?;
+        path.clear();
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+    Ok(url)
+}
+
+fn select_single_assignment_id(deployment: &DatumNodeScopedDeployment) -> Result<String> {
+    if deployment.assignments.len() != 1 {
+        return Err(anyhow!(
+            "Sentinel-bound control-plane mode requires exactly one assignment in the node slice; received {}",
+            deployment.assignments.len()
+        ));
+    }
+    let assignment_id = deployment.assignments[0].assignment_id.trim();
+    if assignment_id.is_empty() {
+        return Err(anyhow!("node-slice assignment_id must not be empty"));
+    }
+    Ok(assignment_id.to_string())
+}
+
+fn resolve_legacy_node_id(config_path: &str, node_id_override: Option<&str>) -> Result<String> {
+    if let Some(node_id) = node_id_override {
+        let node_id = node_id.trim();
+        if node_id.is_empty() {
+            return Err(anyhow!("--node-id must not be empty"));
+        }
+        return Ok(node_id.to_string());
+    }
+
+    let cfg = config::load_config(config_path)?;
+    let node_id = cfg.agent.node_id.trim();
+    if node_id.is_empty() {
+        return Err(anyhow!("node_id is required in --node-id or agent.node_id"));
+    }
+    Ok(node_id.to_string())
+}
+
+fn render_legacy_report(report: &LiveWasmExecutionReport, json_output: bool) -> Result<()> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report)
                 .unwrap_or_else(|_| "{\"error\":\"failed to render live execution report\"}".to_string())
         );
         return Ok(());
@@ -99,23 +439,6 @@ pub fn run_wasm_deploy_live_command(
         println!("  message: {message}");
     }
     Ok(())
-}
-
-fn resolve_node_id(config_path: &str, node_id_override: Option<&str>) -> Result<String> {
-    if let Some(node_id) = node_id_override {
-        let node_id = node_id.trim();
-        if node_id.is_empty() {
-            return Err(anyhow!("--node-id must not be empty"));
-        }
-        return Ok(node_id.to_string());
-    }
-
-    let cfg = config::load_config(config_path)?;
-    let node_id = cfg.agent.node_id.trim();
-    if node_id.is_empty() {
-        return Err(anyhow!("node_id is required in --node-id or agent.node_id"));
-    }
-    Ok(node_id.to_string())
 }
 
 pub fn parse_scalar_arg(value: &str) -> Result<WasmScalarValue> {
@@ -154,8 +477,48 @@ pub fn parse_scalar_arg(value: &str) -> Result<WasmScalarValue> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_scalar_arg;
-    use crate::wasm_runtime::generic_runner::WasmScalarValue;
+    use super::*;
+    use crate::wasm_runtime::{
+        deployment::{
+            DatumDeploymentArtifact, DatumDeploymentAssignment, DatumDeploymentExecutionBoundary,
+            DatumDeploymentRuntimeLimits, DatumNodeDeploymentScope,
+        },
+        generic_runner::WasmScalarValue,
+    };
+
+    fn test_view(assignment_count: usize) -> DatumNodeScopedDeployment {
+        let assignments = (0..assignment_count)
+            .map(|index| DatumDeploymentAssignment {
+                assignment_id: format!("assignment-{index}"),
+                module_id: format!("module-{index}"),
+                function_name: "add".to_string(),
+                artifact: DatumDeploymentArtifact {
+                    artifact_id: format!("artifact-{index}"),
+                    artifact_uri: "https://example.invalid/module.wasm".to_string(),
+                    sha256: "0".repeat(64),
+                    content_id: format!("sha256:{}", "0".repeat(64)),
+                },
+                target_node: "fog-01".to_string(),
+                limits: DatumDeploymentRuntimeLimits {
+                    fuel: Some(1_000_000),
+                    timeout_ms: Some(1_000),
+                },
+            })
+            .collect();
+        DatumNodeScopedDeployment {
+            manifest_version: "0.1.0".to_string(),
+            manifest_id: "manifest-1".to_string(),
+            project_id: "project-1".to_string(),
+            node_id: "fog-01".to_string(),
+            delivery_scope: DatumNodeDeploymentScope::NodeSlice,
+            assignments,
+            execution_boundary: DatumDeploymentExecutionBoundary {
+                explicit_invocation_required: true,
+                automatic_execution_allowed: false,
+                governed_execution_authorized: false,
+            },
+        }
+    }
 
     #[test]
     fn parses_supported_scalar_arguments() {
@@ -175,5 +538,66 @@ mod tests {
     fn rejects_unsupported_scalar_type() {
         let error = parse_scalar_arg("v128:0").expect_err("v128 must remain blocked");
         assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn recognizes_control_plane_mode_only_for_http_urls() {
+        assert!(is_control_plane_mode("https://dserver.example"));
+        assert!(is_control_plane_mode("http://127.0.0.1:8080"));
+        assert!(!is_control_plane_mode("deployment.json"));
+        assert!(!is_control_plane_mode("C:\\tmp\\deployment.json"));
+    }
+
+    #[test]
+    fn bound_mode_forbids_node_override() {
+        let error = validate_bound_mode_cli(Some("other-node"), "auto")
+            .expect_err("bound mode must reject node override");
+        assert!(error.to_string().contains("--node-id is forbidden"));
+    }
+
+    #[test]
+    fn bound_mode_requires_auto_assignment_selector() {
+        let error = validate_bound_mode_cli(None, "fog-scale")
+            .expect_err("bound mode must reject operator assignment selection");
+        assert!(error.to_string().contains("--assignment auto"));
+    }
+
+    #[test]
+    fn bound_identity_requires_non_empty_agent_node_id() {
+        assert_eq!(normalize_bound_node_id(" fog-01 ").unwrap(), "fog-01");
+        assert!(normalize_bound_node_id("  ").is_err());
+    }
+
+    #[test]
+    fn insecure_control_plane_http_is_fail_closed_by_default() {
+        let error = parse_control_plane_base_url("http://127.0.0.1:8080", false)
+            .expect_err("HTTP must be blocked by default");
+        assert!(error.to_string().contains("disabled by default"));
+        assert!(parse_control_plane_base_url("http://127.0.0.1:8080", true).is_ok());
+        assert!(parse_control_plane_base_url("https://example.invalid", false).is_ok());
+    }
+
+    #[test]
+    fn control_plane_endpoint_encodes_bound_node_id() {
+        let base = Url::parse("https://example.invalid/old/path?x=1").unwrap();
+        let url = control_plane_endpoint(
+            &base,
+            &["api", "v1", "controlled-wasm", "deployment", "for-node", "fog node"],
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://example.invalid/api/v1/controlled-wasm/deployment/for-node/fog%20node"
+        );
+    }
+
+    #[test]
+    fn bound_mode_selects_only_single_delivered_assignment() {
+        assert_eq!(
+            select_single_assignment_id(&test_view(1)).unwrap(),
+            "assignment-0"
+        );
+        assert!(select_single_assignment_id(&test_view(0)).is_err());
+        assert!(select_single_assignment_id(&test_view(2)).is_err());
     }
 }
