@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
-- phase_status: active
-- progress: `149/150`
-- latest_checkpoint: `I43`
+- phase_status: closed
+- progress: `150/150`
+- latest_checkpoint: `I44`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -23,9 +23,10 @@
 - deployment_lifecycle_retry_evidence: validated
 - resource_aware_observed_dgraph_join: validated
 - deployment_readiness_governance_evidence: validated
+- phase_final_integration_reproducibility: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I44/150`
-- next_scope: phase-final integration and reproducibility package covering the validated controlled external D-Graph, Sentinel, lifecycle, resource, readiness, persistence, and execution boundaries without enabling canonical automatic governed execution
+- next_checkpoint: none_in_this_phase
+- next_scope: post-phase research handoff for D-Graph/GNN, deployment-continuum policy experiments, stronger persistence/identity/rollback, and later physical/AWS/Ansible/Kubernetes infrastructure without changing the closed phase claim
 
 ## Phase progression
 
@@ -41,6 +42,7 @@ I40      D-Graph-derived dependency stages
 I41      explicit lifecycle attempts and retry lineage
 I42      resource-aware observed D-Graph join
 I43      deployment readiness and governance evidence
+I44      phase-final integration and reproducibility
 ```
 
 Detailed historical evidence remains in each checkpoint final document.
@@ -64,9 +66,7 @@ I41 models controlled deployment attempts as explicit lifecycle evidence with st
 Regression:
 
 ```text
-dserver fmt: PASS
 dserver test: 508 passed; 0 failed
-dserver build: PASS
 ```
 
 A failed first fog attempt was retained. An explicit retry preserved attempt number, retry/root lineage, and `automatic_retry_performed=false`. The retry executed through the real Sentinel path, produced result 24, published a live report, and transitioned to `executed` only after binding to that report's `execution_id`. Reusing the same execution ID from another lifecycle attempt failed closed with HTTP 409.
@@ -83,9 +83,7 @@ I42 joins existing LocalDGraphSnapshot resource/capability evidence into the can
 Regression:
 
 ```text
-dserver fmt: PASS
 dserver test: 514 passed; 0 failed
-dserver build: PASS
 ```
 
 Three-node live join:
@@ -127,9 +125,7 @@ I43 consolidates deterministic deployment readiness evidence into the canonical 
 Regression:
 
 ```text
-dserver fmt: PASS
 dserver test: 520 passed; 0 failed
-dserver build: PASS
 ```
 
 Healthy three-node live state produced:
@@ -164,14 +160,122 @@ Evidence:
 - `docs/I43_DEPLOYMENT_READINESS_GOVERNANCE_FINAL.md`
 - `scripts/fixtures/i43-readiness-three-node-dgraph.json`
 
-## Remaining path to 150/150
+## I44 — validated at 150/150
+
+I44 closes the phase with a reproducible three-node campaign over the already validated contracts. It adds no new Rust execution behavior.
+
+Regression evidence:
 
 ```text
-I44/150 phase-final integration and reproducibility package
+dserver baseline inherited from validated I43: 520 passed; 0 failed
+DATUM explicitly rerun in I44:               431 passed; 0 failed
 ```
 
-The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical automatic governed execution.
+Clean-start prerequisites and initial readiness:
 
-## Next
+```text
+project_id=i44-live-project
+manifest_id=manifest:i44-phase-final-three-node
+sentinel_count=3
+active_count=3
+stale_count=0
+resource_observations=3 fresh=3 stale=0
+report_count=0
+lifecycle_attempts=0
+readiness=ready_for_explicit_execution
+validation_errors=0
+automatic_execution_allowed=false
+governed_execution_performed=false
+```
 
-I44/150 closes the phase with a reproducible integration package that ties together the validated external D-Graph, manifest/node slicing, Sentinel discovery/execution/reporting, persistent controlled state, lifecycle/retry evidence, dependency stages, resource observations, readiness blockers, and the preserved explicit execution boundary.
+Explicit dependency-ordered Sentinel execution produced:
+
+```text
+a-fog-scale        fog-01   executed 24
+m-local-aggregate  local-01 executed 30
+z-cloud-delta      cloud-01 executed 20
+```
+
+During the campaign, all three 300-second Sentinel/resource windows became stale. Readiness blocked the remaining cloud assignment with deterministic `resource_observation_stale` and `sentinel_stale` reasons for all three nodes. Republishing prerequisites restored `z-cloud-delta=ready` with `execution_performed=false`; completed fog/local work was not re-executed.
+
+Integrated pre-restart state:
+
+```text
+report_count=3
+active_sentinels=3
+resource_observations=3 fresh=3 stale=0
+lifecycle_attempts=3
+readiness=ready_for_explicit_execution completed=3
+validation_errors=0
+automatic_execution_allowed=false
+governed_execution_performed=false
+```
+
+Restart persistence boundary:
+
+```text
+persisted:
+  source D-Graph
+  active manifest
+  accepted live reports: 3 -> 3
+
+intentionally in-memory:
+  Sentinel registrations: 3 -> 0
+  lifecycle attempts:      3 -> 0
+```
+
+After restart, prerequisites were republished without artifact execution. Final validation returned:
+
+```text
+report_count=3
+active_sentinels=3
+resource_observations=3 fresh=3 stale=0
+lifecycle_attempts=0
+readiness=ready_for_explicit_execution completed=3
+validation_errors=0
+automatic_execution_allowed=false
+governed_execution_performed=false
+final report count=3
+```
+
+Evidence:
+
+- `docs/I44_PHASE_FINAL_INTEGRATION_REPRODUCIBILITY.md`
+- `docs/I44_PHASE_FINAL_INTEGRATION_REPRODUCIBILITY_FINAL.md`
+- `scripts/fixtures/i44-phase-final-three-node-dgraph.json`
+- `scripts/i44-publish-prerequisites.ps1`
+- `scripts/i44-validate-controlled-state.ps1`
+
+## Phase closure
+
+```text
+Controlled WASM Deployment: 150/150 — CLOSED
+```
+
+The phase closes with canonical automatic governed execution still unavailable:
+
+```text
+automatic_execution_allowed=false
+governed_execution_performed=false
+```
+
+The closed phase does not claim cryptographic Sentinel attestation, persisted Sentinel leases, persisted lifecycle attempts, rollback automation, resource-driven automatic placement, Kubernetes/Ansible/AWS integration, or guest host/network/filesystem/Docker access from the controlled WASM sandbox.
+
+## Research handoff after 150/150
+
+```text
+D-Graph track
+  visualization, queries, GNN-ready export, relationship learning
+
+Deployment-continuum track
+  placement policies, scheduling/trigger experiments, stronger identity,
+  lifecycle persistence, rollback/audit, heterogeneous physical targets
+
+AI/what-if track
+  consume observed graph/resource/lifecycle evidence to compare candidate
+  placements without directly authorizing execution
+
+Infrastructure expansion
+  Raspberry Pi, physical fog nodes, AWS/cloud targets, Ansible/Kubernetes
+  as subsequent experiments rather than phase-closing dependencies
+```
