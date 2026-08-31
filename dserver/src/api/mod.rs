@@ -5,7 +5,6 @@ pub mod controlled_wasm_deployment;
 pub mod dashboard;
 pub mod deployment_lifecycle;
 pub mod deployment_planning;
-pub mod deployment_readiness;
 pub mod dgraph_artifact_integrity;
 pub mod dgraph_capability_negotiation;
 pub mod dgraph_execution_allowlist;
