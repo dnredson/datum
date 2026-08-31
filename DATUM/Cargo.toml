@@ -2,6 +2,11 @@
 name = "datum"
 version = "0.1.0"
 edition = "2021"
+default-run = "datum"
+
+[lib]
+test = false
+doctest = false
 
 
 [dependencies]
@@ -19,3 +24,5 @@ crossterm = "0.27"
 wasmtime = "27.0"
 wat = "1.219.1"
 sha2 = "0.10"
+ctrlc = "3"
+fs2 = "0.4"
