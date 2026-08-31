@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::{OnceLock, RwLock}};
+use std::{
+    collections::BTreeMap,
+    sync::{OnceLock, RwLock},
+};
 
 use axum::{
     extract::{Json, Path},
@@ -125,6 +128,17 @@ pub async fn list_sentinel_registrations(
         .collect::<Vec<_>>();
     let list = build_sentinel_registration_list(&records, now).map_err(bad_request)?;
     Ok(JsonResponse(list))
+}
+
+pub fn sentinel_registration_snapshot() -> Result<Vec<SentinelRegistrationView>, String> {
+    let now = Utc::now();
+    let records = registration_store()
+        .read()
+        .map_err(|error| format!("Sentinel registration state lock poisoned: {error}"))?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    build_sentinel_registration_list(&records, now).map(|list| list.sentinels)
 }
 
 fn bad_request(message: String) -> ApiError {
