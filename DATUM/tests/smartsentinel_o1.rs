@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::Utc;
-use datum::agent::service_loop::{annotate_heartbeat, ServiceLoopOptions};
+use datum::agent::service_loop::{annotate_heartbeat, instance_lock_path, ServiceLoopOptions};
 use datum::core::model::{Entity, Meta, Snapshot};
 use serde_json::json;
 
@@ -12,6 +12,23 @@ fn service_loop_defaults_keep_stable_cross_platform_lifecycle_controls() {
     assert_eq!(options.stop_file, PathBuf::from(".smartsentinel-stop"));
     assert_eq!(options.heartbeat_s, 1);
     assert!(options.max_cycles.is_none());
+}
+
+#[test]
+fn instance_lock_path_is_node_scoped_and_sanitized() {
+    let fog = instance_lock_path("fog-01");
+    let cloud = instance_lock_path("cloud-01");
+    let unsafe_id = instance_lock_path("fog/01:test");
+
+    assert_ne!(fog, cloud);
+    assert_eq!(
+        fog.file_name().and_then(|name| name.to_str()),
+        Some("smartsentinel-fog-01.lock")
+    );
+    assert_eq!(
+        unsafe_id.file_name().and_then(|name| name.to_str()),
+        Some("smartsentinel-fog_01_test.lock")
+    );
 }
 
 #[test]
