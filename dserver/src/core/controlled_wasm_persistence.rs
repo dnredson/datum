@@ -1,11 +1,18 @@
-use std::{collections::HashSet, fs, io::Write, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::{
     controlled_dgraph_deployment::build_controlled_dgraph_activation,
-    controlled_wasm_deployment::{report_execution_id, validate_controlled_live_report_against_manifest},
+    controlled_wasm_deployment::{
+        report_execution_id, validate_controlled_live_report_against_manifest,
+    },
     deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
     dgraph::DGraph,
 };
@@ -131,7 +138,10 @@ pub fn persist_controlled_wasm_state(
 ) -> Result<(), String> {
     validate_controlled_wasm_persisted_state(state)?;
 
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "create controlled WASM persistence directory '{}': {error}",
@@ -198,13 +208,11 @@ pub fn persist_controlled_wasm_state(
         ));
     }
 
+    // The primary state is already committed at this point. Backup cleanup is
+    // deliberately best-effort so cleanup failure cannot make memory lag a
+    // successfully persisted primary state.
     if backup.exists() {
-        fs::remove_file(&backup).map_err(|error| {
-            format!(
-                "remove replaced controlled WASM state backup '{}': {error}",
-                backup.display()
-            )
-        })?;
+        let _ = fs::remove_file(&backup);
     }
 
     Ok(())
