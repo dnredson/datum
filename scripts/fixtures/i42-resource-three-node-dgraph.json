@@ -1,0 +1,73 @@
+{
+  "project_id": "i42-live-project",
+  "nodes": [
+    {"node_id": "fog-01", "node_kind": "fog", "status": "available"},
+    {"node_id": "local-01", "node_kind": "local", "status": "available"},
+    {"node_id": "cloud-01", "node_kind": "cloud", "status": "available"}
+  ],
+  "modules": [
+    {"module_id": "fog-scale-module", "module_kind": "wasm", "artifact_id": "fog-scale-artifact"},
+    {"module_id": "local-aggregate-module", "module_kind": "wasm", "artifact_id": "local-aggregate-artifact"},
+    {"module_id": "cloud-delta-module", "module_kind": "wasm", "artifact_id": "cloud-delta-artifact"}
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "fog-scale-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "http://192.168.10.101:8090/artifacts/fog-scale.wasm",
+      "metadata": {"sha256": "ef6f0bbe18ff074bb7d197172234217fe4a16892f4944ff83d043d054368b96c"}
+    },
+    {
+      "artifact_id": "local-aggregate-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "http://192.168.10.101:8090/artifacts/local-aggregate.wasm",
+      "metadata": {"sha256": "27a26fecd3441a4525f4d0d3a8c71b4f8d1c685115a2a622b238257ac6ebd66d"}
+    },
+    {
+      "artifact_id": "cloud-delta-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "http://192.168.10.101:8090/artifacts/cloud-delta.wasm",
+      "metadata": {"sha256": "919a114011eefd3e1b92d82cba2c6d15efc42c31206f4aff73658b7d72ce0a1a"}
+    }
+  ],
+  "flows": [
+    {
+      "flow_id": "deployment-order",
+      "flow_kind": "deployment_dependency",
+      "modules": ["fog-scale-module", "local-aggregate-module", "cloud-delta-module"],
+      "edges": [
+        {"edge_id": "dep-fog-local", "from_module_id": "fog-scale-module", "to_module_id": "local-aggregate-module"},
+        {"edge_id": "dep-local-cloud", "from_module_id": "local-aggregate-module", "to_module_id": "cloud-delta-module"}
+      ]
+    }
+  ],
+  "placements": [
+    {"placement_id": "placement:fog", "module_id": "fog-scale-module", "selected_node_id": "fog-01", "status": "selected"},
+    {"placement_id": "placement:local", "module_id": "local-aggregate-module", "selected_node_id": "local-01", "status": "selected"},
+    {"placement_id": "placement:cloud", "module_id": "cloud-delta-module", "selected_node_id": "cloud-01", "status": "selected"}
+  ],
+  "wasm_modules": [
+    {
+      "module_id": "cloud-delta-module",
+      "wasm_module_id": "cloud-delta-wasm",
+      "function_name": "cloud_delta",
+      "metadata": {"assignment_id": "z-cloud-delta", "fuel": 1000000, "timeout_ms": 1000}
+    },
+    {
+      "module_id": "fog-scale-module",
+      "wasm_module_id": "fog-scale-wasm",
+      "function_name": "fog_scale",
+      "metadata": {"assignment_id": "a-fog-scale", "fuel": 1000000, "timeout_ms": 1000}
+    },
+    {
+      "module_id": "local-aggregate-module",
+      "wasm_module_id": "local-aggregate-wasm",
+      "function_name": "local_aggregate",
+      "metadata": {"assignment_id": "m-local-aggregate", "fuel": 1000000, "timeout_ms": 1000}
+    }
+  ],
+  "metadata": {
+    "dgraph_id": "i42-resource-three-node",
+    "deployment_manifest_id": "manifest:i42-resource-three-node"
+  }
+}
