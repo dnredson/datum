@@ -214,7 +214,7 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     Ok(())
 }
 
-fn annotate_heartbeat(
+pub fn annotate_heartbeat(
     snapshot: &mut Snapshot,
     sequence: u64,
     started_at_utc: DateTime<Utc>,
@@ -275,53 +275,4 @@ fn acknowledge_stop_file(stop_file: &Path) -> Result<()> {
 
     fs::remove_file(stop_file)
         .with_context(|| format!("remove SmartSentinel stop file {}", stop_file.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::model::{Entity, Meta};
-    use uuid::Uuid;
-
-    #[test]
-    fn heartbeat_annotation_is_explicitly_non_mutating() {
-        let now = Utc::now();
-        let host_id = "host:test".to_string();
-        let mut snapshot = Snapshot {
-            meta: Meta {
-                schema_version: "test".to_string(),
-                agent_version: "test".to_string(),
-                cycle_id: Uuid::new_v4().to_string(),
-                observed_at_utc: now,
-                node_id: "local-01".to_string(),
-                host_id: host_id.clone(),
-            },
-            entities: vec![Entity {
-                id: host_id,
-                kind: "host".to_string(),
-                attrs: json!({"hostname": "test"}),
-                observed_at_utc: now,
-                ttl_s: 60,
-            }],
-            edges: vec![],
-            events: vec![],
-            actions: vec![],
-        };
-
-        annotate_heartbeat(&mut snapshot, 7, now, Duration::from_secs(3));
-
-        let heartbeat = &snapshot.entities[0].attrs["smartsentinel"];
-        assert_eq!(heartbeat["mode"], "continuous");
-        assert_eq!(heartbeat["heartbeat_sequence"], 7);
-        assert_eq!(heartbeat["safe_to_auto_execute"], false);
-        assert_eq!(heartbeat["side_effects_performed"], false);
-    }
-
-    #[test]
-    fn default_stop_file_is_stable() {
-        assert_eq!(
-            ServiceLoopOptions::default().stop_file,
-            PathBuf::from(".smartsentinel-stop")
-        );
-    }
 }
