@@ -7,9 +7,10 @@ use datum::core::model::{Entity, Meta, Snapshot};
 use serde_json::json;
 
 #[test]
-fn service_loop_defaults_keep_a_stable_cross_platform_stop_file() {
+fn service_loop_defaults_keep_stable_cross_platform_lifecycle_controls() {
     let options = ServiceLoopOptions::default();
     assert_eq!(options.stop_file, PathBuf::from(".smartsentinel-stop"));
+    assert_eq!(options.heartbeat_s, 1);
     assert!(options.max_cycles.is_none());
 }
 
