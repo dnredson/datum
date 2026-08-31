@@ -135,6 +135,20 @@ mode=smartsentinel event=shutdown reason=stop_file ... side_effects=false
 
 A stale stop file present before startup is treated as an error rather than silently starting and stopping.
 
+## Local Windows validation evidence — 2026-08-31
+
+Host identity used for smoke validation: `local-01`.
+
+Independent liveness was validated with `--cycle-s 1 --heartbeat-s 1 --max-cycles 1`. The Windows collection took `11780 ms`, while lifecycle heartbeats continued independently from sequence 1 through 12 at approximately one-second intervals. The collection completed successfully with `entities=5`, `edges=3`, `events=1`, `actions=0`, `file_json=ok`, and the expected non-fatal `http_json=err(send snapshot to server)` because the dserver HTTP endpoint was not running for this smoke. Docker Desktop was unavailable and `docker_windows_cli` reported `status=skipped` without failing the cycle.
+
+Ctrl+C shutdown was then validated by running the binary directly with `--cycle-s 5 --heartbeat-s 1`. The collection completed successfully after `10288 ms`, lifecycle heartbeat sequence reached 11, and shutdown ended cleanly with:
+
+```text
+mode=smartsentinel event=shutdown reason=ctrl_c completed_collections=1 heartbeat_seq=11 ... side_effects=false
+```
+
+The previous Windows `STATUS_CONTROL_C_EXIT` behavior was not observed. Local Windows evidence therefore validates independent lifecycle heartbeat and Ctrl+C graceful shutdown. Stop-file validation and the three-host >=10 minute run remain pending.
+
 ## Three-host O1 acceptance run
 
 Use the existing host-specific configuration on each node and start the dedicated binary.
