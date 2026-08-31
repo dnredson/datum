@@ -2,7 +2,7 @@
 
 - checkpoint: `I40/146`
 - predecessor: `I39/145`
-- status: `implementation_ready_for_validation`
+- status: `validated`
 - branch: `agent/i40-dependency-aware-stages`
 
 ## Goal
@@ -95,6 +95,38 @@ I39 manually posted manifests remain accepted. Dependency stages are derived onl
 
 No schema field was added to the public assignment struct, so existing Sentinel deserialization remains compatible.
 
+## Regression — PASS
+
+```text
+dserver fmt: PASS
+dserver test: 500 passed; 0 failed
+dserver build: PASS
+```
+
+## Live validation — PASS
+
+Three-node acyclic fixture:
+
+```text
+assignment_count=3
+dependency_edge_count=2
+stage_count=3
+stage 0 -> a-fog-scale       -> fog-01
+stage 1 -> m-local-aggregate -> local-01 -> a-fog-scale
+stage 2 -> z-cloud-delta     -> cloud-01 -> m-local-aggregate
+```
+
+Observed D-Graph materialized the same assignment/stage/dependency metadata with `report_count=0` and zero validation errors.
+
+Fail-closed fixtures:
+
+```text
+cycle -> HTTP 400
+missing deployable upstream dependency -> HTTP 400
+```
+
+Final controlled live-report count remained `0`.
+
 ## Focused regression tests
 
 I40 adds five dserver tests:
@@ -107,69 +139,14 @@ ordinary data flow -> ignored for deployment ordering
 edge metadata can explicitly mark a dependency in a mixed flow
 ```
 
-Existing controlled D-Graph tests also assert that stage metadata is present in the derived manifest and observed D-Graph without increasing the test count.
-
-Validated dserver baseline before I40 is `495 passed; 0 failed`, so expected minimum is:
-
-```text
-500 passed; 0 failed
-```
-
 ## Fixtures
 
-### Three-node acyclic
-
-`scripts/fixtures/i40-dependency-three-node-dgraph.json`
-
-```text
-fog-scale-module
-    ↓
-local-aggregate-module
-    ↓
-cloud-delta-module
-```
-
-Expected assignment stages:
-
-```text
-stage 0 -> a-fog-scale       -> fog-01
-stage 1 -> m-local-aggregate -> local-01
-stage 2 -> z-cloud-delta     -> cloud-01
-```
-
-### Cycle
-
-`scripts/fixtures/i40-dependency-cycle-dgraph.json`
-
-Expected activation: HTTP 400 with cycle reason.
-
-### Missing deployable dependency
-
-`scripts/fixtures/i40-dependency-missing-dgraph.json`
-
-Expected activation: HTTP 400 explaining that the marked upstream module has no deployable assignment.
-
-## Planned live gate
-
-Use a fresh disposable dserver controlled state. No artifact server is needed because I40 does not acquire or execute artifacts.
-
-1. POST the three-node acyclic fixture to `/api/v1/controlled-wasm/dgraph`;
-2. require activation success and manifest dependency plan `stage_count=3`, `dependency_edge_count=2`;
-3. require assignment metadata stages `0,1,2` and expected dependency IDs;
-4. GET `/api/v1/controlled-wasm/observed-dgraph` before any execution and require module stage metadata plus zero reports;
-5. reset to fresh state and POST cycle fixture -> HTTP 400;
-6. reset to fresh state and POST missing-dependency fixture -> HTTP 400;
-7. require no live WASM reports and no governed execution.
+- `scripts/fixtures/i40-dependency-three-node-dgraph.json`
+- `scripts/fixtures/i40-dependency-cycle-dgraph.json`
+- `scripts/fixtures/i40-dependency-missing-dgraph.json`
 
 ## Non-claims
 
-I40 does not provide:
+I40 does not provide automatic stage execution, distributed barrier synchronization between Sentinels, lifecycle/retry state, resource-aware placement, readiness/governance authorization, or canonical automatic governed execution.
 
-- automatic stage execution;
-- distributed barrier synchronization between Sentinels;
-- lifecycle/retry state (I41);
-- resource-aware placement (I42);
-- readiness/governance authorization (I43);
-- canonical automatic governed execution.
-
-Checkpoint remains `145/150` until regression and the dependency-stage gates pass.
+Closure evidence: `docs/I40_DEPENDENCY_AWARE_DEPLOYMENT_STAGES_FINAL.md`.
