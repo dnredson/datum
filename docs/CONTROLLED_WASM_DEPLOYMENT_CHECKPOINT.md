@@ -13,10 +13,10 @@
 - datum_artifact_acquisition_preflight: validated
 - live_single_node_wasm_execution: validated
 - live_distributed_three_node_deployment: validated
-- end_to_end_external_dgraph_observed_state: implementation_ready_for_validation
+- end_to_end_external_dgraph_observed_state: live_validation_passed_regression_pending
 - governed_allow_transition_available: false
 - next_checkpoint: `I34/140`
-- next_scope: validate external D-Graph -> derived Deployment Manifest -> node slices -> Sentinel/DATUM -> runtime reports -> materialized observed D-Graph
+- next_scope: reconfirm I34 local regression gate, then close external D-Graph -> derived Deployment Manifest -> node slices -> Sentinel/DATUM -> runtime reports -> materialized observed D-Graph
 
 ## Phase progression
 
@@ -123,7 +123,7 @@ Detailed evidence is recorded in `docs/C67_LIVE_DISTRIBUTED_THREE_NODE_DEPLOYMEN
 
 An exploratory accidental invocation demonstrated that the current C67 operator path can override logical node identity with `--node-id`. The final governed Sentinel path must instead bind node identity to the installed/authenticated agent and reject assignments for other nodes independently of command-line claims. The clean C67 campaign was reset and rerun correctly, so this observation is a follow-up hardening requirement rather than a validation failure.
 
-## I34 — implementation ready for validation
+## I34 — live validation PASS; regression reconfirmation pending
 
 I34 closes the controlled provenance and observation loop around the validated C67 execution corridor.
 
@@ -137,7 +137,7 @@ DGraphWasmModuleRef
   -> DeploymentAssignment
 ```
 
-The external graph must provide `metadata.dgraph_id`; the derived manifest carries that value as `source_dgraph_id`. Artifact URI and SHA-256 come from the D-Graph artifact, target node comes from the placement decision, and function/runtime limits come from the WASM descriptor. The resulting manifest remains `distributed/node_slice` and fail-closed for automatic/governed execution.
+The external graph provides `metadata.dgraph_id`; the derived manifest carries that value as `source_dgraph_id`. Artifact URI and SHA-256 come from the D-Graph artifact, target node comes from the placement decision, and function/runtime limits come from the WASM descriptor. The resulting manifest remains `distributed/node_slice` and fail-closed for automatic/governed execution.
 
 New controlled endpoints are:
 
@@ -149,33 +149,51 @@ GET  /api/v1/controlled-wasm/observed-dgraph
 
 The existing C67 manifest/slice/live-report endpoints remain compatible.
 
-The observed-state materializer projects accepted live reports back into a clone of the source D-Graph as `DGraphWasmRuntimeReportRef` entries, updates each module's `observed_state`, rebuilds canonical `OBSERVES` relationships to the node and WASM descriptor, and revalidates/resummarizes the resulting graph.
+On `2026-08-31`, the I34 live campaign was rerun with the desktop at `192.168.10.101`, fog Sentinel at `192.168.10.103`, and cloud Sentinel at `192.168.10.108`.
 
-`scripts/i34_prepare_external_dgraph.py` builds an external source D-Graph independently from the Deployment Manifest, recomputing SHA-256 from the existing three `.wasm` files. `scripts/i34_validate_observed_dgraph.py` requires three materialized reports, results `24 -> 30 -> 20`, three executed module states, and six report `OBSERVES` relationships.
-
-I34 adds 8 focused dserver unit tests. From the validated C67 baseline of `474 passed; 0 failed`, the expected regression target is:
+The externally prepared D-Graph activated successfully and dserver derived:
 
 ```text
-482 passed; 0 failed
+source_dgraph_id=i34-external-dgraph
+manifest_id=manifest:i34-external-dgraph
+project_id=i34-live-project
+strategy=distributed
+graph_distribution=node_slice
+assignment_count=3
 ```
 
-The checkpoint intentionally remains `139/150` until dserver formatting/tests/build, Python syntax validation, and the live external-D-Graph campaign all pass.
+Exactly one execution was performed per node:
 
-Detailed implementation/validation procedure is recorded in `docs/I34_END_TO_END_DGRAPH_OBSERVED_STATE.md`.
+```text
+fog-01   -> fog-scale       -> result_i32=24 -> fuel_consumed=4 -> execution_id=ebb099e2-7ae2-43ff-a8ab-8eb15acd82ed
+local-01 -> local-aggregate -> result_i32=30 -> fuel_consumed=4 -> execution_id=93df16ac-70b8-4442-991f-3c57d938e74f
+cloud-01 -> cloud-delta     -> result_i32=20 -> fuel_consumed=4 -> execution_id=772555f9-5792-4afb-be5f-b2052d10a1af
+```
+
+`GET /api/v1/controlled-wasm/live-reports` returned exactly three reports. All three retained successful integrity verification, Wasmtime compilation/instantiation, network artifact delivery, no persistent write, no host mutation, no guest side effects, `safe_to_auto_execute=false`, `governed_execution_performed=false`, and `timeout_enforced=false`.
+
+The final observed-state validator returned:
+
+```text
+status=PASS
+source_dgraph_id=i34-external-dgraph
+manifest_id=manifest:i34-external-dgraph
+project_id=i34-live-project
+report_count=3
+wasm_report_observes_relationships=6
+```
+
+All three D-Graph modules materialized `observed_state=executed`, with results `24`, `30`, and `20` respectively. Detailed live evidence is recorded in `docs/I34_LIVE_VALIDATION_20260831.md`.
+
+The live I34 corridor is therefore validated. The checkpoint remains `139/150` only until the local regression gate is reconfirmed on the current branch:
+
+```text
+cargo fmt --manifest-path dserver/Cargo.toml -- --check
+cargo test --manifest-path dserver/Cargo.toml      # expected 482 passed; 0 failed
+cargo build --manifest-path dserver/Cargo.toml
+python3/py -3 -m py_compile I34/C67 validation scripts
+```
 
 ## Next
 
-Validate I34 end-to-end:
-
-```text
-External D-Graph
-  -> dserver
-  -> derived typed Deployment Manifest
-  -> node slices
-  -> Sentinel/DATUM agents
-  -> artifact acquisition/execution
-  -> runtime reports
-  -> dserver materialized observed D-Graph
-```
-
-After a clean PASS, advance to `140/150`. Canonical governed `wasm_execution` remains fail-closed and the seven governance prerequisites still block automatic execution.
+Reconfirm the I34 local regression gate. If it passes, close I34 at `140/150`, mark PR #31 ready, and retain canonical governed `wasm_execution` fail-closed. The seven governance prerequisites still block automatic execution.
