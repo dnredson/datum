@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 default-run = "datum"
 
+[lib]
+test = false
+doctest = false
+
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
