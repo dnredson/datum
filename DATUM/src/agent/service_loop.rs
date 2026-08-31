@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::config::{self, FileJsonConfig};
-use crate::core::cycle::run_cycle;
+use crate::core::cycle::run_cycle_for_node_identity;
 use crate::core::model::Snapshot;
 use crate::outputs::file_json::FileJsonOutput;
 use crate::outputs::http_json::HttpJsonOutput;
@@ -180,7 +180,7 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         collection_sequence = collection_sequence.saturating_add(1);
         let cycle_started = Instant::now();
 
-        match run_cycle(
+        match run_cycle_for_node_identity(
             &node_id,
             hostname.as_deref(),
             &cfg.agent.schema_version,
