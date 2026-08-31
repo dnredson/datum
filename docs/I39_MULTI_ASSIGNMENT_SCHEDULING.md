@@ -2,7 +2,7 @@
 
 - checkpoint: `I39/145`
 - predecessor: `I38/144`
-- status: `implementation_ready_for_validation`
+- status: `validated`
 - branch: `agent/i39-multi-assignment-scheduling`
 
 ## Goal
@@ -16,8 +16,8 @@ I39 removes the I35 exactly-one-assignment execution limitation without introduc
 The existing modes remain distinct:
 
 ```text
---assignment inbox          -> read-only discovery
---assignment auto --execute -> exactly one assignment
+--assignment inbox           -> read-only discovery
+--assignment auto --execute  -> exactly one assignment
 --assignment batch --execute -> two or more assignments
 ```
 
@@ -64,55 +64,83 @@ a-local-first  -> local-01
 cloud-untouched -> cloud-01
 ```
 
-Both local assignments use the validated `local-aggregate.wasm` artifact and `local_aggregate(i32,i32)->i32` function. Batch scheduling must reverse the source order into deterministic lexicographic order:
+Both local assignments use the validated `local-aggregate.wasm` artifact and `local_aggregate(i32,i32)->i32` function. Batch scheduling reverses the source order into deterministic lexicographic order:
 
 ```text
 a-local-first
 z-local-second
 ```
 
-The cloud assignment must never appear in the `local-01` batch.
+The cloud assignment never appears in the `local-01` batch.
 
-## Focused tests
-
-I39 adds five focused tests on top of the I38 DATUM baseline of 426 tests:
+## Regression — PASS
 
 ```text
-batch selector is explicit and distinct from auto/inbox
-batch requires --execute
-batch forbids node override
-batch requires at least two assignments
-batch order is assignment_id ascending
+DATUM fmt: PASS
+DATUM test: 431 passed; 0 failed
+DATUM build: PASS
 ```
 
-Expected minimum full-suite result:
+## Live gate — PASS
+
+The local inbox discovered two assignments and classified the slice as `multiple_assignments`.
+
+The legacy single-assignment execution path remained fail-closed:
 
 ```text
-431 passed; 0 failed
+--assignment auto --execute
+-> rejected because local-01 received 2 assignments
+-> live report count remained 0
 ```
 
-The observed full-suite count remains authoritative.
+Explicit batch execution:
 
-## Regression gate
-
-```powershell
-cargo fmt --manifest-path DATUM/Cargo.toml -- --check
-cargo test --manifest-path DATUM/Cargo.toml
-cargo build --manifest-path DATUM/Cargo.toml
+```text
+--assignment batch --execute --arg i32:24 --arg i32:6
 ```
 
-## Planned live gate
+Observed aggregate evidence matched the contract:
 
-1. start a fresh disposable controlled state;
-2. start the existing artifact repository on `192.168.10.101:8090`;
-3. POST `scripts/fixtures/i39-multi-assignment-manifest.json` to the controlled deployment-manifest endpoint;
-4. verify local inbox reports `multiple_assignments` with two local assignments;
-5. prove `--assignment auto --execute` rejects the two-assignment local slice before execution;
-6. run `--assignment batch --execute --arg i32:24 --arg i32:6` on `local-01`;
-7. require aggregate order `[a-local-first, z-local-second]`;
-8. require two attempted/two executed/two reports;
-9. require both results to be `30`;
-10. require dserver live reports to contain exactly those two local assignment IDs and no `cloud-untouched` report.
+```text
+mode=sentinel_bound_batch
+node_id=local-01
+scheduling_policy=assignment_id_ascending
+failure_policy=stop_on_first_failure
+assignment_count=2
+attempted_count=2
+executed_count=2
+failed_or_blocked_count=0
+status=executed
+```
+
+Execution order was deterministic despite the opposite source-manifest order:
+
+```text
+ordinal 1 -> a-local-first  -> result 30
+ordinal 2 -> z-local-second -> result 30
+```
+
+dserver retained exactly two live reports for `local-01`, one per attempted assignment:
+
+```text
+a-local-first
+z-local-second
+```
+
+The cross-node fixture assignment remained untouched:
+
+```text
+cloud-untouched report count = 0
+```
+
+Final compact report assertions:
+
+```text
+report_count=2
+a-local-first present=True
+z-local-second present=True
+cloud-untouched present=False
+```
 
 ## Non-claims
 
@@ -125,4 +153,4 @@ I39 does not provide:
 - cryptographic Sentinel identity;
 - canonical governed execution.
 
-Checkpoint remains `144/150` until regression and live batch validation pass.
+Checkpoint advances to `145/150`.
