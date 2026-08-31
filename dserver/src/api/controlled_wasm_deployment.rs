@@ -1,4 +1,5 @@
 use std::{
+    env,
     path::{Path as FsPath, PathBuf},
     sync::{Mutex, OnceLock, RwLock},
 };
@@ -30,11 +31,15 @@ use crate::core::{
 
 type ApiError = (StatusCode, JsonResponse<Value>);
 
+const DEFAULT_CONTROLLED_WASM_STATE_PATH: &str = ".datum-controlled-wasm-state.json";
+const CONTROLLED_WASM_STATE_PATH_ENV: &str = "DATUM_CONTROLLED_WASM_STATE_PATH";
+
 static ACTIVE_MANIFEST: OnceLock<RwLock<Option<DeploymentManifest>>> = OnceLock::new();
 static SOURCE_DGRAPH: OnceLock<RwLock<Option<DGraph>>> = OnceLock::new();
 static LIVE_REPORTS: OnceLock<RwLock<Vec<Value>>> = OnceLock::new();
 static PERSISTENCE_PATH: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 static STATE_TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
+static PERSISTENCE_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 fn manifest_store() -> &'static RwLock<Option<DeploymentManifest>> {
     ACTIVE_MANIFEST.get_or_init(|| RwLock::new(None))
@@ -54,6 +59,24 @@ fn persistence_path_store() -> &'static RwLock<Option<PathBuf>> {
 
 fn state_transaction() -> &'static Mutex<()> {
     STATE_TRANSACTION.get_or_init(|| Mutex::new(()))
+}
+
+fn ensure_controlled_wasm_persistence_initialized() {
+    PERSISTENCE_INITIALIZED.get_or_init(|| {
+        let path = env::var(CONTROLLED_WASM_STATE_PATH_ENV)
+            .unwrap_or_else(|_| DEFAULT_CONTROLLED_WASM_STATE_PATH.to_string());
+        match initialize_controlled_wasm_persistence(FsPath::new(&path)) {
+            Ok(true) => {
+                println!("restored controlled WASM deployment state from {path}");
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!(
+                    "controlled WASM persisted state was not activated from {path}: {error}; starting controlled state empty"
+                );
+            }
+        }
+    });
 }
 
 pub fn initialize_controlled_wasm_persistence(path: &FsPath) -> Result<bool, String> {
@@ -87,6 +110,7 @@ pub fn initialize_controlled_wasm_persistence(path: &FsPath) -> Result<bool, Str
 pub async fn post_controlled_wasm_dgraph(
     Json(payload): Json<DGraph>,
 ) -> Result<JsonResponse<ControlledDGraphActivation>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let activation = build_controlled_dgraph_activation(&payload).map_err(bad_request)?;
     let _transaction = state_transaction().lock().map_err(lock_error)?;
 
@@ -103,6 +127,7 @@ pub async fn post_controlled_wasm_dgraph(
 }
 
 pub async fn get_controlled_wasm_dgraph() -> Result<JsonResponse<DGraph>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let source = source_dgraph_store().read().map_err(lock_error)?;
     source.clone().map(JsonResponse).ok_or_else(|| {
         (
@@ -114,6 +139,7 @@ pub async fn get_controlled_wasm_dgraph() -> Result<JsonResponse<DGraph>, ApiErr
 
 pub async fn get_controlled_wasm_observed_dgraph(
 ) -> Result<JsonResponse<ControlledObservedDGraphState>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let source = source_dgraph_store()
         .read()
         .map_err(lock_error)?
@@ -143,6 +169,7 @@ pub async fn get_controlled_wasm_observed_dgraph(
 pub async fn post_controlled_wasm_deployment_manifest(
     Json(payload): Json<DeploymentManifest>,
 ) -> Result<JsonResponse<DeploymentManifest>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     validate_deployment_manifest(&payload).map_err(bad_request)?;
     let _transaction = state_transaction().lock().map_err(lock_error)?;
 
@@ -160,6 +187,7 @@ pub async fn post_controlled_wasm_deployment_manifest(
 
 pub async fn get_controlled_wasm_deployment_manifest(
 ) -> Result<JsonResponse<DeploymentManifest>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let active = manifest_store().read().map_err(lock_error)?;
     active.clone().map(JsonResponse).ok_or_else(|| {
         (
@@ -174,6 +202,7 @@ pub async fn get_controlled_wasm_deployment_manifest(
 pub async fn get_controlled_wasm_deployment_for_node(
     Path(node_id): Path<String>,
 ) -> Result<JsonResponse<NodeScopedDeployment>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let manifest = {
         let active = manifest_store().read().map_err(lock_error)?;
         active.clone().ok_or_else(|| {
@@ -193,6 +222,7 @@ pub async fn get_controlled_wasm_deployment_for_node(
 pub async fn post_controlled_wasm_live_report(
     Json(payload): Json<Value>,
 ) -> Result<JsonResponse<Value>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let _transaction = state_transaction().lock().map_err(lock_error)?;
     let manifest = manifest_store()
         .read()
@@ -241,6 +271,7 @@ pub async fn post_controlled_wasm_live_report(
 
 pub async fn list_controlled_wasm_live_reports(
 ) -> Result<JsonResponse<ControlledWasmLiveReportList>, ApiError> {
+    ensure_controlled_wasm_persistence_initialized();
     let manifest = manifest_store()
         .read()
         .map_err(lock_error)?
