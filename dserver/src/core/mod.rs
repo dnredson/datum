@@ -7,6 +7,7 @@ pub mod controlled_wasm_deployment;
 pub mod controlled_wasm_persistence;
 pub mod deployment_assignment;
 pub mod deployment_dependency;
+pub mod deployment_lifecycle;
 pub mod deployment_manifest;
 pub mod deployment_plan;
 pub mod dgraph;
