@@ -17,8 +17,9 @@ use api::action_results::{
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
 use api::controlled_wasm_deployment::{
     get_controlled_wasm_deployment_for_node, get_controlled_wasm_deployment_manifest,
+    get_controlled_wasm_dgraph, get_controlled_wasm_observed_dgraph,
     list_controlled_wasm_live_reports, post_controlled_wasm_deployment_manifest,
-    post_controlled_wasm_live_report,
+    post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
 use api::deployment_planning::{get_deployment_planning_for_node, get_latest_deployment_planning};
@@ -108,6 +109,14 @@ async fn main() {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
+        .route(
+            "/api/v1/controlled-wasm/dgraph",
+            post(post_controlled_wasm_dgraph).get(get_controlled_wasm_dgraph),
+        )
+        .route(
+            "/api/v1/controlled-wasm/observed-dgraph",
+            get(get_controlled_wasm_observed_dgraph),
+        )
         .route(
             "/api/v1/controlled-wasm/deployment-manifest",
             post(post_controlled_wasm_deployment_manifest)

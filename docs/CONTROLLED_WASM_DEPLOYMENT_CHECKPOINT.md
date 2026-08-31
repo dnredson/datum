@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `139/150`
-- latest_checkpoint: `C67`
+- progress: `140/150`
+- latest_checkpoint: `I34`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -13,9 +13,10 @@
 - datum_artifact_acquisition_preflight: validated
 - live_single_node_wasm_execution: validated
 - live_distributed_three_node_deployment: validated
+- end_to_end_external_dgraph_observed_state: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I34/140`
-- next_scope: end-to-end external D-Graph -> dserver -> Deployment Manifest -> node slices -> Sentinel/DATUM -> runtime reports -> dserver materialized observed deployment state
+- next_checkpoint: `I35/141`
+- next_scope: move more controlled deployment activation, node identity, and report publication into the Sentinel agent while retaining fail-closed governed execution
 
 ## Phase progression
 
@@ -102,39 +103,95 @@ cloud-01 -> cloud-delta     -> result_i32=20 -> fuel_consumed=4
 
 The PASS gate also required exactly three distinct execution IDs, three distinct artifact content IDs, successful SHA-256 verification, Wasmtime compilation/instantiation, guest function invocation, network artifact delivery, no persistent artifact write, no host mutation, no guest side effects, `safe_to_auto_execute=false`, `governed_execution_performed=false`, and `timeout_enforced=false`.
 
-C67 therefore proves the controlled distributed path:
-
-```text
-one distributed Deployment Manifest
-  -> dserver validation
-  -> node_slice derivation
-  -> node-specific Sentinel/DATUM consumption
-  -> network artifact acquisition
-  -> content integrity verification
-  -> Wasmtime execution
-  -> per-node live report
-  -> centralized dserver validation/collection
-```
-
 Detailed evidence is recorded in `docs/C67_LIVE_DISTRIBUTED_THREE_NODE_DEPLOYMENT_FINAL.md`.
 
 ## Identity hardening observation
 
 An exploratory accidental invocation demonstrated that the current C67 operator path can override logical node identity with `--node-id`. The final governed Sentinel path must instead bind node identity to the installed/authenticated agent and reject assignments for other nodes independently of command-line claims. The clean C67 campaign was reset and rerun correctly, so this observation is a follow-up hardening requirement rather than a validation failure.
 
-## Next
+## I34 — validated complete
 
-I34/140 should remove more of the temporary C67 orchestration glue and close the real end-to-end loop:
+I34 closes the controlled provenance and observation loop around the validated C67 execution corridor.
+
+The dserver now derives a typed C63 Deployment Manifest directly from an externally supplied canonical D-Graph by joining:
 
 ```text
-External D-Graph
-  -> dserver
-  -> typed Deployment Manifest
-  -> node slices
-  -> Sentinel/DATUM agents
-  -> artifact acquisition/execution
-  -> runtime reports
-  -> dserver materialized observed deployment state
+DGraphWasmModuleRef
+  -> DGraphModule
+  -> DGraphArtifact
+  +  DGraphPlacementDecision
+  -> DeploymentAssignment
 ```
 
-Canonical governed `wasm_execution` remains fail-closed. The seven governance prerequisites still block automatic execution.
+The external graph provides `metadata.dgraph_id`; the derived manifest carries it as `source_dgraph_id`. Artifact URI and SHA-256 come from the D-Graph artifact, target node comes from the placement decision, and function/runtime limits come from the WASM descriptor. The derived manifest remains `distributed/node_slice` and fail-closed for automatic/governed execution.
+
+New controlled endpoints are:
+
+```text
+POST /api/v1/controlled-wasm/dgraph
+GET  /api/v1/controlled-wasm/dgraph
+GET  /api/v1/controlled-wasm/observed-dgraph
+```
+
+The existing C67 manifest/slice/live-report endpoints remain compatible.
+
+On `2026-08-31`, the final I34 live campaign used:
+
+```text
+192.168.10.101  Windows desktop: dserver :8080, artifact repository :8090, local-01
+192.168.10.103  Xubuntu VM: fog-01
+192.168.10.108  Xubuntu VM: cloud-01
+```
+
+The externally prepared D-Graph activated successfully and dserver derived:
+
+```text
+source_dgraph_id=i34-external-dgraph
+manifest_id=manifest:i34-external-dgraph
+project_id=i34-live-project
+strategy=distributed
+graph_distribution=node_slice
+assignment_count=3
+```
+
+Exactly one execution was performed per node:
+
+```text
+fog-01   -> fog-scale       -> result_i32=24 -> fuel_consumed=4 -> execution_id=ebb099e2-7ae2-43ff-a8ab-8eb15acd82ed
+local-01 -> local-aggregate -> result_i32=30 -> fuel_consumed=4 -> execution_id=93df16ac-70b8-4442-991f-3c57d938e74f
+cloud-01 -> cloud-delta     -> result_i32=20 -> fuel_consumed=4 -> execution_id=772555f9-5792-4afb-be5f-b2052d10a1af
+```
+
+`GET /api/v1/controlled-wasm/live-reports` returned exactly three reports. All three retained successful integrity verification, Wasmtime compilation/instantiation, network artifact delivery, no persistent write, no host mutation, no guest side effects, `safe_to_auto_execute=false`, `governed_execution_performed=false`, and `timeout_enforced=false`.
+
+The final observed-state validator returned:
+
+```text
+status=PASS
+source_dgraph_id=i34-external-dgraph
+manifest_id=manifest:i34-external-dgraph
+project_id=i34-live-project
+report_count=3
+wasm_report_observes_relationships=6
+```
+
+All three D-Graph modules materialized `observed_state=executed`, with results `24`, `30`, and `20` respectively.
+
+The local regression gate also passed on the current branch:
+
+```text
+cargo fmt --manifest-path dserver/Cargo.toml -- --check: PASS
+cargo test --manifest-path dserver/Cargo.toml: 482 passed; 0 failed
+cargo build --manifest-path dserver/Cargo.toml: PASS
+Python syntax validation for I34/C67 scripts: PASS
+```
+
+The build emitted only two non-blocking dead-code warnings for `EXECUTION_PREREQUISITE_GATE_NAMES` and `default_embedded_add_module_descriptor`.
+
+Detailed live evidence is recorded in `docs/I34_LIVE_VALIDATION_20260831.md`; final closure is recorded in `docs/I34_END_TO_END_DGRAPH_OBSERVED_STATE_FINAL.md`.
+
+I34 therefore advances the Controlled WASM Deployment phase to `140/150`.
+
+## Next
+
+I35/141 should move more of the temporary orchestration glue into the Sentinel agent itself, especially controlled deployment activation, locally bound node identity, and direct report publication, while preserving explicit execution and keeping canonical governed `wasm_execution` fail-closed. The seven governance prerequisites continue to block automatic execution.
