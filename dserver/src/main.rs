@@ -6,7 +6,7 @@ mod storage;
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Router,
 };
 
@@ -61,6 +61,10 @@ use api::local_dgraph_snapshot::{
     post_local_dgraph_snapshot,
 };
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
+use api::sentinel_registration::{
+    get_sentinel_registration, list_sentinel_registrations, post_sentinel_heartbeat,
+    put_sentinel_registration,
+};
 use api::topology::{get_topology, set_topology};
 use api::wasm_module_registry::{
     get_wasm_module_descriptor, list_wasm_module_descriptors, post_wasm_module_descriptor,
@@ -109,6 +113,19 @@ async fn main() {
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
+        .route("/api/v1/sentinels", get(list_sentinel_registrations))
+        .route(
+            "/api/v1/sentinels/:node_id",
+            get(get_sentinel_registration),
+        )
+        .route(
+            "/api/v1/sentinels/:node_id/registration",
+            put(put_sentinel_registration),
+        )
+        .route(
+            "/api/v1/sentinels/:node_id/heartbeat",
+            post(post_sentinel_heartbeat),
+        )
         .route(
             "/api/v1/controlled-wasm/dgraph",
             post(post_controlled_wasm_dgraph).get(get_controlled_wasm_dgraph),
