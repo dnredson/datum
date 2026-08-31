@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `147/150`
-- latest_checkpoint: `I41`
+- progress: `148/150`
+- latest_checkpoint: `I42`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -21,9 +21,10 @@
 - explicit_multi_assignment_scheduling: validated
 - dependency_aware_deployment_stages: validated
 - deployment_lifecycle_retry_evidence: validated
+- resource_aware_observed_dgraph_join: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I42/148`
-- next_scope: join resource and capability observations with controlled deployment and lifecycle evidence without enabling automatic placement or governed automatic execution
+- next_checkpoint: `I43/149`
+- next_scope: consolidate deterministic deployment readiness and governance evidence over identity, active lease, graph/dependency validity, artifact integrity, capabilities, resource freshness, and execution boundaries while keeping automatic execution unavailable
 
 ## Phase progression
 
@@ -37,6 +38,7 @@ I38      read-only Sentinel deployment inbox
 I39      explicit multi-assignment scheduling
 I40      D-Graph-derived dependency stages
 I41      explicit lifecycle attempts and retry lineage
+I42      resource-aware observed D-Graph join
 ```
 
 Detailed historical evidence remains in each checkpoint final document.
@@ -65,31 +67,60 @@ dserver test: 508 passed; 0 failed
 dserver build: PASS
 ```
 
-Live validation retained a failed first fog attempt and created an explicit retry with:
-
-```text
-attempt_number=2
-retry_of_attempt_id=fog-attempt-1
-root_attempt_id=fog-attempt-1
-automatic_retry_performed=false
-governed_execution_performed=false
-```
-
-The retry executed through the real Sentinel path, produced result 24, published a controlled live report, and transitioned to `executed` only after binding to that real report's `execution_id`.
-
-The observed D-Graph retained both attempts and materialized `fog-attempt-2` as the current `executed` lifecycle state for `fog-scale-module`. Reusing the same execution ID from another lifecycle attempt failed closed with HTTP 409 and did not promote that attempt to `executed`.
-
-No hidden retries or governed automatic execution were introduced. Lifecycle attempts remain intentionally in-memory in I41.
+A failed first fog attempt was retained. An explicit retry preserved attempt number, retry/root lineage, and `automatic_retry_performed=false`. The retry executed through the real Sentinel path, produced result 24, published a live report, and transitioned to `executed` only after binding to that report's `execution_id`. Reusing the same execution ID from another lifecycle attempt failed closed with HTTP 409.
 
 Evidence:
 
 - `docs/I41_DEPLOYMENT_LIFECYCLE_RETRY.md`
 - `docs/I41_DEPLOYMENT_LIFECYCLE_RETRY_FINAL.md`
 
+## I42 — validated at 148/150
+
+I42 joins existing LocalDGraphSnapshot resource/capability evidence into the canonical controlled observed D-Graph. Freshness is explicit with a 300-second threshold.
+
+Regression:
+
+```text
+dserver fmt: PASS
+dserver test: 514 passed; 0 failed
+dserver build: PASS
+```
+
+Three-node live join:
+
+```text
+fog-01   freshness=stale age=629s cpu=72.5% cores=4  capabilities=docker,wasm
+local-01 freshness=fresh age=29s  cpu=31.0% cores=16 capabilities=docker,wasm
+cloud-01 freshness=fresh age=89s  cpu=18.5% cores=32 capabilities=gpu,wasm
+```
+
+Aggregate resource evidence:
+
+```text
+observation_count=3
+fresh_count=2
+stale_count=1
+missing_node_ids=[]
+unmatched_node_ids=[]
+freshness_threshold_seconds=300
+automatic_placement_performed=false
+deployment_side_effects_performed=false
+governed_execution_performed=false
+validation_errors=0
+report_count=0
+```
+
+Placements remained fog/local/cloud and dependency stages remained `0 -> 1 -> 2`; resource evidence did not automatically move work or trigger execution.
+
+Evidence:
+
+- `docs/I42_RESOURCE_AWARE_OBSERVED_DGRAPH_JOIN.md`
+- `docs/I42_RESOURCE_AWARE_OBSERVED_DGRAPH_JOIN_FINAL.md`
+- `scripts/fixtures/i42-resource-three-node-dgraph.json`
+
 ## Remaining path to 150/150
 
 ```text
-I42/148 resource-aware observed D-Graph join
 I43/149 deployment readiness and governance evidence
 I44/150 phase-final integration and reproducibility package
 ```
@@ -98,4 +129,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I42/148 joins explicit node resource and capability observations with the controlled observed D-Graph and current deployment/lifecycle evidence. The join is evidence-only: it does not automatically replace placements, trigger retries, or authorize governed execution.
+I43/149 consolidates the prerequisite evidence required for explicit controlled execution. It must produce deterministic blocking reasons for stale/missing prerequisites while retaining `automatic_execution_allowed=false` and `governed_execution_performed=false`.
