@@ -29,7 +29,8 @@ use crate::{
         deployment_assignment::{derive_node_scoped_deployment, NodeScopedDeployment},
         deployment_lifecycle_observed::materialize_lifecycle_evidence,
         deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
-        dgraph::DGraph,
+        deployment_readiness::build_deployment_readiness,
+        dgraph::{validate_dgraph, DGraph},
         resource_observation::materialize_resource_observations,
     },
     AppState,
@@ -188,6 +189,46 @@ pub async fn get_controlled_wasm_observed_dgraph(
         })?;
     materialize_resource_observations(&mut observed, &snapshots, Utc::now())
         .map_err(bad_request)?;
+    observed.validation_errors = validate_dgraph(&observed.graph).err().unwrap_or_default();
+
+    let registrations = crate::api::sentinel_registration::sentinel_registration_snapshot()
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({"error": error})),
+            )
+        })?;
+    let readiness = build_deployment_readiness(
+        &manifest,
+        &observed,
+        &registrations,
+        &reports,
+        Utc::now(),
+    );
+    let readiness_value = serde_json::to_value(&readiness).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JsonResponse(json!({
+                "error": format!("serialize deployment readiness evidence: {error}")
+            })),
+        )
+    })?;
+    match observed.metadata.as_mut() {
+        Some(Value::Object(metadata)) => {
+            metadata.insert("deployment_readiness".to_string(), readiness_value.clone());
+        }
+        _ => {
+            observed.metadata = Some(json!({"deployment_readiness": readiness_value.clone()}));
+        }
+    }
+    match observed.graph.metadata.as_mut() {
+        Some(Value::Object(metadata)) => {
+            metadata.insert("deployment_readiness".to_string(), readiness_value);
+        }
+        _ => {
+            observed.graph.metadata = Some(json!({"deployment_readiness": readiness_value}));
+        }
+    }
 
     Ok(JsonResponse(observed))
 }

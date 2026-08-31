@@ -11,6 +11,7 @@ pub mod deployment_lifecycle;
 pub mod deployment_lifecycle_observed;
 pub mod deployment_manifest;
 pub mod deployment_plan;
+pub mod deployment_readiness;
 pub mod dgraph;
 pub mod dgraph_artifact_integrity;
 pub mod dgraph_capability_negotiation;
