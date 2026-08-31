@@ -55,6 +55,10 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         );
     }
 
+    if options.max_cycles == Some(0) {
+        bail!("SmartSentinel max-cycles must be greater than zero when provided");
+    }
+
     let mut cfg = config::load_config(&options.config_path)?;
 
     // O1 is observation-only. Preserve historical configuration on disk, but make
@@ -216,10 +220,11 @@ fn annotate_heartbeat(
     started_at_utc: DateTime<Utc>,
     uptime: Duration,
 ) {
+    let host_id = snapshot.meta.host_id.clone();
     let Some(host) = snapshot
         .entities
         .iter_mut()
-        .find(|entity| entity.id == snapshot.meta.host_id)
+        .find(|entity| entity.id == host_id)
     else {
         return;
     };
@@ -229,13 +234,14 @@ fn annotate_heartbeat(
     }
 
     if let Some(attrs) = host.attrs.as_object_mut() {
+        let uptime_ms = uptime.as_millis().min(u64::MAX as u128) as u64;
         attrs.insert(
             "smartsentinel".to_string(),
             json!({
                 "mode": "continuous",
                 "heartbeat_sequence": sequence,
                 "service_started_at_utc": started_at_utc,
-                "service_uptime_ms": uptime.as_millis(),
+                "service_uptime_ms": uptime_ms,
                 "safe_to_auto_execute": false,
                 "side_effects_performed": false
             }),
