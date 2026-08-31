@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `143/150`
-- latest_checkpoint: `I37`
+- progress: `144/150`
+- latest_checkpoint: `I38`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -17,9 +17,10 @@
 - sentinel_bound_deployment_cycle: validated
 - controlled_wasm_state_persistence: validated
 - sentinel_registration_lease: validated
+- sentinel_deployment_inbox_discovery: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I38/144`
-- next_scope: let a bound Sentinel discover whether dserver currently has work for its own node identity without executing it
+- next_checkpoint: `I39/145`
+- next_scope: accept explicit multi-assignment execution only through a deterministic batch scheduling contract while preserving cross-node isolation and explicit authorization
 
 ## Phase progression
 
@@ -37,6 +38,7 @@ I34  external D-Graph -> manifest -> reports -> observed D-Graph
 I35  Sentinel-bound slice discovery/execution/report publication
 I36  persisted + revalidated controlled state across dserver restart
 I37  explicit Sentinel registration + heartbeat/lease presence state
+I38  read-only Sentinel deployment inbox discovery
 ```
 
 Detailed evidence for every earlier checkpoint remains in the corresponding final/checkpoint documents.
@@ -199,12 +201,55 @@ Evidence:
 - `docs/I37_SENTINEL_REGISTRATION_LEASE_PLAN.md`
 - `docs/I37_SENTINEL_REGISTRATION_LEASE_FINAL.md`
 
+## I38 — validated at 144/150
+
+I38 adds read-only inbox discovery to the Sentinel-bound control-plane path. The explicit selector `--assignment inbox` fetches only the node-scoped deployment for configured `agent.node_id`, validates the returned slice, and classifies the result as `no_work`, `one_assignment`, or `multiple_assignments` without transitioning into artifact or execution behavior.
+
+Regression:
+
+```text
+DATUM fmt: PASS
+DATUM test: 426 passed; 0 failed
+DATUM build: PASS
+```
+
+Live discovery evidence:
+
+```text
+no active manifest:
+  local-01 -> no_work -> assignment_count=0
+
+active i34-live-project manifest:
+  local-01 -> one_assignment -> local-aggregate
+  fog-01   -> one_assignment -> fog-scale
+  cloud-01 -> one_assignment -> cloud-delta
+  probe-01 -> no_work -> empty slice
+```
+
+Every discovery result retained:
+
+```text
+control_plane_fetch_performed=true
+artifact_acquisition_performed=false
+wasmtime_compiled=false
+guest_execution_performed=false
+report_published=false
+governed_execution_performed=false
+deployment_side_effects_performed=false
+```
+
+The artifact repository at `192.168.10.101:8090` was deliberately unavailable and discovery still succeeded. Controlled live-report count remained `0 -> 0`, proving the inbox path did not create execution evidence.
+
+Evidence:
+
+- `docs/I38_SENTINEL_DEPLOYMENT_INBOX.md`
+- `docs/I38_SENTINEL_DEPLOYMENT_INBOX_FINAL.md`
+
 ## Remaining path to 150/150
 
 The fixed roadmap is recorded in `docs/CONTROLLED_WASM_DEPLOYMENT_142_TO_150_ROADMAP.md`.
 
 ```text
-I38/144 Sentinel deployment inbox discovery
 I39/145 explicit multi-assignment scheduling
 I40/146 dependency-aware deployment stages
 I41/147 deployment lifecycle and retry evidence
@@ -217,4 +262,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I38/144 connects Sentinel presence with node-scoped deployment discovery. A bound Sentinel should be able to ask dserver whether work exists for its own `agent.node_id`, report explicit no-work/one-work/multiple-work discovery state, and perform no artifact acquisition or guest execution during discovery.
+I39/145 removes I35's deliberately narrow exactly-one-assignment execution restriction through an explicit batch scheduling mode. Multiple assignments must be ordered deterministically, remain node-scoped, produce per-assignment reports/evidence, and require an explicit operator transition. No automatic governed execution is enabled.

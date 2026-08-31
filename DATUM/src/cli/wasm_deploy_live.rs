@@ -9,7 +9,7 @@ use crate::{
     wasm_runtime::{
         deployment::{
             validate_node_scoped_deployment_for_local_node, ArtifactAcquisitionPolicy,
-            DatumNodeScopedDeployment,
+            DatumNodeDeploymentScope, DatumNodeScopedDeployment,
         },
         generic_runner::WasmScalarValue,
         live_deployment::{
@@ -20,6 +20,7 @@ use crate::{
 };
 
 const CONTROL_PLANE_ASSIGNMENT_SELECTOR: &str = "auto";
+const CONTROL_PLANE_INBOX_SELECTOR: &str = "inbox";
 const DEFAULT_CONTROL_PLANE_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Serialize)]
@@ -37,6 +38,26 @@ struct SentinelBoundDeploymentResult {
     execution_id: String,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct SentinelDeploymentInboxResult {
+    mode: &'static str,
+    node_id: String,
+    status: &'static str,
+    slice_url: String,
+    manifest_id: Option<String>,
+    project_id: Option<String>,
+    delivery_scope: Option<&'static str>,
+    assignment_count: usize,
+    assignment_ids: Vec<String>,
+    control_plane_fetch_performed: bool,
+    artifact_acquisition_performed: bool,
+    wasmtime_compiled: bool,
+    guest_execution_performed: bool,
+    report_published: bool,
+    governed_execution_performed: bool,
+    deployment_side_effects_performed: bool,
+}
+
 pub fn run_wasm_deploy_live_command(
     config_path: &str,
     node_id_override: Option<&str>,
@@ -50,6 +71,20 @@ pub fn run_wasm_deploy_live_command(
     acquisition_timeout_ms: Option<u64>,
     json_output: bool,
 ) -> Result<()> {
+    if is_control_plane_mode(deployment_path) && is_inbox_selector(assignment_id) {
+        return run_sentinel_bound_inbox_discovery(
+            config_path,
+            node_id_override,
+            deployment_path,
+            scalar_args,
+            execute,
+            allow_insecure_http,
+            max_artifact_bytes,
+            acquisition_timeout_ms,
+            json_output,
+        );
+    }
+
     if !execute {
         return Err(anyhow!(
             "live deployment is execution-capable; pass --execute to explicitly authorize this invocation"
@@ -154,11 +189,7 @@ fn run_sentinel_bound_control_plane_mode(
     if timeout_ms == 0 {
         return Err(anyhow!("control-plane timeout must be positive"));
     }
-    let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .redirect(RedirectPolicy::none())
-        .build()
-        .context("build bounded Sentinel control-plane HTTP client")?;
+    let client = build_control_plane_client(timeout_ms)?;
 
     let slice_url = control_plane_endpoint(
         &base_url,
@@ -289,6 +320,152 @@ fn run_sentinel_bound_control_plane_mode(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_sentinel_bound_inbox_discovery(
+    config_path: &str,
+    node_id_override: Option<&str>,
+    dserver_base: &str,
+    scalar_args: &[String],
+    execute: bool,
+    allow_insecure_http: bool,
+    max_artifact_bytes: Option<usize>,
+    acquisition_timeout_ms: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
+    validate_inbox_mode_cli(node_id_override, scalar_args, execute, max_artifact_bytes)?;
+
+    let cfg = config::load_config(config_path)?;
+    let local_node_id = normalize_bound_node_id(&cfg.agent.node_id)?;
+    let base_url = parse_control_plane_base_url(dserver_base, allow_insecure_http)?;
+    let timeout_ms = acquisition_timeout_ms.unwrap_or(DEFAULT_CONTROL_PLANE_TIMEOUT_MS);
+    if timeout_ms == 0 {
+        return Err(anyhow!("control-plane timeout must be positive"));
+    }
+    let client = build_control_plane_client(timeout_ms)?;
+    let slice_url = control_plane_endpoint(
+        &base_url,
+        &[
+            "api",
+            "v1",
+            "controlled-wasm",
+            "deployment",
+            "for-node",
+            &local_node_id,
+        ],
+    )?;
+
+    let response = client
+        .get(slice_url.clone())
+        .send()
+        .with_context(|| format!("discover Sentinel deployment inbox from {slice_url}"))?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return render_inbox_result(
+            build_inbox_result(&local_node_id, &slice_url, None)?,
+            json_output,
+        );
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "discover Sentinel deployment inbox failed with HTTP {status}: {body}"
+        ));
+    }
+
+    let deployment: DatumNodeScopedDeployment = response
+        .json()
+        .context("parse Sentinel deployment inbox node-scoped response")?;
+    validate_node_scoped_deployment_for_local_node(&deployment, &local_node_id)?;
+
+    render_inbox_result(
+        build_inbox_result(&local_node_id, &slice_url, Some(&deployment))?,
+        json_output,
+    )
+}
+
+fn build_control_plane_client(timeout_ms: u64) -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .redirect(RedirectPolicy::none())
+        .build()
+        .context("build bounded Sentinel control-plane HTTP client")
+}
+
+fn build_inbox_result(
+    local_node_id: &str,
+    slice_url: &Url,
+    deployment: Option<&DatumNodeScopedDeployment>,
+) -> Result<SentinelDeploymentInboxResult> {
+    let (manifest_id, project_id, delivery_scope, assignment_ids) = match deployment {
+        Some(deployment) => {
+            validate_node_scoped_deployment_for_local_node(deployment, local_node_id)?;
+            let assignment_ids = deployment
+                .assignments
+                .iter()
+                .map(|assignment| assignment.assignment_id.trim().to_string())
+                .collect::<Vec<_>>();
+            (
+                Some(deployment.manifest_id.clone()),
+                Some(deployment.project_id.clone()),
+                Some(delivery_scope_name(&deployment.delivery_scope)),
+                assignment_ids,
+            )
+        }
+        None => (None, None, None, Vec::new()),
+    };
+
+    Ok(SentinelDeploymentInboxResult {
+        mode: "sentinel_deployment_inbox",
+        node_id: local_node_id.to_string(),
+        status: inbox_status(assignment_ids.len()),
+        slice_url: slice_url.to_string(),
+        manifest_id,
+        project_id,
+        delivery_scope,
+        assignment_count: assignment_ids.len(),
+        assignment_ids,
+        control_plane_fetch_performed: true,
+        artifact_acquisition_performed: false,
+        wasmtime_compiled: false,
+        guest_execution_performed: false,
+        report_published: false,
+        governed_execution_performed: false,
+        deployment_side_effects_performed: false,
+    })
+}
+
+fn render_inbox_result(result: SentinelDeploymentInboxResult, json_output: bool) -> Result<()> {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                "{\"error\":\"failed to render Sentinel deployment inbox result\"}".to_string()
+            })
+        );
+        return Ok(());
+    }
+
+    println!("I38 Sentinel deployment inbox discovery");
+    println!("  node_id: {}", result.node_id);
+    println!("  status: {}", result.status);
+    println!("  slice_url: {}", result.slice_url);
+    println!("  assignment_count: {}", result.assignment_count);
+    println!("  assignment_ids: {:?}", result.assignment_ids);
+    println!(
+        "  artifact_acquisition_performed: {}",
+        result.artifact_acquisition_performed
+    );
+    println!("  wasmtime_compiled: {}", result.wasmtime_compiled);
+    println!(
+        "  guest_execution_performed: {}",
+        result.guest_execution_performed
+    );
+    println!("  report_published: {}", result.report_published);
+    Ok(())
+}
+
 fn artifact_policy(
     allow_insecure_http: bool,
     max_artifact_bytes: Option<usize>,
@@ -317,6 +494,10 @@ fn is_control_plane_mode(deployment: &str) -> bool {
     deployment.starts_with("http://") || deployment.starts_with("https://")
 }
 
+fn is_inbox_selector(assignment_selector: &str) -> bool {
+    assignment_selector.trim() == CONTROL_PLANE_INBOX_SELECTOR
+}
+
 fn validate_bound_mode_cli(node_id_override: Option<&str>, assignment_selector: &str) -> Result<()> {
     if node_id_override.is_some() {
         return Err(anyhow!(
@@ -329,6 +510,51 @@ fn validate_bound_mode_cli(node_id_override: Option<&str>, assignment_selector: 
         ));
     }
     Ok(())
+}
+
+fn validate_inbox_mode_cli(
+    node_id_override: Option<&str>,
+    scalar_args: &[String],
+    execute: bool,
+    max_artifact_bytes: Option<usize>,
+) -> Result<()> {
+    if node_id_override.is_some() {
+        return Err(anyhow!(
+            "--node-id is forbidden in Sentinel deployment inbox mode; identity comes only from agent.node_id"
+        ));
+    }
+    if execute {
+        return Err(anyhow!(
+            "Sentinel deployment inbox discovery is read-only; --execute is forbidden"
+        ));
+    }
+    if !scalar_args.is_empty() {
+        return Err(anyhow!(
+            "Sentinel deployment inbox discovery does not accept WASM --arg values"
+        ));
+    }
+    if max_artifact_bytes.is_some() {
+        return Err(anyhow!(
+            "Sentinel deployment inbox discovery does not acquire artifacts; --max-artifact-bytes is not applicable"
+        ));
+    }
+    Ok(())
+}
+
+fn inbox_status(assignment_count: usize) -> &'static str {
+    match assignment_count {
+        0 => "no_work",
+        1 => "one_assignment",
+        _ => "multiple_assignments",
+    }
+}
+
+fn delivery_scope_name(scope: &DatumNodeDeploymentScope) -> &'static str {
+    match scope {
+        DatumNodeDeploymentScope::Full => "full",
+        DatumNodeDeploymentScope::NodeSlice => "node_slice",
+        DatumNodeDeploymentScope::Empty => "empty",
+    }
 }
 
 fn normalize_bound_node_id(node_id: &str) -> Result<String> {
@@ -481,7 +707,7 @@ mod tests {
     use crate::wasm_runtime::{
         deployment::{
             DatumDeploymentArtifact, DatumDeploymentAssignment, DatumDeploymentExecutionBoundary,
-            DatumDeploymentRuntimeLimits, DatumNodeDeploymentScope,
+            DatumDeploymentRuntimeLimits,
         },
         generic_runner::WasmScalarValue,
     };
@@ -510,7 +736,11 @@ mod tests {
             manifest_id: "manifest-1".to_string(),
             project_id: "project-1".to_string(),
             node_id: "fog-01".to_string(),
-            delivery_scope: DatumNodeDeploymentScope::NodeSlice,
+            delivery_scope: if assignment_count == 0 {
+                DatumNodeDeploymentScope::Empty
+            } else {
+                DatumNodeDeploymentScope::NodeSlice
+            },
             assignments,
             execution_boundary: DatumDeploymentExecutionBoundary {
                 explicit_invocation_required: true,
@@ -599,5 +829,84 @@ mod tests {
         );
         assert!(select_single_assignment_id(&test_view(0)).is_err());
         assert!(select_single_assignment_id(&test_view(2)).is_err());
+    }
+
+    #[test]
+    fn inbox_selector_is_explicit_and_separate_from_auto_execution_selector() {
+        assert!(is_inbox_selector("inbox"));
+        assert!(is_inbox_selector(" inbox "));
+        assert!(!is_inbox_selector("auto"));
+        assert!(!is_inbox_selector("fog-scale"));
+    }
+
+    #[test]
+    fn inbox_mode_forbids_execute() {
+        let error = validate_inbox_mode_cli(None, &[], true, None)
+            .expect_err("inbox discovery must reject --execute");
+        assert!(error.to_string().contains("--execute is forbidden"));
+    }
+
+    #[test]
+    fn inbox_mode_forbids_node_override() {
+        let error = validate_inbox_mode_cli(Some("other-node"), &[], false, None)
+            .expect_err("inbox discovery must bind identity to config");
+        assert!(error.to_string().contains("--node-id is forbidden"));
+    }
+
+    #[test]
+    fn inbox_mode_forbids_execution_arguments_and_artifact_knobs() {
+        let args = vec!["i32:7".to_string()];
+        let args_error = validate_inbox_mode_cli(None, &args, false, None)
+            .expect_err("inbox discovery must reject WASM args");
+        assert!(args_error.to_string().contains("does not accept WASM --arg"));
+
+        let artifact_error = validate_inbox_mode_cli(None, &[], false, Some(1024))
+            .expect_err("inbox discovery must reject artifact size policy");
+        assert!(artifact_error
+            .to_string()
+            .contains("does not acquire artifacts"));
+    }
+
+    #[test]
+    fn inbox_status_distinguishes_zero_one_and_multiple_assignments() {
+        assert_eq!(inbox_status(0), "no_work");
+        assert_eq!(inbox_status(1), "one_assignment");
+        assert_eq!(inbox_status(2), "multiple_assignments");
+        assert_eq!(inbox_status(9), "multiple_assignments");
+    }
+
+    #[test]
+    fn inbox_result_is_read_only_and_lists_only_delivered_assignment_ids() {
+        let view = test_view(2);
+        let url = Url::parse(
+            "https://example.invalid/api/v1/controlled-wasm/deployment/for-node/fog-01",
+        )
+        .unwrap();
+        let result = build_inbox_result("fog-01", &url, Some(&view)).unwrap();
+        assert_eq!(result.status, "multiple_assignments");
+        assert_eq!(result.assignment_count, 2);
+        assert_eq!(
+            result.assignment_ids,
+            vec!["assignment-0".to_string(), "assignment-1".to_string()]
+        );
+        assert!(!result.artifact_acquisition_performed);
+        assert!(!result.wasmtime_compiled);
+        assert!(!result.guest_execution_performed);
+        assert!(!result.report_published);
+        assert!(!result.governed_execution_performed);
+        assert!(!result.deployment_side_effects_performed);
+    }
+
+    #[test]
+    fn inbox_result_rejects_cross_node_assignment_leak() {
+        let mut view = test_view(1);
+        view.assignments[0].target_node = "cloud-01".to_string();
+        let url = Url::parse(
+            "https://example.invalid/api/v1/controlled-wasm/deployment/for-node/fog-01",
+        )
+        .unwrap();
+        let error = build_inbox_result("fog-01", &url, Some(&view))
+            .expect_err("cross-node assignment must fail discovery validation");
+        assert!(error.to_string().contains("targets 'cloud-01'"));
     }
 }
