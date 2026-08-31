@@ -1,0 +1,45 @@
+{
+  "project_id": "i40-cycle-project",
+  "nodes": [
+    {"node_id": "fog-01", "node_kind": "fog", "status": "available"},
+    {"node_id": "local-01", "node_kind": "local", "status": "available"}
+  ],
+  "modules": [
+    {"module_id": "a-module", "module_kind": "wasm", "artifact_id": "a-artifact"},
+    {"module_id": "b-module", "module_kind": "wasm", "artifact_id": "b-artifact"}
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "a-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "https://example.invalid/a.wasm",
+      "metadata": {"sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+    },
+    {
+      "artifact_id": "b-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "https://example.invalid/b.wasm",
+      "metadata": {"sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}
+    }
+  ],
+  "flows": [
+    {
+      "flow_id": "cycle",
+      "flow_kind": "deployment_dependency",
+      "modules": ["a-module", "b-module"],
+      "edges": [
+        {"edge_id": "a-to-b", "from_module_id": "a-module", "to_module_id": "b-module"},
+        {"edge_id": "b-to-a", "from_module_id": "b-module", "to_module_id": "a-module"}
+      ]
+    }
+  ],
+  "placements": [
+    {"placement_id": "placement:a", "module_id": "a-module", "selected_node_id": "fog-01", "status": "selected"},
+    {"placement_id": "placement:b", "module_id": "b-module", "selected_node_id": "local-01", "status": "selected"}
+  ],
+  "wasm_modules": [
+    {"module_id": "a-module", "wasm_module_id": "a-wasm", "function_name": "run", "metadata": {"assignment_id": "a-assignment"}},
+    {"module_id": "b-module", "wasm_module_id": "b-wasm", "function_name": "run", "metadata": {"assignment_id": "b-assignment"}}
+  ],
+  "metadata": {"dgraph_id": "i40-dependency-cycle"}
+}
