@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `144/150`
-- latest_checkpoint: `I38`
+- progress: `145/150`
+- latest_checkpoint: `I39`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -18,9 +18,10 @@
 - controlled_wasm_state_persistence: validated
 - sentinel_registration_lease: validated
 - sentinel_deployment_inbox_discovery: validated
+- explicit_multi_assignment_scheduling: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I39/145`
-- next_scope: accept explicit multi-assignment execution only through a deterministic batch scheduling contract while preserving cross-node isolation and explicit authorization
+- next_checkpoint: `I40/146`
+- next_scope: derive deterministic dependency-aware deployment stages, reject cycles and unsatisfied dependencies fail-closed, and preserve explicit execution boundaries
 
 ## Phase progression
 
@@ -39,6 +40,7 @@ I35  Sentinel-bound slice discovery/execution/report publication
 I36  persisted + revalidated controlled state across dserver restart
 I37  explicit Sentinel registration + heartbeat/lease presence state
 I38  read-only Sentinel deployment inbox discovery
+I39  explicit deterministic multi-assignment scheduling
 ```
 
 Detailed evidence for every earlier checkpoint remains in the corresponding final/checkpoint documents.
@@ -245,12 +247,65 @@ Evidence:
 - `docs/I38_SENTINEL_DEPLOYMENT_INBOX.md`
 - `docs/I38_SENTINEL_DEPLOYMENT_INBOX_FINAL.md`
 
+## I39 — validated at 145/150
+
+I39 adds an explicit deterministic batch execution path for node slices containing two or more assignments while retaining the I35 exactly-one-assignment path and I38 read-only inbox path.
+
+Regression:
+
+```text
+DATUM fmt: PASS
+DATUM test: 431 passed; 0 failed
+DATUM build: PASS
+```
+
+Validated execution modes:
+
+```text
+--assignment inbox           -> read-only discovery
+--assignment auto --execute  -> exactly one assignment
+--assignment batch --execute -> two or more assignments
+```
+
+The batch scheduler uses:
+
+```text
+scheduling_policy=assignment_id_ascending
+failure_policy=stop_on_first_failure
+```
+
+The live fixture deliberately listed local assignments in reverse lexical order:
+
+```text
+z-local-second -> local-01
+a-local-first  -> local-01
+cloud-untouched -> cloud-01
+```
+
+The local inbox reported `multiple_assignments`. The legacy `auto` path rejected the two-assignment slice and produced no report. Explicit batch execution produced:
+
+```text
+ordinal 1 -> a-local-first  -> result 30
+ordinal 2 -> z-local-second -> result 30
+attempted_count=2
+executed_count=2
+failed_or_blocked_count=0
+status=executed
+```
+
+dserver retained exactly two local reports and no report for `cloud-untouched`, preserving cross-node isolation.
+
+Evidence:
+
+- `docs/I39_MULTI_ASSIGNMENT_SCHEDULING.md`
+- `docs/I39_MULTI_ASSIGNMENT_SCHEDULING_FINAL.md`
+- `scripts/fixtures/i39-multi-assignment-manifest.json`
+
 ## Remaining path to 150/150
 
 The fixed roadmap is recorded in `docs/CONTROLLED_WASM_DEPLOYMENT_142_TO_150_ROADMAP.md`.
 
 ```text
-I39/145 explicit multi-assignment scheduling
 I40/146 dependency-aware deployment stages
 I41/147 deployment lifecycle and retry evidence
 I42/148 resource-aware observed D-Graph join
@@ -262,4 +317,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I39/145 removes I35's deliberately narrow exactly-one-assignment execution restriction through an explicit batch scheduling mode. Multiple assignments must be ordered deterministically, remain node-scoped, produce per-assignment reports/evidence, and require an explicit operator transition. No automatic governed execution is enabled.
+I40/146 makes deployment ordering derive from dependency semantics rather than a flat assignment-id order. The checkpoint must derive deterministic topological stages, reject cycles and missing dependencies fail-closed, materialize stage metadata, and retain the explicit execution transition. No canonical automatic governed execution is enabled.
