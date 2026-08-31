@@ -5,29 +5,34 @@ use std::{
 };
 
 use axum::{
-    extract::{Json, Path},
+    extract::{Json, Path, State},
     http::StatusCode,
     Json as JsonResponse,
 };
+use chrono::Utc;
 use serde_json::{json, Value};
 
-use crate::core::{
-    controlled_dgraph_deployment::{
-        build_controlled_dgraph_activation, materialize_controlled_observed_dgraph,
-        ControlledDGraphActivation, ControlledObservedDGraphState,
+use crate::{
+    core::{
+        controlled_dgraph_deployment::{
+            build_controlled_dgraph_activation, materialize_controlled_observed_dgraph,
+            ControlledDGraphActivation, ControlledObservedDGraphState,
+        },
+        controlled_wasm_deployment::{
+            build_controlled_live_report_list, report_execution_id,
+            validate_controlled_live_report_against_manifest, ControlledWasmLiveReportList,
+        },
+        controlled_wasm_persistence::{
+            load_controlled_wasm_persisted_state, persist_controlled_wasm_state,
+            ControlledWasmPersistedState, CONTROLLED_WASM_PERSISTENCE_VERSION,
+        },
+        deployment_assignment::{derive_node_scoped_deployment, NodeScopedDeployment},
+        deployment_lifecycle_observed::materialize_lifecycle_evidence,
+        deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
+        dgraph::DGraph,
+        resource_observation::materialize_resource_observations,
     },
-    controlled_wasm_deployment::{
-        build_controlled_live_report_list, report_execution_id,
-        validate_controlled_live_report_against_manifest, ControlledWasmLiveReportList,
-    },
-    controlled_wasm_persistence::{
-        load_controlled_wasm_persisted_state, persist_controlled_wasm_state,
-        ControlledWasmPersistedState, CONTROLLED_WASM_PERSISTENCE_VERSION,
-    },
-    deployment_assignment::{derive_node_scoped_deployment, NodeScopedDeployment},
-    deployment_lifecycle_observed::materialize_lifecycle_evidence,
-    deployment_manifest::{validate_deployment_manifest, DeploymentManifest},
-    dgraph::DGraph,
+    AppState,
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
@@ -140,6 +145,7 @@ pub async fn get_controlled_wasm_dgraph() -> Result<JsonResponse<DGraph>, ApiErr
 }
 
 pub async fn get_controlled_wasm_observed_dgraph(
+    State(state): State<AppState>,
 ) -> Result<JsonResponse<ControlledObservedDGraphState>, ApiError> {
     ensure_controlled_wasm_persistence_initialized();
     let source = source_dgraph_store()
@@ -167,6 +173,22 @@ pub async fn get_controlled_wasm_observed_dgraph(
         .map_err(bad_request)?;
     let attempts = crate::api::deployment_lifecycle::attempts_snapshot().map_err(bad_request)?;
     materialize_lifecycle_evidence(&mut observed, &manifest, &attempts).map_err(bad_request)?;
+
+    let snapshots = state
+        .firebase
+        .list_latest_local_dgraph_snapshots(&manifest.project_id)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({
+                    "error": format!("load resource observation snapshots: {error}")
+                })),
+            )
+        })?;
+    materialize_resource_observations(&mut observed, &snapshots, Utc::now())
+        .map_err(bad_request)?;
+
     Ok(JsonResponse(observed))
 }
 
