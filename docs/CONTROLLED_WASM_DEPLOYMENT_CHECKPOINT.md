@@ -1,8 +1,8 @@
 # Controlled WASM Deployment Readiness Checkpoint
 
 - phase_status: active
-- progress: `148/150`
-- latest_checkpoint: `I42`
+- progress: `149/150`
+- latest_checkpoint: `I43`
 - predecessor_phase_final: `C58_DISTRIBUTED_DRY_RUN_PREPARATION_CHECKPOINT_FINAL.md`
 - phase_entry_checkpoint: `C59/150`
 - external_wasm_artifact_loader: validated
@@ -22,9 +22,10 @@
 - dependency_aware_deployment_stages: validated
 - deployment_lifecycle_retry_evidence: validated
 - resource_aware_observed_dgraph_join: validated
+- deployment_readiness_governance_evidence: validated
 - governed_allow_transition_available: false
-- next_checkpoint: `I43/149`
-- next_scope: consolidate deterministic deployment readiness and governance evidence over identity, active lease, graph/dependency validity, artifact integrity, capabilities, resource freshness, and execution boundaries while keeping automatic execution unavailable
+- next_checkpoint: `I44/150`
+- next_scope: phase-final integration and reproducibility package covering the validated controlled external D-Graph, Sentinel, lifecycle, resource, readiness, persistence, and execution boundaries without enabling canonical automatic governed execution
 
 ## Phase progression
 
@@ -39,6 +40,7 @@ I39      explicit multi-assignment scheduling
 I40      D-Graph-derived dependency stages
 I41      explicit lifecycle attempts and retry lineage
 I42      resource-aware observed D-Graph join
+I43      deployment readiness and governance evidence
 ```
 
 Detailed historical evidence remains in each checkpoint final document.
@@ -118,10 +120,53 @@ Evidence:
 - `docs/I42_RESOURCE_AWARE_OBSERVED_DGRAPH_JOIN_FINAL.md`
 - `scripts/fixtures/i42-resource-three-node-dgraph.json`
 
+## I43 — validated at 149/150
+
+I43 consolidates deterministic deployment readiness evidence into the canonical controlled observed D-Graph while retaining the explicit fail-closed execution boundary.
+
+Regression:
+
+```text
+dserver fmt: PASS
+dserver test: 520 passed; 0 failed
+dserver build: PASS
+```
+
+Healthy three-node live state produced:
+
+```text
+status=ready_for_explicit_execution
+assignment_count=3
+target_node_count=3
+ready_assignment_count=1
+waiting_assignment_count=2
+blocking_reasons=[]
+automatic_execution_allowed=false
+governed_execution_performed=false
+readiness_side_effects_performed=false
+```
+
+Dependency evidence remained explicit: `a-fog-scale=ready`, `m-local-aggregate=waiting_on_dependencies(a-fog-scale)`, and `z-cloud-delta=waiting_on_dependencies(m-local-aggregate)`.
+
+After re-registering only `fog-01` with a one-second lease and allowing it to expire, Sentinel presence became `active_count=2`, `stale_count=1`. Readiness failed closed with exactly one blocker:
+
+```text
+code=sentinel_stale
+scope=node
+node_id=fog-01
+```
+
+The fog resource observation remained fresh, and controlled live reports remained `0 -> 0`, demonstrating that readiness itself performed no execution or placement side effects.
+
+Evidence:
+
+- `docs/I43_DEPLOYMENT_READINESS_GOVERNANCE.md`
+- `docs/I43_DEPLOYMENT_READINESS_GOVERNANCE_FINAL.md`
+- `scripts/fixtures/i43-readiness-three-node-dgraph.json`
+
 ## Remaining path to 150/150
 
 ```text
-I43/149 deployment readiness and governance evidence
 I44/150 phase-final integration and reproducibility package
 ```
 
@@ -129,4 +174,4 @@ The critical path intentionally excludes Kubernetes, Ansible, AWS, and canonical
 
 ## Next
 
-I43/149 consolidates the prerequisite evidence required for explicit controlled execution. It must produce deterministic blocking reasons for stale/missing prerequisites while retaining `automatic_execution_allowed=false` and `governed_execution_performed=false`.
+I44/150 closes the phase with a reproducible integration package that ties together the validated external D-Graph, manifest/node slicing, Sentinel discovery/execution/reporting, persistent controlled state, lifecycle/retry evidence, dependency stages, resource observations, readiness blockers, and the preserved explicit execution boundary.
