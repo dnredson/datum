@@ -36,7 +36,10 @@ nav:
       - SmartSentinel: architecture/smartsentinel.md
   - Data Models:
       - Snapshot: reference/snapshot-model.md
+      - Local D-Graph Snapshot: reference/local-dgraph-snapshot.md
       - Capabilities: reference/capabilities-model.md
+      - Action Execution Reports: reference/action-execution-report.md
+      - Sentinel Registration: reference/sentinel-registration.md
   - API:
       - Overview: api/overview.md
   - Reference:
