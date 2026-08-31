@@ -1,5 +1,6 @@
 use std::cmp::min;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde_json::json;
 
 use crate::config::{self, FileJsonConfig};
@@ -75,6 +77,39 @@ impl ShutdownReason {
     }
 }
 
+pub fn instance_lock_path(node_id: &str) -> PathBuf {
+    let safe_node_id = crate::core::ids::sanitize_id_component(node_id);
+    std::env::temp_dir().join(format!("smartsentinel-{}.lock", safe_node_id))
+}
+
+fn acquire_instance_lock(node_id: &str) -> Result<(File, PathBuf)> {
+    let path = instance_lock_path(node_id);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open SmartSentinel instance lock {}", path.display()))?;
+
+    if let Err(e) = file.try_lock_exclusive() {
+        bail!(
+            "SmartSentinel instance already running for node_id={} (lock={}): {}",
+            node_id,
+            path.display(),
+            e
+        );
+    }
+
+    file.set_len(0)
+        .with_context(|| format!("truncate SmartSentinel instance lock {}", path.display()))?;
+    write!(file, "pid={}\nnode_id={}\n", std::process::id(), node_id)
+        .with_context(|| format!("write SmartSentinel instance lock {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("flush SmartSentinel instance lock {}", path.display()))?;
+
+    Ok((file, path))
+}
+
 pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     if options.stop_file.exists() {
         bail!(
@@ -110,6 +145,12 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     if cycle_s == 0 {
         bail!("SmartSentinel cycle interval must be greater than zero seconds");
     }
+
+    // Hold an OS-backed exclusive file lock for the entire process lifetime. The lock
+    // lives in the host temp directory so a second clone/working directory cannot
+    // launch another SmartSentinel for the same logical node. The OS releases it on
+    // normal exit and abnormal process termination; the small lock file may remain.
+    let (_instance_lock, instance_lock_path) = acquire_instance_lock(&node_id)?;
 
     let hostname = options.hostname_override.or(cfg.agent.hostname.clone());
 
@@ -160,11 +201,12 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     );
 
     println!(
-        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} file_json={} http_json={} mutations=disabled",
+        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} mutations=disabled",
         node_id,
         cycle_s,
         options.heartbeat_s,
         options.stop_file.display(),
+        instance_lock_path.display(),
         if file_output.is_some() { "enabled" } else { "disabled" },
         if http_output.is_some() { "enabled" } else { "disabled" }
     );
