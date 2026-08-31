@@ -157,7 +157,15 @@ mode=smartsentinel event=shutdown reason=stop_file completed_collections=1 heart
 
 After shutdown, `Test-Path .smartsentinel-stop` returned `False`, confirming the acknowledged stop request was consumed and removed. A separate stale-stop-file startup test then correctly refused to launch and returned `SmartSentinel stop file already exists: .smartsentinel-stop. Remove it before starting the agent.`
 
-Local Windows evidence therefore validates independent lifecycle heartbeat, Ctrl+C graceful shutdown, active stop-file shutdown, and stale stop-file startup protection. Only the three-host >=10 minute acceptance run remains for O1.
+Local Windows evidence therefore validates independent lifecycle heartbeat, Ctrl+C graceful shutdown, active stop-file shutdown, and stale stop-file startup protection.
+
+## fog-01 Linux smoke validation evidence — 2026-08-31
+
+Host identity used for Linux smoke validation: `fog-01`.
+
+The agent was run with `config.linux`, `--cycle-s 1`, `--heartbeat-s 1`, and `--max-cycles 1`. Lifecycle liveness advanced from sequence 1 through 7 while the collection was in progress. The Linux collection completed successfully after `6124 ms` with `entities=6`, `edges=3`, `events=2`, `actions=0`, `file_json=ok`, `http_json=disabled`, and `side_effects=false`. Shutdown then completed cleanly with `reason=max_cycles`.
+
+This confirms that the same SmartSentinel lifecycle implementation runs on Linux while preserving heartbeat independence from collection duration. Ctrl+C shutdown and direct inspection of the Linux host snapshot remain to be checked on `fog-01` before the long acceptance run.
 
 ## Three-host O1 acceptance run
 
