@@ -1,0 +1,35 @@
+{
+  "project_id": "i40-missing-project",
+  "nodes": [
+    {"node_id": "local-01", "node_kind": "local", "status": "available"}
+  ],
+  "modules": [
+    {"module_id": "external-upstream", "module_kind": "external"},
+    {"module_id": "managed-module", "module_kind": "wasm", "artifact_id": "managed-artifact"}
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "managed-artifact",
+      "artifact_kind": "wasm",
+      "artifact_ref": "https://example.invalid/managed.wasm",
+      "metadata": {"sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+    }
+  ],
+  "flows": [
+    {
+      "flow_id": "missing-deployable-upstream",
+      "flow_kind": "deployment_dependency",
+      "modules": ["external-upstream", "managed-module"],
+      "edges": [
+        {"edge_id": "missing-upstream", "from_module_id": "external-upstream", "to_module_id": "managed-module"}
+      ]
+    }
+  ],
+  "placements": [
+    {"placement_id": "placement:managed", "module_id": "managed-module", "selected_node_id": "local-01", "status": "selected"}
+  ],
+  "wasm_modules": [
+    {"module_id": "managed-module", "wasm_module_id": "managed-wasm", "function_name": "run", "metadata": {"assignment_id": "managed-assignment"}}
+  ],
+  "metadata": {"dgraph_id": "i40-dependency-missing"}
+}
