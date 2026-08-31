@@ -13,16 +13,18 @@ O1 introduces a dedicated `smartsentinel` binary without changing the historical
 The continuous SmartSentinel process:
 
 - loads the existing DATUM configuration;
-- resolves `node_id`, hostname, cycle interval and existing file/HTTP outputs;
-- runs collection cycles continuously;
-- emits a monotonically increasing heartbeat sequence;
-- annotates the emitted host snapshot with SmartSentinel service-mode heartbeat evidence;
-- survives collection or publication errors and continues to the next cycle;
+- resolves `node_id`, hostname, collection interval and existing file/HTTP outputs;
+- emits an independent lifecycle/liveness heartbeat, default 1 s;
+- runs the existing collection/plugin cycle independently from heartbeat timing;
+- annotates emitted host snapshots with the latest SmartSentinel heartbeat evidence;
+- survives collection or publication errors and continues running;
 - explicitly disables `auto_recovery` and `desired_state` in the in-memory service-mode configuration so this checkpoint is observation-only;
-- supports deterministic graceful shutdown through a cross-platform stop file;
-- supports `--max-cycles` for short smoke tests.
+- supports graceful shutdown through Ctrl+C and a cross-platform stop file;
+- supports `--max-cycles` for short collection smoke tests.
 
-The heartbeat annotation is intentionally small and is not the O2 telemetry envelope. O2 will introduce the typed host telemetry contract.
+A slow collector must not make the Sentinel itself appear dead. `event=liveness` means the SmartSentinel process is alive; `event=collection` means an observation cycle finished. These are intentionally distinct states.
+
+The heartbeat annotation is intentionally small and is not the O2 telemetry envelope. O2 will introduce the typed host/discovery telemetry contract, including OS/runtime/capability discovery.
 
 ## Build and smoke test
 
@@ -33,50 +35,83 @@ cargo test
 cargo build --bin smartsentinel
 ```
 
-Short deterministic smoke test:
+Short smoke test that deliberately allows a collection to be slower than heartbeat:
 
 ```text
-cargo run --bin smartsentinel -- --config config.toml --cycle-s 1 --max-cycles 3
+cargo run --bin smartsentinel -- --config config.toml --node-id local-01 --cycle-s 1 --heartbeat-s 1 --max-cycles 2
 ```
 
 Expected log shape:
 
 ```text
-mode=smartsentinel event=start node_id=... cycle_s=1 ... mutations=disabled
-mode=smartsentinel event=heartbeat seq=1 status=ok ... side_effects=false
-mode=smartsentinel event=heartbeat seq=2 status=ok ... side_effects=false
-mode=smartsentinel event=heartbeat seq=3 status=ok ... side_effects=false
-mode=smartsentinel event=shutdown reason=max_cycles completed_cycles=3 ... side_effects=false
+mode=smartsentinel event=start node_id=local-01 cycle_s=1 heartbeat_s=1 ... mutations=disabled
+mode=smartsentinel event=liveness seq=1 node_id=local-01 status=alive ...
+mode=smartsentinel event=liveness seq=2 node_id=local-01 status=alive ...
+...
+mode=smartsentinel event=collection seq=1 status=ok ... heartbeat_seq=N ... side_effects=false
+...
+mode=smartsentinel event=collection seq=2 status=ok ... heartbeat_seq=M ... side_effects=false
+mode=smartsentinel event=shutdown reason=max_cycles completed_collections=2 heartbeat_seq=M ... side_effects=false
 ```
+
+If Windows ping/CIM/Docker inspection makes a collection take several seconds, multiple `event=liveness` entries should still appear while that collection is running.
 
 The generated host entity contains an additional `smartsentinel` object:
 
 ```json
 {
   "mode": "continuous",
-  "heartbeat_sequence": 3,
+  "heartbeat_sequence": 7,
   "service_started_at_utc": "...",
-  "service_uptime_ms": 2000,
+  "service_uptime_ms": 6000,
   "safe_to_auto_execute": false,
   "side_effects_performed": false
 }
 ```
 
+## Platform plugins
+
+The SmartSentinel orchestration layer remains cross-platform. Existing collectors continue to select themselves by operating system.
+
+Examples:
+
+```text
+Windows:
+  host_telemetry_windows
+  process_windows_tasklist
+  docker_windows_cli
+  connection_ping_windows
+
+Linux:
+  host_telemetry_linux
+  process_linux_ps
+  docker_linux_cli
+  connection_ping_linux
+```
+
+An unavailable optional runtime such as Docker is observation evidence, not a process-fatal error. During O3 this will be promoted from best-effort/skipped logging into typed runtime availability state.
+
 ## Graceful shutdown
+
+### Ctrl+C
+
+Start normally and press Ctrl+C. The process should request shutdown rather than terminate with the Windows `STATUS_CONTROL_C_EXIT` default behavior.
+
+Expected final log:
+
+```text
+mode=smartsentinel event=shutdown reason=ctrl_c ... side_effects=false
+```
+
+A collector already in progress may finish or return early before the main service loop exits.
+
+### Stop file
 
 Default stop-file path:
 
 ```text
 .smartsentinel-stop
 ```
-
-Start normally:
-
-```text
-cargo run --bin smartsentinel -- --config config.toml
-```
-
-From another shell, request shutdown.
 
 PowerShell:
 
@@ -90,7 +125,9 @@ Linux shell:
 touch .smartsentinel-stop
 ```
 
-The running process polls the stop file during the inter-cycle wait, removes it after acknowledging the request, and emits:
+The heartbeat thread also watches this file, so the shutdown request is detected even while the collection thread is busy. After shutdown the file is removed.
+
+Expected final log:
 
 ```text
 mode=smartsentinel event=shutdown reason=stop_file ... side_effects=false
@@ -102,22 +139,10 @@ A stale stop file present before startup is treated as an error rather than sile
 
 Use the existing host-specific configuration on each node and start the dedicated binary.
 
-`local-01`:
-
 ```text
-cargo run --release --bin smartsentinel -- --config <local-config>
-```
-
-`fog-01`:
-
-```text
-cargo run --release --bin smartsentinel -- --config <fog-config>
-```
-
-`cloud-01`:
-
-```text
-cargo run --release --bin smartsentinel -- --config <cloud-config>
+local-01: cargo run --release --bin smartsentinel -- --config <local-config> --heartbeat-s 1
+fog-01:   cargo run --release --bin smartsentinel -- --config <fog-config> --heartbeat-s 1
+cloud-01: cargo run --release --bin smartsentinel -- --config <cloud-config> --heartbeat-s 1
 ```
 
 Keep all three processes running continuously for at least 10 minutes.
@@ -126,17 +151,18 @@ Acceptance evidence should record, for each host:
 
 ```text
 start log
-first heartbeat sequence
-heartbeat after >= 10 minutes
+first liveness sequence
+liveness after >= 10 minutes
+collection cycles continuing independently
 no process exit/restart
 HTTP/file output status across the run
 graceful shutdown log
 ```
 
-The O1 checkpoint is accepted only when all three current hosts complete that run with stable heartbeats.
+The O1 checkpoint is accepted only when all three current hosts complete that run with stable lifecycle heartbeats.
 
 ## Safety boundary
 
 The SmartSentinel service loop changes only an in-memory copy of configuration to disable mutation paths. It does not rewrite `config.toml`, the closed `150/150` artifacts, automatic deployment flags, or the existing `datum run` behavior.
 
-O1 must not be used to claim real host telemetry completion: existing snapshot collectors are reused only to exercise a live continuous cycle. Typed CPU/RAM/uptime/process telemetry, cross-platform normalization and its explicit schema belong to O2.
+O1 must not be used to claim real host telemetry completion. Existing snapshot collectors are reused only to exercise a live continuous cycle. Typed OS, CPU/RAM/uptime/process/runtime capability discovery belongs to O2 and will support both known-node and previously-unregistered-node bootstrap paths.
