@@ -5,6 +5,8 @@ docs_dir: documentation
 
 theme:
   name: material
+  logo: assets/brand/datum-monochrome.png
+  favicon: assets/brand/datum-icon.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -44,3 +46,4 @@ nav:
       - Overview: api/overview.md
   - Reference:
       - Glossary: reference/glossary.md
+      - Visual Identity: reference/visual-identity.md
