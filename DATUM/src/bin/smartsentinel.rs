@@ -64,6 +64,12 @@ struct Args {
 
     #[arg(long, default_value_t = 30)]
     drift_verify_s: u64,
+
+    #[arg(long)]
+    runtime_artifact: Option<PathBuf>,
+
+    #[arg(long)]
+    runtime_execution_user: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -93,6 +99,8 @@ fn main() -> Result<()> {
             discovery_refresh_s: args.discovery_refresh_s,
             snapshot_s: args.snapshot_s,
             drift_verify_s: args.drift_verify_s,
+            runtime_artifact_path: args.runtime_artifact,
+            runtime_execution_user: args.runtime_execution_user,
             heartbeat_s: args.heartbeat_s,
             node_id_override: args.node_id,
             hostname_override: args.hostname,
@@ -101,8 +109,13 @@ fn main() -> Result<()> {
         });
     }
 
-    if args.dserver_url.is_some() || args.project_id.is_some() || args.execute {
-        bail!("--dserver-url, --project-id, and --execute require --operational");
+    if args.dserver_url.is_some()
+        || args.project_id.is_some()
+        || args.execute
+        || args.runtime_artifact.is_some()
+        || args.runtime_execution_user.is_some()
+    {
+        bail!("--dserver-url, --project-id, --execute, --runtime-artifact, and --runtime-execution-user require --operational");
     }
 
     run_service_loop(ServiceLoopOptions {
