@@ -78,7 +78,12 @@ fn main() -> Result<()> {
             .hardware_fingerprint_id
             .as_deref()
             .unwrap_or("unknown"),
-        report.discovery.identity.role_binding_id,
+        report
+            .discovery
+            .identity
+            .role_binding_id
+            .as_deref()
+            .unwrap_or("unresolved"),
         report.discovery.resources.capacity_profile_id,
         report.control_plane.expected_capabilities.is_some(),
         report.control_plane.sentinel_registration.is_some(),
