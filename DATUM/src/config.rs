@@ -158,7 +158,33 @@ pub struct DispatchContainerMapping {
     pub service_name: Option<String>,
     pub container_name: String,
     pub artifact: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<DispatchContainerPortMapping>,
+    #[serde(default)]
+    pub restart_policy: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DispatchContainerPortMapping {
+    pub host_port: u16,
+    pub container_port: u16,
+    #[serde(default = "default_tcp_protocol")]
+    pub protocol: String,
+    #[serde(default)]
+    pub host_ip: Option<String>,
+}
+
+impl Default for DispatchContainerPortMapping {
+    fn default() -> Self {
+        Self {
+            host_port: 0,
+            container_port: 0,
+            protocol: default_tcp_protocol(),
+            host_ip: None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CollectorsConfig {
     #[serde(default)]
@@ -313,4 +339,8 @@ pub fn load_config(path: &str) -> Result<Config> {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_tcp_protocol() -> String {
+    "tcp".to_string()
 }
