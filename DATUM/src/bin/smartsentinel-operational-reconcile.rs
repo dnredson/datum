@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         .count();
 
     println!(
-        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} out={}",
+        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} snapshot_published={} out={}",
         report.bootstrap_state,
         report.resource_id,
         report.node_id,
@@ -100,6 +100,7 @@ fn main() -> Result<()> {
         report.local_container_execution_allowed,
         converged_after,
         report.side_effects_performed,
+        report.snapshot_published,
         args.out,
     );
 
