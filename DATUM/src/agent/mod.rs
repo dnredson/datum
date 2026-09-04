@@ -10,4 +10,5 @@ pub mod runtime_artifact;
 pub mod runtime_prerequisite;
 pub mod service_artifact;
 pub mod service_deployment_drift;
+pub mod service_deployment_reconciliation;
 pub mod service_loop;
