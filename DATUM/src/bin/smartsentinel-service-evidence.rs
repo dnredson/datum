@@ -121,8 +121,8 @@ fn main() -> Result<()> {
                     "service_operational_assessment_error",
                     false,
                     json!({
-                        "artifact_id": artifact.artifact_id,
-                        "service_id": artifact.service_id,
+                        "artifact_id": artifact.artifact_id.clone(),
+                        "service_id": artifact.service_id.clone(),
                         "error": error.to_string()
                     }),
                 )?;
@@ -170,8 +170,8 @@ fn main() -> Result<()> {
                     "deployment_drift_assessment_error",
                     false,
                     json!({
-                        "artifact_id": artifact.artifact_id,
-                        "service_id": artifact.service_id,
+                        "artifact_id": artifact.artifact_id.clone(),
+                        "service_id": artifact.service_id.clone(),
                         "error": error.to_string()
                     }),
                 )?;
