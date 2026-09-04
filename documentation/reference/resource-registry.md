@@ -14,26 +14,59 @@ A discovered resource can therefore be visible to planning before it is part of 
 
 ## O2 discovery states
 
-The target bootstrap/resource model distinguishes:
+The implemented bootstrap/resource model distinguishes:
 
 ```text
 known_bound_node
-  resource known to the control plane and bound to a DATUM node/role
+  resource/node context is known to the control plane and associated with a DATUM role
 
 known_unbound_resource
-  resource known to the control plane but not assigned to a role
-  eligible to become a planning/deployment candidate
+  resource is known to the Resource Registry but has no assigned role
+  eligible to become a planning/deployment candidate when planning_eligible=true
 
 unknown_resource
-  resource has not yet been registered
-  SmartSentinel performs capability/resource discovery first
+  local resource identity is not present in the Resource Registry
+  capability/resource discovery evidence exists locally but no control-plane record is assumed
 ```
+
+SmartSentinel does not infer a missing state. Unexpected control-plane responses fail closed rather than being converted into discovery or binding decisions.
+
+## Resource-aware bootstrap
+
+`smartsentinel-bootstrap` now begins with role-free local resource discovery. It derives the same resource lookup identity used by dserver and queries the Resource Registry before resolving logical-node context.
+
+Conceptually:
+
+```text
+SmartSentinel starts
+    |
+    v
+local role-free resource discovery
+    |
+    v
+derive resource lookup id
+    |
+    v
+GET /api/v1/resources/:resource_id
+    |
+    +--> resource has assigned_node_id --> known_bound_node
+    |
+    +--> resource exists, role is null --> known_unbound_resource
+    |
+    +--> resource absent --> unknown_resource
+```
+
+A requested `node_id` may still be provided explicitly or by configuration. If the registry later reports that the same local resource is assigned to a different role, bootstrap rejects the conflict instead of silently accepting the requested role.
+
+Bootstrap is observation/query-only in O2. It does not register an unknown resource, assign a role, take over an existing role, or mutate deployment state.
+
+Until governed Resource Registry binding is implemented, an existing logical-node context in dserver remains sufficient to classify a requested role as `known_bound_node`. Once `assigned_node_id` becomes the authoritative binding path, the registry relationship should become the primary correlation source.
 
 ## Role-free SmartSentinel discovery
 
 `smartsentinel-resource-discovery` collects an observation-only resource envelope without requiring a DATUM `node_id`.
 
-The normal DATUM configuration structure can still be reused. When `agent.node_id` is absent, the resource-discovery binary creates only an ephemeral internal collector scope. That synthetic value is not exported as a logical node identity.
+The normal DATUM configuration structure can still be reused. When `agent.node_id` is absent, the resource-discovery/bootstrap loader creates only an ephemeral internal collector scope. That synthetic value is not exported as a logical node identity.
 
 The role-free envelope contains:
 
