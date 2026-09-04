@@ -12,6 +12,15 @@ path = "snapshot.json"
 enabled = false
 url = "http://localhost:8080/v1/snapshots"
 
+[dispatch]
+enabled = true
+allow_container_execution = true
+
+[[dispatch.container_mappings]]
+service_name = "mqtt"
+container_name = "datum-mqtt"
+artifact = "eclipse-mosquitto:2"
+
 #[collectors.process_windows]
 #enabled = true
 #mode = "group_by_name"                                                   # novo (default recomendado)
@@ -38,10 +47,13 @@ enabled = false
 [services]
 enabled = true
 
-
 [[services.items]]
 name = "mosquitto"
 implemented_by = [{ container_name = "mosquitto" }]
+
+[[services.items]]
+name = "mqtt"
+implemented_by = [{ container_name = "datum-mqtt" }]
 
 [[services.items]]
 name = "datum-agent"
