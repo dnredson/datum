@@ -10,7 +10,9 @@ fn valid_discovery() -> SmartSentinelDiscovery {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
         observed_at_utc: Utc::now(),
         node_id: "fog-01".to_string(),
+        instance_id: "fog-instance-1".to_string(),
         host_id: "host:fog-01".to_string(),
+        stage: Some("fog".to_string()),
         bootstrap_mode: BootstrapMode::Discovery,
         identity: IdentityObservation {
             hostname: "Xubuntu".to_string(),
@@ -50,7 +52,7 @@ fn valid_discovery() -> SmartSentinelDiscovery {
                 name: "python".to_string(),
                 category: CapabilityCategory::LanguageRuntime,
                 present: true,
-                usable: true,
+                available: true,
                 version: Some("3.13.0".to_string()),
                 source: CapabilitySource::Observed,
                 detail: None,
@@ -59,16 +61,16 @@ fn valid_discovery() -> SmartSentinelDiscovery {
                 name: "docker".to_string(),
                 category: CapabilityCategory::ContainerRuntime,
                 present: true,
-                usable: false,
+                available: false,
                 version: Some("28.0.0".to_string()),
                 source: CapabilitySource::Observed,
                 detail: Some("daemon unavailable".to_string()),
             },
             CapabilityObservation {
-                name: "wasm".to_string(),
+                name: "wasmtime".to_string(),
                 category: CapabilityCategory::ExecutionRuntime,
                 present: true,
-                usable: true,
+                available: true,
                 version: None,
                 source: CapabilitySource::Embedded,
                 detail: Some("embedded wasmtime execution path".to_string()),
@@ -86,10 +88,14 @@ fn typed_discovery_contract_accepts_observation_only_report() {
 
     let json = serde_json::to_value(&discovery).expect("serialize discovery");
     assert_eq!(json["schema_version"], DISCOVERY_SCHEMA_VERSION);
+    assert_eq!(json["node_id"], "fog-01");
+    assert_eq!(json["instance_id"], "fog-instance-1");
+    assert_eq!(json["stage"], "fog");
     assert_eq!(json["bootstrap_mode"], "discovery");
     assert_eq!(json["capabilities"][1]["name"], "docker");
     assert_eq!(json["capabilities"][1]["present"], true);
-    assert_eq!(json["capabilities"][1]["usable"], false);
+    assert_eq!(json["capabilities"][1]["available"], false);
+    assert_eq!(json["safe_to_auto_execute"], false);
     assert_eq!(json["side_effects_performed"], false);
 }
 
@@ -98,6 +104,10 @@ fn discovery_contract_rejects_mutating_or_impossible_evidence() {
     let mut mutating = valid_discovery();
     mutating.side_effects_performed = true;
     assert!(mutating.validate().is_err());
+
+    let mut authorized = valid_discovery();
+    authorized.safe_to_auto_execute = true;
+    assert!(authorized.validate().is_err());
 
     let mut impossible_memory = valid_discovery();
     impossible_memory.resources.memory.used_bytes =
@@ -110,10 +120,18 @@ fn discovery_contract_rejects_mutating_or_impossible_evidence() {
 
     let mut impossible_capability = valid_discovery();
     impossible_capability.capabilities[0].present = false;
-    impossible_capability.capabilities[0].usable = true;
+    impossible_capability.capabilities[0].available = true;
     assert!(impossible_capability.validate().is_err());
 
     let mut unnamed_capability = valid_discovery();
     unnamed_capability.capabilities[0].name.clear();
     assert!(unnamed_capability.validate().is_err());
+
+    let mut no_instance = valid_discovery();
+    no_instance.instance_id.clear();
+    assert!(no_instance.validate().is_err());
+
+    let mut empty_stage = valid_discovery();
+    empty_stage.stage = Some("  ".to_string());
+    assert!(empty_stage.validate().is_err());
 }
