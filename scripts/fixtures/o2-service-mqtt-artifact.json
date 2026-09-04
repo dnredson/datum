@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "service:mqtt:mosquitto-2",
+  "service_id": "mqtt",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-mqtt",
+      "image": "eclipse-mosquitto:2",
+      "ports": [
+        {
+          "container_port": 1883,
+          "host_port": 1883,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "vantage_point": "local_runtime"
+    },
+    "health": {
+      "kind": "docker_health",
+      "vantage_point": "local_runtime"
+    },
+    "availability": {
+      "kind": "mqtt_connect",
+      "params": {
+        "host": "127.0.0.1",
+        "port": 1883,
+        "timeout_ms": 2000
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "purpose": "step-52 execution-health-availability validation",
+    "note": "The desired host port is declared but step 52 only observes; deployment drift reconciliation is intentionally deferred."
+  }
+}
