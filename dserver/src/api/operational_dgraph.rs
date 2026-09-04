@@ -14,9 +14,8 @@ use serde_json::{json, Value};
 use crate::{
     api::resource_registry::resource_registry_snapshot,
     core::operational_dgraph::{
-        build_operational_head, build_operational_slice, build_reconciliation_authorization,
-        validate_operational_dgraph, OperationalDGraph, OperationalDGraphHead,
-        OperationalDGraphSlice, OperationalReconciliationAuthorization,
+        build_operational_slice, build_reconciliation_authorization, validate_operational_dgraph,
+        OperationalDGraph, OperationalDGraphSlice, OperationalReconciliationAuthorization,
         OperationalReconciliationAuthorizationRequest,
     },
 };
@@ -125,30 +124,6 @@ pub async fn get_operational_dgraph_slice(
     let slice = build_operational_slice(&graph, node_id.trim(), authorization.as_ref())
         .map_err(not_found)?;
     Ok(JsonResponse(slice))
-}
-
-pub async fn get_operational_dgraph_head(
-    Path(node_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<JsonResponse<OperationalDGraphHead>, ApiError> {
-    let project_id = extract_project_id(&headers)?;
-    let graph = graph_store()
-        .read()
-        .map_err(lock_error)?
-        .get(&project_id)
-        .cloned()
-        .ok_or_else(|| not_found(format!(
-            "operational D-Graph not found for project '{}'",
-            project_id
-        )))?;
-    let authorization = authorization_store()
-        .read()
-        .map_err(lock_error)?
-        .get(&authorization_key(&project_id, node_id.trim()))
-        .cloned();
-    let head = build_operational_head(&graph, node_id.trim(), authorization.as_ref())
-        .map_err(not_found)?;
-    Ok(JsonResponse(head))
 }
 
 pub async fn post_operational_reconciliation_authorization(
