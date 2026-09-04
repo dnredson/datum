@@ -186,12 +186,31 @@ pub fn reconcile_service_deployment_from_artifact(
     command_results.push(remove_result);
 
     let run_args = build_docker_run_args(artifact)?;
-    let run_output = run_docker(&run_args).with_context(|| {
-        format!(
-            "redeploy service '{}' from trusted artifact '{}'",
-            artifact.service_id, artifact.artifact_id
-        )
-    })?;
+    let run_output = match run_docker(&run_args) {
+        Ok(output) => output,
+        Err(error) => {
+            command_results.push(ServiceDeploymentCommandResult {
+                phase: "deploy_expected".to_string(),
+                program: "docker".to_string(),
+                args: run_args,
+                success: false,
+                detail: error.to_string(),
+            });
+            let drift_after = assess_service_deployment_drift(artifact).ok();
+            return Ok(build_report(
+                artifact,
+                execute_requested,
+                desired_in_active_slice,
+                control_plane_authorized,
+                local_container_execution_allowed,
+                "failed_deploy_expected",
+                true,
+                drift_before,
+                drift_after,
+                command_results,
+            ));
+        }
+    };
     let run_result = command_result("deploy_expected", &run_args, &run_output);
     let run_success = run_result.success;
     command_results.push(run_result);
