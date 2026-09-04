@@ -33,6 +33,8 @@ pub struct OperationalEvidenceQuery {
     #[serde(default)]
     pub dgraph_id: Option<String>,
     #[serde(default)]
+    pub dgraph_revision: Option<u64>,
+    #[serde(default)]
     pub event_kind: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
@@ -74,6 +76,10 @@ pub async fn list_operational_evidence(
             matches_optional(query.resource_id.as_deref(), Some(event.resource_id.as_str()))
                 && matches_optional(query.node_id.as_deref(), event.node_id.as_deref())
                 && matches_optional(query.dgraph_id.as_deref(), event.dgraph_id.as_deref())
+                && query
+                    .dgraph_revision
+                    .map(|revision| event.dgraph_revision == Some(revision))
+                    .unwrap_or(true)
                 && matches_optional(query.event_kind.as_deref(), Some(event.event_kind.as_str()))
         })
         .cloned()
