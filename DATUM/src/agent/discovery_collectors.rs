@@ -7,10 +7,12 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::agent::discovery::{
-    derive_capacity_profile_id, derive_host_incarnation_id, BootstrapMode, CapabilityCategory,
-    CapabilityObservation, CapabilitySource, CpuObservation, FilesystemObservation,
-    HostIdentityBasis, IdentityObservation, MemoryObservation, PlatformObservation,
-    ResourceObservation, SmartSentinelDiscovery, SwapObservation, DISCOVERY_SCHEMA_VERSION,
+    derive_capacity_profile_id, derive_hardware_fingerprint_id, derive_os_installation_id,
+    derive_role_binding_id, BootstrapMode, CapabilityCategory, CapabilityObservation,
+    CapabilitySource, CpuObservation, FilesystemObservation, HardwareIdentityBasis,
+    IdentityConfidence, IdentityObservation, MemoryObservation, OsIdentityBasis,
+    PlatformObservation, ResourceObservation, SmartSentinelDiscovery, SwapObservation,
+    DISCOVERY_SCHEMA_VERSION,
 };
 use crate::config::Config;
 use crate::core::cycle::run_cycle_for_node_identity;
@@ -59,7 +61,15 @@ pub fn collect_discovery(
     supplement_host_resources(&mut resources)?;
     resources.capacity_profile_id = derive_capacity_profile_id(&resources);
 
-    let (host_incarnation_id, host_identity_basis) = collect_host_identity(&hostname);
+    let (hardware_fingerprint_id, hardware_identity_basis, hardware_identity_confidence) =
+        collect_hardware_identity(&hostname);
+    let (os_installation_id, os_identity_basis) = collect_os_identity();
+    let role_binding_id = derive_role_binding_id(
+        node_id,
+        hardware_fingerprint_id.as_deref(),
+        os_installation_id.as_deref(),
+        &hostname,
+    );
 
     let discovery = SmartSentinelDiscovery {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
@@ -72,9 +82,14 @@ pub fn collect_discovery(
         identity: IdentityObservation {
             hostname,
             sentinel_version: env!("CARGO_PKG_VERSION").to_string(),
-            host_incarnation_id,
-            host_identity_basis,
-            host_identity_attested: false,
+            hardware_fingerprint_id,
+            hardware_identity_basis,
+            hardware_identity_confidence,
+            hardware_identity_attested: false,
+            os_installation_id,
+            os_identity_basis,
+            role_binding_id,
+            predecessor_binding_id: None,
         },
         platform,
         resources,
@@ -256,39 +271,101 @@ if ($null -eq $used) { $used = 0 }
     Ok(())
 }
 
-fn collect_host_identity(hostname: &str) -> (String, HostIdentityBasis) {
+fn collect_hardware_identity(
+    hostname: &str,
+) -> (
+    Option<String>,
+    Vec<HardwareIdentityBasis>,
+    IdentityConfidence,
+) {
+    let mut anchors = Vec::<(HardwareIdentityBasis, String)>::new();
+
     if cfg!(windows) {
-        if let Some(anchor) = windows_system_uuid() {
-            return (
-                derive_host_incarnation_id(HostIdentityBasis::SystemUuid, &anchor),
-                HostIdentityBasis::SystemUuid,
-            );
-        }
-        if let Some(anchor) = windows_machine_guid() {
-            return (
-                derive_host_incarnation_id(HostIdentityBasis::OsMachineId, &anchor),
-                HostIdentityBasis::OsMachineId,
-            );
-        }
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::SystemUuid,
+            windows_system_uuid(),
+        );
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::BaseboardSerial,
+            windows_baseboard_serial(),
+        );
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::SystemSerial,
+            windows_bios_serial(),
+        );
     } else {
-        if let Some(anchor) = read_meaningful_anchor("/sys/class/dmi/id/product_uuid") {
-            return (
-                derive_host_incarnation_id(HostIdentityBasis::SystemUuid, &anchor),
-                HostIdentityBasis::SystemUuid,
-            );
-        }
-        if let Some(anchor) = read_meaningful_anchor("/etc/machine-id") {
-            return (
-                derive_host_incarnation_id(HostIdentityBasis::OsMachineId, &anchor),
-                HostIdentityBasis::OsMachineId,
-            );
-        }
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::SystemUuid,
+            read_meaningful_anchor("/sys/class/dmi/id/product_uuid"),
+        );
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::BaseboardSerial,
+            read_meaningful_anchor("/sys/class/dmi/id/board_serial"),
+        );
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::SystemSerial,
+            read_meaningful_anchor("/sys/class/dmi/id/product_serial"),
+        );
+        push_anchor(
+            &mut anchors,
+            HardwareIdentityBasis::BoardSerial,
+            linux_board_serial(),
+        );
     }
 
+    let confidence = match anchors.len() {
+        0 => IdentityConfidence::Weak,
+        1 => IdentityConfidence::Medium,
+        _ => IdentityConfidence::Strong,
+    };
+
+    if anchors.is_empty() {
+        anchors.push((
+            HardwareIdentityBasis::HostnameFallback,
+            hostname.to_string(),
+        ));
+    }
+
+    let basis = anchors.iter().map(|(basis, _)| *basis).collect::<Vec<_>>();
     (
-        derive_host_incarnation_id(HostIdentityBasis::HostnameFallback, hostname),
-        HostIdentityBasis::HostnameFallback,
+        derive_hardware_fingerprint_id(&anchors),
+        basis,
+        confidence,
     )
+}
+
+fn collect_os_identity() -> (Option<String>, OsIdentityBasis) {
+    if cfg!(windows) {
+        if let Some(anchor) = windows_machine_guid() {
+            return (
+                derive_os_installation_id(OsIdentityBasis::MachineGuid, &anchor),
+                OsIdentityBasis::MachineGuid,
+            );
+        }
+    } else if let Some(anchor) = read_meaningful_anchor("/etc/machine-id") {
+        return (
+            derive_os_installation_id(OsIdentityBasis::MachineId, &anchor),
+            OsIdentityBasis::MachineId,
+        );
+    }
+
+    (None, OsIdentityBasis::Unknown)
+}
+
+fn push_anchor(
+    anchors: &mut Vec<(HardwareIdentityBasis, String)>,
+    basis: HardwareIdentityBasis,
+    value: Option<String>,
+) {
+    if let Some(value) = value.filter(|value| meaningful_anchor(value)) {
+        anchors.push((basis, value));
+    }
 }
 
 fn windows_system_uuid() -> Option<String> {
@@ -300,7 +377,28 @@ fn windows_system_uuid() -> Option<String> {
             "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
         ],
     )
-    .filter(|value| meaningful_anchor(value))
+}
+
+fn windows_baseboard_serial() -> Option<String> {
+    command_text(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_BaseBoard).SerialNumber",
+        ],
+    )
+}
+
+fn windows_bios_serial() -> Option<String> {
+    command_text(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_BIOS).SerialNumber",
+        ],
+    )
 }
 
 fn windows_machine_guid() -> Option<String> {
@@ -312,25 +410,53 @@ fn windows_machine_guid() -> Option<String> {
             "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid",
         ],
     )
-    .filter(|value| meaningful_anchor(value))
+}
+
+fn linux_board_serial() -> Option<String> {
+    if let Some(value) = read_meaningful_anchor("/sys/firmware/devicetree/base/serial-number") {
+        return Some(value);
+    }
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo").ok()?;
+    cpuinfo.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case("serial") && meaningful_anchor(value) {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn read_meaningful_anchor(path: &str) -> Option<String> {
     fs::read_to_string(path)
         .ok()
-        .map(|value| value.trim().to_string())
+        .map(|value| value.trim_matches(char::from(0)).trim().to_string())
         .filter(|value| meaningful_anchor(value))
 }
 
 fn meaningful_anchor(value: &str) -> bool {
-    let compact = value
-        .trim()
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    const PLACEHOLDERS: &[&str] = &[
+        "unknown",
+        "none",
+        "not specified",
+        "default string",
+        "to be filled by o.e.m.",
+        "system serial number",
+    ];
+    if PLACEHOLDERS.iter().any(|placeholder| normalized == *placeholder) {
+        return false;
+    }
+    let compact = normalized
         .chars()
-        .filter(|ch| ch.is_ascii_hexdigit())
+        .filter(|ch| ch.is_ascii_alphanumeric())
         .collect::<String>();
     !compact.is_empty()
         && compact.chars().any(|ch| ch != '0')
-        && compact.chars().any(|ch| ch.to_ascii_lowercase() != 'f')
+        && compact.chars().any(|ch| ch != 'f')
 }
 
 fn command_text(name: &str, args: &[&str]) -> Option<String> {
