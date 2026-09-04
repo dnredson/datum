@@ -65,7 +65,10 @@ use api::local_dgraph_snapshot::{
     post_local_dgraph_snapshot,
 };
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
-use api::resource_registry::{get_resource, list_resources, post_resource_discovery};
+use api::resource_registry::{
+    get_resource, get_resource_binding, list_resource_bindings, list_resources,
+    post_resource_binding, post_resource_discovery,
+};
 use api::sentinel_registration::{
     get_sentinel_registration, list_sentinel_registrations, post_sentinel_heartbeat,
     put_sentinel_registration,
@@ -119,8 +122,13 @@ async fn main() {
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
         .route("/api/v1/resources", get(list_resources))
+        .route("/api/v1/resource-bindings", get(list_resource_bindings))
         .route("/api/v1/resources/discovery", post(post_resource_discovery))
         .route("/api/v1/resources/:resource_id", get(get_resource))
+        .route(
+            "/api/v1/resources/:resource_id/binding",
+            post(post_resource_binding).get(get_resource_binding),
+        )
         .route("/api/v1/sentinels", get(list_sentinel_registrations))
         .route(
             "/api/v1/sentinels/:node_id",
