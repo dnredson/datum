@@ -396,6 +396,11 @@ fn trusted_container_mapping<'a>(
     })
 }
 
+fn docker_inspect_reports_missing(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("no such object") || normalized.contains("no such container")
+}
+
 fn inspect_container(container_name: &str) -> Result<ContainerState> {
     let output = Command::new("docker")
         .args(["inspect", "-f", "{{.State.Running}}", container_name])
@@ -413,7 +418,7 @@ fn inspect_container(container_name: &str) -> Result<ContainerState> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    if combined.contains("No such object") || combined.contains("No such container") {
+    if docker_inspect_reports_missing(&combined) {
         Ok(ContainerState::Missing)
     } else {
         bail!("Docker unavailable while inspecting '{}': {}", container_name, combined.trim())
@@ -539,5 +544,13 @@ mod tests {
     fn wasm_requests_no_action_when_service_is_already_running() {
         let result = run_embedded_reconciler(true, true).unwrap();
         assert_eq!(result.action_code, 0);
+    }
+
+    #[test]
+    fn docker_missing_container_error_is_case_insensitive() {
+        assert!(docker_inspect_reports_missing("Error: No such object: datum-mqtt"));
+        assert!(docker_inspect_reports_missing("error: no such object: datum-mqtt"));
+        assert!(docker_inspect_reports_missing("Error response from daemon: No such container: datum-mqtt"));
+        assert!(!docker_inspect_reports_missing("permission denied while trying to connect to the docker API"));
     }
 }
