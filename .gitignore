@@ -5,6 +5,9 @@ target/
 DATUM/target/
 dserver/target/
 
+# Generated documentation site output.
+site/
+
 # Operator-local DATUM inputs and smoke evidence. Keep credentials, local endpoints,
 # persisted observations, and generated live-run output out of version control.
 DATUM/config-*.local.toml
