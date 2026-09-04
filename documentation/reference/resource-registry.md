@@ -33,7 +33,7 @@ SmartSentinel does not infer a missing state. Unexpected control-plane responses
 
 ## Resource-aware bootstrap
 
-`smartsentinel-bootstrap` now begins with role-free local resource discovery. It derives the same resource lookup identity used by dserver and queries the Resource Registry before resolving logical-node context.
+`smartsentinel-bootstrap` begins with role-free local resource discovery. It derives the same resource lookup identity used by dserver and queries the Resource Registry before resolving logical-node context.
 
 Conceptually:
 
@@ -56,11 +56,11 @@ GET /api/v1/resources/:resource_id
     +--> resource absent --> unknown_resource
 ```
 
-A requested `node_id` may still be provided explicitly or by configuration. If the registry later reports that the same local resource is assigned to a different role, bootstrap rejects the conflict instead of silently accepting the requested role.
+A requested `node_id` may still be provided explicitly or by configuration. If the registry reports that the same local resource is assigned to a different role, bootstrap rejects the conflict instead of silently accepting the requested role.
 
 Bootstrap is observation/query-only in O2. It does not register an unknown resource, assign a role, take over an existing role, or mutate deployment state.
 
-Until governed Resource Registry binding is implemented, an existing logical-node context in dserver remains sufficient to classify a requested role as `known_bound_node`. Once `assigned_node_id` becomes the authoritative binding path, the registry relationship should become the primary correlation source.
+An existing logical-node context in dserver can still classify an explicitly requested role as `known_bound_node`; the Resource Registry binding is the implemented control-plane path for associating a discovered resource with a logical role.
 
 ## Role-free SmartSentinel discovery
 
@@ -154,13 +154,63 @@ Resource Registry
 Planner candidate pool
 ```
 
-Later, a planning/governance decision may create a role binding:
+## Governed initial role binding
+
+O2 includes an explicit control-plane operation for the first assignment of an unbound planning resource to a logical DATUM role.
+
+The operation accepts only:
 
 ```text
-resource:R -- performs --> fog-02
+transition_kind = initial_assignment
 ```
 
-Only then does the resource become a bound logical node participant.
+and creates an active binding record such as:
+
+```text
+binding_id = binding:<uuid>
+resource_id = resource:os:ABC
+node_id = fog-01
+status = active
+predecessor_binding_id = null
+control_plane_authorized = true
+automatic_assignment_performed = false
+```
+
+At the same time the Resource Registry record becomes:
+
+```text
+state = bound
+assigned_node_id = fog-01
+```
+
+The binding freezes the identity/capacity context observed at assignment time, including `identity_scope`, optional hardware fingerprint, optional OS installation identity, and `capacity_profile_id`. This preserves evidence needed for later history and AI/GNN reasoning even if the resource is subsequently upgraded or replaced.
+
+Initial binding is deliberately fail-closed:
+
+```text
+same resource -> same active node
+  idempotent; return the existing binding
+
+same resource -> different active node
+  409 conflict
+
+different resource -> node with an active binding
+  409 conflict
+
+non-planning-eligible resource
+  rejected
+
+hardware_replacement / rebind transition sent to initial endpoint
+  rejected
+```
+
+Hardware replacement and controlled rebind are intentionally separate future operations because they must close the previous active binding and create a successor with explicit lineage:
+
+```text
+B2.predecessor_binding_id = B1
+```
+
+No historical binding is overwritten.
 
 ## Rediscovery
 
@@ -172,7 +222,7 @@ Repeated discovery of the same derived resource identity updates the latest obse
 - the most recent SmartSentinel `instance_id`;
 - current discovery/capability/capacity evidence.
 
-This makes repeated observation distinguishable from creation of a new resource.
+This makes repeated observation distinguishable from creation of a new resource. If the resource is already bound, rediscovery preserves its bound state and assigned node while updating the latest evidence.
 
 ## Planning semantics
 
@@ -209,21 +259,24 @@ This avoids forcing every discovered machine to masquerade as a logical DATUM no
 
 ## API
 
-O2 introduces:
+O2 exposes:
 
 ```text
 POST /api/v1/resources/discovery
 GET  /api/v1/resources
 GET  /api/v1/resources/:resource_id
+POST /api/v1/resources/:resource_id/binding
+GET  /api/v1/resources/:resource_id/binding
+GET  /api/v1/resource-bindings
 ```
 
 All calls are scoped by `X-Datum-Project`.
 
-The list response includes `available_unbound_count` so future planners and dashboards can identify the candidate pool without treating ephemeral observations as stable resources.
+The resource list includes `available_unbound_count` and `bound_count`. The binding list exposes active/history records retained by the current process-local proof implementation.
 
 ## Persistence boundary
 
-The first O2 Resource Registry implementation is intentionally process-local, matching the current Sentinel-registration proof path. It establishes identity, validation, deduplication, API, and planning semantics without prematurely changing Firestore schemas.
+The first O2 Resource Registry and role-binding implementation is intentionally process-local, matching the current Sentinel-registration proof path. It establishes identity, validation, deduplication, explicit assignment, conflict handling, API, and planning semantics without prematurely changing Firestore schemas.
 
 Durable resource/binding history is required before production historical reasoning. A later persistence step must preserve resource identity, role-binding lineage, capacity revisions, and transitions across dserver restarts rather than overwriting history.
 
@@ -240,4 +293,4 @@ resource:R1 is unbound and has required runtime/capacity
 resource:R2 is unbound but lacks required container runtime
 ```
 
-The deterministic planner can establish candidate eligibility first. An AI reasoning layer can then compare historical behavior, risk, expected performance, environmental context, and prior outcomes without being asked to invent infrastructure that was never observed.
+The deterministic planner can establish candidate eligibility first. An AI reasoning layer can then compare historical behavior, risk, expected performance, environmental context, prior outcomes without being asked to invent infrastructure that was never observed.
