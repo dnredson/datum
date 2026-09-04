@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use fs2::FileExt;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,11 +83,20 @@ pub fn append_operational_evidence(path: &Path, event: &OperationalEvidenceEvent
         .append(true)
         .open(path)
         .with_context(|| format!("open operational evidence history {}", path.display()))?;
-    let json = serde_json::to_string(event).context("serialize operational evidence event")?;
-    writeln!(file, "{json}")
-        .with_context(|| format!("append operational evidence history {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("flush operational evidence history {}", path.display()))
+    file.lock_exclusive()
+        .with_context(|| format!("lock operational evidence history {}", path.display()))?;
+
+    let write_result = (|| -> Result<()> {
+        let json = serde_json::to_string(event).context("serialize operational evidence event")?;
+        writeln!(file, "{json}")
+            .with_context(|| format!("append operational evidence history {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("flush operational evidence history {}", path.display()))
+    })();
+
+    let unlock_result = FileExt::unlock(&file)
+        .with_context(|| format!("unlock operational evidence history {}", path.display()));
+    write_result.and(unlock_result)
 }
 
 pub fn publish_operational_evidence(
