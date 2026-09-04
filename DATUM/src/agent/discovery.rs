@@ -16,7 +16,10 @@ pub struct SmartSentinelDiscovery {
     pub schema_version: String,
     pub observed_at_utc: DateTime<Utc>,
     pub node_id: String,
+    pub instance_id: String,
     pub host_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
     pub bootstrap_mode: BootstrapMode,
     pub identity: IdentityObservation,
     pub platform: PlatformObservation,
@@ -31,11 +34,15 @@ impl SmartSentinelDiscovery {
         if self.schema_version.trim().is_empty() {
             bail!("discovery schema_version must not be empty");
         }
-        if self.node_id.trim().is_empty() {
-            bail!("discovery node_id must not be empty");
-        }
+        validate_identifier("node_id", &self.node_id)?;
+        validate_identifier("instance_id", &self.instance_id)?;
         if self.host_id.trim().is_empty() {
             bail!("discovery host_id must not be empty");
+        }
+        if let Some(stage) = &self.stage {
+            if stage.trim().is_empty() {
+                bail!("discovery stage must be omitted or non-empty");
+            }
         }
         if self.identity.hostname.trim().is_empty() {
             bail!("discovery hostname must not be empty");
@@ -63,18 +70,32 @@ impl SmartSentinelDiscovery {
             if capability.name.trim().is_empty() {
                 bail!("discovery capability name must not be empty");
             }
-            if capability.usable && !capability.present {
+            if capability.available && !capability.present {
                 bail!(
-                    "discovery capability {} cannot be usable when it is not present",
+                    "discovery capability {} cannot be available when it is not present",
                     capability.name
                 );
             }
+        }
+        if self.safe_to_auto_execute {
+            bail!("discovery must not authorize automatic execution");
         }
         if self.side_effects_performed {
             bail!("discovery must remain observation-only");
         }
         Ok(())
     }
+}
+
+fn validate_identifier(field: &str, value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("discovery {field} must not be empty");
+    }
+    if trimmed.len() > 128 {
+        bail!("discovery {field} must not exceed 128 characters");
+    }
+    Ok(())
 }
 
 fn validate_memory(memory: &MemoryObservation) -> Result<()> {
@@ -172,7 +193,7 @@ pub struct CapabilityObservation {
     pub name: String,
     pub category: CapabilityCategory,
     pub present: bool,
-    pub usable: bool,
+    pub available: bool,
     pub version: Option<String>,
     pub source: CapabilitySource,
     pub detail: Option<String>,
