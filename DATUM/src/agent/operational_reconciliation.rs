@@ -7,7 +7,11 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use wasmtime::{Config as WasmConfig, Engine, Instance, Module, Store};
 
-use crate::agent::bootstrap::{run_bootstrap, BootstrapState};
+use crate::agent::bootstrap::{
+    run_bootstrap, run_bootstrap_with_resource_discovery, BootstrapState,
+    SmartSentinelBootstrapReport,
+};
+use crate::agent::resource_discovery::SmartSentinelResourceDiscovery;
 use crate::config::{Config, DispatchContainerMapping};
 use crate::core::cycle::run_cycle_for_node_identity;
 use crate::outputs::http_json::HttpJsonOutput;
@@ -129,6 +133,58 @@ pub fn run_operational_reconciliation(
         project_id,
         timeout_s,
     )?;
+    run_operational_reconciliation_from_bootstrap(
+        cfg,
+        bootstrap,
+        hostname_override,
+        dserver_url,
+        project_id,
+        timeout_s,
+        execute_requested,
+        true,
+    )
+}
+
+pub fn run_operational_reconciliation_with_resource_discovery(
+    cfg: &Config,
+    resource_discovery: SmartSentinelResourceDiscovery,
+    requested_node_id: Option<&str>,
+    hostname_override: Option<&str>,
+    dserver_url: &str,
+    project_id: &str,
+    timeout_s: u64,
+    execute_requested: bool,
+    publish_snapshot: bool,
+) -> Result<OperationalReconciliationReport> {
+    let bootstrap = run_bootstrap_with_resource_discovery(
+        resource_discovery,
+        requested_node_id,
+        dserver_url,
+        project_id,
+        timeout_s,
+    )?;
+    run_operational_reconciliation_from_bootstrap(
+        cfg,
+        bootstrap,
+        hostname_override,
+        dserver_url,
+        project_id,
+        timeout_s,
+        execute_requested,
+        publish_snapshot,
+    )
+}
+
+fn run_operational_reconciliation_from_bootstrap(
+    cfg: &Config,
+    bootstrap: SmartSentinelBootstrapReport,
+    hostname_override: Option<&str>,
+    dserver_url: &str,
+    project_id: &str,
+    timeout_s: u64,
+    execute_requested: bool,
+    publish_snapshot: bool,
+) -> Result<OperationalReconciliationReport> {
     if bootstrap.bootstrap_state != BootstrapState::KnownBoundNode {
         bail!(
             "operational reconciliation requires known_bound_node, received {:?}",
@@ -256,16 +312,20 @@ pub fn run_operational_reconciliation(
         });
     }
 
-    let (snapshot_published, snapshot_publish_error) = match publish_role_snapshot(
-        cfg,
-        &node_id,
-        hostname_override,
-        base,
-        project_id,
-        timeout_s,
-    ) {
-        Ok(()) => (true, None),
-        Err(error) => (false, Some(error.to_string())),
+    let (snapshot_published, snapshot_publish_error) = if publish_snapshot {
+        match publish_operational_role_snapshot(
+            cfg,
+            &node_id,
+            hostname_override,
+            base,
+            project_id,
+            timeout_s,
+        ) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        }
+    } else {
+        (false, None)
     };
 
     Ok(OperationalReconciliationReport {
@@ -496,7 +556,7 @@ fn execute_trusted_container_intent(
     }
 }
 
-fn publish_role_snapshot(
+pub fn publish_operational_role_snapshot(
     cfg: &Config,
     node_id: &str,
     hostname_override: Option<&str>,
