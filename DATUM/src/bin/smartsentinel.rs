@@ -52,6 +52,15 @@ struct Args {
 
     #[arg(long, default_value = "smartsentinel-operational.json")]
     operational_out: PathBuf,
+
+    #[arg(long, default_value = "smartsentinel-operational-history.jsonl")]
+    operational_history_out: PathBuf,
+
+    #[arg(long, default_value_t = 30)]
+    discovery_refresh_s: u64,
+
+    #[arg(long, default_value_t = 30)]
+    snapshot_s: u64,
 }
 
 fn main() -> Result<()> {
@@ -76,7 +85,10 @@ fn main() -> Result<()> {
             timeout_s: args.timeout_s,
             execute: args.execute,
             report_path: args.operational_out,
+            history_path: args.operational_history_out,
             cycle_s_override: args.cycle_s,
+            discovery_refresh_s: args.discovery_refresh_s,
+            snapshot_s: args.snapshot_s,
             heartbeat_s: args.heartbeat_s,
             node_id_override: args.node_id,
             hostname_override: args.hostname,
