@@ -68,6 +68,7 @@ use api::operational_dgraph::{
     get_operational_dgraph, get_operational_dgraph_slice,
     post_operational_reconciliation_authorization, put_operational_dgraph,
 };
+use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::resource_registry::{
     get_resource, get_resource_binding, list_resource_bindings, list_resources,
@@ -144,6 +145,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/operational-reconciliation/authorize",
             post(post_operational_reconciliation_authorization),
+        )
+        .route(
+            "/api/v1/operational-evidence",
+            post(post_operational_evidence).get(list_operational_evidence),
         )
         .route("/api/v1/sentinels", get(list_sentinel_registrations))
         .route(
