@@ -42,6 +42,8 @@ nav:
       - Capabilities: reference/capabilities-model.md
       - Action Execution Reports: reference/action-execution-report.md
       - Sentinel Registration: reference/sentinel-registration.md
+      - Resource Registry: reference/resource-registry.md
+      - Node / Hardware History: reference/node-incarnation-history.md
   - API:
       - Overview: api/overview.md
   - Reference:
