@@ -1,150 +1,193 @@
-# Node incarnation and historical telemetry semantics
+# Hardware, role binding and historical telemetry semantics
 
-DATUM distinguishes the identity of a logical node from the identity of the concrete host currently realizing that node.
+DATUM distinguishes the stable logical role of a node from the concrete hardware, operating-system installation, capacity profile, and SmartSentinel process currently realizing that role.
 
-This distinction is required for long-lived IoTinuum management. A logical node such as `fog-01` can survive hardware replacement, VM recreation, operating-system reinstall, agent restart, or resource upgrades, but those events do not all have the same meaning for telemetry history or AI-assisted management.
+This is required for long-lived IoTinuum management. A logical node such as `fog-01` can survive hardware replacement, OS reinstall, resource upgrades, and agent restarts without losing its historical context. At the same time, those changes must remain visible so AI/GNN/planner consumers do not treat heterogeneous observations as one homogeneous machine.
 
-## Identity hierarchy
+## Identity dimensions
 
 ```text
 node_id
   stable logical DATUM role/participant
 
-host_incarnation_id
-  one concrete host/VM incarnation realizing that node
+hardware_fingerprint_id
+  one-way fingerprint of the physical/virtual compute resource
+
+os_installation_id
+  one-way identifier of the installed OS instance
 
 capacity_profile_id
-  structural capacity profile of that incarnation
+  structural capacity profile currently exposed by the resource
+
+role_binding_id
+  relationship binding node_id to the hardware currently performing that role
 
 instance_id
   one concrete SmartSentinel process lifetime
 ```
 
-### `node_id`
+### Logical role: `node_id`
 
-`node_id` is the stable logical identity used by DATUM/D-Graph reasoning. Replacing a failed fog machine does not require inventing a new logical role if the replacement continues to represent `fog-01`.
+`node_id` is the stable DATUM/D-Graph role identity. A replacement computer can continue to be `fog-01` if the control plane deliberately binds the replacement hardware to that role.
 
-### `host_incarnation_id`
+Telemetry history by `node_id` therefore remains continuous across legitimate replacement or upgrade events.
 
-`host_incarnation_id` identifies one concrete host incarnation. It is derived from a one-way hash of the best available machine anchor, preferring a system/hardware UUID and falling back to an operating-system machine identifier. If neither exists, hostname is only a low-confidence fallback.
+### Hardware fingerprint
 
-Raw hardware/system identifiers are not emitted in the discovery report. The identifier is observational and is explicitly **not authenticated identity attestation**.
+`hardware_fingerprint_id` is derived from the best hardware anchors available to the guest environment, such as system UUID, baseboard/system serials, Raspberry Pi/board serials, or corresponding virtual-machine identifiers.
 
-A different `host_incarnation_id` for the same `node_id` means the control plane must treat the host realization as changed.
+Upgradeable capacity such as RAM size, disk capacity, GPU inventory, current CPU utilization, and installed software must not be part of the hardware fingerprint.
 
-Example:
+Raw serials and UUIDs are not emitted. SmartSentinel hashes canonicalized anchors locally and reports only the derived fingerprint plus the classes of evidence used and a confidence level.
 
-```text
-fog-01 / hostinc:A   -> old physical/virtual machine
-fog-01 / hostinc:B   -> replacement machine
-```
+The fingerprint is observational evidence, not cryptographic identity attestation.
 
-### `capacity_profile_id`
+### OS installation identity
 
-`capacity_profile_id` fingerprints structural resource capacity rather than instantaneous load. The current profile includes:
+`os_installation_id` is intentionally separate from hardware identity. Linux can use `/etc/machine-id`; Windows can use `MachineGuid`. Raw values are hashed before leaving the host.
 
-- logical CPU count;
-- total RAM;
-- total swap/pagefile capacity;
-- filesystem mount identities and total capacities.
-
-Instantaneous CPU use, used RAM, free RAM, and used filesystem space do not affect this identifier.
-
-Therefore:
+This separation handles cases such as:
 
 ```text
-same host_incarnation_id + same capacity_profile_id
-  same host and same structural capacity
+same hardware + new OS installation
+  hardware_fingerprint_id unchanged
+  os_installation_id changed
+  logical role continuity preserved
 
-same host_incarnation_id + different capacity_profile_id
-  same host incarnation, but capacity changed
-  e.g. RAM upgrade, CPU/vCPU change, disk resize
-
-different host_incarnation_id + any capacity_profile_id
-  host incarnation changed
-  e.g. hardware replacement or VM recreation
+same SD card moved from Raspberry Pi A to Raspberry Pi B
+  hardware_fingerprint_id changed
+  os_installation_id unchanged
+  logical role continuity can be preserved by a controlled rebind
 ```
 
-### `instance_id`
+### Capacity profile
 
-`instance_id` identifies one running SmartSentinel process lifetime. Restarting the agent changes `instance_id` but does not imply that the host or its capacity changed.
+`capacity_profile_id` fingerprints structural resource capacity rather than instantaneous load. The current O2 profile includes logical CPU count, total RAM, total swap/pagefile capacity, and filesystem identities/total capacities.
 
-## Historical time-series rule
+CPU use, used/free RAM, used filesystem space, and uptime do not affect the identifier.
 
-Telemetry must remain queryable by the stable logical `node_id`, but physical-resource history must be segmented by `host_incarnation_id`.
+A RAM upgrade therefore changes `capacity_profile_id` without changing hardware identity or role binding.
+
+### Role binding
+
+`role_binding_id` expresses the DATUM relationship between a logical role and the hardware currently realizing it.
 
 Conceptually:
 
 ```text
-fog-01 history
-
-hostinc:A
-  2026-09-01 ... 2026-10-14
-  RAM total = 8 GiB
-
-hostinc:B
-  2026-10-14 ...
-  RAM total = 32 GiB
+hardware HW-A -- performs --> role fog-01
+                     binding B1
 ```
 
-The logical node history remains continuous because both incarnations represented `fog-01`, while resource baselines are not silently blended across the replacement boundary.
+The observation-side candidate binding is derived from `node_id` and the strongest observed hardware identity. If hardware identity is unavailable, OS identity and finally hostname may be used as lower-confidence fallback anchors.
 
-## AI-management semantics
-
-AI/GNN/planner consumers must receive incarnation and capacity-profile context together with telemetry. They must not interpret all samples sharing one `node_id` as homogeneous physical observations.
-
-When `host_incarnation_id` changes, consumers should:
-
-- emit/consume an explicit host-incarnation-change event;
-- re-evaluate node capabilities and eligibility;
-- reset or segment host-performance baselines;
-- avoid comparing absolute RAM/disk/CPU-capacity values as though the physical host were unchanged;
-- retain logical workload/history context attached to `node_id` where that context remains meaningful;
-- treat previous incarnation-specific anomalies or learned thresholds as historical evidence, not automatically valid current thresholds.
-
-When only `capacity_profile_id` changes, consumers should:
-
-- emit/consume a capacity-profile-change event;
-- keep the same host incarnation;
-- re-evaluate placement/readiness because resource capacity changed;
-- rebaseline capacity-sensitive metrics;
-- preserve process/service/workload continuity where appropriate.
-
-When only `instance_id` changes, consumers should:
-
-- interpret the change primarily as agent lifecycle/restart;
-- preserve host and resource historical baselines unless independent evidence shows a host or capacity change.
-
-## Comparing telemetry across incarnations
-
-Some metrics remain meaningful across host replacements, while others require normalization or segmentation.
-
-Examples:
+When hardware is replaced, a new binding is created:
 
 ```text
-CPU utilization percent
-  comparable with caution across incarnations
-
-RAM used bytes
-  not directly comparable when RAM total changed
-
-RAM utilization percent
-  more comparable, but performance interpretation still depends on the incarnation
-
-latency / workload completion time
-  logically comparable for the same workload, but host-incarnation context must remain available
+B1: HW-A -> fog-01
+B2: HW-B -> fog-01
 ```
 
-The system should therefore preserve raw metrics and the identity/capacity dimensions needed for later normalization instead of destroying history by overwriting the old node description.
+The dserver, not SmartSentinel, owns historical binding lineage. It may persist:
+
+```text
+B2.predecessor_binding_id = B1
+transition = hardware_replacement
+```
+
+`predecessor_binding_id` is therefore empty in standalone discovery until the control plane correlates the report with existing history.
+
+### SmartSentinel process: `instance_id`
+
+`instance_id` represents one SmartSentinel process lifetime. A process restart changes this ID without implying hardware, OS, capacity, or role changes.
+
+## Change interpretation
+
+```text
+only instance_id changed
+  SmartSentinel restart
+
+os_installation_id changed, hardware unchanged
+  OS reinstall/reimage
+
+capacity_profile_id changed, hardware unchanged
+  upgrade/downgrade or capacity reconfiguration
+
+hardware_fingerprint_id changed for same node_id
+  physical/virtual resource replacement or recreation
+
+hardware changed but os_installation_id stayed the same
+  OS/storage migrated to replacement hardware
+
+same hardware becomes another node_id
+  hardware role reassignment
+```
+
+A hardware change must not automatically authorize a takeover. If the old binding is still active, the dserver should treat a competing binding as conflict until policy/operator evidence permits a controlled rebind.
+
+## Historical queries
+
+Different questions require different historical axes:
+
+```text
+history(node_id = fog-01)
+  complete logical history of the role across hardware generations
+
+history(hardware_fingerprint_id = HW-B)
+  observations belonging only to that concrete resource
+
+history(role_binding_id = B2)
+  observations while HW-B performed fog-01
+
+history(capacity_profile_id = CAP-X)
+  observations produced under one structural capacity profile
+```
+
+No telemetry is copied from predecessor hardware to successor hardware. Instead, the binding lineage preserves logical continuity while retaining the original context of every observation.
+
+## AI/GNN context
+
+AI/GNN/planner inputs should receive these identity and lineage dimensions together with telemetry. This enables contextual reasoning that is impossible from a flat node time series alone.
+
+Example: if `fog-01` is rebound to replacement hardware three times in one month, the system can expose a repeated-hardware-replacement pattern. An AI reasoning layer can then correlate it with other evidence such as power-quality telemetry, temperature, environmental events, device error logs, lightning/weather information, or operator maintenance records.
+
+The observation itself should remain deterministic:
+
+```text
+three hardware bindings in 30 days
+```
+
+Higher-level interpretation may propose hypotheses such as:
+
+```text
+possible unstable power supply
+possible environmental damage
+possible repeated hardware incompatibility
+```
+
+Those hypotheses must remain distinguishable from observed facts.
+
+## Baseline rules
+
+When hardware changes, host-specific performance baselines should be segmented or reset while logical workload history remains available.
+
+When only capacity changes, capacity-sensitive baselines should be re-evaluated without declaring the hardware replaced.
+
+When only the OS installation changes, the system should preserve hardware/capacity context but avoid assuming software/runtime state continuity.
+
+When only the SmartSentinel instance changes, host/resource baselines normally remain valid unless independent evidence indicates another transition.
 
 ## Control-plane evolution
 
-O2 introduces the observation-side identifiers. A later dserver ingestion/materialization step should maintain node-scoped incarnation history and derive transitions such as:
+O2 introduces observation-side identity dimensions. dserver ingestion/materialization should later persist binding history and derive explicit transitions such as:
 
 ```text
-node_incarnation_changed
-capacity_profile_changed
 sentinel_instance_changed
+os_installation_changed
+capacity_profile_changed
+hardware_replaced
+role_rebound
+binding_conflict
 ```
 
-The dserver may additionally assign monotonic node-scoped generations/revisions when these transitions are persisted. SmartSentinel should report observed identity evidence; it should not unilaterally declare global historical truth.
+The dserver may additionally assign monotonic node-scoped generations or binding revisions. SmartSentinel reports local evidence; it must not unilaterally declare global lineage or inherit historical authority.
