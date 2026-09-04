@@ -21,6 +21,8 @@ pub struct OperationalEvidenceEvent {
     pub node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dgraph_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dgraph_revision: Option<u64>,
     pub sequence: u64,
     pub event_kind: String,
     pub side_effects_performed: bool,
@@ -28,11 +30,13 @@ pub struct OperationalEvidenceEvent {
 }
 
 impl OperationalEvidenceEvent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project_id: &str,
         resource_id: &str,
         node_id: Option<&str>,
         dgraph_id: Option<&str>,
+        dgraph_revision: Option<u64>,
         sequence: u64,
         event_kind: &str,
         side_effects_performed: bool,
@@ -40,6 +44,12 @@ impl OperationalEvidenceEvent {
     ) -> Result<Self> {
         if sequence == 0 {
             bail!("operational evidence sequence must be greater than zero");
+        }
+        if dgraph_revision == Some(0) {
+            bail!("operational evidence dgraph_revision must be greater than zero");
+        }
+        if dgraph_revision.is_some() && dgraph_id.is_none() {
+            bail!("operational evidence dgraph_revision requires dgraph_id");
         }
         if !payload.is_object() {
             bail!("operational evidence payload must be a JSON object");
@@ -52,6 +62,7 @@ impl OperationalEvidenceEvent {
             resource_id: non_empty("resource_id", resource_id)?.to_string(),
             node_id: optional_non_empty(node_id),
             dgraph_id: optional_non_empty(dgraph_id),
+            dgraph_revision,
             sequence,
             event_kind: non_empty("event_kind", event_kind)?.to_string(),
             side_effects_performed,
@@ -129,6 +140,7 @@ mod tests {
             "resource:os:abc",
             Some("fog-01"),
             Some("dgraph:v1"),
+            Some(2),
             1,
             "reconciliation",
             true,
@@ -136,6 +148,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(event.node_id.as_deref(), Some("fog-01"));
+        assert_eq!(event.dgraph_revision, Some(2));
         assert!(event.side_effects_performed);
         assert!(event.event_id.starts_with("opev:"));
     }
