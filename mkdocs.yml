@@ -44,6 +44,7 @@ nav:
       - Sentinel Registration: reference/sentinel-registration.md
       - Resource Registry: reference/resource-registry.md
       - Node / Hardware History: reference/node-incarnation-history.md
+      - Operational WASM Reconciliation: reference/operational-wasm-reconciliation.md
   - API:
       - Overview: api/overview.md
   - Reference:
