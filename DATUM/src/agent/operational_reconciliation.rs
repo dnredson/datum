@@ -9,6 +9,8 @@ use wasmtime::{Config as WasmConfig, Engine, Instance, Module, Store};
 
 use crate::agent::bootstrap::{run_bootstrap, BootstrapState};
 use crate::config::{Config, DispatchContainerMapping};
+use crate::core::cycle::run_cycle_for_node_identity;
+use crate::outputs::http_json::HttpJsonOutput;
 
 pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1";
 pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
@@ -98,6 +100,9 @@ pub struct OperationalReconciliationReport {
     pub local_container_execution_allowed: bool,
     pub services: Vec<OperationalServiceReconciliationReport>,
     pub side_effects_performed: bool,
+    pub snapshot_published: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_publish_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,11 +168,9 @@ pub fn run_operational_reconciliation(
             && authorization.dgraph_id == slice.dgraph_id
             && authorization.node_id == slice.node_id
     });
-    let local_container_execution_allowed = cfg
-        .dispatch
-        .as_ref()
-        .and_then(|dispatch| dispatch.allow_container_execution)
-        .unwrap_or(false);
+    let local_container_execution_allowed = cfg.dispatch.as_ref().is_some_and(|dispatch| {
+        dispatch.enabled && dispatch.allow_container_execution.unwrap_or(false)
+    });
 
     let mut side_effects_performed = false;
     let mut services = Vec::with_capacity(slice.desired_services.len());
@@ -204,7 +207,7 @@ pub fn run_operational_reconciliation(
         } else if !local_container_execution_allowed {
             (
                 "blocked_local_policy".to_string(),
-                "WASM requested ensure_service_running, but local dispatch.allow_container_execution is not true".to_string(),
+                "WASM requested ensure_service_running, but local dispatch is disabled or allow_container_execution is not true".to_string(),
                 false,
             )
         } else if mapping.is_none() {
@@ -253,6 +256,18 @@ pub fn run_operational_reconciliation(
         });
     }
 
+    let (snapshot_published, snapshot_publish_error) = match publish_role_snapshot(
+        cfg,
+        &node_id,
+        hostname_override,
+        base,
+        project_id,
+        timeout_s,
+    ) {
+        Ok(()) => (true, None),
+        Err(error) => (false, Some(error.to_string())),
+    };
+
     Ok(OperationalReconciliationReport {
         bootstrap_state: bootstrap.bootstrap_state,
         resource_id: bootstrap.control_plane.resource_id,
@@ -263,6 +278,8 @@ pub fn run_operational_reconciliation(
         local_container_execution_allowed,
         services,
         side_effects_performed,
+        snapshot_published,
+        snapshot_publish_error,
     })
 }
 
@@ -472,6 +489,37 @@ fn execute_trusted_container_intent(
             ))
         }
     }
+}
+
+fn publish_role_snapshot(
+    cfg: &Config,
+    node_id: &str,
+    hostname_override: Option<&str>,
+    dserver_base: &str,
+    project_id: &str,
+    timeout_s: u64,
+) -> Result<()> {
+    let mut observation_cfg = cfg.clone();
+    if let Some(auto_recovery) = observation_cfg.auto_recovery.as_mut() {
+        auto_recovery.enabled = false;
+        auto_recovery.dry_run = Some(true);
+    }
+    if let Some(desired_state) = observation_cfg.desired_state.as_mut() {
+        desired_state.enabled = false;
+    }
+
+    let snapshot = run_cycle_for_node_identity(
+        node_id,
+        hostname_override,
+        &observation_cfg.agent.schema_version,
+        &observation_cfg,
+    )?;
+    let output = HttpJsonOutput::new(
+        format!("{}/api/v1/snapshots", dserver_base.trim_end_matches('/')),
+        project_id.trim().to_string(),
+        timeout_s,
+    )?;
+    output.emit(&snapshot)
 }
 
 #[cfg(test)]
