@@ -25,6 +25,10 @@ use crate::agent::resource_discovery::{
     collect_unbound_resource_discovery, derive_resource_lookup_id, load_config_allow_unbound,
     SmartSentinelResourceDiscovery,
 };
+use crate::agent::runtime_artifact::{
+    load_runtime_install_artifact, reconcile_runtime_from_artifact, RuntimeInstallArtifact,
+};
+use crate::agent::runtime_prerequisite::{probe_docker_runtime, DockerRuntimeState};
 use crate::config::Config;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -42,6 +46,8 @@ pub struct OperationalServiceLoopOptions {
     pub discovery_refresh_s: u64,
     pub snapshot_s: u64,
     pub drift_verify_s: u64,
+    pub runtime_artifact_path: Option<PathBuf>,
+    pub runtime_execution_user: Option<String>,
     pub heartbeat_s: u64,
     pub node_id_override: Option<String>,
     pub hostname_override: Option<String>,
@@ -63,6 +69,8 @@ impl Default for OperationalServiceLoopOptions {
             discovery_refresh_s: 30,
             snapshot_s: 30,
             drift_verify_s: 30,
+            runtime_artifact_path: None,
+            runtime_execution_user: None,
             heartbeat_s: 1,
             node_id_override: None,
             hostname_override: None,
@@ -81,10 +89,17 @@ struct OperationalControlAuthorizationHead {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct OperationalControlDesiredServiceHead {
+    runtime: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct OperationalControlSliceHead {
     dgraph_id: String,
     dgraph_revision: u64,
     node_id: String,
+    #[serde(default)]
+    desired_services: Vec<OperationalControlDesiredServiceHead>,
     #[serde(default)]
     authorization: Option<OperationalControlAuthorizationHead>,
 }
@@ -141,6 +156,12 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         desired_state.enabled = false;
     }
 
+    let runtime_artifact = options
+        .runtime_artifact_path
+        .as_deref()
+        .map(load_runtime_install_artifact)
+        .transpose()?;
+
     let configured_node_id = read_configured_node_id(&options.config_path)?;
     let requested_node_id = options
         .node_id_override
@@ -181,7 +202,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
     );
 
     println!(
-        "mode=smartsentinel-operational event=start resource_id={} requested_node_id={} cycle_s={} discovery_refresh_s={} snapshot_s={} drift_verify_s={} heartbeat_s={} execute={} dserver_url={} project_id={} lock_file={} history={}",
+        "mode=smartsentinel-operational event=start resource_id={} requested_node_id={} cycle_s={} discovery_refresh_s={} snapshot_s={} drift_verify_s={} heartbeat_s={} execute={} dserver_url={} project_id={} lock_file={} history={} runtime_artifact={}",
         resource_id,
         requested_node_id.as_deref().unwrap_or("none"),
         cycle_s,
@@ -194,6 +215,10 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         options.project_id,
         lock_path.display(),
         options.history_path.display(),
+        runtime_artifact
+            .as_ref()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .unwrap_or("none"),
     );
 
     let mut sequence = 0u64;
@@ -311,6 +336,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                 &client,
                 &cfg,
                 &options,
+                runtime_artifact.as_ref(),
                 &cached_discovery,
                 requested_node_id.as_deref(),
                 sequence,
@@ -362,6 +388,7 @@ fn run_hybrid_control_cycle(
     client: &Client,
     cfg: &Config,
     options: &OperationalServiceLoopOptions,
+    runtime_artifact: Option<&RuntimeInstallArtifact>,
     cached_discovery: &SmartSentinelResourceDiscovery,
     requested_node_id: Option<&str>,
     sequence: u64,
@@ -527,6 +554,27 @@ fn run_hybrid_control_cycle(
         "time_driven_drift_verification"
     };
 
+    if control_head
+        .desired_services
+        .iter()
+        .any(|service| service.runtime.trim().eq_ignore_ascii_case("container"))
+        && !ensure_container_runtime(
+            client,
+            cfg,
+            options,
+            runtime_artifact,
+            sequence,
+            startup_resource_id,
+            node_id,
+            &control_head,
+            trigger,
+        )
+    {
+        *last_control_signature = Some(signature);
+        *last_drift_verification = Some(Instant::now());
+        return;
+    }
+
     match run_operational_reconciliation_with_resource_discovery(
         cfg,
         cached_discovery.clone(),
@@ -607,6 +655,174 @@ fn run_hybrid_control_cycle(
                 error,
                 cycle_started.elapsed().as_millis()
             );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_container_runtime(
+    client: &Client,
+    cfg: &Config,
+    options: &OperationalServiceLoopOptions,
+    runtime_artifact: Option<&RuntimeInstallArtifact>,
+    sequence: u64,
+    resource_id: &str,
+    node_id: &str,
+    control_head: &OperationalControlSliceHead,
+    trigger: &str,
+) -> bool {
+    let local_container_execution_allowed = cfg.dispatch.as_ref().is_some_and(|dispatch| {
+        dispatch.enabled && dispatch.allow_container_execution.unwrap_or(false)
+    });
+    let control_plane_authorized = control_head.authorization.as_ref().is_some_and(|authorization| {
+        authorization.allow_host_mutation
+            && authorization.dgraph_revision == Some(control_head.dgraph_revision)
+    });
+    let execution_authorized = control_plane_authorized && local_container_execution_allowed;
+
+    if let Some(artifact) = runtime_artifact {
+        match reconcile_runtime_from_artifact(
+            artifact,
+            options.runtime_execution_user.as_deref(),
+            options.execute,
+            execution_authorized,
+        ) {
+            Ok(report) => {
+                let ready = report
+                    .after
+                    .as_ref()
+                    .map(|after| after.state == DockerRuntimeState::Available)
+                    .unwrap_or(report.before.state == DockerRuntimeState::Available);
+                let event_kind = if report.side_effects_performed {
+                    "runtime_prerequisite_action"
+                } else if ready {
+                    "runtime_prerequisite"
+                } else {
+                    "runtime_prerequisite_blocked"
+                };
+                let mut payload = serde_json::to_value(&report)
+                    .unwrap_or_else(|_| json!({"serialization_error":true}));
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("trigger".to_string(), Value::String(trigger.to_string()));
+                    object.insert(
+                        "control_plane_authorized".to_string(),
+                        Value::Bool(control_plane_authorized),
+                    );
+                    object.insert(
+                        "local_container_execution_allowed".to_string(),
+                        Value::Bool(local_container_execution_allowed),
+                    );
+                }
+                record_event(
+                    client,
+                    options,
+                    sequence,
+                    resource_id,
+                    Some(node_id),
+                    Some(&control_head.dgraph_id),
+                    Some(control_head.dgraph_revision),
+                    event_kind,
+                    report.side_effects_performed,
+                    payload,
+                );
+                println!(
+                    "mode=smartsentinel-operational event=runtime_prerequisite seq={} status={} runtime=docker artifact_id={} ready={} execute_requested={} execution_authorized={} side_effects={} session_refresh_required={} trigger={} dgraph_revision={}",
+                    sequence,
+                    report.status,
+                    report.artifact_id,
+                    ready,
+                    report.execute_requested,
+                    report.execution_authorized,
+                    report.side_effects_performed,
+                    report.session_refresh_required,
+                    trigger,
+                    control_head.dgraph_revision,
+                );
+                ready
+            }
+            Err(error) => {
+                record_event(
+                    client,
+                    options,
+                    sequence,
+                    resource_id,
+                    Some(node_id),
+                    Some(&control_head.dgraph_id),
+                    Some(control_head.dgraph_revision),
+                    "runtime_prerequisite_error",
+                    false,
+                    json!({
+                        "runtime":"docker",
+                        "artifact_id":artifact.artifact_id,
+                        "trigger":trigger,
+                        "error":error.to_string()
+                    }),
+                );
+                println!(
+                    "mode=smartsentinel-operational event=runtime_prerequisite seq={} status=error runtime=docker artifact_id={} trigger={} err={} side_effects=false",
+                    sequence, artifact.artifact_id, trigger, error
+                );
+                false
+            }
+        }
+    } else {
+        match probe_docker_runtime() {
+            Ok(probe) => {
+                let ready = probe.state == DockerRuntimeState::Available;
+                record_event(
+                    client,
+                    options,
+                    sequence,
+                    resource_id,
+                    Some(node_id),
+                    Some(&control_head.dgraph_id),
+                    Some(control_head.dgraph_revision),
+                    if ready {
+                        "runtime_prerequisite"
+                    } else {
+                        "runtime_prerequisite_blocked"
+                    },
+                    false,
+                    json!({
+                        "runtime":"docker",
+                        "artifact_configured":false,
+                        "state":probe.state,
+                        "cli_version":probe.cli_version,
+                        "detail":probe.detail,
+                        "trigger":trigger,
+                        "control_plane_authorized":control_plane_authorized,
+                        "local_container_execution_allowed":local_container_execution_allowed
+                    }),
+                );
+                println!(
+                    "mode=smartsentinel-operational event=runtime_prerequisite seq={} status={} runtime=docker artifact_id=none ready={} trigger={} side_effects=false",
+                    sequence,
+                    if ready { "available" } else { "blocked_missing_runtime_artifact" },
+                    ready,
+                    trigger
+                );
+                ready
+            }
+            Err(error) => {
+                record_event(
+                    client,
+                    options,
+                    sequence,
+                    resource_id,
+                    Some(node_id),
+                    Some(&control_head.dgraph_id),
+                    Some(control_head.dgraph_revision),
+                    "runtime_prerequisite_error",
+                    false,
+                    json!({
+                        "runtime":"docker",
+                        "artifact_configured":false,
+                        "trigger":trigger,
+                        "error":error.to_string()
+                    }),
+                );
+                false
+            }
         }
     }
 }
@@ -890,6 +1106,9 @@ fn validate_options(options: &OperationalServiceLoopOptions) -> Result<()> {
     if options.heartbeat_s == 0 {
         bail!("SmartSentinel operational heartbeat interval must be greater than zero seconds");
     }
+    if options.runtime_execution_user.is_some() && options.runtime_artifact_path.is_none() {
+        bail!("SmartSentinel --runtime-execution-user requires --runtime-artifact");
+    }
     if options.max_cycles == Some(0) {
         bail!("SmartSentinel operational max-cycles must be greater than zero when provided");
     }
@@ -1060,11 +1279,23 @@ mod tests {
     }
 
     #[test]
+    fn runtime_execution_user_requires_runtime_artifact() {
+        let mut options = OperationalServiceLoopOptions::default();
+        options.dserver_url = "http://127.0.0.1:8080".to_string();
+        options.project_id = "project-a".to_string();
+        options.runtime_execution_user = Some("smartsentinel".to_string());
+        assert!(validate_options(&options).is_err());
+    }
+
+    #[test]
     fn control_signature_changes_on_revision_or_authorization() {
         let base = OperationalControlSliceHead {
             dgraph_id: "dgraph:a".to_string(),
             dgraph_revision: 1,
             node_id: "fog-01".to_string(),
+            desired_services: vec![OperationalControlDesiredServiceHead {
+                runtime: "container".to_string(),
+            }],
             authorization: None,
         };
         let first = ControlSignature::from_head(&base);
