@@ -14,8 +14,9 @@ use serde_json::{json, Value};
 use crate::{
     api::resource_registry::resource_registry_snapshot,
     core::operational_dgraph::{
-        build_operational_slice, build_reconciliation_authorization, validate_operational_dgraph,
-        OperationalDGraph, OperationalDGraphSlice, OperationalReconciliationAuthorization,
+        build_operational_head, build_operational_slice, build_reconciliation_authorization,
+        validate_operational_dgraph, OperationalDGraph, OperationalDGraphHead,
+        OperationalDGraphSlice, OperationalReconciliationAuthorization,
         OperationalReconciliationAuthorizationRequest,
     },
 };
@@ -51,14 +52,28 @@ pub async fn put_operational_dgraph(
 
     {
         let mut graphs = graph_store().write().map_err(lock_error)?;
-        let replacing_dgraph_id = graphs
-            .get(&project_id)
-            .map(|existing| existing.dgraph_id.as_str())
-            .filter(|existing| *existing != graph.dgraph_id.as_str())
-            .is_some();
+        if let Some(existing) = graphs.get(&project_id) {
+            if graph.revision < existing.revision {
+                return Err(conflict(format!(
+                    "operational D-Graph revision regression: active revision is {}, received {}",
+                    existing.revision, graph.revision
+                )));
+            }
+            if graph.revision == existing.revision {
+                if &graph == existing {
+                    return Ok(JsonResponse(existing.clone()));
+                }
+                return Err(conflict(format!(
+                    "operational D-Graph revision {} is already active with different content; publish a higher revision",
+                    graph.revision
+                )));
+            }
+        }
+
+        let replacing_existing = graphs.contains_key(&project_id);
         graphs.insert(project_id.clone(), graph.clone());
 
-        if replacing_dgraph_id {
+        if replacing_existing {
             let prefix = format!("{}|", project_id);
             authorization_store()
                 .write()
@@ -110,6 +125,30 @@ pub async fn get_operational_dgraph_slice(
     let slice = build_operational_slice(&graph, node_id.trim(), authorization.as_ref())
         .map_err(not_found)?;
     Ok(JsonResponse(slice))
+}
+
+pub async fn get_operational_dgraph_head(
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<JsonResponse<OperationalDGraphHead>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let graph = graph_store()
+        .read()
+        .map_err(lock_error)?
+        .get(&project_id)
+        .cloned()
+        .ok_or_else(|| not_found(format!(
+            "operational D-Graph not found for project '{}'",
+            project_id
+        )))?;
+    let authorization = authorization_store()
+        .read()
+        .map_err(lock_error)?
+        .get(&authorization_key(&project_id, node_id.trim()))
+        .cloned();
+    let head = build_operational_head(&graph, node_id.trim(), authorization.as_ref())
+        .map_err(not_found)?;
+    Ok(JsonResponse(head))
 }
 
 pub async fn post_operational_reconciliation_authorization(
