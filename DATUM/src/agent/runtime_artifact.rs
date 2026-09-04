@@ -138,8 +138,8 @@ pub fn reconcile_runtime_from_artifact(
     let package_manager = detect_package_manager();
     let selected_installer = package_manager.map(package_manager_key).map(str::to_string);
 
-    if before.state == DockerRuntimeState::Available {
-        return Ok(base_report(
+    match before.state {
+        DockerRuntimeState::Available => Ok(base_report(
             artifact,
             execution_user,
             before,
@@ -149,44 +149,195 @@ pub fn reconcile_runtime_from_artifact(
             execution_authorized,
             "available",
             Some("Docker runtime is already available to SmartSentinel".to_string()),
-        ));
-    }
-
-    if before.state == DockerRuntimeState::InstalledButUnavailable {
-        return Ok(base_report(
+        )),
+        DockerRuntimeState::InstalledButUnavailable => reconcile_installed_but_unavailable(
             artifact,
             execution_user,
             before,
             package_manager,
-            selected_installer,
             execute_requested,
             execution_authorized,
-            "installed_but_unavailable",
-            Some("Docker CLI is installed but the current SmartSentinel process cannot use the daemon; installation is not repeated".to_string()),
-        ));
+        ),
+        DockerRuntimeState::Missing => reconcile_missing_runtime(
+            artifact,
+            execution_user,
+            before,
+            package_manager,
+            execute_requested,
+            execution_authorized,
+        ),
     }
+}
 
+fn reconcile_installed_but_unavailable(
+    artifact: &RuntimeInstallArtifact,
+    execution_user: String,
+    before: DockerRuntimeProbe,
+    package_manager: Option<PackageManager>,
+    execute_requested: bool,
+    execution_authorized: bool,
+) -> Result<RuntimeArtifactReconciliationReport> {
     if !execute_requested {
         return Ok(base_report(
             artifact,
             execution_user,
             before,
             package_manager,
-            selected_installer,
+            package_manager.map(package_manager_key).map(str::to_string),
             execute_requested,
             execution_authorized,
-            "suggested",
-            Some("Docker runtime is missing; trusted runtime artifact is available but execution was not requested".to_string()),
+            "remediation_suggested",
+            Some("Docker is installed but unavailable; trusted post-install remediation is available but execution was not requested".to_string()),
         ));
     }
-
     if !execution_authorized {
         return Ok(base_report(
             artifact,
             execution_user,
             before,
             package_manager,
-            selected_installer,
+            package_manager.map(package_manager_key).map(str::to_string),
+            execute_requested,
+            execution_authorized,
+            "blocked_governance",
+            Some("Docker is installed but unavailable, and post-install remediation is not authorized by the active D-Graph revision and local policy".to_string()),
+        ));
+    }
+
+    let Some(manager) = package_manager else {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            None,
+            None,
+            execute_requested,
+            execution_authorized,
+            "unsupported_remediation",
+            Some("Docker is installed but unavailable and no supported package manager was detected to select trusted post-install commands".to_string()),
+        ));
+    };
+    let installer_key = package_manager_key(manager);
+    let Some(installer) = artifact.installers.get(installer_key) else {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            Some(manager),
+            Some(installer_key.to_string()),
+            execute_requested,
+            execution_authorized,
+            "missing_installer",
+            Some(format!(
+                "runtime artifact does not define installer '{}' for detected package manager",
+                installer_key
+            )),
+        ));
+    };
+    if installer.post_install_commands.is_empty() {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            Some(manager),
+            Some(installer_key.to_string()),
+            execute_requested,
+            execution_authorized,
+            "no_post_install_remediation",
+            Some("Docker is installed but unavailable and the selected runtime artifact defines no post-install remediation commands".to_string()),
+        ));
+    }
+    if commands_require_privilege(&installer.post_install_commands) && !has_noninteractive_privilege()? {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            Some(manager),
+            Some(installer_key.to_string()),
+            execute_requested,
+            execution_authorized,
+            "privilege_required",
+            Some("trusted post-install remediation requires root or passwordless sudo; SmartSentinel will not prompt for a password".to_string()),
+        ));
+    }
+
+    let mut report = base_report(
+        artifact,
+        execution_user.clone(),
+        before,
+        Some(manager),
+        Some(installer_key.to_string()),
+        execute_requested,
+        execution_authorized,
+        "remediating",
+        None,
+    );
+    if !run_command_phase(
+        &mut report,
+        "post_install_remediation",
+        &installer.post_install_commands,
+        &execution_user,
+    )? {
+        report.after = Some(probe_docker_runtime()?);
+        return Ok(report);
+    }
+
+    let after = probe_docker_runtime()?;
+    report.status = match after.state {
+        DockerRuntimeState::Available => "remediated_available",
+        DockerRuntimeState::InstalledButUnavailable if report.session_refresh_required => {
+            "remediation_requires_session_refresh"
+        }
+        DockerRuntimeState::InstalledButUnavailable => "remediation_still_unavailable",
+        DockerRuntimeState::Missing => "failed",
+    }
+    .to_string();
+    report.detail = Some(match after.state {
+        DockerRuntimeState::Available => {
+            "trusted post-install remediation completed and Docker is available to SmartSentinel".to_string()
+        }
+        DockerRuntimeState::InstalledButUnavailable if report.session_refresh_required => {
+            "trusted post-install remediation completed; Docker group membership changed and the SmartSentinel session/service must be refreshed before daemon access can change".to_string()
+        }
+        DockerRuntimeState::InstalledButUnavailable => {
+            "trusted post-install remediation completed but Docker daemon access remains unavailable".to_string()
+        }
+        DockerRuntimeState::Missing => {
+            "Docker CLI disappeared during post-install remediation".to_string()
+        }
+    });
+    report.after = Some(after);
+    Ok(report)
+}
+
+fn reconcile_missing_runtime(
+    artifact: &RuntimeInstallArtifact,
+    execution_user: String,
+    before: DockerRuntimeProbe,
+    package_manager: Option<PackageManager>,
+    execute_requested: bool,
+    execution_authorized: bool,
+) -> Result<RuntimeArtifactReconciliationReport> {
+    if !execute_requested {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            package_manager,
+            package_manager.map(package_manager_key).map(str::to_string),
+            execute_requested,
+            execution_authorized,
+            "suggested",
+            Some("Docker runtime is missing; trusted runtime artifact is available but execution was not requested".to_string()),
+        ));
+    }
+    if !execution_authorized {
+        return Ok(base_report(
+            artifact,
+            execution_user,
+            before,
+            package_manager,
+            package_manager.map(package_manager_key).map(str::to_string),
             execute_requested,
             execution_authorized,
             "blocked_governance",
@@ -224,8 +375,7 @@ pub fn reconcile_runtime_from_artifact(
             )),
         ));
     };
-
-    if lifecycle_requires_privilege(installer) && !has_noninteractive_privilege()? {
+    if installer_requires_privilege(installer) && !has_noninteractive_privilege()? {
         return Ok(base_report(
             artifact,
             execution_user,
@@ -251,46 +401,40 @@ pub fn reconcile_runtime_from_artifact(
         None,
     );
 
-    for (phase, commands) in [
-        ("pre_install", installer.pre_install_commands.as_slice()),
-        ("install", std::slice::from_ref(&installer.install_command)),
-        ("post_install", installer.post_install_commands.as_slice()),
-    ] {
-        for (ordinal, command) in commands.iter().enumerate() {
-            let resolved = resolve_command(command, &execution_user);
-            let output = execute_typed_command(&resolved)?;
-            let success = output.status.success();
-            report.command_results.push(RuntimeInstallCommandResult {
-                phase: phase.to_string(),
-                ordinal,
-                program: resolved.program.clone(),
-                args: resolved.args.clone(),
-                privileged: resolved.privileged,
-                success,
-                detail: Some(output_detail(&output)),
-            });
-            report.side_effects_performed = true;
-            if resolved.program == "usermod"
-                && resolved.args.iter().any(|arg| arg == "docker")
-                && success
-            {
-                report.session_refresh_required = true;
-            }
-            if !success {
-                report.status = "failed".to_string();
-                report.detail = Some(format!(
-                    "runtime artifact command failed during {}: {}",
-                    phase, resolved.program
-                ));
-                report.after = Some(probe_docker_runtime()?);
-                return Ok(report);
-            }
-        }
+    if !run_command_phase(
+        &mut report,
+        "pre_install",
+        &installer.pre_install_commands,
+        &execution_user,
+    )? {
+        report.after = Some(probe_docker_runtime()?);
+        return Ok(report);
+    }
+    if !run_command_phase(
+        &mut report,
+        "install",
+        std::slice::from_ref(&installer.install_command),
+        &execution_user,
+    )? {
+        report.after = Some(probe_docker_runtime()?);
+        return Ok(report);
+    }
+    if !run_command_phase(
+        &mut report,
+        "post_install",
+        &installer.post_install_commands,
+        &execution_user,
+    )? {
+        report.after = Some(probe_docker_runtime()?);
+        return Ok(report);
     }
 
     let after = probe_docker_runtime()?;
     report.status = match after.state {
         DockerRuntimeState::Available => "installed_available",
+        DockerRuntimeState::InstalledButUnavailable if report.session_refresh_required => {
+            "installed_requires_session_refresh"
+        }
         DockerRuntimeState::InstalledButUnavailable => "installed_but_unavailable",
         DockerRuntimeState::Missing => "failed",
     }
@@ -300,7 +444,7 @@ pub fn reconcile_runtime_from_artifact(
             "runtime artifact completed and Docker is available to SmartSentinel".to_string()
         }
         DockerRuntimeState::InstalledButUnavailable if report.session_refresh_required => {
-            "runtime artifact completed, but Docker access requires a refreshed SmartSentinel session/service after group membership change".to_string()
+            "runtime artifact completed; Docker group membership changed and the SmartSentinel session/service must be refreshed before daemon access can change".to_string()
         }
         DockerRuntimeState::InstalledButUnavailable => {
             "runtime artifact completed, but Docker daemon access is still unavailable".to_string()
@@ -311,6 +455,44 @@ pub fn reconcile_runtime_from_artifact(
     });
     report.after = Some(after);
     Ok(report)
+}
+
+fn run_command_phase(
+    report: &mut RuntimeArtifactReconciliationReport,
+    phase: &str,
+    commands: &[RuntimeInstallCommand],
+    execution_user: &str,
+) -> Result<bool> {
+    for (ordinal, command) in commands.iter().enumerate() {
+        let resolved = resolve_command(command, execution_user);
+        let output = execute_typed_command(&resolved)?;
+        let success = output.status.success();
+        report.command_results.push(RuntimeInstallCommandResult {
+            phase: phase.to_string(),
+            ordinal,
+            program: resolved.program.clone(),
+            args: resolved.args.clone(),
+            privileged: resolved.privileged,
+            success,
+            detail: Some(output_detail(&output)),
+        });
+        report.side_effects_performed = true;
+        if resolved.program == "usermod"
+            && resolved.args.iter().any(|arg| arg == "docker")
+            && success
+        {
+            report.session_refresh_required = true;
+        }
+        if !success {
+            report.status = "failed".to_string();
+            report.detail = Some(format!(
+                "runtime artifact command failed during {}: {}",
+                phase, resolved.program
+            ));
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn current_execution_user() -> Result<String> {
@@ -414,13 +596,17 @@ fn package_manager_key(manager: PackageManager) -> &'static str {
     }
 }
 
-fn lifecycle_requires_privilege(installer: &RuntimeInstallerLifecycle) -> bool {
+fn installer_requires_privilege(installer: &RuntimeInstallerLifecycle) -> bool {
     installer
         .pre_install_commands
         .iter()
         .chain(std::iter::once(&installer.install_command))
         .chain(installer.post_install_commands.iter())
         .any(|command| command.privileged)
+}
+
+fn commands_require_privilege(commands: &[RuntimeInstallCommand]) -> bool {
+    commands.iter().any(|command| command.privileged)
 }
 
 fn execute_typed_command(command: &RuntimeInstallCommand) -> Result<Output> {
@@ -527,5 +713,21 @@ mod tests {
         assert_eq!(package_manager_key(PackageManager::AptGet), "apt_get");
         assert_eq!(package_manager_key(PackageManager::Dnf), "dnf");
         assert_eq!(package_manager_key(PackageManager::Zypper), "zypper");
+    }
+
+    #[test]
+    fn docker_fixture_has_post_install_remediation_for_linux_managers() {
+        let artifact = fixture();
+        for key in ["apt_get", "dnf", "yum", "pacman", "zypper"] {
+            let installer = artifact.installers.get(key).unwrap();
+            assert!(installer
+                .post_install_commands
+                .iter()
+                .any(|command| command.program == "systemctl"));
+            assert!(installer
+                .post_install_commands
+                .iter()
+                .any(|command| command.program == "usermod"));
+        }
     }
 }
