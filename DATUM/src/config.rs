@@ -162,6 +162,8 @@ pub struct DispatchContainerMapping {
     pub ports: Vec<DispatchContainerPortMapping>,
     #[serde(default)]
     pub restart_policy: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
