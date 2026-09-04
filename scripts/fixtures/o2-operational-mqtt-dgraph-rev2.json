@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "dgraph_id": "dgraph:o2-mqtt-role-1",
+  "revision": 2,
+  "project_id": "monitor-f49c8",
+  "nodes": [
+    {
+      "node_id": "fog-01",
+      "desired_services": [
+        {
+          "service_id": "mqtt",
+          "runtime": "container",
+          "desired_state": "running"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "source": "external-o2-live-fixture",
+    "purpose": "step-50 event-driven D-Graph revision validation",
+    "change": "revision-only control-plane update; desired MQTT state intentionally unchanged"
+  }
+}
