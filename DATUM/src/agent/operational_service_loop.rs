@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use reqwest::blocking::Client;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::agent::bootstrap::{run_bootstrap_with_resource_discovery, BootstrapState};
 use crate::agent::operational_evidence::{
     append_operational_evidence, publish_operational_evidence, OperationalEvidenceEvent,
 };
@@ -39,6 +41,7 @@ pub struct OperationalServiceLoopOptions {
     pub cycle_s_override: Option<u64>,
     pub discovery_refresh_s: u64,
     pub snapshot_s: u64,
+    pub drift_verify_s: u64,
     pub heartbeat_s: u64,
     pub node_id_override: Option<String>,
     pub hostname_override: Option<String>,
@@ -59,6 +62,7 @@ impl Default for OperationalServiceLoopOptions {
             cycle_s_override: None,
             discovery_refresh_s: 30,
             snapshot_s: 30,
+            drift_verify_s: 30,
             heartbeat_s: 1,
             node_id_override: None,
             hostname_override: None,
@@ -68,13 +72,67 @@ impl Default for OperationalServiceLoopOptions {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct OperationalControlAuthorizationHead {
+    authorization_id: String,
+    #[serde(default)]
+    dgraph_revision: Option<u64>,
+    allow_host_mutation: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct OperationalControlSliceHead {
+    dgraph_id: String,
+    dgraph_revision: u64,
+    node_id: String,
+    #[serde(default)]
+    authorization: Option<OperationalControlAuthorizationHead>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ControlSignature {
+    dgraph_id: String,
+    dgraph_revision: u64,
+    authorization_id: Option<String>,
+    authorization_revision: Option<u64>,
+    allow_host_mutation: bool,
+}
+
+impl ControlSignature {
+    fn from_head(head: &OperationalControlSliceHead) -> Self {
+        Self {
+            dgraph_id: head.dgraph_id.clone(),
+            dgraph_revision: head.dgraph_revision,
+            authorization_id: head
+                .authorization
+                .as_ref()
+                .map(|authorization| authorization.authorization_id.clone()),
+            authorization_revision: head
+                .authorization
+                .as_ref()
+                .and_then(|authorization| authorization.dgraph_revision),
+            allow_host_mutation: head
+                .authorization
+                .as_ref()
+                .is_some_and(|authorization| authorization.allow_host_mutation),
+        }
+    }
+
+    fn as_json(&self) -> Value {
+        json!({
+            "dgraph_id": self.dgraph_id,
+            "dgraph_revision": self.dgraph_revision,
+            "authorization_id": self.authorization_id,
+            "authorization_revision": self.authorization_revision,
+            "allow_host_mutation": self.allow_host_mutation
+        })
+    }
+}
+
 pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> Result<()> {
     validate_options(&options)?;
 
     let mut cfg = load_config_allow_unbound(&options.config_path)?;
-
-    // The operational path owns desired-state reconciliation. Legacy auto-recovery and
-    // desired-state mechanisms remain disabled so there is only one mutation path.
     if let Some(auto_recovery) = cfg.auto_recovery.as_mut() {
         auto_recovery.enabled = false;
         auto_recovery.dry_run = Some(true);
@@ -123,12 +181,13 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
     );
 
     println!(
-        "mode=smartsentinel-operational event=start resource_id={} requested_node_id={} cycle_s={} discovery_refresh_s={} snapshot_s={} heartbeat_s={} execute={} dserver_url={} project_id={} lock_file={} history={}",
+        "mode=smartsentinel-operational event=start resource_id={} requested_node_id={} cycle_s={} discovery_refresh_s={} snapshot_s={} drift_verify_s={} heartbeat_s={} execute={} dserver_url={} project_id={} lock_file={} history={}",
         resource_id,
         requested_node_id.as_deref().unwrap_or("none"),
         cycle_s,
         options.discovery_refresh_s,
         options.snapshot_s,
+        options.drift_verify_s,
         options.heartbeat_s,
         options.execute,
         options.dserver_url.trim_end_matches('/'),
@@ -140,6 +199,8 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
     let mut sequence = 0u64;
     let mut last_discovery_refresh = Instant::now();
     let mut last_snapshot: Option<Instant> = None;
+    let mut last_drift_verification: Option<Instant> = None;
+    let mut last_control_signature: Option<ControlSignature> = None;
 
     while !shutdown.load(Ordering::SeqCst) {
         detect_stop_file(&options.stop_file, &shutdown);
@@ -158,12 +219,6 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                 Ok(discovery) => {
                     let observed_resource_id = derive_resource_lookup_id(&discovery);
                     if observed_resource_id != resource_id {
-                        let payload = json!({
-                            "status": "identity_changed",
-                            "startup_resource_id": resource_id,
-                            "observed_resource_id": observed_resource_id,
-                            "action": "fail_closed"
-                        });
                         record_event(
                             &client,
                             &options,
@@ -171,20 +226,22 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                             &resource_id,
                             None,
                             None,
+                            None,
                             "identity_changed",
                             false,
-                            payload,
+                            json!({
+                                "status": "identity_changed",
+                                "startup_resource_id": resource_id,
+                                "observed_resource_id": observed_resource_id,
+                                "action": "fail_closed"
+                            }),
                         );
                         println!(
                             "mode=smartsentinel-operational event=identity seq={} status=changed startup_resource_id={} observed_resource_id={} action=fail_closed side_effects=false",
                             sequence, resource_id, observed_resource_id
                         );
                         last_discovery_refresh = Instant::now();
-                        wait_with_shutdown(
-                            &options.stop_file,
-                            &shutdown,
-                            Duration::from_secs(cycle_s),
-                        );
+                        finish_cycle_wait(&options, &shutdown, cycle_started, cycle_s);
                         continue;
                     }
                     cached_discovery = discovery;
@@ -219,6 +276,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                         &resource_id,
                         None,
                         None,
+                        None,
                         "resource_discovery",
                         false,
                         serde_json::to_value(&cached_discovery)
@@ -239,6 +297,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                     &resource_id,
                     None,
                     None,
+                    None,
                     "resource_discovery_publish_error",
                     false,
                     json!({"error": error.to_string()}),
@@ -247,37 +306,20 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
             }
         };
 
-        if let Some(published_resource_id) = published_resource_id {
-            if published_resource_id != resource_id {
-                record_event(
-                    &client,
-                    &options,
-                    sequence,
-                    &resource_id,
-                    None,
-                    None,
-                    "identity_changed",
-                    false,
-                    json!({
-                        "status": "identity_changed",
-                        "startup_resource_id": resource_id,
-                        "published_resource_id": published_resource_id,
-                        "action": "fail_closed"
-                    }),
-                );
-            } else {
-                run_reconcile_cycle(
-                    &client,
-                    &cfg,
-                    &options,
-                    &cached_discovery,
-                    requested_node_id.as_deref(),
-                    sequence,
-                    cycle_started,
-                    &resource_id,
-                    &mut last_snapshot,
-                );
-            }
+        if published_resource_id.as_deref() == Some(resource_id.as_str()) {
+            run_hybrid_control_cycle(
+                &client,
+                &cfg,
+                &options,
+                &cached_discovery,
+                requested_node_id.as_deref(),
+                sequence,
+                cycle_started,
+                &resource_id,
+                &mut last_snapshot,
+                &mut last_drift_verification,
+                &mut last_control_signature,
+            );
         }
 
         if options
@@ -289,11 +331,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
             break;
         }
 
-        let elapsed = cycle_started.elapsed();
-        let target = Duration::from_secs(cycle_s);
-        if elapsed < target {
-            wait_with_shutdown(&options.stop_file, &shutdown, target - elapsed);
-        }
+        finish_cycle_wait(&options, &shutdown, cycle_started, cycle_s);
     }
 
     if options.stop_file.exists() {
@@ -320,7 +358,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_reconcile_cycle(
+fn run_hybrid_control_cycle(
     client: &Client,
     cfg: &Config,
     options: &OperationalServiceLoopOptions,
@@ -330,7 +368,165 @@ fn run_reconcile_cycle(
     cycle_started: Instant,
     startup_resource_id: &str,
     last_snapshot: &mut Option<Instant>,
+    last_drift_verification: &mut Option<Instant>,
+    last_control_signature: &mut Option<ControlSignature>,
 ) {
+    let bootstrap = match run_bootstrap_with_resource_discovery(
+        cached_discovery.clone(),
+        requested_node_id,
+        &options.dserver_url,
+        &options.project_id,
+        options.timeout_s,
+    ) {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => {
+            record_waiting_or_error(
+                client,
+                options,
+                sequence,
+                startup_resource_id,
+                requested_node_id,
+                error.to_string(),
+                cycle_started,
+            );
+            return;
+        }
+    };
+
+    if bootstrap.bootstrap_state != BootstrapState::KnownBoundNode {
+        *last_control_signature = None;
+        record_waiting_or_error(
+            client,
+            options,
+            sequence,
+            startup_resource_id,
+            requested_node_id,
+            format!(
+                "operational reconciliation requires known_bound_node, received {:?}",
+                bootstrap.bootstrap_state
+            ),
+            cycle_started,
+        );
+        return;
+    }
+
+    let node_id = match bootstrap.control_plane.resolved_node_id.as_deref() {
+        Some(node_id) => node_id,
+        None => {
+            record_waiting_or_error(
+                client,
+                options,
+                sequence,
+                startup_resource_id,
+                requested_node_id,
+                "known_bound_node bootstrap did not resolve node_id".to_string(),
+                cycle_started,
+            );
+            return;
+        }
+    };
+
+    let control_head = match fetch_control_slice_head(
+        client,
+        &options.dserver_url,
+        &options.project_id,
+        node_id,
+    ) {
+        Ok(head) => head,
+        Err(error) => {
+            record_event(
+                client,
+                options,
+                sequence,
+                startup_resource_id,
+                Some(node_id),
+                None,
+                None,
+                "control_poll_error",
+                false,
+                json!({"error":error.to_string()}),
+            );
+            println!(
+                "mode=smartsentinel-operational event=control_poll seq={} status=error node_id={} err={} dur_ms={}",
+                sequence,
+                node_id,
+                error,
+                cycle_started.elapsed().as_millis()
+            );
+            return;
+        }
+    };
+
+    let signature = ControlSignature::from_head(&control_head);
+    let control_changed = last_control_signature
+        .as_ref()
+        .map(|previous| previous != &signature)
+        .unwrap_or(true);
+    let drift_due = last_drift_verification
+        .as_ref()
+        .map(|last| last.elapsed() >= Duration::from_secs(options.drift_verify_s))
+        .unwrap_or(true);
+
+    if control_changed {
+        record_event(
+            client,
+            options,
+            sequence,
+            startup_resource_id,
+            Some(node_id),
+            Some(&control_head.dgraph_id),
+            Some(control_head.dgraph_revision),
+            "control_change_detected",
+            false,
+            json!({
+                "previous": last_control_signature.as_ref().map(ControlSignature::as_json),
+                "current": signature.as_json(),
+                "trigger": "event_driven_control_change"
+            }),
+        );
+    }
+
+    if !control_changed && !drift_due {
+        let drift_age_ms = last_drift_verification
+            .as_ref()
+            .map(|last| last.elapsed().as_millis())
+            .unwrap_or(0);
+        record_event(
+            client,
+            options,
+            sequence,
+            startup_resource_id,
+            Some(node_id),
+            Some(&control_head.dgraph_id),
+            Some(control_head.dgraph_revision),
+            "reconciliation_skipped",
+            false,
+            json!({
+                "reason": "control_unchanged_and_drift_proof_fresh",
+                "trigger": "none",
+                "control_signature": signature.as_json(),
+                "drift_age_ms": drift_age_ms,
+                "drift_verify_s": options.drift_verify_s
+            }),
+        );
+        println!(
+            "mode=smartsentinel-operational event=reconcile seq={} status=skipped node_id={} dgraph_id={} dgraph_revision={} reason=control_unchanged_and_drift_proof_fresh drift_age_ms={} dur_ms={}",
+            sequence,
+            node_id,
+            control_head.dgraph_id,
+            control_head.dgraph_revision,
+            drift_age_ms,
+            cycle_started.elapsed().as_millis()
+        );
+        return;
+    }
+
+    let trigger = if control_changed {
+        "event_driven_control_change"
+    } else {
+        "time_driven_drift_verification"
+    };
+
     match run_operational_reconciliation_with_resource_discovery(
         cfg,
         cached_discovery.clone(),
@@ -343,6 +539,9 @@ fn run_reconcile_cycle(
         false,
     ) {
         Ok(mut report) => {
+            *last_control_signature = Some(signature.clone());
+            *last_drift_verification = Some(Instant::now());
+
             let snapshot_due = report.side_effects_performed
                 || last_snapshot
                     .as_ref()
@@ -370,94 +569,203 @@ fn run_reconcile_cycle(
                 }
             }
 
-            let write_status = match write_report(&options.report_path, &report) {
-                Ok(()) => "ok".to_string(),
-                Err(error) => format!("err({error})"),
-            };
-            let wasm_actions = report
-                .services
-                .iter()
-                .filter(|service| service.wasm.action_code != 0)
-                .count();
-            let converged_after = report
-                .services
-                .iter()
-                .filter(|service| service.observed_after_running)
-                .count();
-            let event_kind = if report.side_effects_performed {
-                "reconciliation_action"
-            } else {
-                "reconciliation"
-            };
-            let event_payload = serde_json::to_value(&report)
-                .unwrap_or_else(|_| json!({"serialization_error":true}));
-            record_event(
+            write_reconciliation_result(
                 client,
                 options,
                 sequence,
-                &report.resource_id,
-                Some(&report.node_id),
-                Some(&report.dgraph_id),
-                event_kind,
-                report.side_effects_performed,
-                event_payload,
-            );
-
-            println!(
-                "mode=smartsentinel-operational event=reconcile seq={} status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_actions={} converged_after={} host_mutation={} snapshot_published={} snapshot_due={} report={} report_write={} dur_ms={}",
-                sequence,
-                report.bootstrap_state,
-                report.resource_id,
-                report.node_id,
-                report.dgraph_id,
-                report.services.len(),
-                wasm_actions,
-                converged_after,
-                report.side_effects_performed,
-                report.snapshot_published,
+                cycle_started,
+                &control_head,
+                trigger,
+                &report,
                 snapshot_due,
-                options.report_path.display(),
-                write_status,
-                cycle_started.elapsed().as_millis(),
             );
         }
         Err(error) => {
-            let message = error.to_string();
-            let waiting = message.contains("KnownUnboundResource")
-                || message.contains("UnknownResource")
-                || message.contains("known_unbound_resource")
-                || message.contains("unknown_resource");
             record_event(
                 client,
                 options,
                 sequence,
                 startup_resource_id,
-                requested_node_id,
-                None,
-                if waiting {
-                    "reconciliation_waiting"
-                } else {
-                    "reconciliation_error"
-                },
+                Some(node_id),
+                Some(&control_head.dgraph_id),
+                Some(control_head.dgraph_revision),
+                "reconciliation_error",
                 false,
                 json!({
-                    "error": message,
-                    "requested_node_id": requested_node_id,
-                    "waiting_for_binding": waiting
+                    "error": error.to_string(),
+                    "trigger": trigger,
+                    "control_signature": signature.as_json()
                 }),
             );
             println!(
-                "mode=smartsentinel-operational event=reconcile seq={} status=waiting_or_error resource_id={} requested_node_id={} err={} dur_ms={} side_effects=false",
+                "mode=smartsentinel-operational event=reconcile seq={} status=error trigger={} node_id={} dgraph_id={} dgraph_revision={} err={} dur_ms={} side_effects=false",
                 sequence,
-                startup_resource_id,
-                requested_node_id.unwrap_or("none"),
+                trigger,
+                node_id,
+                control_head.dgraph_id,
+                control_head.dgraph_revision,
                 error,
-                cycle_started.elapsed().as_millis(),
+                cycle_started.elapsed().as_millis()
             );
         }
     }
 }
 
+fn write_reconciliation_result(
+    client: &Client,
+    options: &OperationalServiceLoopOptions,
+    sequence: u64,
+    cycle_started: Instant,
+    control_head: &OperationalControlSliceHead,
+    trigger: &str,
+    report: &OperationalReconciliationReport,
+    snapshot_due: bool,
+) {
+    let write_status = match write_report(&options.report_path, report) {
+        Ok(()) => "ok".to_string(),
+        Err(error) => format!("err({error})"),
+    };
+    let wasm_actions = report
+        .services
+        .iter()
+        .filter(|service| service.wasm.action_code != 0)
+        .count();
+    let converged_after = report
+        .services
+        .iter()
+        .filter(|service| service.observed_after_running)
+        .count();
+    let event_kind = if report.side_effects_performed {
+        "reconciliation_action"
+    } else if trigger == "time_driven_drift_verification" {
+        "drift_verification"
+    } else {
+        "reconciliation"
+    };
+    let mut event_payload = serde_json::to_value(report)
+        .unwrap_or_else(|_| json!({"serialization_error":true}));
+    if let Some(object) = event_payload.as_object_mut() {
+        object.insert("trigger".to_string(), Value::String(trigger.to_string()));
+        object.insert(
+            "dgraph_revision".to_string(),
+            Value::from(control_head.dgraph_revision),
+        );
+    }
+    record_event(
+        client,
+        options,
+        sequence,
+        &report.resource_id,
+        Some(&report.node_id),
+        Some(&report.dgraph_id),
+        Some(control_head.dgraph_revision),
+        event_kind,
+        report.side_effects_performed,
+        event_payload,
+    );
+
+    println!(
+        "mode=smartsentinel-operational event=reconcile seq={} status=ok trigger={} bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} dgraph_revision={} services={} wasm_actions={} converged_after={} host_mutation={} snapshot_published={} snapshot_due={} report={} report_write={} dur_ms={}",
+        sequence,
+        trigger,
+        report.bootstrap_state,
+        report.resource_id,
+        report.node_id,
+        report.dgraph_id,
+        control_head.dgraph_revision,
+        report.services.len(),
+        wasm_actions,
+        converged_after,
+        report.side_effects_performed,
+        report.snapshot_published,
+        snapshot_due,
+        options.report_path.display(),
+        write_status,
+        cycle_started.elapsed().as_millis(),
+    );
+}
+
+fn fetch_control_slice_head(
+    client: &Client,
+    dserver_url: &str,
+    project_id: &str,
+    node_id: &str,
+) -> Result<OperationalControlSliceHead> {
+    let url = format!(
+        "{}/api/v1/nodes/{}/operational-dgraph-slice",
+        dserver_url.trim().trim_end_matches('/'),
+        node_id.trim()
+    );
+    let response = client
+        .get(&url)
+        .header("X-Datum-Project", project_id.trim())
+        .send()
+        .with_context(|| format!("poll operational D-Graph control slice {url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        bail!("operational control slice poll failed with status {status}: {body}");
+    }
+    let head: OperationalControlSliceHead = response
+        .json()
+        .context("decode operational D-Graph control slice head")?;
+    if head.dgraph_revision == 0 {
+        bail!("operational control slice returned revision zero");
+    }
+    if head.node_id.trim() != node_id.trim() {
+        bail!(
+            "operational control slice node '{}' does not match resolved node '{}'",
+            head.node_id,
+            node_id
+        );
+    }
+    Ok(head)
+}
+
+fn record_waiting_or_error(
+    client: &Client,
+    options: &OperationalServiceLoopOptions,
+    sequence: u64,
+    startup_resource_id: &str,
+    requested_node_id: Option<&str>,
+    message: String,
+    cycle_started: Instant,
+) {
+    let waiting = message.contains("KnownUnboundResource")
+        || message.contains("UnknownResource")
+        || message.contains("known_unbound_resource")
+        || message.contains("unknown_resource");
+    record_event(
+        client,
+        options,
+        sequence,
+        startup_resource_id,
+        None,
+        None,
+        None,
+        if waiting {
+            "reconciliation_waiting"
+        } else {
+            "reconciliation_error"
+        },
+        false,
+        json!({
+            "error": message,
+            "requested_node_id": requested_node_id,
+            "waiting_for_binding": waiting
+        }),
+    );
+    println!(
+        "mode=smartsentinel-operational event=reconcile seq={} status=waiting_or_error resource_id={} requested_node_id={} err={} dur_ms={} side_effects=false",
+        sequence,
+        startup_resource_id,
+        requested_node_id.unwrap_or("none"),
+        message,
+        cycle_started.elapsed().as_millis(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_event(
     client: &Client,
     options: &OperationalServiceLoopOptions,
@@ -465,6 +773,7 @@ fn record_event(
     resource_id: &str,
     node_id: Option<&str>,
     dgraph_id: Option<&str>,
+    dgraph_revision: Option<u64>,
     event_kind: &str,
     side_effects_performed: bool,
     payload: Value,
@@ -474,6 +783,7 @@ fn record_event(
         resource_id,
         node_id,
         dgraph_id,
+        dgraph_revision,
         sequence,
         event_kind,
         side_effects_performed,
@@ -503,13 +813,17 @@ fn record_event(
         Err(error) => format!("err({error})"),
     };
     println!(
-        "mode=smartsentinel-operational event=evidence seq={} kind={} event_id={} local={} remote={} side_effects={}",
+        "mode=smartsentinel-operational event=evidence seq={} kind={} event_id={} local={} remote={} side_effects={} dgraph_revision={}",
         sequence,
         event_kind,
         event.event_id,
         local_status,
         remote_status,
         event.side_effects_performed,
+        event
+            .dgraph_revision
+            .map(|revision| revision.to_string())
+            .unwrap_or_else(|| "none".to_string()),
     );
 }
 
@@ -570,6 +884,9 @@ fn validate_options(options: &OperationalServiceLoopOptions) -> Result<()> {
     if options.snapshot_s == 0 {
         bail!("SmartSentinel operational snapshot interval must be greater than zero seconds");
     }
+    if options.drift_verify_s == 0 {
+        bail!("SmartSentinel operational drift verification interval must be greater than zero seconds");
+    }
     if options.heartbeat_s == 0 {
         bail!("SmartSentinel operational heartbeat interval must be greater than zero seconds");
     }
@@ -587,8 +904,6 @@ fn validate_options(options: &OperationalServiceLoopOptions) -> Result<()> {
 
 fn operational_lock_key(resource_id: &str, hostname: &str) -> String {
     if resource_id.starts_with("resource:instance:") {
-        // The instance-scoped resource id is intentionally ephemeral. For the local process
-        // singleton only, hostname is a valid host-local mutex key; it is never used as identity.
         format!("operational-host:{}", hostname.trim())
     } else {
         format!("operational:{}", resource_id.trim())
@@ -702,6 +1017,19 @@ fn wait_with_shutdown(stop_file: &Path, shutdown: &AtomicBool, duration: Duratio
     }
 }
 
+fn finish_cycle_wait(
+    options: &OperationalServiceLoopOptions,
+    shutdown: &AtomicBool,
+    cycle_started: Instant,
+    cycle_s: u64,
+) {
+    let elapsed = cycle_started.elapsed();
+    let target = Duration::from_secs(cycle_s);
+    if elapsed < target {
+        wait_with_shutdown(&options.stop_file, shutdown, target - elapsed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,5 +1057,28 @@ mod tests {
         options.dserver_url = "http://127.0.0.1:8080".to_string();
         options.project_id = "project-a".to_string();
         assert!(validate_options(&options).is_ok());
+    }
+
+    #[test]
+    fn control_signature_changes_on_revision_or_authorization() {
+        let base = OperationalControlSliceHead {
+            dgraph_id: "dgraph:a".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            authorization: None,
+        };
+        let first = ControlSignature::from_head(&base);
+
+        let mut revised = base.clone();
+        revised.dgraph_revision = 2;
+        assert_ne!(first, ControlSignature::from_head(&revised));
+
+        let mut authorized = base;
+        authorized.authorization = Some(OperationalControlAuthorizationHead {
+            authorization_id: "opauth:1".to_string(),
+            dgraph_revision: Some(1),
+            allow_host_mutation: true,
+        });
+        assert_ne!(first, ControlSignature::from_head(&authorized));
     }
 }
