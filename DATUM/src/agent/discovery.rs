@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const DISCOVERY_SCHEMA_VERSION: &str = "0.3.0";
+pub const DISCOVERY_SCHEMA_VERSION: &str = "0.4.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,7 +28,6 @@ pub enum HardwareIdentityBasis {
     BaseboardSerial,
     SystemSerial,
     BoardSerial,
-    HostnameFallback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,12 +74,33 @@ impl SmartSentinelDiscovery {
         if self.identity.hostname.trim().is_empty() {
             bail!("discovery hostname must not be empty");
         }
-        validate_identifier("role_binding_id", &self.identity.role_binding_id)?;
         if let Some(id) = &self.identity.hardware_fingerprint_id {
             validate_identifier("hardware_fingerprint_id", id)?;
+            if self.identity.hardware_identity_basis.is_empty() {
+                bail!("hardware fingerprint requires at least one hardware identity basis");
+            }
+            if self.identity.hardware_identity_confidence == IdentityConfidence::Unknown {
+                bail!("hardware fingerprint cannot have unknown confidence");
+            }
+        } else {
+            if !self.identity.hardware_identity_basis.is_empty() {
+                bail!("hardware identity basis must be empty when no hardware fingerprint exists");
+            }
+            if self.identity.hardware_identity_confidence != IdentityConfidence::Unknown {
+                bail!("missing hardware fingerprint must have unknown confidence");
+            }
         }
         if let Some(id) = &self.identity.os_installation_id {
             validate_identifier("os_installation_id", id)?;
+        }
+        if let Some(id) = &self.identity.role_binding_id {
+            validate_identifier("role_binding_id", id)?;
+            if self.identity.hardware_fingerprint_id.is_none() {
+                bail!("role binding candidate requires a hardware fingerprint");
+            }
+        }
+        if self.identity.predecessor_binding_id.is_some() {
+            bail!("SmartSentinel discovery must not assign predecessor binding history");
         }
         if self.identity.hardware_identity_attested {
             bail!("discovery hardware identity is observational and must not claim attestation");
@@ -173,7 +193,8 @@ pub struct IdentityObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_installation_id: Option<String>,
     pub os_identity_basis: OsIdentityBasis,
-    pub role_binding_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_binding_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predecessor_binding_id: Option<String>,
 }
@@ -253,18 +274,22 @@ pub fn derive_os_installation_id(basis: OsIdentityBasis, anchor: &str) -> Option
 pub fn derive_role_binding_id(
     node_id: &str,
     hardware_fingerprint_id: Option<&str>,
-    os_installation_id: Option<&str>,
-    hostname: &str,
-) -> String {
-    let physical_anchor = hardware_fingerprint_id
-        .or(os_installation_id)
-        .unwrap_or(hostname)
-        .trim()
-        .to_ascii_lowercase();
-    format!(
+) -> Option<String> {
+    let hardware = hardware_fingerprint_id?.trim().to_ascii_lowercase();
+    if hardware.is_empty() {
+        return None;
+    }
+    Some(format!(
         "binding:{}",
-        sha256_hex(format!("node={};anchor={}", node_id.trim().to_ascii_lowercase(), physical_anchor).as_bytes())
-    )
+        sha256_hex(
+            format!(
+                "node={};hardware={}",
+                node_id.trim().to_ascii_lowercase(),
+                hardware
+            )
+            .as_bytes(),
+        )
+    ))
 }
 
 pub fn derive_capacity_profile_id(resources: &ResourceObservation) -> String {
