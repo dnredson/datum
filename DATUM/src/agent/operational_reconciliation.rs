@@ -39,6 +39,8 @@ pub struct OperationalReconciliationAuthorization {
     pub authorization_id: String,
     pub project_id: String,
     pub dgraph_id: String,
+    #[serde(default)]
+    pub dgraph_revision: Option<u64>,
     pub node_id: String,
     pub authorized_by: String,
     pub authorized_at_utc: String,
@@ -57,6 +59,8 @@ pub struct OperationalReconcilerDescriptor {
 pub struct OperationalDGraphSlice {
     pub schema_version: String,
     pub dgraph_id: String,
+    #[serde(default)]
+    pub dgraph_revision: Option<u64>,
     pub project_id: String,
     pub node_id: String,
     pub desired_services: Vec<OperationalDesiredService>,
@@ -99,6 +103,8 @@ pub struct OperationalReconciliationReport {
     pub resource_id: String,
     pub node_id: String,
     pub dgraph_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dgraph_revision: Option<u64>,
     pub execute_requested: bool,
     pub control_plane_authorized: bool,
     pub local_container_execution_allowed: bool,
@@ -222,6 +228,7 @@ fn run_operational_reconciliation_from_bootstrap(
         authorization.allow_host_mutation
             && authorization.project_id == slice.project_id
             && authorization.dgraph_id == slice.dgraph_id
+            && authorization.dgraph_revision == slice.dgraph_revision
             && authorization.node_id == slice.node_id
     });
     let local_container_execution_allowed = cfg.dispatch.as_ref().is_some_and(|dispatch| {
@@ -257,7 +264,7 @@ fn run_operational_reconciliation_from_bootstrap(
         } else if !control_plane_authorized {
             (
                 "blocked_control_plane".to_string(),
-                "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization".to_string(),
+                "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization for this revision".to_string(),
                 false,
             )
         } else if !local_container_execution_allowed {
@@ -333,6 +340,7 @@ fn run_operational_reconciliation_from_bootstrap(
         resource_id: bootstrap.control_plane.resource_id,
         node_id,
         dgraph_id: slice.dgraph_id,
+        dgraph_revision: slice.dgraph_revision,
         execute_requested,
         control_plane_authorized,
         local_container_execution_allowed,
@@ -407,6 +415,11 @@ fn validate_slice(slice: &OperationalDGraphSlice, project_id: &str, node_id: &st
             slice.node_id,
             node_id
         );
+    }
+    match slice.dgraph_revision {
+        Some(revision) if revision > 0 => {}
+        Some(_) => bail!("operational D-Graph slice revision must be greater than zero"),
+        None => bail!("operational D-Graph slice omitted dgraph_revision"),
     }
     if slice.reconciler.module_id != OPERATIONAL_RECONCILER_MODULE_ID
         || slice.reconciler.function_name != OPERATIONAL_RECONCILER_FUNCTION
