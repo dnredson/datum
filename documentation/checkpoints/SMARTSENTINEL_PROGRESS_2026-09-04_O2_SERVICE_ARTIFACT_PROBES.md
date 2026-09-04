@@ -2,18 +2,18 @@
 
 Date: 2026-09-04
 Branch: `agent/o2-service-artifact-probes`
-Baseline main: `ef51332d602387dc10b809886e2ec90035ffbed5`
+Baseline main before step 52: `ef51332d602387dc10b809886e2ec90035ffbed5`
 
 ## Progress status
 
 - 49/100 — LIVE PASS.
 - 50/100 — LIVE PASS.
 - 51/100 — LIVE PASS.
-- 52/100 — IMPLEMENTED; first live availability-discrimination proof PASS; A/B recovery proof pending.
+- 52/100 — LIVE PASS.
 
-The validated 51/100 baseline is on `main`. Step 52 remains isolated in the development branch.
+Step 52 is closed after an A/B live proof using the same trusted MQTT service artifact.
 
-## Step 52 — service artifact operational probes
+## Step 52 — service artifact operational probes — LIVE PASS
 
 Step 52 formalizes the distinction:
 
@@ -23,7 +23,7 @@ A process or container being reported as running is not sufficient evidence that
 
 ### Service artifact contract
 
-A trusted service artifact now describes:
+A trusted service artifact describes:
 
 - service identity;
 - runtime kind;
@@ -91,40 +91,68 @@ Derived operational states include:
 
 ### Live proof A — running but unavailable — PASS
 
-The current O2 MQTT container was running but had no host port mapping. Running the unchanged service artifact produced:
+The MQTT container was running without a host port mapping. Running the unchanged service artifact produced:
 
 - `artifact_id=service:mqtt:mosquitto-2`;
 - `service_id=mqtt`;
 - `operational_state=unavailable`;
 - `assessment_basis=execution_health_availability`;
-- execution `docker_container_running` -> `passed` with detail that `datum-mqtt` is running;
-- health `docker_health` -> `not_verifiable` because the container image exposes no Docker HEALTHCHECK state;
-- availability `mqtt_connect` -> `failed` because a host-local MQTT client could not connect to `127.0.0.1:1883`;
-- execution vantage point `local_runtime`;
-- availability vantage point `local_host`.
+- execution `docker_container_running` -> `passed`;
+- health `docker_health` -> `not_verifiable` because the image exposes no Docker HEALTHCHECK state;
+- availability `mqtt_connect` -> `failed` because a host-local MQTT client could not connect to `127.0.0.1:1883`.
 
-This is the intended counterexample to any rule that equates runtime execution with service availability:
+This proves that `container running = true` does not imply `service available = true`.
 
-`container running = true` did not imply `service available = true`.
+### Live proof B — same artifact, consumable deployment — PASS
 
-The live result reproduces the operational issue observed during thesis experimentation: a component can be executing correctly from the runtime perspective while still being unusable by its consumer.
+SmartSentinel continuous reconciliation was stopped while dserver remained running. The same Mosquitto image was recreated as `datum-mqtt` with the artifact-declared exposure:
 
-### Remaining A/B proof for step 52
+`-p 1883:1883`
 
-Without changing the service artifact, recreate the same Mosquitto container with the declared `1883:1883/tcp` host exposure and rerun the same probe. The expected transition is:
+Docker then reported:
 
-- execution remains `passed`;
-- health remains `not_verifiable` for the same image;
-- availability changes `failed -> passed`;
-- `operational_state` changes `unavailable -> available`.
+- `0.0.0.0:1883->1883/tcp`;
+- `[::]:1883->1883/tcp`.
 
-This A/B test isolates availability from execution and proves that the service artifact describes a meaningful consumer-visible contract.
+The same unchanged service artifact was evaluated again and produced:
+
+- `artifact_id=service:mqtt:mosquitto-2`;
+- `service_id=mqtt`;
+- `operational_state=available`;
+- `assessment_basis=execution_health_availability`;
+- execution `docker_container_running` -> `passed`, with `datum-mqtt` running;
+- health `docker_health` -> `not_verifiable`, unchanged from proof A;
+- availability `mqtt_connect` -> `passed` with a successful MQTT CONNECT/CONNACK against `127.0.0.1:1883`.
+
+The only material operational difference between proof A and proof B was consumer-visible port exposure. Execution remained satisfied and Docker health remained unverifiable.
+
+Therefore the live A/B transition was:
+
+`execution=passed, health=not_verifiable, availability=failed, state=unavailable`
+
+-> publish the declared `1883:1883/tcp` exposure ->
+
+`execution=passed, health=not_verifiable, availability=passed, state=available`.
+
+This is a direct live proof that runtime execution, internal health evidence, and actual service consumability are distinct dimensions.
+
+### Step 52 conclusion
+
+Step 52 is LIVE PASS.
+
+SmartSentinel can now produce typed evidence that a service is executing but unavailable, can preserve uncertainty through `not_verifiable`, and can verify MQTT consumability through a protocol-level CONNECT/CONNACK rather than through runtime status or a raw TCP-open assumption.
+
+The trusted service artifact also carries the desired deployment declaration that explains the A/B difference (`1883:1883/tcp`), providing the basis for explicit deployment-drift detection in the next step.
 
 ### New CLI
 
 `smartsentinel-service-probe` loads a trusted service artifact and writes a typed `ServiceOperationalAssessment` JSON report.
 
-Step 52 first validates the semantic/probe layer in isolation. Integration of these assessments into the continuous operational evidence stream and use of deployment declarations for governed drift reconciliation are intentionally deferred to the next step so observation is proven before a new host-mutation class is introduced.
+## Next step — 53/100
+
+Integrate service operational assessments into the continuous SmartSentinel operational loop and operational evidence stream, and explicitly distinguish deployment drift from application execution/health/availability failures.
+
+Step 53 should remain observation-first: detect and publish deployment drift, but do not yet introduce automatic port/configuration repair as a new host-mutation class.
 
 ## Architecture statement
 
