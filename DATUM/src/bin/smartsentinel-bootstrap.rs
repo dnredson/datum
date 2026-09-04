@@ -3,11 +3,11 @@ use std::fs;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use datum::agent::bootstrap::run_bootstrap;
-use datum::config;
+use datum::agent::resource_discovery::load_config_allow_unbound;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-bootstrap")]
-#[command(about = "Resolve SmartSentinel known-node vs discovery bootstrap against dserver")]
+#[command(about = "Resolve SmartSentinel bound-node, unbound-resource, or unknown-resource bootstrap against dserver")]
 struct Args {
     #[arg(long, default_value = "config.toml")]
     config: String,
@@ -33,8 +33,13 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let cfg = config::load_config(&args.config)?;
-    let node_id = args.node_id.unwrap_or_else(|| cfg.agent.node_id.clone());
+    let configured_node_id = read_configured_node_id(&args.config)?;
+    let cfg = load_config_allow_unbound(&args.config)?;
+    let requested_node_id = args
+        .node_id
+        .or(configured_node_id)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let project_id = args
         .project_id
         .or_else(|| {
@@ -54,7 +59,7 @@ fn main() -> Result<()> {
 
     let report = run_bootstrap(
         &cfg,
-        &node_id,
+        requested_node_id.as_deref(),
         args.hostname.as_deref(),
         &args.dserver_url,
         &project_id,
@@ -67,28 +72,44 @@ fn main() -> Result<()> {
         .with_context(|| format!("write SmartSentinel bootstrap report {}", args.out))?;
 
     println!(
-        "mode=smartsentinel-bootstrap status=ok node_id={} instance_id={} bootstrap_mode={:?} node_known={} hardware_id={} binding_id={} capacity_profile_id={} expected_capabilities={} existing_registration={} out={} side_effects=false",
-        report.discovery.node_id,
-        report.discovery.instance_id,
-        report.control_plane.bootstrap_mode,
-        report.control_plane.node_known,
+        "mode=smartsentinel-bootstrap status=ok bootstrap_state={:?} resource_id={} requested_node_id={} resolved_node_id={} instance_id={} hardware_id={} capacity_profile_id={} resource_known={} node_known={} out={} side_effects=false",
+        report.bootstrap_state,
+        report.control_plane.resource_id,
         report
-            .discovery
+            .control_plane
+            .requested_node_id
+            .as_deref()
+            .unwrap_or("none"),
+        report
+            .control_plane
+            .resolved_node_id
+            .as_deref()
+            .unwrap_or("none"),
+        report.resource_discovery.instance_id,
+        report
+            .resource_discovery
             .identity
             .hardware_fingerprint_id
             .as_deref()
             .unwrap_or("unknown"),
-        report
-            .discovery
-            .identity
-            .role_binding_id
-            .as_deref()
-            .unwrap_or("unresolved"),
-        report.discovery.resources.capacity_profile_id,
-        report.control_plane.expected_capabilities.is_some(),
-        report.control_plane.sentinel_registration.is_some(),
+        report.resource_discovery.resources.capacity_profile_id,
+        report.control_plane.resource_record.is_some(),
+        report.control_plane.node_known,
         args.out,
     );
 
     Ok(())
+}
+
+fn read_configured_node_id(path: &str) -> Result<Option<String>> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read config file: {path}"))?;
+    let value: toml::Value = toml::from_str(&raw).context("parse bootstrap TOML config")?;
+    Ok(value
+        .get("agent")
+        .and_then(toml::Value::as_table)
+        .and_then(|agent| agent.get("node_id"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string))
 }
