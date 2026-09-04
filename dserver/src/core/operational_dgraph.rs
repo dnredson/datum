@@ -9,10 +9,16 @@ pub const OPERATIONAL_DGRAPH_SCHEMA_VERSION: &str = "0.1.0";
 pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1";
 pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
 
+fn default_dgraph_revision() -> u64 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OperationalDGraph {
     pub schema_version: String,
     pub dgraph_id: String,
+    #[serde(default = "default_dgraph_revision")]
+    pub revision: u64,
     pub project_id: String,
     pub nodes: Vec<OperationalNodeDesiredState>,
     #[serde(default)]
@@ -36,6 +42,8 @@ pub struct OperationalDesiredService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperationalReconciliationAuthorizationRequest {
     pub dgraph_id: String,
+    #[serde(default)]
+    pub dgraph_revision: Option<u64>,
     pub authorized_by: String,
     pub allow_host_mutation: bool,
 }
@@ -45,6 +53,7 @@ pub struct OperationalReconciliationAuthorization {
     pub authorization_id: String,
     pub project_id: String,
     pub dgraph_id: String,
+    pub dgraph_revision: u64,
     pub node_id: String,
     pub authorized_by: String,
     pub authorized_at_utc: String,
@@ -63,12 +72,28 @@ pub struct OperationalReconcilerDescriptor {
 pub struct OperationalDGraphSlice {
     pub schema_version: String,
     pub dgraph_id: String,
+    pub dgraph_revision: u64,
     pub project_id: String,
     pub node_id: String,
     pub desired_services: Vec<OperationalDesiredService>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<OperationalReconciliationAuthorization>,
     pub reconciler: OperationalReconcilerDescriptor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalDGraphHead {
+    pub schema_version: String,
+    pub project_id: String,
+    pub node_id: String,
+    pub dgraph_id: String,
+    pub dgraph_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_revision: Option<u64>,
+    pub allow_host_mutation: bool,
+    pub reconciler_module_id: String,
 }
 
 pub fn validate_operational_dgraph(graph: &OperationalDGraph) -> Result<(), String> {
@@ -80,6 +105,9 @@ pub fn validate_operational_dgraph(graph: &OperationalDGraph) -> Result<(), Stri
     }
     required("dgraph_id", &graph.dgraph_id)?;
     required("project_id", &graph.project_id)?;
+    if graph.revision == 0 {
+        return Err("operational D-Graph revision must be greater than zero".to_string());
+    }
     if graph.nodes.is_empty() {
         return Err("operational D-Graph must contain at least one node".to_string());
     }
@@ -122,6 +150,7 @@ pub fn build_operational_slice(
         .filter(|auth| {
             auth.project_id == graph.project_id
                 && auth.dgraph_id == graph.dgraph_id
+                && auth.dgraph_revision == graph.revision
                 && auth.node_id == node_id
         })
         .cloned();
@@ -129,6 +158,7 @@ pub fn build_operational_slice(
     Ok(OperationalDGraphSlice {
         schema_version: graph.schema_version.clone(),
         dgraph_id: graph.dgraph_id.clone(),
+        dgraph_revision: graph.revision,
         project_id: graph.project_id.clone(),
         node_id: node.node_id.clone(),
         desired_services: node.desired_services.clone(),
@@ -139,6 +169,35 @@ pub fn build_operational_slice(
             abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
             host_imports_allowed: false,
         },
+    })
+}
+
+pub fn build_operational_head(
+    graph: &OperationalDGraph,
+    node_id: &str,
+    authorization: Option<&OperationalReconciliationAuthorization>,
+) -> Result<OperationalDGraphHead, String> {
+    validate_operational_dgraph(graph)?;
+    let node_id = node_id.trim();
+    if !graph.nodes.iter().any(|node| node.node_id.trim() == node_id) {
+        return Err(format!("node '{}' is not present in operational D-Graph", node_id));
+    }
+    let authorization = authorization.filter(|auth| {
+        auth.project_id == graph.project_id
+            && auth.dgraph_id == graph.dgraph_id
+            && auth.dgraph_revision == graph.revision
+            && auth.node_id == node_id
+    });
+    Ok(OperationalDGraphHead {
+        schema_version: graph.schema_version.clone(),
+        project_id: graph.project_id.clone(),
+        node_id: node_id.to_string(),
+        dgraph_id: graph.dgraph_id.clone(),
+        dgraph_revision: graph.revision,
+        authorization_id: authorization.map(|auth| auth.authorization_id.clone()),
+        authorization_revision: authorization.map(|auth| auth.dgraph_revision),
+        allow_host_mutation: authorization.is_some_and(|auth| auth.allow_host_mutation),
+        reconciler_module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
     })
 }
 
@@ -159,6 +218,14 @@ pub fn build_reconciliation_authorization(
             request.dgraph_id, graph.dgraph_id
         ));
     }
+    if let Some(requested_revision) = request.dgraph_revision {
+        if requested_revision != graph.revision {
+            return Err(format!(
+                "authorization dgraph_revision '{}' does not match active operational D-Graph revision '{}'",
+                requested_revision, graph.revision
+            ));
+        }
+    }
     required("authorized_by", &request.authorized_by)?;
     if !request.allow_host_mutation {
         return Err(
@@ -171,6 +238,7 @@ pub fn build_reconciliation_authorization(
         authorization_id: format!("opauth:{}", Uuid::new_v4()),
         project_id: graph.project_id.clone(),
         dgraph_id: graph.dgraph_id.clone(),
+        dgraph_revision: graph.revision,
         node_id: node_id.to_string(),
         authorized_by: request.authorized_by.trim().to_string(),
         authorized_at_utc: now.to_rfc3339(),
@@ -213,6 +281,7 @@ mod tests {
         OperationalDGraph {
             schema_version: OPERATIONAL_DGRAPH_SCHEMA_VERSION.to_string(),
             dgraph_id: "dgraph:o2-mqtt-role-1".to_string(),
+            revision: 1,
             project_id: "monitor-f49c8".to_string(),
             nodes: vec![OperationalNodeDesiredState {
                 node_id: "fog-01".to_string(),
@@ -231,6 +300,7 @@ mod tests {
         let graph = graph();
         validate_operational_dgraph(&graph).unwrap();
         let slice = build_operational_slice(&graph, "fog-01", None).unwrap();
+        assert_eq!(slice.dgraph_revision, 1);
         assert_eq!(slice.desired_services.len(), 1);
         assert_eq!(slice.desired_services[0].service_id, "mqtt");
         assert_eq!(slice.reconciler.module_id, OPERATIONAL_RECONCILER_MODULE_ID);
@@ -245,16 +315,46 @@ mod tests {
     }
 
     #[test]
-    fn authorization_is_bound_to_active_graph_and_node() {
+    fn zero_revision_is_rejected() {
+        let mut graph = graph();
+        graph.revision = 0;
+        assert!(validate_operational_dgraph(&graph).is_err());
+    }
+
+    #[test]
+    fn authorization_is_bound_to_active_graph_revision_and_node() {
         let graph = graph();
         let request = OperationalReconciliationAuthorizationRequest {
             dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision),
             authorized_by: "operator:test".to_string(),
             allow_host_mutation: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
         let auth = build_reconciliation_authorization(&graph, "fog-01", &request, now).unwrap();
         let slice = build_operational_slice(&graph, "fog-01", Some(&auth)).unwrap();
-        assert_eq!(slice.authorization.unwrap().dgraph_id, graph.dgraph_id);
+        assert_eq!(slice.authorization.unwrap().dgraph_revision, graph.revision);
+    }
+
+    #[test]
+    fn operational_head_exposes_revision_and_authorization() {
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(1),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: true,
+        };
+        let auth = build_reconciliation_authorization(
+            &graph,
+            "fog-01",
+            &request,
+            Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap(),
+        )
+        .unwrap();
+        let head = build_operational_head(&graph, "fog-01", Some(&auth)).unwrap();
+        assert_eq!(head.dgraph_revision, 1);
+        assert_eq!(head.authorization_revision, Some(1));
+        assert!(head.allow_host_mutation);
     }
 }
