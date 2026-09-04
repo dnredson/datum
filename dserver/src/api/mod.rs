@@ -29,6 +29,7 @@ pub mod local_dgraph_snapshot;
 pub mod middleware;
 pub mod nodes;
 pub mod operational_dgraph;
+pub mod operational_evidence;
 pub mod planner;
 pub mod resource_registry;
 pub mod sentinel_registration;
