@@ -56,6 +56,23 @@ pub fn run_bootstrap(
     project_id: &str,
     timeout_s: u64,
 ) -> Result<SmartSentinelBootstrapReport> {
+    let resource_discovery = collect_unbound_resource_discovery(cfg, hostname_override)?;
+    run_bootstrap_with_resource_discovery(
+        resource_discovery,
+        requested_node_id,
+        dserver_url,
+        project_id,
+        timeout_s,
+    )
+}
+
+pub fn run_bootstrap_with_resource_discovery(
+    resource_discovery: SmartSentinelResourceDiscovery,
+    requested_node_id: Option<&str>,
+    dserver_url: &str,
+    project_id: &str,
+    timeout_s: u64,
+) -> Result<SmartSentinelBootstrapReport> {
     if project_id.trim().is_empty() {
         bail!("SmartSentinel bootstrap project_id must not be empty");
     }
@@ -65,6 +82,7 @@ pub fn run_bootstrap(
     if timeout_s == 0 {
         bail!("SmartSentinel bootstrap timeout_s must be greater than zero");
     }
+    resource_discovery.validate()?;
 
     let requested_node_id = requested_node_id
         .map(str::trim)
@@ -76,7 +94,6 @@ pub fn run_bootstrap(
         .build()
         .context("build SmartSentinel bootstrap HTTP client")?;
 
-    let resource_discovery = collect_unbound_resource_discovery(cfg, hostname_override)?;
     let resource_id = derive_resource_lookup_id(&resource_discovery);
     let resource_url = format!("{base}/api/v1/resources/{resource_id}");
     let resource_response = client
