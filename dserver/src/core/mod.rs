@@ -36,6 +36,7 @@ pub mod local_mapping_preflight;
 pub mod local_mapping_recommendations;
 pub mod model;
 pub mod planner;
+pub mod resource_binding;
 pub mod resource_observation;
 pub mod resource_registry;
 pub mod sentinel_registration;
