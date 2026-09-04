@@ -7,4 +7,5 @@ pub mod operational_service_loop;
 pub mod resource_discovery;
 pub mod runtime_artifact;
 pub mod runtime_prerequisite;
+pub mod service_artifact;
 pub mod service_loop;
