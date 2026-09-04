@@ -5,7 +5,6 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use wasmtime::{Config as WasmConfig, Engine, Instance, Module, Store};
 
 use crate::agent::bootstrap::{run_bootstrap, BootstrapState};
@@ -81,18 +80,12 @@ pub struct OperationalServiceReconciliationReport {
     pub trusted_container_name: Option<String>,
     pub trusted_image: Option<String>,
     pub observed_before_running: bool,
-    pub configuration_converged_before: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub configuration_detail_before: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
     pub wasm: WasmReconciliationDecision,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_intent_reason: Option<String>,
     pub execution_status: String,
     pub message: String,
     pub observed_after_running: bool,
-    pub configuration_converged_after: bool,
     pub host_mutation_performed: bool,
 }
 
@@ -117,13 +110,6 @@ enum ContainerState {
     Running,
     Stopped,
     Missing,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ContainerObservation {
-    state: ContainerState,
-    configuration_converged: bool,
-    configuration_detail: Option<String>,
 }
 
 pub fn run_operational_reconciliation(
@@ -191,58 +177,37 @@ pub fn run_operational_reconciliation(
     for service in &slice.desired_services {
         let mapping = trusted_container_mapping(cfg, &service.service_id);
         let (observed_before, observation_error) = match mapping {
-            Some(mapping) => match inspect_container(mapping) {
-                Ok(observation) => (observation, None),
-                Err(error) => (
-                    ContainerObservation {
-                        state: ContainerState::Missing,
-                        configuration_converged: false,
-                        configuration_detail: None,
-                    },
-                    Some(error.to_string()),
-                ),
+            Some(mapping) => match inspect_container(&mapping.container_name) {
+                Ok(state) => (state, None),
+                Err(error) => (ContainerState::Missing, Some(error.to_string())),
             },
-            None => (
-                ContainerObservation {
-                    state: ContainerState::Missing,
-                    configuration_converged: false,
-                    configuration_detail: Some("trusted local mapping is absent".to_string()),
-                },
-                None,
-            ),
+            None => (ContainerState::Missing, None),
         };
-        let observed_before_running = observed_before.state == ContainerState::Running;
-        let configuration_converged_before = observed_before.configuration_converged;
+        let observed_before_running = observed_before == ContainerState::Running;
         let wasm = run_embedded_reconciler(true, observed_before_running)?;
-        let host_intent_reason = host_intent_reason(&wasm, &observed_before);
-        let host_intent_required = host_intent_reason.is_some();
 
-        let (execution_status, message, host_mutation_performed) = if !host_intent_required {
+        let (execution_status, message, host_mutation_performed) = if wasm.action_code == 0 {
             (
                 "converged".to_string(),
-                "desired service is running and the trusted local deployment mapping already converges"
-                    .to_string(),
+                "desired service is already running; WASM requested no host action".to_string(),
                 false,
             )
         } else if !execute_requested {
             (
                 "suggested".to_string(),
-                format!(
-                    "reconciliation requires host action because {}; --execute was not provided",
-                    host_intent_reason.as_deref().unwrap_or("state differs")
-                ),
+                "WASM requested ensure_service_running, but --execute was not provided".to_string(),
                 false,
             )
         } else if !control_plane_authorized {
             (
                 "blocked_control_plane".to_string(),
-                "reconciliation requires host action, but the active D-Graph slice has no matching host-mutation authorization".to_string(),
+                "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization".to_string(),
                 false,
             )
         } else if !local_container_execution_allowed {
             (
                 "blocked_local_policy".to_string(),
-                "reconciliation requires host action, but local dispatch is disabled or allow_container_execution is not true".to_string(),
+                "WASM requested ensure_service_running, but local dispatch is disabled or allow_container_execution is not true".to_string(),
                 false,
             )
         } else if mapping.is_none() {
@@ -257,15 +222,11 @@ pub fn run_operational_reconciliation(
         } else if let Some(error) = observation_error.as_deref() {
             (
                 "docker_unavailable".to_string(),
-                format!("reconciliation requires host action, but Docker observation failed: {error}"),
+                format!("WASM requested ensure_service_running, but Docker observation failed: {error}"),
                 false,
             )
         } else {
-            match execute_trusted_container_intent(
-                cfg,
-                &service.service_id,
-                &observed_before,
-            ) {
+            match execute_trusted_container_intent(cfg, &service.service_id, observed_before) {
                 Ok(result) => result,
                 Err(error) => (
                     "failed".to_string(),
@@ -276,13 +237,9 @@ pub fn run_operational_reconciliation(
         };
 
         side_effects_performed |= host_mutation_performed;
-        let observed_after = mapping
-            .and_then(|mapping| inspect_container(mapping).ok())
-            .unwrap_or(ContainerObservation {
-                state: ContainerState::Missing,
-                configuration_converged: false,
-                configuration_detail: None,
-            });
+        let observed_after_running = mapping
+            .and_then(|mapping| inspect_container(&mapping.container_name).ok())
+            .is_some_and(|state| state == ContainerState::Running);
 
         services.push(OperationalServiceReconciliationReport {
             service_id: service.service_id.clone(),
@@ -290,15 +247,11 @@ pub fn run_operational_reconciliation(
             trusted_container_name: mapping.map(|mapping| mapping.container_name.clone()),
             trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
             observed_before_running,
-            configuration_converged_before,
-            configuration_detail_before: observed_before.configuration_detail,
             observation_error,
             wasm,
-            host_intent_reason,
             execution_status,
             message,
-            observed_after_running: observed_after.state == ContainerState::Running,
-            configuration_converged_after: observed_after.configuration_converged,
+            observed_after_running,
             host_mutation_performed,
         });
     }
@@ -443,285 +396,39 @@ fn trusted_container_mapping<'a>(
     })
 }
 
-fn host_intent_reason(
-    wasm: &WasmReconciliationDecision,
-    observation: &ContainerObservation,
-) -> Option<String> {
-    match (wasm.action_code != 0, observation.configuration_converged) {
-        (false, true) => None,
-        (true, true) => Some("logical service is not running".to_string()),
-        (false, false) => Some("trusted local deployment mapping drifted".to_string()),
-        (true, false) => Some(
-            "logical service is not running and trusted local deployment mapping drifted"
-                .to_string(),
-        ),
-    }
-}
-
 fn docker_inspect_reports_missing(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     normalized.contains("no such object") || normalized.contains("no such container")
 }
 
-fn inspect_container(mapping: &DispatchContainerMapping) -> Result<ContainerObservation> {
-    let container_name = mapping.container_name.trim();
+fn inspect_container(container_name: &str) -> Result<ContainerState> {
     let output = Command::new("docker")
-        .args(["inspect", container_name])
+        .args(["inspect", "-f", "{{.State.Running}}", container_name])
         .output()
         .with_context(|| format!("execute docker inspect for trusted container '{container_name}'"))?;
-    if !output.status.success() {
-        let combined = format!(
-            "{} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if docker_inspect_reports_missing(&combined) {
-            return Ok(ContainerObservation {
-                state: ContainerState::Missing,
-                configuration_converged: false,
-                configuration_detail: Some(format!(
-                    "trusted container '{}' does not exist",
-                    container_name
-                )),
-            });
-        }
-        bail!(
-            "Docker unavailable while inspecting '{}': {}",
-            container_name,
-            combined.trim()
-        );
-    }
-
-    let values: Vec<Value> = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("decode docker inspect JSON for '{container_name}'"))?;
-    let value = values
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("docker inspect returned an empty result for '{container_name}'"))?;
-    let running = value
-        .pointer("/State/Running")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let state = if running {
-        ContainerState::Running
-    } else {
-        ContainerState::Stopped
-    };
-    let (configuration_converged, configuration_detail) =
-        container_configuration_matches(mapping, value)?;
-
-    Ok(ContainerObservation {
-        state,
-        configuration_converged,
-        configuration_detail,
-    })
-}
-
-fn container_configuration_matches(
-    mapping: &DispatchContainerMapping,
-    inspect: &Value,
-) -> Result<(bool, Option<String>)> {
-    validate_trusted_container_mapping(mapping)?;
-    let mut drift = Vec::new();
-
-    let expected_image = mapping
-        .artifact
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .expect("trusted mapping validation requires an image");
-    let actual_image = inspect
-        .pointer("/Config/Image")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if actual_image != expected_image {
-        drift.push(format!(
-            "image expected='{}' observed='{}'",
-            expected_image, actual_image
-        ));
-    }
-
-    let expected_restart = mapping.restart_policy.as_deref().unwrap_or("no").trim();
-    let actual_restart = inspect
-        .pointer("/HostConfig/RestartPolicy/Name")
-        .and_then(Value::as_str)
-        .unwrap_or("no");
-    if actual_restart != expected_restart {
-        drift.push(format!(
-            "restart_policy expected='{}' observed='{}'",
-            expected_restart, actual_restart
-        ));
-    }
-
-    let port_bindings = inspect
-        .pointer("/HostConfig/PortBindings")
-        .and_then(Value::as_object);
-    for port in &mapping.ports {
-        let protocol = port.protocol.trim().to_ascii_lowercase();
-        let key = format!("{}/{}", port.container_port, protocol);
-        let expected_host_port = port.host_port.to_string();
-        let matched = port_bindings
-            .and_then(|bindings| bindings.get(&key))
-            .and_then(Value::as_array)
-            .is_some_and(|entries| {
-                entries.iter().any(|entry| {
-                    let observed_host_port = entry
-                        .get("HostPort")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let observed_host_ip = entry
-                        .get("HostIp")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    let host_port_matches = observed_host_port == expected_host_port;
-                    let host_ip_matches = port
-                        .host_ip
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(|expected| observed_host_ip == expected)
-                        .unwrap_or(true);
-                    host_port_matches && host_ip_matches
-                })
-            });
-        if !matched {
-            let host_ip = port.host_ip.as_deref().unwrap_or("*");
-            drift.push(format!(
-                "port expected='{}:{}->{}/{}' is not published",
-                host_ip, port.host_port, port.container_port, protocol
-            ));
-        }
-    }
-
-    if !mapping.command.is_empty() {
-        let actual_command: Vec<String> = inspect
-            .pointer("/Config/Cmd")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        if actual_command != mapping.command {
-            drift.push(format!(
-                "command expected={:?} observed={:?}",
-                mapping.command, actual_command
-            ));
-        }
-    }
-
-    if drift.is_empty() {
-        Ok((true, None))
-    } else {
-        Ok((false, Some(drift.join("; "))))
-    }
-}
-
-fn validate_trusted_container_mapping(mapping: &DispatchContainerMapping) -> Result<()> {
-    if mapping.container_name.trim().is_empty() {
-        bail!("trusted container mapping requires non-empty container_name");
-    }
-    if mapping
-        .artifact
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        bail!("trusted container mapping requires non-empty artifact image");
-    }
-    for port in &mapping.ports {
-        if port.host_port == 0 || port.container_port == 0 {
-            bail!("trusted container mapping ports must be greater than zero");
-        }
-        let protocol = port.protocol.trim().to_ascii_lowercase();
-        if !matches!(protocol.as_str(), "tcp" | "udp") {
-            bail!("unsupported container port protocol '{}'; expected tcp or udp", port.protocol);
-        }
-    }
-    if let Some(policy) = mapping.restart_policy.as_deref() {
-        let policy = policy.trim();
-        if !matches!(policy, "no" | "always" | "unless-stopped" | "on-failure") {
-            bail!(
-                "unsupported restart_policy '{}'; expected no, always, unless-stopped, or on-failure",
-                policy
-            );
-        }
-    }
-    if mapping.command.iter().any(|argument| argument.trim().is_empty()) {
-        bail!("trusted container command arguments must not be empty");
-    }
-    Ok(())
-}
-
-pub fn build_trusted_container_run_args(mapping: &DispatchContainerMapping) -> Result<Vec<String>> {
-    validate_trusted_container_mapping(mapping)?;
-    let image = mapping
-        .artifact
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .expect("trusted mapping validation requires an image");
-    let mut args = vec![
-        "run".to_string(),
-        "-d".to_string(),
-        "--name".to_string(),
-        mapping.container_name.trim().to_string(),
-    ];
-
-    if let Some(policy) = mapping.restart_policy.as_deref().map(str::trim) {
-        if !policy.is_empty() && policy != "no" {
-            args.push("--restart".to_string());
-            args.push(policy.to_string());
-        }
-    }
-
-    for port in &mapping.ports {
-        let protocol = port.protocol.trim().to_ascii_lowercase();
-        let publish = match port
-            .host_ip
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            Some(host_ip) => format!(
-                "{}:{}:{}/{}",
-                host_ip, port.host_port, port.container_port, protocol
-            ),
-            None => format!("{}:{}/{}", port.host_port, port.container_port, protocol),
+    if output.status.success() {
+        return match String::from_utf8_lossy(&output.stdout).trim() {
+            "true" => Ok(ContainerState::Running),
+            "false" => Ok(ContainerState::Stopped),
+            other => bail!("unexpected docker inspect state '{other}' for '{container_name}'"),
         };
-        args.push("-p".to_string());
-        args.push(publish);
     }
-
-    args.push(image.to_string());
-    args.extend(mapping.command.iter().cloned());
-    Ok(args)
-}
-
-fn run_trusted_container(mapping: &DispatchContainerMapping) -> Result<()> {
-    let args = build_trusted_container_run_args(mapping)?;
-    let output = Command::new("docker")
-        .args(&args)
-        .output()
-        .with_context(|| format!("execute governed docker run for '{}'", mapping.container_name))?;
-    if !output.status.success() {
-        bail!(
-            "governed docker run failed for '{}' using trusted image '{}': {}",
-            mapping.container_name,
-            mapping.artifact.as_deref().unwrap_or("unknown"),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    let combined = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if docker_inspect_reports_missing(&combined) {
+        Ok(ContainerState::Missing)
+    } else {
+        bail!("Docker unavailable while inspecting '{}': {}", container_name, combined.trim())
     }
-    Ok(())
 }
 
 fn execute_trusted_container_intent(
     cfg: &Config,
     service_id: &str,
-    observed_before: &ContainerObservation,
+    observed_before: ContainerState,
 ) -> Result<(String, String, bool)> {
     let mapping = trusted_container_mapping(cfg, service_id).ok_or_else(|| {
         anyhow::anyhow!(
@@ -729,47 +436,18 @@ fn execute_trusted_container_intent(
             service_id
         )
     })?;
-    validate_trusted_container_mapping(mapping)?;
     let container_name = mapping.container_name.trim();
     let image = mapping
         .artifact
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .expect("trusted mapping validation requires an image");
+        .expect("trusted mapping requires non-empty artifact image");
 
-    if observed_before.state != ContainerState::Missing
-        && !observed_before.configuration_converged
-    {
-        let remove = Command::new("docker")
-            .args(["rm", "-f", container_name])
-            .output()
-            .with_context(|| format!("remove drifted trusted container '{container_name}'"))?;
-        if !remove.status.success() {
-            bail!(
-                "docker rm -f failed for drifted container '{}': {}",
-                container_name,
-                String::from_utf8_lossy(&remove.stderr).trim()
-            );
-        }
-        run_trusted_container(mapping)?;
-        return Ok((
-            "redeployed".to_string(),
-            format!(
-                "recreated trusted container '{}' from image '{}' because the local deployment mapping drifted",
-                container_name, image
-            ),
-            true,
-        ));
-    }
-
-    match observed_before.state {
+    match observed_before {
         ContainerState::Running => Ok((
             "already_running".to_string(),
-            format!(
-                "trusted container '{}' is already running and matches the local deployment mapping",
-                container_name
-            ),
+            format!("trusted container '{}' is already running", container_name),
             false,
         )),
         ContainerState::Stopped => {
@@ -794,7 +472,18 @@ fn execute_trusted_container_intent(
             ))
         }
         ContainerState::Missing => {
-            run_trusted_container(mapping)?;
+            let output = Command::new("docker")
+                .args(["run", "-d", "--name", container_name, image])
+                .output()
+                .with_context(|| format!("execute governed docker run for '{container_name}'"))?;
+            if !output.status.success() {
+                bail!(
+                    "governed docker run failed for '{}' using trusted image '{}': {}",
+                    container_name,
+                    image,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
             Ok((
                 "deployed".to_string(),
                 format!(
@@ -841,28 +530,6 @@ fn publish_role_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DispatchContainerPortMapping;
-
-    fn mqtt_mapping() -> DispatchContainerMapping {
-        DispatchContainerMapping {
-            module_id: None,
-            service_name: Some("mqtt".to_string()),
-            container_name: "datum-mqtt".to_string(),
-            artifact: Some("eclipse-mosquitto:2".to_string()),
-            ports: vec![DispatchContainerPortMapping {
-                host_port: 1883,
-                container_port: 1883,
-                protocol: "tcp".to_string(),
-                host_ip: None,
-            }],
-            restart_policy: Some("unless-stopped".to_string()),
-            command: vec![
-                "mosquitto".to_string(),
-                "-c".to_string(),
-                "/mosquitto-no-auth.conf".to_string(),
-            ],
-        }
-    }
 
     #[test]
     fn wasm_requests_action_when_desired_service_is_missing() {
@@ -885,68 +552,5 @@ mod tests {
         assert!(docker_inspect_reports_missing("error: no such object: datum-mqtt"));
         assert!(docker_inspect_reports_missing("Error response from daemon: No such container: datum-mqtt"));
         assert!(!docker_inspect_reports_missing("permission denied while trying to connect to the docker API"));
-    }
-
-    #[test]
-    fn trusted_run_args_include_typed_port_restart_and_command() {
-        let args = build_trusted_container_run_args(&mqtt_mapping()).unwrap();
-        assert_eq!(
-            args,
-            vec![
-                "run",
-                "-d",
-                "--name",
-                "datum-mqtt",
-                "--restart",
-                "unless-stopped",
-                "-p",
-                "1883:1883/tcp",
-                "eclipse-mosquitto:2",
-                "mosquitto",
-                "-c",
-                "/mosquitto-no-auth.conf"
-            ]
-        );
-    }
-
-    #[test]
-    fn inspect_configuration_detects_missing_port_restart_and_command() {
-        let inspect = serde_json::json!({
-            "Config": {
-                "Image": "eclipse-mosquitto:2",
-                "Cmd": ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
-            },
-            "HostConfig": {
-                "RestartPolicy": {"Name": "no"},
-                "PortBindings": {}
-            }
-        });
-        let (matches, detail) = container_configuration_matches(&mqtt_mapping(), &inspect).unwrap();
-        assert!(!matches);
-        let detail = detail.unwrap();
-        assert!(detail.contains("restart_policy"));
-        assert!(detail.contains("1883"));
-        assert!(detail.contains("command"));
-    }
-
-    #[test]
-    fn inspect_configuration_accepts_expected_mapping() {
-        let inspect = serde_json::json!({
-            "Config": {
-                "Image": "eclipse-mosquitto:2",
-                "Cmd": ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
-            },
-            "HostConfig": {
-                "RestartPolicy": {"Name": "unless-stopped"},
-                "PortBindings": {
-                    "1883/tcp": [
-                        {"HostIp": "", "HostPort": "1883"}
-                    ]
-                }
-            }
-        });
-        let (matches, detail) = container_configuration_matches(&mqtt_mapping(), &inspect).unwrap();
-        assert!(matches);
-        assert!(detail.is_none());
     }
 }
