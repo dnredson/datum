@@ -1,6 +1,7 @@
 {
   "schema_version": "0.1.0",
   "dgraph_id": "dgraph:o2-mqtt-role-1",
+  "revision": 1,
   "project_id": "monitor-f49c8",
   "nodes": [
     {
