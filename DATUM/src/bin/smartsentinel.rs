@@ -118,6 +118,7 @@ fn main() -> Result<()> {
                     node_id_override: args.node_id.clone(),
                     hostname_override: args.hostname.clone(),
                     stop_file: args.stop_file.clone(),
+                    execute: args.execute,
                 },
                 Arc::clone(&shutdown),
             )?;
