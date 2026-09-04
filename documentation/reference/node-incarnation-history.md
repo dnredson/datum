@@ -11,7 +11,7 @@ node_id
   stable logical DATUM role/participant
 
 hardware_fingerprint_id
-  one-way fingerprint of the physical/virtual compute resource
+  one-way fingerprint of the physical/virtual compute resource when trustworthy anchors are observable
 
 os_installation_id
   one-way identifier of the installed OS instance
@@ -20,7 +20,7 @@ capacity_profile_id
   structural capacity profile currently exposed by the resource
 
 role_binding_id
-  relationship binding node_id to the hardware currently performing that role
+  optional candidate relationship binding node_id to observed hardware
 
 instance_id
   one concrete SmartSentinel process lifetime
@@ -34,13 +34,23 @@ Telemetry history by `node_id` therefore remains continuous across legitimate re
 
 ### Hardware fingerprint
 
-`hardware_fingerprint_id` is derived from the best hardware anchors available to the guest environment, such as system UUID, baseboard/system serials, Raspberry Pi/board serials, or corresponding virtual-machine identifiers.
+`hardware_fingerprint_id` is derived from trustworthy hardware anchors visible to the guest environment, such as system UUID, baseboard/system serials, Raspberry Pi/board serials, or corresponding virtual-machine identifiers.
 
 Upgradeable capacity such as RAM size, disk capacity, GPU inventory, current CPU utilization, and installed software must not be part of the hardware fingerprint.
 
 Raw serials and UUIDs are not emitted. SmartSentinel hashes canonicalized anchors locally and reports only the derived fingerprint plus the classes of evidence used and a confidence level.
 
 The fingerprint is observational evidence, not cryptographic identity attestation.
+
+Critically, SmartSentinel does **not** fabricate hardware identity from hostname or OS identity. If the guest cannot observe a trustworthy hardware anchor, discovery reports:
+
+```text
+hardware_fingerprint_id = null
+hardware_identity_basis = []
+hardware_identity_confidence = unknown
+```
+
+This fail-closed behavior avoids collisions such as multiple VMs sharing the hostname `Xubuntu` and avoids pretending that an OS installation identifier proves physical hardware identity.
 
 ### OS installation identity
 
@@ -60,6 +70,8 @@ same SD card moved from Raspberry Pi A to Raspberry Pi B
   logical role continuity can be preserved by a controlled rebind
 ```
 
+When hardware identity is unavailable, `os_installation_id` remains useful correlation evidence but must not be promoted to a hardware fingerprint.
+
 ### Capacity profile
 
 `capacity_profile_id` fingerprints structural resource capacity rather than instantaneous load. The current O2 profile includes logical CPU count, total RAM, total swap/pagefile capacity, and filesystem identities/total capacities.
@@ -70,7 +82,7 @@ A RAM upgrade therefore changes `capacity_profile_id` without changing hardware 
 
 ### Role binding
 
-`role_binding_id` expresses the DATUM relationship between a logical role and the hardware currently realizing it.
+`role_binding_id` expresses the DATUM relationship between a logical role and hardware currently realizing it.
 
 Conceptually:
 
@@ -79,7 +91,9 @@ hardware HW-A -- performs --> role fog-01
                      binding B1
 ```
 
-The observation-side candidate binding is derived from `node_id` and the strongest observed hardware identity. If hardware identity is unavailable, OS identity and finally hostname may be used as lower-confidence fallback anchors.
+SmartSentinel may derive an observation-side binding candidate only when it has a hardware fingerprint. The candidate is based on `node_id + hardware_fingerprint_id`.
+
+If trustworthy hardware identity is unavailable, `role_binding_id` remains unresolved rather than falling back to OS identity or hostname. The dserver/resource registry can later correlate the observation and assign canonical binding history.
 
 When hardware is replaced, a new binding is created:
 
@@ -100,6 +114,55 @@ transition = hardware_replacement
 ### SmartSentinel process: `instance_id`
 
 `instance_id` represents one SmartSentinel process lifetime. A process restart changes this ID without implying hardware, OS, capacity, or role changes.
+
+## Discovered resources without a DATUM role
+
+A compute resource does not need to have a logical DATUM role before it becomes useful to the control plane.
+
+The target model is:
+
+```text
+SmartSentinel discovery
+        ↓
+resource registry
+        ↓
+resource_id = resource:X
+hardware / OS / capacity / capabilities known
+role_binding = none
+        ↓
+planner candidate pool
+        ↓
+DATUM planning decision
+        ↓
+resource:X -- performs --> fog-02
+```
+
+This separates two questions:
+
+```text
+what compute resources exist and what can they do?
+
+which DATUM role, if any, should each resource perform?
+```
+
+A registered but unbound resource can therefore publish capability evidence and participate in placement/deployment planning without being prematurely represented as `fog-01`, `cloud-01`, or another logical role.
+
+A future dserver resource registry should assign a canonical `resource_id`. That identity can be retained even when hardware fingerprint evidence is unavailable or uncertain, while preserving the underlying identity evidence and confidence rather than hiding it.
+
+This enables bootstrap states richer than a binary known/unknown node distinction:
+
+```text
+known_bound_node
+  known resource with an active DATUM role binding
+
+known_unbound_resource
+  registered resource with capabilities but no role; available to the planner
+
+unknown_resource
+  resource not yet registered; discovery/registration required
+```
+
+Role assignment then becomes a planning/control-plane decision rather than an intrinsic property of the host.
 
 ## Change interpretation
 
@@ -134,7 +197,7 @@ history(node_id = fog-01)
   complete logical history of the role across hardware generations
 
 history(hardware_fingerprint_id = HW-B)
-  observations belonging only to that concrete resource
+  observations belonging only to that concrete resource when hardware identity is known
 
 history(role_binding_id = B2)
   observations while HW-B performed fog-01
@@ -179,7 +242,7 @@ When only the SmartSentinel instance changes, host/resource baselines normally r
 
 ## Control-plane evolution
 
-O2 introduces observation-side identity dimensions. dserver ingestion/materialization should later persist binding history and derive explicit transitions such as:
+O2 introduces observation-side identity dimensions. dserver ingestion/materialization should later persist resource identity, role bindings, binding history, and explicit transitions such as:
 
 ```text
 sentinel_instance_changed
@@ -190,4 +253,4 @@ role_rebound
 binding_conflict
 ```
 
-The dserver may additionally assign monotonic node-scoped generations or binding revisions. SmartSentinel reports local evidence; it must not unilaterally declare global lineage or inherit historical authority.
+The dserver may additionally assign monotonic resource/node generations or binding revisions. SmartSentinel reports local evidence; it must not unilaterally declare global lineage or inherit historical authority.
