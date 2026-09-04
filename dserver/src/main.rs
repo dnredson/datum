@@ -64,6 +64,10 @@ use api::local_dgraph_snapshot::{
     get_latest_local_dgraph_snapshot, list_latest_local_dgraph_snapshots,
     post_local_dgraph_snapshot,
 };
+use api::operational_dgraph::{
+    get_operational_dgraph, get_operational_dgraph_slice,
+    post_operational_reconciliation_authorization, put_operational_dgraph,
+};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::resource_registry::{
     get_resource, get_resource_binding, list_resource_bindings, list_resources,
@@ -128,6 +132,18 @@ async fn main() {
         .route(
             "/api/v1/resources/:resource_id/binding",
             post(post_resource_binding).get(get_resource_binding),
+        )
+        .route(
+            "/api/v1/operational-dgraph",
+            put(put_operational_dgraph).get(get_operational_dgraph),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/operational-dgraph-slice",
+            get(get_operational_dgraph_slice),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/operational-reconciliation/authorize",
+            post(post_operational_reconciliation_authorization),
         )
         .route("/api/v1/sentinels", get(list_sentinel_registrations))
         .route(
