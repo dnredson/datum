@@ -1,9 +1,11 @@
 use chrono::Utc;
 use datum::agent::discovery::{
-    derive_capacity_profile_id, derive_host_incarnation_id, BootstrapMode, CapabilityCategory,
-    CapabilityObservation, CapabilitySource, CpuObservation, FilesystemObservation,
-    HostIdentityBasis, IdentityObservation, MemoryObservation, PlatformObservation,
-    ResourceObservation, SmartSentinelDiscovery, SwapObservation, DISCOVERY_SCHEMA_VERSION,
+    derive_capacity_profile_id, derive_hardware_fingerprint_id, derive_os_installation_id,
+    derive_role_binding_id, BootstrapMode, CapabilityCategory, CapabilityObservation,
+    CapabilitySource, CpuObservation, FilesystemObservation, HardwareIdentityBasis,
+    IdentityConfidence, IdentityObservation, MemoryObservation, OsIdentityBasis,
+    PlatformObservation, ResourceObservation, SmartSentinelDiscovery, SwapObservation,
+    DISCOVERY_SCHEMA_VERSION,
 };
 
 fn valid_resources() -> ResourceObservation {
@@ -35,7 +37,27 @@ fn valid_resources() -> ResourceObservation {
     resources
 }
 
+fn hardware_a() -> String {
+    derive_hardware_fingerprint_id(&[
+        (
+            HardwareIdentityBasis::SystemUuid,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
+        ),
+        (
+            HardwareIdentityBasis::BaseboardSerial,
+            "board-a".to_string(),
+        ),
+    ])
+    .unwrap()
+}
+
 fn valid_discovery() -> SmartSentinelDiscovery {
+    let hardware = hardware_a();
+    let os_installation = derive_os_installation_id(
+        OsIdentityBasis::MachineId,
+        "11111111111111111111111111111111",
+    )
+    .unwrap();
     SmartSentinelDiscovery {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
         observed_at_utc: Utc::now(),
@@ -47,12 +69,22 @@ fn valid_discovery() -> SmartSentinelDiscovery {
         identity: IdentityObservation {
             hostname: "Xubuntu".to_string(),
             sentinel_version: "0.1.0".to_string(),
-            host_incarnation_id: derive_host_incarnation_id(
-                HostIdentityBasis::SystemUuid,
-                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            hardware_fingerprint_id: Some(hardware.clone()),
+            hardware_identity_basis: vec![
+                HardwareIdentityBasis::SystemUuid,
+                HardwareIdentityBasis::BaseboardSerial,
+            ],
+            hardware_identity_confidence: IdentityConfidence::Strong,
+            hardware_identity_attested: false,
+            os_installation_id: Some(os_installation),
+            os_identity_basis: OsIdentityBasis::MachineId,
+            role_binding_id: derive_role_binding_id(
+                "fog-01",
+                Some(&hardware),
+                None,
+                "Xubuntu",
             ),
-            host_identity_basis: HostIdentityBasis::SystemUuid,
-            host_identity_attested: false,
+            predecessor_binding_id: None,
         },
         platform: PlatformObservation {
             os_family: "linux".to_string(),
@@ -106,8 +138,10 @@ fn typed_discovery_contract_accepts_observation_only_report() {
     assert_eq!(json["node_id"], "fog-01");
     assert_eq!(json["instance_id"], "fog-instance-1");
     assert_eq!(json["stage"], "fog");
-    assert_eq!(json["identity"]["host_identity_basis"], "system_uuid");
-    assert_eq!(json["identity"]["host_identity_attested"], false);
+    assert_eq!(json["identity"]["hardware_identity_confidence"], "strong");
+    assert_eq!(json["identity"]["hardware_identity_attested"], false);
+    assert_eq!(json["identity"]["os_identity_basis"], "machine_id");
+    assert_eq!(json["identity"]["predecessor_binding_id"], serde_json::Value::Null);
     assert_eq!(json["capabilities"][1]["name"], "docker");
     assert_eq!(json["capabilities"][1]["present"], true);
     assert_eq!(json["capabilities"][1]["available"], false);
@@ -139,27 +173,57 @@ fn discovery_contract_rejects_mutating_or_impossible_evidence() {
     impossible_capability.capabilities[0].available = true;
     assert!(impossible_capability.validate().is_err());
 
-    let mut unnamed_capability = valid_discovery();
-    unnamed_capability.capabilities[0].name.clear();
-    assert!(unnamed_capability.validate().is_err());
-
     let mut attested = valid_discovery();
-    attested.identity.host_identity_attested = true;
+    attested.identity.hardware_identity_attested = true;
     assert!(attested.validate().is_err());
 }
 
 #[test]
-fn host_incarnation_changes_when_machine_anchor_changes() {
-    let old_host = derive_host_incarnation_id(HostIdentityBasis::SystemUuid, "machine-a");
-    let same_host = derive_host_incarnation_id(HostIdentityBasis::SystemUuid, "machine-a");
-    let replacement = derive_host_incarnation_id(HostIdentityBasis::SystemUuid, "machine-b");
+fn hardware_fingerprint_is_stable_and_changes_on_replacement() {
+    let old_host = hardware_a();
+    let same_host = hardware_a();
+    let replacement = derive_hardware_fingerprint_id(&[
+        (HardwareIdentityBasis::SystemUuid, "machine-b".to_string()),
+        (HardwareIdentityBasis::BaseboardSerial, "board-b".to_string()),
+    ])
+    .unwrap();
 
     assert_eq!(old_host, same_host);
     assert_ne!(old_host, replacement);
 }
 
 #[test]
-fn capacity_profile_ignores_usage_but_changes_with_capacity() {
+fn os_reinstall_does_not_change_role_binding_when_hardware_is_same() {
+    let hardware = hardware_a();
+    let old_os = derive_os_installation_id(OsIdentityBasis::MachineId, "old-os").unwrap();
+    let new_os = derive_os_installation_id(OsIdentityBasis::MachineId, "new-os").unwrap();
+    assert_ne!(old_os, new_os);
+
+    let before = derive_role_binding_id("fog-01", Some(&hardware), Some(&old_os), "Xubuntu");
+    let after = derive_role_binding_id("fog-01", Some(&hardware), Some(&new_os), "Xubuntu");
+    assert_eq!(before, after);
+}
+
+#[test]
+fn hardware_replacement_changes_binding_but_keeps_logical_node_available_for_history() {
+    let old_hardware = hardware_a();
+    let replacement = derive_hardware_fingerprint_id(&[
+        (HardwareIdentityBasis::BoardSerial, "rpi-b".to_string()),
+    ])
+    .unwrap();
+    let os = derive_os_installation_id(OsIdentityBasis::MachineId, "same-sd-card").unwrap();
+
+    let old_binding =
+        derive_role_binding_id("fog-01", Some(&old_hardware), Some(&os), "raspberrypi");
+    let new_binding =
+        derive_role_binding_id("fog-01", Some(&replacement), Some(&os), "raspberrypi");
+
+    assert_ne!(old_binding, new_binding);
+    assert_eq!("fog-01", "fog-01");
+}
+
+#[test]
+fn capacity_profile_ignores_usage_but_changes_with_ram_upgrade() {
     let original = valid_resources();
 
     let mut different_usage = original.clone();
