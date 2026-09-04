@@ -42,7 +42,10 @@ count = 4
 timeout_s = 1
 
 [collectors.docker]
-enabled = false
+enabled = true
+mode = "allowlist"
+names = ["datum-mqtt"]
+max_entries = 20
 
 [services]
 enabled = true
