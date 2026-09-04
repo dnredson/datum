@@ -47,3 +47,5 @@ pub mod wasm_runtime_reports;
 
 #[cfg(test)]
 mod controlled_dgraph_deployment_tests;
+#[cfg(test)]
+mod resource_registry_regression_tests;
