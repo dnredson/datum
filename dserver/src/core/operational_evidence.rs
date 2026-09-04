@@ -15,6 +15,8 @@ pub struct OperationalEvidenceEvent {
     pub node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dgraph_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dgraph_revision: Option<u64>,
     pub sequence: u64,
     pub event_kind: String,
     pub side_effects_performed: bool,
@@ -45,6 +47,12 @@ pub fn validate_operational_evidence_event(event: &OperationalEvidenceEvent) -> 
     if let Some(dgraph_id) = event.dgraph_id.as_deref() {
         required("dgraph_id", dgraph_id)?;
     }
+    if event.dgraph_revision == Some(0) {
+        return Err("operational evidence dgraph_revision must be greater than zero".to_string());
+    }
+    if event.dgraph_revision.is_some() && event.dgraph_id.is_none() {
+        return Err("operational evidence dgraph_revision requires dgraph_id".to_string());
+    }
     if !event.payload.is_object() {
         return Err("operational evidence payload must be a JSON object".to_string());
     }
@@ -73,6 +81,7 @@ mod tests {
             resource_id: "resource:os:abc".to_string(),
             node_id: Some("fog-01".to_string()),
             dgraph_id: Some("dgraph:test".to_string()),
+            dgraph_revision: Some(2),
             sequence: 1,
             event_kind: "reconciliation".to_string(),
             side_effects_performed: true,
@@ -89,6 +98,13 @@ mod tests {
     fn zero_sequence_is_rejected() {
         let mut value = event();
         value.sequence = 0;
+        assert!(validate_operational_evidence_event(&value).is_err());
+    }
+
+    #[test]
+    fn revision_requires_graph_identity() {
+        let mut value = event();
+        value.dgraph_id = None;
         assert!(validate_operational_evidence_event(&value).is_err());
     }
 }
