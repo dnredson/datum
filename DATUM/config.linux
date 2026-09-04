@@ -20,13 +20,6 @@ allow_container_execution = true
 service_name = "mqtt"
 container_name = "datum-mqtt"
 artifact = "eclipse-mosquitto:2"
-restart_policy = "unless-stopped"
-command = ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
-
-[[dispatch.container_mappings.ports]]
-host_port = 1883
-container_port = 1883
-protocol = "tcp"
 
 #[collectors.process_windows]
 #enabled = true
