@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::process::Command;
 use std::time::Duration;
 
@@ -77,6 +78,8 @@ pub struct OperationalServiceReconciliationReport {
     pub trusted_container_name: Option<String>,
     pub trusted_image: Option<String>,
     pub observed_before_running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_error: Option<String>,
     pub wasm: WasmReconciliationDecision,
     pub execution_status: String,
     pub message: String,
@@ -170,9 +173,12 @@ pub fn run_operational_reconciliation(
     let mut services = Vec::with_capacity(slice.desired_services.len());
     for service in &slice.desired_services {
         let mapping = trusted_container_mapping(cfg, &service.service_id);
-        let observed_before = match mapping {
-            Some(mapping) => inspect_container(&mapping.container_name).unwrap_or(ContainerState::Missing),
-            None => ContainerState::Missing,
+        let (observed_before, observation_error) = match mapping {
+            Some(mapping) => match inspect_container(&mapping.container_name) {
+                Ok(state) => (state, None),
+                Err(error) => (ContainerState::Missing, Some(error.to_string())),
+            },
+            None => (ContainerState::Missing, None),
         };
         let observed_before_running = observed_before == ContainerState::Running;
         let wasm = run_embedded_reconciler(true, observed_before_running)?;
@@ -201,8 +207,30 @@ pub fn run_operational_reconciliation(
                 "WASM requested ensure_service_running, but local dispatch.allow_container_execution is not true".to_string(),
                 false,
             )
+        } else if mapping.is_none() {
+            (
+                "blocked_local_mapping".to_string(),
+                format!(
+                    "service '{}' is inside the authorized D-Graph slice, but no trusted local container mapping with image exists",
+                    service.service_id
+                ),
+                false,
+            )
+        } else if let Some(error) = observation_error.as_deref() {
+            (
+                "docker_unavailable".to_string(),
+                format!("WASM requested ensure_service_running, but Docker observation failed: {error}"),
+                false,
+            )
         } else {
-            execute_trusted_container_intent(cfg, &service.service_id, observed_before)?
+            match execute_trusted_container_intent(cfg, &service.service_id, observed_before) {
+                Ok(result) => result,
+                Err(error) => (
+                    "failed".to_string(),
+                    format!("governed trusted container execution failed: {error}"),
+                    false,
+                ),
+            }
         };
 
         side_effects_performed |= host_mutation_performed;
@@ -216,6 +244,7 @@ pub fn run_operational_reconciliation(
             trusted_container_name: mapping.map(|mapping| mapping.container_name.clone()),
             trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
             observed_before_running,
+            observation_error,
             wasm,
             execution_status,
             message,
@@ -261,11 +290,10 @@ pub fn run_embedded_reconciler(
     let function = instance
         .get_typed_func::<(i32, i32), i32>(&mut store, OPERATIONAL_RECONCILER_FUNCTION)
         .context("resolve operational reconciler function")?;
+    let desired = if desired_running { 1 } else { 0 };
+    let observed = if observed_running { 1 } else { 0 };
     let action_code = function
-        .call(
-            &mut store,
-            (i32::from(desired_running), i32::from(observed_running)),
-        )
+        .call(&mut store, (desired, observed))
         .context("execute operational reconciler WASM")?;
     if !matches!(action_code, 0 | 1) {
         bail!("operational reconciler returned unsupported action code {action_code}");
@@ -309,9 +337,17 @@ fn validate_slice(slice: &OperationalDGraphSlice, project_id: &str, node_id: &st
     {
         bail!("operational D-Graph slice requests an unsupported reconciler contract");
     }
+
+    let mut seen_services = HashSet::new();
     for service in &slice.desired_services {
         if service.service_id.trim().is_empty() {
             bail!("operational D-Graph desired service_id must not be empty");
+        }
+        if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
+            bail!(
+                "operational D-Graph slice contains duplicate desired service '{}'",
+                service.service_id
+            );
         }
         if !service.runtime.eq_ignore_ascii_case("container") {
             bail!("unsupported operational runtime '{}': expected container", service.runtime);
@@ -406,7 +442,10 @@ fn execute_trusted_container_intent(
             }
             Ok((
                 "started".to_string(),
-                format!("started trusted existing container '{}'; image mapping='{}'", container_name, image),
+                format!(
+                    "started trusted existing container '{}'; image mapping='{}'",
+                    container_name, image
+                ),
                 true,
             ))
         }
@@ -425,7 +464,10 @@ fn execute_trusted_container_intent(
             }
             Ok((
                 "deployed".to_string(),
-                format!("created and started trusted container '{}' from local mapping image '{}'", container_name, image),
+                format!(
+                    "created and started trusted container '{}' from local mapping image '{}'",
+                    container_name, image
+                ),
                 true,
             ))
         }
