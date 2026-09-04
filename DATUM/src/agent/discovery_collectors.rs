@@ -7,8 +7,9 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::agent::discovery::{
-    BootstrapMode, CapabilityCategory, CapabilityObservation, CapabilitySource, CpuObservation,
-    FilesystemObservation, IdentityObservation, MemoryObservation, PlatformObservation,
+    derive_capacity_profile_id, derive_host_incarnation_id, BootstrapMode, CapabilityCategory,
+    CapabilityObservation, CapabilitySource, CpuObservation, FilesystemObservation,
+    HostIdentityBasis, IdentityObservation, MemoryObservation, PlatformObservation,
     ResourceObservation, SmartSentinelDiscovery, SwapObservation, DISCOVERY_SCHEMA_VERSION,
 };
 use crate::config::Config;
@@ -56,6 +57,9 @@ pub fn collect_discovery(
 
     let (platform, mut resources) = typed_host_from_system(&system)?;
     supplement_host_resources(&mut resources)?;
+    resources.capacity_profile_id = derive_capacity_profile_id(&resources);
+
+    let (host_incarnation_id, host_identity_basis) = collect_host_identity(&hostname);
 
     let discovery = SmartSentinelDiscovery {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
@@ -68,6 +72,9 @@ pub fn collect_discovery(
         identity: IdentityObservation {
             hostname,
             sentinel_version: env!("CARGO_PKG_VERSION").to_string(),
+            host_incarnation_id,
+            host_identity_basis,
+            host_identity_attested: false,
         },
         platform,
         resources,
@@ -106,6 +113,7 @@ fn typed_linux_host(system: &Value) -> Result<(PlatformObservation, ResourceObse
             arch: string_field(system, "arch").unwrap_or_else(|| std::env::consts::ARCH.to_string()),
         },
         ResourceObservation {
+            capacity_profile_id: String::new(),
             uptime_seconds: None,
             cpu: CpuObservation {
                 logical_cores,
@@ -162,6 +170,7 @@ fn typed_windows_host(system: &Value) -> Result<(PlatformObservation, ResourceOb
             arch: std::env::consts::ARCH.to_string(),
         },
         ResourceObservation {
+            capacity_profile_id: String::new(),
             uptime_seconds: None,
             cpu: CpuObservation {
                 logical_cores,
@@ -245,6 +254,91 @@ if ($null -eq $used) { $used = 0 }
         available_bytes: total.saturating_sub(used.min(total)),
     };
     Ok(())
+}
+
+fn collect_host_identity(hostname: &str) -> (String, HostIdentityBasis) {
+    if cfg!(windows) {
+        if let Some(anchor) = windows_system_uuid() {
+            return (
+                derive_host_incarnation_id(HostIdentityBasis::SystemUuid, &anchor),
+                HostIdentityBasis::SystemUuid,
+            );
+        }
+        if let Some(anchor) = windows_machine_guid() {
+            return (
+                derive_host_incarnation_id(HostIdentityBasis::OsMachineId, &anchor),
+                HostIdentityBasis::OsMachineId,
+            );
+        }
+    } else {
+        if let Some(anchor) = read_meaningful_anchor("/sys/class/dmi/id/product_uuid") {
+            return (
+                derive_host_incarnation_id(HostIdentityBasis::SystemUuid, &anchor),
+                HostIdentityBasis::SystemUuid,
+            );
+        }
+        if let Some(anchor) = read_meaningful_anchor("/etc/machine-id") {
+            return (
+                derive_host_incarnation_id(HostIdentityBasis::OsMachineId, &anchor),
+                HostIdentityBasis::OsMachineId,
+            );
+        }
+    }
+
+    (
+        derive_host_incarnation_id(HostIdentityBasis::HostnameFallback, hostname),
+        HostIdentityBasis::HostnameFallback,
+    )
+}
+
+fn windows_system_uuid() -> Option<String> {
+    command_text(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
+        ],
+    )
+    .filter(|value| meaningful_anchor(value))
+}
+
+fn windows_machine_guid() -> Option<String> {
+    command_text(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-Command",
+            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid",
+        ],
+    )
+    .filter(|value| meaningful_anchor(value))
+}
+
+fn read_meaningful_anchor(path: &str) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| meaningful_anchor(value))
+}
+
+fn meaningful_anchor(value: &str) -> bool {
+    let compact = value
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_hexdigit())
+        .collect::<String>();
+    !compact.is_empty()
+        && compact.chars().any(|ch| ch != '0')
+        && compact.chars().any(|ch| ch.to_ascii_lowercase() != 'f')
+}
+
+fn command_text(name: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(name).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    nonempty_output(&out.stdout)
 }
 
 fn collect_capabilities() -> Vec<CapabilityObservation> {
@@ -399,7 +493,9 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 }
 
 fn float_field(value: &Value, key: &str) -> Option<f64> {
-    value.get(key).and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|n| n as f64)))
+    value
+        .get(key)
+        .and_then(|v| v.as_f64().or_else(|| v.as_u64().map(|n| n as f64)))
 }
 
 fn value_as_u64(value: &Value) -> Option<u64> {
@@ -436,7 +532,8 @@ fn meminfo_kb(raw: &str, field: &str) -> Option<u64> {
         if !line.starts_with(field) {
             return None;
         }
-        line.split_whitespace().find_map(|part| part.parse::<u64>().ok())
+        line.split_whitespace()
+            .find_map(|part| part.parse::<u64>().ok())
     })
 }
 
