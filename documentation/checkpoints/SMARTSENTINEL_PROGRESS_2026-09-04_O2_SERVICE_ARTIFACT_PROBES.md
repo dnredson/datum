@@ -9,9 +9,9 @@ Baseline main: `ef51332d602387dc10b809886e2ec90035ffbed5`
 - 49/100 — LIVE PASS.
 - 50/100 — LIVE PASS.
 - 51/100 — LIVE PASS.
-- 52/100 — IMPLEMENTED, pending compile/live validation.
+- 52/100 — IMPLEMENTED; first live availability-discrimination proof PASS; A/B recovery proof pending.
 
-The validated 51/100 baseline is now on `main`. Step 52 is isolated in a new development branch.
+The validated 51/100 baseline is on `main`. Step 52 remains isolated in the development branch.
 
 ## Step 52 — service artifact operational probes
 
@@ -89,7 +89,36 @@ Derived operational states include:
 - health probe `docker_health` from `local_runtime`;
 - availability probe `mqtt_connect` to `127.0.0.1:1883` from `local_host`.
 
-The current validated O2 MQTT container is intentionally useful for the first live proof: Docker reports the container running, while the container was created without a host port mapping. Therefore the expected assessment is execution `passed`, Docker health `not_verifiable` if the image has no HEALTHCHECK, and availability `failed` because a host-local MQTT consumer cannot connect to port 1883.
+### Live proof A — running but unavailable — PASS
+
+The current O2 MQTT container was running but had no host port mapping. Running the unchanged service artifact produced:
+
+- `artifact_id=service:mqtt:mosquitto-2`;
+- `service_id=mqtt`;
+- `operational_state=unavailable`;
+- `assessment_basis=execution_health_availability`;
+- execution `docker_container_running` -> `passed` with detail that `datum-mqtt` is running;
+- health `docker_health` -> `not_verifiable` because the container image exposes no Docker HEALTHCHECK state;
+- availability `mqtt_connect` -> `failed` because a host-local MQTT client could not connect to `127.0.0.1:1883`;
+- execution vantage point `local_runtime`;
+- availability vantage point `local_host`.
+
+This is the intended counterexample to any rule that equates runtime execution with service availability:
+
+`container running = true` did not imply `service available = true`.
+
+The live result reproduces the operational issue observed during thesis experimentation: a component can be executing correctly from the runtime perspective while still being unusable by its consumer.
+
+### Remaining A/B proof for step 52
+
+Without changing the service artifact, recreate the same Mosquitto container with the declared `1883:1883/tcp` host exposure and rerun the same probe. The expected transition is:
+
+- execution remains `passed`;
+- health remains `not_verifiable` for the same image;
+- availability changes `failed -> passed`;
+- `operational_state` changes `unavailable -> available`.
+
+This A/B test isolates availability from execution and proves that the service artifact describes a meaningful consumer-visible contract.
 
 ### New CLI
 
