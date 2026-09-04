@@ -61,6 +61,9 @@ struct Args {
 
     #[arg(long, default_value_t = 30)]
     snapshot_s: u64,
+
+    #[arg(long, default_value_t = 30)]
+    drift_verify_s: u64,
 }
 
 fn main() -> Result<()> {
@@ -89,6 +92,7 @@ fn main() -> Result<()> {
             cycle_s_override: args.cycle_s,
             discovery_refresh_s: args.discovery_refresh_s,
             snapshot_s: args.snapshot_s,
+            drift_verify_s: args.drift_verify_s,
             heartbeat_s: args.heartbeat_s,
             node_id_override: args.node_id,
             hostname_override: args.hostname,
