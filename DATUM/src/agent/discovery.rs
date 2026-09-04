@@ -59,6 +59,17 @@ impl SmartSentinelDiscovery {
                 bail!("discovery filesystem usage exceeds total capacity for {}", fs.mount);
             }
         }
+        for capability in &self.capabilities {
+            if capability.name.trim().is_empty() {
+                bail!("discovery capability name must not be empty");
+            }
+            if capability.usable && !capability.present {
+                bail!(
+                    "discovery capability {} cannot be usable when it is not present",
+                    capability.name
+                );
+            }
+        }
         if self.side_effects_performed {
             bail!("discovery must remain observation-only");
         }
