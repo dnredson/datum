@@ -24,8 +24,6 @@ pub fn collect_discovery(
         bail!("SmartSentinel discovery node_id must not be empty");
     }
 
-    // O2 discovery is observation-only even if the on-disk configuration enables
-    // historical remediation paths.
     let mut safe_cfg = cfg.clone();
     if let Some(auto_recovery) = safe_cfg.auto_recovery.as_mut() {
         auto_recovery.enabled = false;
@@ -268,11 +266,9 @@ fn collect_capabilities() -> Vec<CapabilityObservation> {
             CapabilityCategory::Tool,
         ));
     } else {
-        capabilities.push(probe_command(
-            "sh",
-            &["--version"],
-            CapabilityCategory::Tool,
-        ));
+        let mut shell = probe_command("sh", &["-c", "exit 0"], CapabilityCategory::Tool);
+        shell.version = None;
+        capabilities.push(shell);
     }
 
     capabilities
