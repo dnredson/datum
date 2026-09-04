@@ -58,11 +58,13 @@ fn main() -> Result<()> {
         .with_context(|| format!("write SmartSentinel discovery report {}", args.out))?;
 
     println!(
-        "mode=smartsentinel-discovery status=ok node_id={} instance_id={} host_id={} host_incarnation_id={} capacity_profile_id={} stage={} bootstrap_mode={:?} capabilities={} out={} side_effects=false",
+        "mode=smartsentinel-discovery status=ok node_id={} instance_id={} host_id={} hardware_fingerprint_id={} os_installation_id={} role_binding_id={} capacity_profile_id={} stage={} bootstrap_mode={:?} capabilities={} out={} side_effects=false",
         discovery.node_id,
         discovery.instance_id,
         discovery.host_id,
-        discovery.identity.host_incarnation_id,
+        discovery.identity.hardware_fingerprint_id.as_deref().unwrap_or("unknown"),
+        discovery.identity.os_installation_id.as_deref().unwrap_or("unknown"),
+        discovery.identity.role_binding_id,
         discovery.resources.capacity_profile_id,
         discovery.stage.as_deref().unwrap_or("unknown"),
         discovery.bootstrap_mode,
