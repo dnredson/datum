@@ -12,7 +12,7 @@ Baseline main: `95be3aff1020622f031d861c850e3ad6dda2a2cc`
 - 52/100 — LIVE PASS.
 - 53/100 — LIVE PASS.
 - 54/100 — LIVE PASS.
-- 55/100 — IMPLEMENTED, pending compile/live validation.
+- 55/100 — IMPLEMENTED; compile/test PASS; blocked-control-plane live path PASS; authorized action/convergence live path pending.
 
 The validated 54/100 baseline is on `main`. Step 55 is isolated in this branch.
 
@@ -117,6 +117,24 @@ The intended proof is:
 5. authorize revision 3;
 6. on a subsequent service-evidence cycle, confirm `service_deployment_reconciliation_action`, `side_effects_performed=true`, typed `docker rm -f` + `docker run ... -p 1883:1883/tcp`, and immediate snapshot publication attempt;
 7. confirm following service evidence changes to `available` + `deployment_converged` while the D-Graph desired service and placement remain unchanged.
+
+## Live validation progress
+
+The revision-three fail-closed path passed on fog-01.
+
+Observed integrated evidence across repeated cycles:
+
+- `deployment_drift_detected` with `revision=3` and `status=drift_detected`;
+- `execute_requested=true`;
+- `desired_in_active_slice=true`;
+- `control_plane_authorized=false`;
+- `local_container_execution_allowed=true`;
+- `service_deployment_reconciliation_blocked` with `status=blocked_control_plane`;
+- `side_effects_performed=false`.
+
+Docker inspection after the blocked run still showed the same running `datum-mqtt` container with only internal `1883/tcp` exposure and `docker port datum-mqtt 1883/tcp` returned no published host port. This proves the stale/missing authorization gate prevented the new deployment reconciler from repairing drift even though SmartSentinel was started with `--execute`, the service remained desired, and local execution policy allowed container mutation.
+
+The authorized revision-three action/redeployment/convergence path remains to be executed before closing 55/100.
 
 ## Architecture statement
 
