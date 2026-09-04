@@ -9,11 +9,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
+use reqwest::blocking::Client;
+use serde_json::Value;
 
 use crate::agent::operational_reconciliation::run_operational_reconciliation;
 use crate::agent::resource_discovery::{
     collect_unbound_resource_discovery, derive_resource_lookup_id, load_config_allow_unbound,
 };
+use crate::config::Config;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -86,6 +89,11 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
     let lock_key = operational_lock_key(&resource_id, &initial_discovery.identity.hostname);
     let (_instance_lock, lock_path) = acquire_operational_lock(&lock_key)?;
 
+    let client = Client::builder()
+        .timeout(Duration::from_secs(options.timeout_s))
+        .build()
+        .context("build SmartSentinel operational control-plane client")?;
+
     let shutdown = Arc::new(AtomicBool::new(false));
     install_ctrlc_handler(Arc::clone(&shutdown))?;
 
@@ -123,58 +131,43 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         sequence = sequence.saturating_add(1);
         let cycle_started = Instant::now();
 
-        match run_operational_reconciliation(
+        let published_resource_id = match publish_resource_discovery(
+            &client,
             &cfg,
-            requested_node_id.as_deref(),
             options.hostname_override.as_deref(),
             &options.dserver_url,
             &options.project_id,
-            options.timeout_s,
-            options.execute,
         ) {
-            Ok(report) => {
-                let write_status = match write_report(&options.report_path, &report) {
-                    Ok(()) => "ok".to_string(),
-                    Err(error) => format!("err({error})"),
-                };
-                let wasm_actions = report
-                    .services
-                    .iter()
-                    .filter(|service| service.wasm.action_code != 0)
-                    .count();
-                let converged_after = report
-                    .services
-                    .iter()
-                    .filter(|service| service.observed_after_running)
-                    .count();
-
+            Ok(published_resource_id) => {
                 println!(
-                    "mode=smartsentinel-operational event=reconcile seq={} status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_actions={} converged_after={} host_mutation={} snapshot_published={} report={} report_write={} dur_ms={}",
-                    sequence,
-                    report.bootstrap_state,
-                    report.resource_id,
-                    report.node_id,
-                    report.dgraph_id,
-                    report.services.len(),
-                    wasm_actions,
-                    converged_after,
-                    report.side_effects_performed,
-                    report.snapshot_published,
-                    options.report_path.display(),
-                    write_status,
-                    cycle_started.elapsed().as_millis(),
+                    "mode=smartsentinel-operational event=resource_discovery seq={} status=ok resource_id={}",
+                    sequence, published_resource_id
                 );
+                Some(published_resource_id)
             }
             Err(error) => {
-                // Starting before registration/binding is expected. Keep the process alive and
-                // retry so a resource can receive its role after SmartSentinel has already started.
                 println!(
-                    "mode=smartsentinel-operational event=reconcile seq={} status=waiting_or_error resource_id={} requested_node_id={} err={} dur_ms={} side_effects=false",
+                    "mode=smartsentinel-operational event=resource_discovery seq={} status=publish_error resource_id={} err={} side_effects=false",
+                    sequence, resource_id, error
+                );
+                None
+            }
+        };
+
+        if let Some(published_resource_id) = published_resource_id {
+            if published_resource_id != resource_id {
+                println!(
+                    "mode=smartsentinel-operational event=reconcile seq={} status=identity_changed startup_resource_id={} observed_resource_id={} action=fail_closed side_effects=false",
+                    sequence, resource_id, published_resource_id
+                );
+            } else {
+                run_reconcile_cycle(
+                    &cfg,
+                    &options,
+                    requested_node_id.as_deref(),
                     sequence,
-                    resource_id,
-                    requested_node_id.as_deref().unwrap_or("none"),
-                    error,
-                    cycle_started.elapsed().as_millis(),
+                    cycle_started,
+                    &resource_id,
                 );
             }
         }
@@ -216,6 +209,114 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
     );
 
     Ok(())
+}
+
+fn run_reconcile_cycle(
+    cfg: &Config,
+    options: &OperationalServiceLoopOptions,
+    requested_node_id: Option<&str>,
+    sequence: u64,
+    cycle_started: Instant,
+    startup_resource_id: &str,
+) {
+    match run_operational_reconciliation(
+        cfg,
+        requested_node_id,
+        options.hostname_override.as_deref(),
+        &options.dserver_url,
+        &options.project_id,
+        options.timeout_s,
+        options.execute,
+    ) {
+        Ok(report) => {
+            let write_status = match write_report(&options.report_path, &report) {
+                Ok(()) => "ok".to_string(),
+                Err(error) => format!("err({error})"),
+            };
+            let wasm_actions = report
+                .services
+                .iter()
+                .filter(|service| service.wasm.action_code != 0)
+                .count();
+            let converged_after = report
+                .services
+                .iter()
+                .filter(|service| service.observed_after_running)
+                .count();
+
+            println!(
+                "mode=smartsentinel-operational event=reconcile seq={} status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_actions={} converged_after={} host_mutation={} snapshot_published={} report={} report_write={} dur_ms={}",
+                sequence,
+                report.bootstrap_state,
+                report.resource_id,
+                report.node_id,
+                report.dgraph_id,
+                report.services.len(),
+                wasm_actions,
+                converged_after,
+                report.side_effects_performed,
+                report.snapshot_published,
+                options.report_path.display(),
+                write_status,
+                cycle_started.elapsed().as_millis(),
+            );
+        }
+        Err(error) => {
+            // Starting before registration/binding is expected. Keep the process alive and
+            // retry so a resource can receive its role after SmartSentinel has already started.
+            println!(
+                "mode=smartsentinel-operational event=reconcile seq={} status=waiting_or_error resource_id={} requested_node_id={} err={} dur_ms={} side_effects=false",
+                sequence,
+                startup_resource_id,
+                requested_node_id.unwrap_or("none"),
+                error,
+                cycle_started.elapsed().as_millis(),
+            );
+        }
+    }
+}
+
+fn publish_resource_discovery(
+    client: &Client,
+    cfg: &Config,
+    hostname_override: Option<&str>,
+    dserver_url: &str,
+    project_id: &str,
+) -> Result<String> {
+    let discovery = collect_unbound_resource_discovery(cfg, hostname_override)?;
+    let resource_id = derive_resource_lookup_id(&discovery);
+    let url = format!(
+        "{}/api/v1/resources/discovery",
+        dserver_url.trim().trim_end_matches('/')
+    );
+    let response = client
+        .post(&url)
+        .header("X-Datum-Project", project_id.trim())
+        .json(&discovery)
+        .send()
+        .with_context(|| format!("publish SmartSentinel role-free discovery {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        bail!("dserver resource discovery publish failed with status {status}: {body}");
+    }
+    let body: Value = response
+        .json()
+        .context("decode dserver resource discovery response")?;
+    let response_resource_id = body
+        .get("resource_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("dserver resource discovery response omitted resource_id"))?;
+    if response_resource_id != resource_id {
+        bail!(
+            "dserver resource discovery returned resource_id '{}' but local discovery derived '{}'",
+            response_resource_id,
+            resource_id
+        );
+    }
+    Ok(resource_id)
 }
 
 fn validate_options(options: &OperationalServiceLoopOptions) -> Result<()> {
