@@ -7,9 +7,9 @@ Branch: `agent/o2-host-capability-discovery`
 
 - 49/100 — LIVE PASS.
 - 50/100 — LIVE PASS.
-- 51/100 — IMPLEMENTED; compile PASS; live runtime-gate/available path PASS; clean-host install/remediation lifecycle validation still pending.
+- 51/100 — LIVE PASS.
 
-Step 50 is closed. Step 51 is not considered closed until the trusted runtime artifact is exercised on a host where Docker is missing or installed-but-unavailable.
+Steps 50 and 51 are closed.
 
 ## Step 50 — hybrid time-driven + event-driven reconciliation — LIVE PASS
 
@@ -75,8 +75,6 @@ After revision 2 received a matching authorization, sequence 116 recorded anothe
 
 `docker ps --filter name=datum-mqtt` then showed the existing `datum-mqtt` container `Up`, confirming recovery after the authorization change without waiting for the drift interval.
 
-The following cycles returned to `reconciliation_skipped` while the drift proof was fresh, and later time-driven verification returned `wasm_actions=0` with stable convergence.
-
 ### Step 50 conclusion
 
 Both trigger classes are live-proven:
@@ -86,7 +84,7 @@ Both trigger classes are live-proven:
 
 The same operational evidence stream preserves both paths and the D-Graph revision associated with each event.
 
-## Step 51 — trusted runtime artifact prerequisite gate — partial live validation
+## Step 51 — trusted runtime artifact prerequisite gate — LIVE PASS
 
 The operational loop checks the runtime prerequisite before container reconciliation when the active slice contains container services.
 
@@ -120,11 +118,11 @@ If a gate is missing, SmartSentinel records evidence and does not install or rem
 
 - Docker `available`: continue to WASM/service reconciliation.
 - Docker `missing`: execute trusted `pre -> install -> post` lifecycle only when governed and allowed.
-- Docker `installed_but_unavailable`: do not reinstall. When governed and allowed, execute only trusted post-install remediation (for example starting/enabling Docker and configuring the execution user's Docker group).
+- Docker `installed_but_unavailable`: do not reinstall. When governed and allowed, execute only trusted post-install remediation.
 
 If post-install group membership changes require a new session/service, the report sets `session_refresh_required=true`; SmartSentinel does not pretend that the current process immediately gained supplementary-group access.
 
-### Live evidence — Docker already available
+### Live evidence — Docker already available on fog-01
 
 The combined step 50/51 live run repeatedly recorded:
 
@@ -140,15 +138,73 @@ The combined step 50/51 live run repeatedly recorded:
 
 This proves the trusted runtime artifact is integrated into the continuous loop and that an already-satisfied prerequisite passes through without unnecessary installation or remediation.
 
-### Remaining validation for step 51
+### Live evidence — clean cloud-01 host with Docker missing
 
-To close step 51, validate on a clean or isolated Linux host:
+Cloud-01 started with:
 
-1. Docker `missing`: governed artifact executes typed `pre_install -> install -> post_install`, then reprobes the runtime;
-2. or Docker `installed_but_unavailable`: artifact does not reinstall, applies only trusted post-install remediation, and reports whether a session/service refresh is required;
-3. verify local and remote operational evidence preserves command phases, argv, privilege use, side effects, before/after probes, and final status.
+- user `vboxuser`;
+- Docker executable absent;
+- `apt-get` available;
+- `sudo -n true` rejected because interactive authentication was required.
 
-Do not remove or break Docker on the already validated fog-01 merely to create this condition; prefer cloud-01 or another disposable VM.
+Dry-run artifact reconciliation produced:
+
+- `before=missing`;
+- `package_manager=apt_get`;
+- `execute_requested=false`;
+- `execution_authorized=false`;
+- `status=suggested`;
+- `side_effects_performed=false`;
+- no command results.
+
+A second run requested execution and host mutation authorization without non-interactive privilege. It correctly produced:
+
+- `before=missing`;
+- `execute_requested=true`;
+- `execution_authorized=true`;
+- `status=privilege_required`;
+- `side_effects_performed=false`;
+- no command results.
+
+This proves fail-closed privilege handling with no interactive password prompt and no partial mutation.
+
+The same trusted artifact was then explicitly executed under `sudo`, with `execution_user=vboxuser`. The report recorded:
+
+- `before=missing`;
+- `package_manager=apt_get`;
+- `selected_installer=apt_get`;
+- `status=installed_available`;
+- `side_effects_performed=true`;
+- `session_refresh_required=true`;
+- `after=available`.
+
+Every lifecycle command succeeded:
+
+1. `pre_install`: `apt-get update`;
+2. `install`: `apt-get install -y docker.io`;
+3. `post_install`: `systemctl enable --now docker`;
+4. `post_install`: `usermod -aG docker vboxuser`.
+
+Immediately afterward, the existing `vboxuser` session showed:
+
+- Docker CLI installed;
+- daemon socket inaccessible to that old session;
+- `id` still omitted the Docker group.
+
+After logout/login, `id` included group `docker` and `docker info --format '{{.ServerVersion}}'` returned `29.1.3`.
+
+This validates the artifact's `session_refresh_required=true` semantics and proves that SmartSentinel does not falsely claim that supplementary-group changes affect the already-running user session.
+
+### Step 51 conclusion
+
+The trusted runtime artifact lifecycle is live-proven across all required paths:
+
+- prerequisite already satisfied -> pass through without mutation;
+- Docker missing + no execute -> suggestion only;
+- Docker missing + authorized execute but insufficient privilege -> fail closed without side effects;
+- Docker missing + explicit privilege -> typed `pre -> install -> post` lifecycle;
+- session refresh requirement -> explicitly reported and confirmed by logout/login;
+- refreshed user session -> Docker available to the SmartSentinel execution user.
 
 ## Evidence event classes
 
@@ -165,7 +221,7 @@ Runtime artifact action reports preserve phase, command program, argv, privilege
 
 The standalone/manual operational reconciliation path also deserializes and validates `dgraph_revision`. Host-mutation authorization is accepted only when its revision matches the active D-Graph slice revision. This prevents an older authorization from being accepted by an alternate reconciliation path.
 
-## Next architectural step
+## Next architectural step — 52/100
 
 Step 52 should formalize service artifacts and operational probes so SmartSentinel distinguishes:
 
@@ -173,9 +229,21 @@ Step 52 should formalize service artifacts and operational probes so SmartSentin
 - health state (component internally healthy/responding);
 - availability or consumability (a real consumer can use the exposed service).
 
-A running process/container must not automatically imply service availability. Probe definitions should live in the trusted service artifact and select typed probe plugins such as Docker/process/systemd execution checks, TCP/HTTP/MQTT/database health or consumption checks, with an explicit `not_verifiable` state when no meaningful probe exists.
+A running process/container must not automatically imply service availability.
+
+Probe definitions should live in the trusted service artifact and select typed probe plugins such as:
+
+- Docker/process/systemd execution checks;
+- TCP checks;
+- HTTP/REST checks;
+- MQTT connect / publish / subscribe checks;
+- database checks.
+
+When no meaningful health or consumption probe exists, SmartSentinel should report an explicit `not_verifiable` state rather than infer availability from execution.
 
 This also provides the basis for later peer/vantage-point checks, where a service can be locally available but unreachable from an actual dependent node.
+
+The MQTT proof motivating this step is concrete: a container may be `Up` and the Mosquitto process may be running while an external consumer still cannot reach the broker because host port `1883` was not published. Therefore `running != healthy != available`.
 
 ## Architecture statement
 
