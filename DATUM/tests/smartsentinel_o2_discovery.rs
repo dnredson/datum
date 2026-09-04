@@ -107,4 +107,13 @@ fn discovery_contract_rejects_mutating_or_impossible_evidence() {
     let mut no_cpu = valid_discovery();
     no_cpu.resources.cpu.logical_cores = 0;
     assert!(no_cpu.validate().is_err());
+
+    let mut impossible_capability = valid_discovery();
+    impossible_capability.capabilities[0].present = false;
+    impossible_capability.capabilities[0].usable = true;
+    assert!(impossible_capability.validate().is_err());
+
+    let mut unnamed_capability = valid_discovery();
+    unnamed_capability.capabilities[0].name.clear();
+    assert!(unnamed_capability.validate().is_err());
 }
