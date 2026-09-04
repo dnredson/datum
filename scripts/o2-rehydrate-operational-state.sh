@@ -50,20 +50,27 @@ DGRAPH_JSON="$(curl -fsS \
   --data-binary "@$DGRAPH_FILE")"
 
 DGRAPH_ID="$(printf '%s' "$DGRAPH_JSON" | jq -r '.dgraph_id')"
+DGRAPH_REVISION="$(printf '%s' "$DGRAPH_JSON" | jq -r '.revision')"
 if [[ -z "$DGRAPH_ID" || "$DGRAPH_ID" == "null" ]]; then
   echo "operational D-Graph did not return dgraph_id" >&2
   exit 4
 fi
+if [[ -z "$DGRAPH_REVISION" || "$DGRAPH_REVISION" == "null" || "$DGRAPH_REVISION" == "0" ]]; then
+  echo "operational D-Graph did not return a valid revision" >&2
+  exit 5
+fi
 
 echo "dgraph_id=$DGRAPH_ID"
+echo "dgraph_revision=$DGRAPH_REVISION"
 
 AUTH_JSON="$(curl -fsS \
   -X POST \
   "$DSERVER_URL/api/v1/nodes/$NODE_ID/operational-reconciliation/authorize" \
   -H "Content-Type: application/json" \
   -H "X-Datum-Project: $PROJECT_ID" \
-  -d "{\"dgraph_id\":\"$DGRAPH_ID\",\"authorized_by\":\"$AUTHORIZED_BY\",\"allow_host_mutation\":true}")"
+  -d "{\"dgraph_id\":\"$DGRAPH_ID\",\"dgraph_revision\":$DGRAPH_REVISION,\"authorized_by\":\"$AUTHORIZED_BY\",\"allow_host_mutation\":true}")"
 
 echo "authorization_id=$(printf '%s' "$AUTH_JSON" | jq -r '.authorization_id')"
+echo "authorization_revision=$(printf '%s' "$AUTH_JSON" | jq -r '.dgraph_revision')"
 
-echo "rehydrate_status=ok project_id=$PROJECT_ID node_id=$NODE_ID resource_id=$RESOURCE_ID dgraph_id=$DGRAPH_ID"
+echo "rehydrate_status=ok project_id=$PROJECT_ID node_id=$NODE_ID resource_id=$RESOURCE_ID dgraph_id=$DGRAPH_ID dgraph_revision=$DGRAPH_REVISION"
