@@ -78,12 +78,7 @@ fn valid_discovery() -> SmartSentinelDiscovery {
             hardware_identity_attested: false,
             os_installation_id: Some(os_installation),
             os_identity_basis: OsIdentityBasis::MachineId,
-            role_binding_id: derive_role_binding_id(
-                "fog-01",
-                Some(&hardware),
-                None,
-                "Xubuntu",
-            ),
+            role_binding_id: derive_role_binding_id("fog-01", Some(&hardware)),
             predecessor_binding_id: None,
         },
         platform: PlatformObservation {
@@ -141,6 +136,7 @@ fn typed_discovery_contract_accepts_observation_only_report() {
     assert_eq!(json["identity"]["hardware_identity_confidence"], "strong");
     assert_eq!(json["identity"]["hardware_identity_attested"], false);
     assert_eq!(json["identity"]["os_identity_basis"], "machine_id");
+    assert!(json["identity"]["role_binding_id"].is_string());
     assert_eq!(json["identity"]["predecessor_binding_id"], serde_json::Value::Null);
     assert_eq!(json["capabilities"][1]["name"], "docker");
     assert_eq!(json["capabilities"][1]["present"], true);
@@ -199,8 +195,8 @@ fn os_reinstall_does_not_change_role_binding_when_hardware_is_same() {
     let new_os = derive_os_installation_id(OsIdentityBasis::MachineId, "new-os").unwrap();
     assert_ne!(old_os, new_os);
 
-    let before = derive_role_binding_id("fog-01", Some(&hardware), Some(&old_os), "Xubuntu");
-    let after = derive_role_binding_id("fog-01", Some(&hardware), Some(&new_os), "Xubuntu");
+    let before = derive_role_binding_id("fog-01", Some(&hardware));
+    let after = derive_role_binding_id("fog-01", Some(&hardware));
     assert_eq!(before, after);
 }
 
@@ -211,15 +207,25 @@ fn hardware_replacement_changes_binding_but_keeps_logical_node_available_for_his
         (HardwareIdentityBasis::BoardSerial, "rpi-b".to_string()),
     ])
     .unwrap();
-    let os = derive_os_installation_id(OsIdentityBasis::MachineId, "same-sd-card").unwrap();
 
-    let old_binding =
-        derive_role_binding_id("fog-01", Some(&old_hardware), Some(&os), "raspberrypi");
-    let new_binding =
-        derive_role_binding_id("fog-01", Some(&replacement), Some(&os), "raspberrypi");
+    let old_binding = derive_role_binding_id("fog-01", Some(&old_hardware));
+    let new_binding = derive_role_binding_id("fog-01", Some(&replacement));
 
     assert_ne!(old_binding, new_binding);
     assert_eq!("fog-01", "fog-01");
+}
+
+#[test]
+fn missing_hardware_identity_does_not_fabricate_role_binding() {
+    assert_eq!(derive_hardware_fingerprint_id(&[]), None);
+    assert_eq!(derive_role_binding_id("fog-01", None), None);
+
+    let mut discovery = valid_discovery();
+    discovery.identity.hardware_fingerprint_id = None;
+    discovery.identity.hardware_identity_basis.clear();
+    discovery.identity.hardware_identity_confidence = IdentityConfidence::Unknown;
+    discovery.identity.role_binding_id = None;
+    discovery.validate().expect("unknown hardware remains valid evidence");
 }
 
 #[test]
