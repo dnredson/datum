@@ -1,14 +1,23 @@
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-pub const DISCOVERY_SCHEMA_VERSION: &str = "0.1.0";
+pub const DISCOVERY_SCHEMA_VERSION: &str = "0.2.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BootstrapMode {
     KnownNode,
     Discovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostIdentityBasis {
+    SystemUuid,
+    OsMachineId,
+    HostnameFallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,11 +56,18 @@ impl SmartSentinelDiscovery {
         if self.identity.hostname.trim().is_empty() {
             bail!("discovery hostname must not be empty");
         }
+        validate_identifier("host_incarnation_id", &self.identity.host_incarnation_id)?;
+        if self.identity.host_identity_attested {
+            bail!("discovery host identity is observational and must not claim attestation");
+        }
         if self.platform.os_family.trim().is_empty() {
             bail!("discovery os_family must not be empty");
         }
         if self.platform.arch.trim().is_empty() {
             bail!("discovery architecture must not be empty");
+        }
+        if self.resources.capacity_profile_id.trim().is_empty() {
+            bail!("discovery capacity_profile_id must not be empty");
         }
         if self.resources.cpu.logical_cores == 0 {
             bail!("discovery cpu.logical_cores must be greater than zero");
@@ -125,6 +141,9 @@ fn validate_swap(swap: &SwapObservation) -> Result<()> {
 pub struct IdentityObservation {
     pub hostname: String,
     pub sentinel_version: String,
+    pub host_incarnation_id: String,
+    pub host_identity_basis: HostIdentityBasis,
+    pub host_identity_attested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -137,6 +156,7 @@ pub struct PlatformObservation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceObservation {
+    pub capacity_profile_id: String,
     pub uptime_seconds: Option<u64>,
     pub cpu: CpuObservation,
     pub memory: MemoryObservation,
@@ -170,6 +190,30 @@ pub struct FilesystemObservation {
     pub total_bytes: u64,
     pub used_bytes: u64,
     pub available_bytes: u64,
+}
+
+pub fn derive_host_incarnation_id(basis: HostIdentityBasis, anchor: &str) -> String {
+    let canonical = format!("{:?}:{}", basis, anchor.trim().to_ascii_lowercase());
+    format!("hostinc:{}", sha256_hex(canonical.as_bytes()))
+}
+
+pub fn derive_capacity_profile_id(resources: &ResourceObservation) -> String {
+    let mut filesystems = resources.filesystems.clone();
+    filesystems.sort_by(|a, b| a.mount.cmp(&b.mount));
+
+    let mut canonical = format!(
+        "cpu={};mem={};swap={}",
+        resources.cpu.logical_cores, resources.memory.total_bytes, resources.swap.total_bytes
+    );
+    for fs in filesystems {
+        canonical.push_str(&format!(";fs={}:{}", fs.mount, fs.total_bytes));
+    }
+    format!("capacity:{}", sha256_hex(canonical.as_bytes()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
