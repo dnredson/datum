@@ -11,10 +11,13 @@ use axum::{
 use chrono::Utc;
 use serde_json::{json, Value};
 
-use crate::core::operational_dgraph::{
-    build_operational_slice, build_reconciliation_authorization, validate_operational_dgraph,
-    OperationalDGraph, OperationalDGraphSlice, OperationalReconciliationAuthorization,
-    OperationalReconciliationAuthorizationRequest,
+use crate::{
+    api::resource_registry::resource_registry_snapshot,
+    core::operational_dgraph::{
+        build_operational_slice, build_reconciliation_authorization, validate_operational_dgraph,
+        OperationalDGraph, OperationalDGraphSlice, OperationalReconciliationAuthorization,
+        OperationalReconciliationAuthorizationRequest,
+    },
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
@@ -115,6 +118,22 @@ pub async fn post_operational_reconciliation_authorization(
     Json(request): Json<OperationalReconciliationAuthorizationRequest>,
 ) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
     let project_id = extract_project_id(&headers)?;
+    let node_id = node_id.trim();
+
+    let resource_bound_to_node = resource_registry_snapshot(&project_id)
+        .map_err(internal_error)?
+        .into_iter()
+        .any(|resource| {
+            resource.state == "bound"
+                && resource.assigned_node_id.as_deref() == Some(node_id)
+        });
+    if !resource_bound_to_node {
+        return Err(conflict(format!(
+            "cannot authorize operational reconciliation for node '{}': no active Resource Registry binding exists",
+            node_id
+        )));
+    }
+
     let graph = graph_store()
         .read()
         .map_err(lock_error)?
@@ -127,7 +146,7 @@ pub async fn post_operational_reconciliation_authorization(
 
     let authorization = build_reconciliation_authorization(
         &graph,
-        node_id.trim(),
+        node_id,
         &request,
         Utc::now(),
     )
@@ -137,7 +156,7 @@ pub async fn post_operational_reconciliation_authorization(
         .write()
         .map_err(lock_error)?
         .insert(
-            authorization_key(&project_id, node_id.trim()),
+            authorization_key(&project_id, node_id),
             authorization.clone(),
         );
 
@@ -162,8 +181,19 @@ fn bad_request(message: String) -> ApiError {
     (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message})))
 }
 
+fn conflict(message: String) -> ApiError {
+    (StatusCode::CONFLICT, JsonResponse(json!({"error": message})))
+}
+
 fn not_found(message: String) -> ApiError {
     (StatusCode::NOT_FOUND, JsonResponse(json!({"error": message})))
+}
+
+fn internal_error(message: String) -> ApiError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({"error": message})),
+    )
 }
 
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> ApiError {
