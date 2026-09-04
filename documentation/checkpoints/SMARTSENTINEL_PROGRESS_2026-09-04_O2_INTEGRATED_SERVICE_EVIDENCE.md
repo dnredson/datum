@@ -2,7 +2,7 @@
 
 Date: 2026-09-04
 Branch: `agent/o2-integrated-service-evidence`
-Baseline main: `7c13e1f950d0f0d7507235ed50341655947750dc`
+Baseline main before closure: `7c13e1f950d0f0d7507235ed50341655947750dc`
 
 ## Progress status
 
@@ -11,15 +11,15 @@ Baseline main: `7c13e1f950d0f0d7507235ed50341655947750dc`
 - 51/100 — LIVE PASS.
 - 52/100 — LIVE PASS.
 - 53/100 — LIVE PASS.
-- 54/100 — IMPLEMENTED, pending compile/live validation.
+- 54/100 — LIVE PASS.
 
-The validated 53/100 baseline is on `main`. Step 54 is isolated in this branch.
+Step 54 is closed after build and live validation on fog-01 with one operational SmartSentinel process.
 
-## Step 54 — service evidence inside the main SmartSentinel process
+## Step 54 — service evidence inside the main SmartSentinel process — LIVE PASS
 
 Step 54 removes the need to run `smartsentinel-service-evidence` as a second process during normal operation.
 
-The main `smartsentinel --operational` binary now accepts:
+The main `smartsentinel --operational` binary accepts:
 
 - `--service-artifact <path>`;
 - `--service-evidence-s <seconds>` with default 15 seconds.
@@ -44,55 +44,58 @@ All integrated service evidence remains observational and sets `side_effects_per
 
 Before each service assessment the observer resolves the current resource binding with the existing fail-closed bootstrap path and, when bound, fetches the active operational D-Graph slice.
 
-The evidence envelope therefore carries, when available:
+The evidence envelope carries, when available:
 
 - `resource_id`;
 - current `node_id`;
 - current `dgraph_id`;
 - current `dgraph_revision`.
 
-The payload also includes:
+The payload includes:
 
 - `integration_source=smartsentinel_operational`;
 - `desired_in_active_slice=true|false|null`.
 
-This prevents a locally configured service artifact from silently being treated as current desired state after a future placement change. If the active D-Graph no longer desires that service on the node, the evidence explicitly records that fact rather than letting SmartSentinel make a placement decision.
+This prevents a locally configured service artifact from silently being treated as current desired state after a future placement change. If the active D-Graph no longer desires that service on the node, the evidence records that fact rather than letting SmartSentinel make a placement decision.
 
 ## Shared history safety
 
-Because the reconciliation loop and service observer may append to the same JSONL concurrently, `append_operational_evidence` now takes an exclusive file lock around each append+flush operation.
+Because the reconciliation loop and service observer append to the same JSONL concurrently, `append_operational_evidence` takes an exclusive file lock around each append+flush operation.
 
-This is a storage-safety change only; evidence schema `0.1.0` is unchanged.
+The live history was successfully parsed line-by-line with `jq` after concurrent reconciliation and service-evidence writes, proving that the shared JSONL remained valid.
 
-## Lifecycle
+## Live validation — PASS
 
-The internal service observer:
+The live run on fog-01 used one `smartsentinel --operational` process with both runtime and service artifacts configured.
 
-- starts only when `--service-artifact` is configured in operational mode;
-- validates the artifact before starting;
-- runs at `--service-evidence-s` cadence;
-- observes the same stop file;
-- receives an explicit shutdown flag after the main operational loop returns;
-- is joined before the `smartsentinel` process exits.
+Observed integrated service timeline:
 
-The observer does not install runtimes, reconcile containers, alter ports, or execute host mutation.
+- `service_operational_assessment` repeated with `dgraph_revision=2`;
+- `operational_state=available`;
+- execution `passed`;
+- availability `passed`;
+- `desired_in_active_slice=true`;
+- `integration_source=smartsentinel_operational`;
+- `side_effects_performed=false`;
+- matching `deployment_converged` events with `drift_detected=false`.
 
-## Planned live validation
+At the same time, the same history preserved the existing hybrid reconciliation timeline:
 
-On fog-01, with dserver left running and MQTT restored with `1883:1883/tcp`:
+- initial `reconciliation` under revision 2;
+- repeated `reconciliation_skipped` while drift proof remained fresh;
+- periodic `drift_verification`;
+- no service-observer side effects.
 
-1. build the main `smartsentinel` binary from this branch;
-2. run one operational SmartSentinel process with both runtime and service artifacts configured;
-3. confirm the normal hybrid reconciliation loop remains active;
-4. confirm integrated service events appear in the same operational history with `local=ok remote=ok`;
-5. confirm `desired_in_active_slice=true`, `dgraph_revision=2`, MQTT `available`, and deployment `converged`;
-6. verify no `smartsentinel-service-evidence` process is required;
-7. verify clean observer shutdown when the main SmartSentinel exits.
+No separate `smartsentinel-service-evidence` process was present after the run (`pgrep -af smartsentinel-service-evidence` returned no process).
 
-A later step can use the now-integrated deployment drift evidence as an input to a new governed local deployment-reconciliation class. Step 54 itself remains observation-only for service/deployment state.
+The main command returned normally after the configured max cycles, so the internal observer lifecycle completed with the main process rather than becoming a second daemon.
 
 ## Architecture statement
 
 `SmartSentinel main process observes host/resource state -> polls D-Graph control -> reconciles governed desired execution -> independently probes service execution/health/consumability and deployment drift at service cadence -> publishes all evidence with current resource/node/D-Graph lineage.`
 
 D-Graph remains the desired-state source, dserver remains governance/control plane, and external AI remains responsible for placement/reasoning decisions. DATUM remains the conceptual framework and does not execute host actions.
+
+## Next step
+
+55/100 introduces governed local deployment-drift reconciliation using the trusted service artifact. It must remain strictly gated by current D-Graph desire, current-revision authorization, local execution policy, and explicit `--execute`; it must not make placement decisions.
