@@ -1,0 +1,75 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "runtime:docker",
+  "artifact_type": "runtime_installation",
+  "runtime": "docker",
+  "execution_user": "${SMARTSENTINEL_USER}",
+  "installers": {
+    "apt_get": {
+      "pre_install_commands": [
+        {"program": "apt-get", "args": ["update"], "privileged": true}
+      ],
+      "install_command": {
+        "program": "apt-get",
+        "args": ["install", "-y", "docker.io"],
+        "privileged": true
+      },
+      "post_install_commands": [
+        {"program": "systemctl", "args": ["enable", "--now", "docker"], "privileged": true},
+        {"program": "usermod", "args": ["-aG", "docker", "${SMARTSENTINEL_USER}"], "privileged": true}
+      ]
+    },
+    "dnf": {
+      "pre_install_commands": [],
+      "install_command": {
+        "program": "dnf",
+        "args": ["install", "-y", "moby-engine"],
+        "privileged": true
+      },
+      "post_install_commands": [
+        {"program": "systemctl", "args": ["enable", "--now", "docker"], "privileged": true},
+        {"program": "usermod", "args": ["-aG", "docker", "${SMARTSENTINEL_USER}"], "privileged": true}
+      ]
+    },
+    "yum": {
+      "pre_install_commands": [],
+      "install_command": {
+        "program": "yum",
+        "args": ["install", "-y", "docker"],
+        "privileged": true
+      },
+      "post_install_commands": [
+        {"program": "systemctl", "args": ["enable", "--now", "docker"], "privileged": true},
+        {"program": "usermod", "args": ["-aG", "docker", "${SMARTSENTINEL_USER}"], "privileged": true}
+      ]
+    },
+    "pacman": {
+      "pre_install_commands": [],
+      "install_command": {
+        "program": "pacman",
+        "args": ["-S", "--noconfirm", "docker"],
+        "privileged": true
+      },
+      "post_install_commands": [
+        {"program": "systemctl", "args": ["enable", "--now", "docker"], "privileged": true},
+        {"program": "usermod", "args": ["-aG", "docker", "${SMARTSENTINEL_USER}"], "privileged": true}
+      ]
+    },
+    "zypper": {
+      "pre_install_commands": [],
+      "install_command": {
+        "program": "zypper",
+        "args": ["--non-interactive", "install", "docker"],
+        "privileged": true
+      },
+      "post_install_commands": [
+        {"program": "systemctl", "args": ["enable", "--now", "docker"], "privileged": true},
+        {"program": "usermod", "args": ["-aG", "docker", "${SMARTSENTINEL_USER}"], "privileged": true}
+      ]
+    }
+  },
+  "notes": {
+    "session_refresh_required_after_group_change": true,
+    "purpose": "Preserve thesis-style pre-install / install / post-install lifecycle for SmartSentinel runtime prerequisites"
+  }
+}
