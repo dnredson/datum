@@ -62,14 +62,9 @@ pub fn collect_discovery(
     resources.capacity_profile_id = derive_capacity_profile_id(&resources);
 
     let (hardware_fingerprint_id, hardware_identity_basis, hardware_identity_confidence) =
-        collect_hardware_identity(&hostname);
+        collect_hardware_identity();
     let (os_installation_id, os_identity_basis) = collect_os_identity();
-    let role_binding_id = derive_role_binding_id(
-        node_id,
-        hardware_fingerprint_id.as_deref(),
-        os_installation_id.as_deref(),
-        &hostname,
-    );
+    let role_binding_id = derive_role_binding_id(node_id, hardware_fingerprint_id.as_deref());
 
     let discovery = SmartSentinelDiscovery {
         schema_version: DISCOVERY_SCHEMA_VERSION.to_string(),
@@ -271,9 +266,7 @@ if ($null -eq $used) { $used = 0 }
     Ok(())
 }
 
-fn collect_hardware_identity(
-    hostname: &str,
-) -> (
+fn collect_hardware_identity() -> (
     Option<String>,
     Vec<HardwareIdentityBasis>,
     IdentityConfidence,
@@ -319,19 +312,14 @@ fn collect_hardware_identity(
         );
     }
 
+    if anchors.is_empty() {
+        return (None, Vec::new(), IdentityConfidence::Unknown);
+    }
+
     let confidence = match anchors.len() {
-        0 => IdentityConfidence::Weak,
         1 => IdentityConfidence::Medium,
         _ => IdentityConfidence::Strong,
     };
-
-    if anchors.is_empty() {
-        anchors.push((
-            HardwareIdentityBasis::HostnameFallback,
-            hostname.to_string(),
-        ));
-    }
-
     let basis = anchors.iter().map(|(basis, _)| *basis).collect::<Vec<_>>();
     (
         derive_hardware_fingerprint_id(&anchors),
