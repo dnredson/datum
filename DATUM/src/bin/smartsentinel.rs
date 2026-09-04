@@ -1,7 +1,12 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use datum::agent::integrated_service_evidence::{
+    start_integrated_service_evidence, IntegratedServiceEvidenceOptions,
+};
 use datum::agent::operational_service_loop::{
     run_operational_service_loop, OperationalServiceLoopOptions,
 };
@@ -70,6 +75,12 @@ struct Args {
 
     #[arg(long)]
     runtime_execution_user: Option<String>,
+
+    #[arg(long)]
+    service_artifact: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 15)]
+    service_evidence_s: u64,
 }
 
 fn main() -> Result<()> {
@@ -78,16 +89,44 @@ fn main() -> Result<()> {
     if args.operational {
         let dserver_url = args
             .dserver_url
+            .clone()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("--operational requires --dserver-url"))?;
         let project_id = args
             .project_id
+            .clone()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("--operational requires --project-id"))?;
 
-        return run_operational_service_loop(OperationalServiceLoopOptions {
+        if args.service_artifact.is_some() && args.service_evidence_s == 0 {
+            bail!("--service-evidence-s must be greater than zero when --service-artifact is configured");
+        }
+
+        let service_observer = if let Some(artifact_path) = args.service_artifact.clone() {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let handle = start_integrated_service_evidence(
+                IntegratedServiceEvidenceOptions {
+                    config_path: args.config.clone(),
+                    artifact_path,
+                    dserver_url: dserver_url.clone(),
+                    project_id: project_id.clone(),
+                    timeout_s: args.timeout_s,
+                    interval_s: args.service_evidence_s,
+                    history_path: args.operational_history_out.clone(),
+                    node_id_override: args.node_id.clone(),
+                    hostname_override: args.hostname.clone(),
+                    stop_file: args.stop_file.clone(),
+                },
+                Arc::clone(&shutdown),
+            )?;
+            Some((shutdown, handle))
+        } else {
+            None
+        };
+
+        let result = run_operational_service_loop(OperationalServiceLoopOptions {
             config_path: args.config,
             dserver_url,
             project_id,
@@ -107,6 +146,17 @@ fn main() -> Result<()> {
             stop_file: args.stop_file,
             max_cycles: args.max_cycles,
         });
+
+        if let Some((shutdown, handle)) = service_observer {
+            shutdown.store(true, Ordering::SeqCst);
+            if handle.join().is_err() {
+                eprintln!(
+                    "mode=smartsentinel-operational event=service_observer_shutdown status=thread_join_error"
+                );
+            }
+        }
+
+        return result;
     }
 
     if args.dserver_url.is_some()
@@ -114,8 +164,9 @@ fn main() -> Result<()> {
         || args.execute
         || args.runtime_artifact.is_some()
         || args.runtime_execution_user.is_some()
+        || args.service_artifact.is_some()
     {
-        bail!("--dserver-url, --project-id, --execute, --runtime-artifact, and --runtime-execution-user require --operational");
+        bail!("--dserver-url, --project-id, --execute, --runtime-artifact, --runtime-execution-user, and --service-artifact require --operational");
     }
 
     run_service_loop(ServiceLoopOptions {
