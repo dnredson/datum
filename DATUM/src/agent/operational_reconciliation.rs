@@ -592,6 +592,26 @@ fn container_configuration_matches(
         }
     }
 
+    if !mapping.command.is_empty() {
+        let actual_command: Vec<String> = inspect
+            .pointer("/Config/Cmd")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if actual_command != mapping.command {
+            drift.push(format!(
+                "command expected={:?} observed={:?}",
+                mapping.command, actual_command
+            ));
+        }
+    }
+
     if drift.is_empty() {
         Ok((true, None))
     } else {
@@ -629,6 +649,9 @@ fn validate_trusted_container_mapping(mapping: &DispatchContainerMapping) -> Res
                 policy
             );
         }
+    }
+    if mapping.command.iter().any(|argument| argument.trim().is_empty()) {
+        bail!("trusted container command arguments must not be empty");
     }
     Ok(())
 }
@@ -674,6 +697,7 @@ pub fn build_trusted_container_run_args(mapping: &DispatchContainerMapping) -> R
     }
 
     args.push(image.to_string());
+    args.extend(mapping.command.iter().cloned());
     Ok(args)
 }
 
@@ -832,6 +856,11 @@ mod tests {
                 host_ip: None,
             }],
             restart_policy: Some("unless-stopped".to_string()),
+            command: vec![
+                "mosquitto".to_string(),
+                "-c".to_string(),
+                "/mosquitto-no-auth.conf".to_string(),
+            ],
         }
     }
 
@@ -859,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_run_args_include_typed_port_and_restart_policy() {
+    fn trusted_run_args_include_typed_port_restart_and_command() {
         let args = build_trusted_container_run_args(&mqtt_mapping()).unwrap();
         assert_eq!(
             args,
@@ -872,15 +901,21 @@ mod tests {
                 "unless-stopped",
                 "-p",
                 "1883:1883/tcp",
-                "eclipse-mosquitto:2"
+                "eclipse-mosquitto:2",
+                "mosquitto",
+                "-c",
+                "/mosquitto-no-auth.conf"
             ]
         );
     }
 
     #[test]
-    fn inspect_configuration_detects_missing_port_binding() {
+    fn inspect_configuration_detects_missing_port_restart_and_command() {
         let inspect = serde_json::json!({
-            "Config": {"Image": "eclipse-mosquitto:2"},
+            "Config": {
+                "Image": "eclipse-mosquitto:2",
+                "Cmd": ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+            },
             "HostConfig": {
                 "RestartPolicy": {"Name": "no"},
                 "PortBindings": {}
@@ -891,12 +926,16 @@ mod tests {
         let detail = detail.unwrap();
         assert!(detail.contains("restart_policy"));
         assert!(detail.contains("1883"));
+        assert!(detail.contains("command"));
     }
 
     #[test]
     fn inspect_configuration_accepts_expected_mapping() {
         let inspect = serde_json::json!({
-            "Config": {"Image": "eclipse-mosquitto:2"},
+            "Config": {
+                "Image": "eclipse-mosquitto:2",
+                "Cmd": ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+            },
             "HostConfig": {
                 "RestartPolicy": {"Name": "unless-stopped"},
                 "PortBindings": {
