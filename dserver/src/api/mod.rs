@@ -29,6 +29,7 @@ pub mod local_dgraph_snapshot;
 pub mod middleware;
 pub mod nodes;
 pub mod planner;
+pub mod resource_registry;
 pub mod sentinel_registration;
 pub mod topology;
 pub mod wasm_module_registry;
