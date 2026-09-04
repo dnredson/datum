@@ -92,9 +92,7 @@ pub fn reconcile_service_deployment_from_artifact(
 ) -> Result<ServiceDeploymentReconciliationReport> {
     validate_service_artifact(artifact)?;
     if artifact.runtime.kind.trim() != "container" {
-        bail!(
-            "service deployment reconciliation supports container runtime artifacts only"
-        );
+        bail!("service deployment reconciliation supports container runtime artifacts only");
     }
 
     let drift_before = assess_service_deployment_drift(artifact)?;
@@ -109,6 +107,23 @@ pub fn reconcile_service_deployment_from_artifact(
             false,
             drift_before.clone(),
             Some(drift_before),
+            Vec::new(),
+        ));
+    }
+
+    // Missing/stopped execution remains owned by the existing operational/WASM reconciler.
+    // This artifact reconciler only owns configuration/deployment drift on an existing container.
+    if drift_before.observed.is_none() {
+        return Ok(build_report(
+            artifact,
+            execute_requested,
+            desired_in_active_slice,
+            control_plane_authorized,
+            local_container_execution_allowed,
+            "deferred_execution_reconciler",
+            false,
+            drift_before,
+            None,
             Vec::new(),
         ));
     }
@@ -141,53 +156,45 @@ pub fn reconcile_service_deployment_from_artifact(
         .expect("validated container artifact must carry runtime.container");
 
     let mut command_results = Vec::new();
-    let mut side_effects_performed = false;
-
-    if drift_before.observed.is_some() {
-        let args = vec![
-            "rm".to_string(),
-            "-f".to_string(),
-            container.container_name.trim().to_string(),
-        ];
-        let output = run_docker(&args).with_context(|| {
-            format!(
-                "remove drifted container '{}' before trusted artifact redeployment",
-                container.container_name
-            )
-        })?;
-        let result = command_result("remove_existing", &args, &output);
-        if !result.success {
-            command_results.push(result);
-            return Ok(build_report(
-                artifact,
-                execute_requested,
-                desired_in_active_slice,
-                control_plane_authorized,
-                local_container_execution_allowed,
-                "failed_remove_existing",
-                false,
-                drift_before,
-                None,
-                command_results,
-            ));
-        }
-        side_effects_performed = true;
-        command_results.push(result);
+    let remove_args = vec![
+        "rm".to_string(),
+        "-f".to_string(),
+        container.container_name.trim().to_string(),
+    ];
+    let remove_output = run_docker(&remove_args).with_context(|| {
+        format!(
+            "remove drifted container '{}' before trusted artifact redeployment",
+            container.container_name
+        )
+    })?;
+    let remove_result = command_result("remove_existing", &remove_args, &remove_output);
+    if !remove_result.success {
+        command_results.push(remove_result);
+        return Ok(build_report(
+            artifact,
+            execute_requested,
+            desired_in_active_slice,
+            control_plane_authorized,
+            local_container_execution_allowed,
+            "failed_remove_existing",
+            false,
+            drift_before,
+            None,
+            command_results,
+        ));
     }
+    command_results.push(remove_result);
 
     let run_args = build_docker_run_args(artifact)?;
-    let output = run_docker(&run_args).with_context(|| {
+    let run_output = run_docker(&run_args).with_context(|| {
         format!(
             "redeploy service '{}' from trusted artifact '{}'",
             artifact.service_id, artifact.artifact_id
         )
     })?;
-    let result = command_result("deploy_expected", &run_args, &output);
-    let run_success = result.success;
-    command_results.push(result);
-    if run_success {
-        side_effects_performed = true;
-    }
+    let run_result = command_result("deploy_expected", &run_args, &run_output);
+    let run_success = run_result.success;
+    command_results.push(run_result);
 
     let drift_after = assess_service_deployment_drift(artifact).ok();
     let status = if !run_success {
@@ -208,7 +215,7 @@ pub fn reconcile_service_deployment_from_artifact(
         control_plane_authorized,
         local_container_execution_allowed,
         status,
-        side_effects_performed,
+        true,
         drift_before,
         drift_after,
         command_results,
@@ -270,7 +277,8 @@ fn build_report(
         desired_in_active_slice,
         control_plane_authorized,
         local_container_execution_allowed,
-        execution_authorized: desired_in_active_slice
+        execution_authorized: execute_requested
+            && desired_in_active_slice
             && control_plane_authorized
             && local_container_execution_allowed,
         status: status.to_string(),
