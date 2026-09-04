@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         discovery.host_id,
         discovery.identity.hardware_fingerprint_id.as_deref().unwrap_or("unknown"),
         discovery.identity.os_installation_id.as_deref().unwrap_or("unknown"),
-        discovery.identity.role_binding_id,
+        discovery.identity.role_binding_id.as_deref().unwrap_or("unresolved"),
         discovery.resources.capacity_profile_id,
         discovery.stage.as_deref().unwrap_or("unknown"),
         discovery.bootstrap_mode,
