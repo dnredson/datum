@@ -18,3 +18,8 @@ scripts/.smoke-output/
 .datum-controlled-wasm-state.json
 .datum-controlled-wasm-state.json.tmp
 .datum-controlled-wasm-state.json.bak
+
+# O2 durable Resource Registry / role-binding state.
+.datum-resource-registry-state.json
+.datum-resource-registry-state.json.tmp
+.datum-resource-registry-state.json.bak
