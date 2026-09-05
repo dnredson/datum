@@ -41,6 +41,7 @@ pub mod planner;
 pub mod resource_binding;
 pub mod resource_observation;
 pub mod resource_registry;
+pub mod resource_registry_persistence;
 pub mod sentinel_registration;
 pub mod topology;
 pub mod wasm_module_registry;
