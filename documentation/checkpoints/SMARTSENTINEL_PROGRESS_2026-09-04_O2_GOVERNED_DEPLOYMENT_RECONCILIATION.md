@@ -2,7 +2,7 @@
 
 Date: 2026-09-04
 Branch: `agent/o2-governed-deployment-reconciliation`
-Baseline main: `95be3aff1020622f031d861c850e3ad6dda2a2cc`
+Baseline main before closure: `95be3aff1020622f031d861c850e3ad6dda2a2cc`
 
 ## Progress status
 
@@ -12,11 +12,11 @@ Baseline main: `95be3aff1020622f031d861c850e3ad6dda2a2cc`
 - 52/100 — LIVE PASS.
 - 53/100 — LIVE PASS.
 - 54/100 — LIVE PASS.
-- 55/100 — IMPLEMENTED; compile/test PASS; blocked-control-plane live path PASS; authorized action/convergence live path pending.
+- 55/100 — LIVE PASS.
 
-The validated 54/100 baseline is on `main`. Step 55 is isolated in this branch.
+Step 55 is closed after compile/test plus fail-closed and authorized-action live validation on fog-01.
 
-## Step 55 — governed service deployment drift reconciliation
+## Step 55 — governed service deployment drift reconciliation — LIVE PASS
 
 Step 55 introduces a new local host-mutation class for deployment configuration drift described by a trusted service artifact.
 
@@ -30,7 +30,7 @@ The existing operational/WASM reconciler remains responsible for execution lifec
 - stopped container;
 - desired running vs observed running.
 
-The new service deployment reconciler is responsible only for configuration/deployment drift on an existing container, currently:
+The service deployment reconciler is responsible only for configuration/deployment drift on an existing container, currently:
 
 - image mismatch;
 - required host-port publication mismatch.
@@ -64,7 +64,7 @@ For supported configuration drift it performs typed Docker argv operations:
 1. `docker rm -f <trusted container_name>`;
 2. `docker run -d --name <trusted container_name> [-p <trusted host:container/protocol> ...] <trusted image>`.
 
-The MQTT artifact therefore reconstructs the desired deployment as:
+The MQTT artifact reconstructs the desired deployment as:
 
 `docker run -d --name datum-mqtt -p 1883:1883/tcp eclipse-mosquitto:2`
 
@@ -94,35 +94,21 @@ If a deployment action occurs, SmartSentinel immediately attempts to publish an 
 
 ### Concurrency boundary
 
-The deployment reconciler does not act on missing execution. This avoids competing with the existing execution reconciler. The intended step-55 live case is a running MQTT container whose host port mapping is wrong: the execution reconciler sees it running and performs no Docker mutation, while the service artifact reconciler owns the port-binding correction.
+The deployment reconciler does not act on missing execution. This avoids competing with the existing execution reconciler. The live case used a running MQTT container whose host port mapping was wrong: the execution reconciler saw it running and performed no Docker mutation, while the service artifact reconciler owned the port-binding correction.
 
-### Automated tests
+### Automated validation
 
-`DATUM/tests/smartsentinel_o2_service_deployment_reconciliation.rs` validates without touching Docker:
+`DATUM/tests/smartsentinel_o2_service_deployment_reconciliation.rs` passed and validates without touching Docker:
 
 - fail-closed gate ordering;
 - fully authorized gate;
 - typed Docker argv construction from the MQTT service artifact contract.
 
-### Planned live proof
+### Live validation A — fail-closed control-plane gate — PASS
 
-A revision-three fixture is provided at `scripts/fixtures/o2-operational-mqtt-dgraph-rev3.json`.
+A revision-three D-Graph fixture kept MQTT desired on `fog-01` while invalidating the prior revision-two authorization. The running `datum-mqtt` container was recreated without `-p 1883:1883`, preserving execution while introducing deployment and availability drift.
 
-The intended proof is:
-
-1. build/test step 55;
-2. publish D-Graph revision 3 while MQTT desired state remains unchanged, invalidating revision-2 authorization;
-3. recreate `datum-mqtt` without `-p 1883:1883`, so execution remains running but service deployment drift and availability failure are present;
-4. run the integrated SmartSentinel with `--execute` and confirm the service reconciler reports `blocked_control_plane`, performs no side effects, and the port remains absent;
-5. authorize revision 3;
-6. on a subsequent service-evidence cycle, confirm `service_deployment_reconciliation_action`, `side_effects_performed=true`, typed `docker rm -f` + `docker run ... -p 1883:1883/tcp`, and immediate snapshot publication attempt;
-7. confirm following service evidence changes to `available` + `deployment_converged` while the D-Graph desired service and placement remain unchanged.
-
-## Live validation progress
-
-The revision-three fail-closed path passed on fog-01.
-
-Observed integrated evidence across repeated cycles:
+Repeated integrated evidence showed:
 
 - `deployment_drift_detected` with `revision=3` and `status=drift_detected`;
 - `execute_requested=true`;
@@ -132,9 +118,42 @@ Observed integrated evidence across repeated cycles:
 - `service_deployment_reconciliation_blocked` with `status=blocked_control_plane`;
 - `side_effects_performed=false`.
 
-Docker inspection after the blocked run still showed the same running `datum-mqtt` container with only internal `1883/tcp` exposure and `docker port datum-mqtt 1883/tcp` returned no published host port. This proves the stale/missing authorization gate prevented the new deployment reconciler from repairing drift even though SmartSentinel was started with `--execute`, the service remained desired, and local execution policy allowed container mutation.
+Docker inspection after the blocked cycles still showed only internal `1883/tcp` exposure and no host publication. This proves that `--execute` plus local policy are insufficient without current-revision control-plane authorization.
 
-The authorized revision-three action/redeployment/convergence path remains to be executed before closing 55/100.
+### Live validation B — authorized artifact reconciliation — PASS
+
+Revision 3 was then explicitly authorized with `allow_host_mutation=true` while the D-Graph desired MQTT placement remained unchanged.
+
+The next integrated reconciliation produced:
+
+- `service_deployment_reconciliation_action`;
+- `revision=3`;
+- `status=reconciled`;
+- `execute_requested=true`;
+- `desired_in_active_slice=true`;
+- `control_plane_authorized=true`;
+- `local_container_execution_allowed=true`;
+- `side_effects_performed=true`;
+- `snapshot_published=true`.
+
+Typed command evidence showed both operations succeeding:
+
+1. `docker rm -f datum-mqtt`;
+2. `docker run -d --name datum-mqtt -p 1883:1883/tcp eclipse-mosquitto:2`.
+
+Docker inspection then showed:
+
+- `0.0.0.0:1883->1883/tcp`;
+- `[::]:1883->1883/tcp`.
+
+The service evidence timeline proved convergence:
+
+- sequence 1: `service_operational_assessment` = `unavailable`, availability `failed`;
+- sequence 1: `deployment_drift_detected` = true;
+- sequence 2 onward: `service_operational_assessment` = `available`, availability `passed`;
+- sequence 2 onward: `deployment_converged`, drift=false.
+
+This closes the full observation -> governed mutation -> proof-of-convergence path without any SmartSentinel placement decision or D-Graph modification.
 
 ## Architecture statement
 
