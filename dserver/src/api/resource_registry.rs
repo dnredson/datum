@@ -1,6 +1,7 @@
 use std::{
-    collections::BTreeMap,
-    sync::{OnceLock, RwLock},
+    env,
+    path::{Path as FsPath, PathBuf},
+    sync::{Mutex, OnceLock, RwLock},
 };
 
 use axum::{
@@ -19,45 +20,104 @@ use crate::core::{
         build_resource_registry_record, derive_resource_identity, ResourceDiscoveryRequest,
         ResourceRegistryRecord,
     },
+    resource_registry_persistence::{
+        load_resource_registry_persisted_state, persist_resource_registry_state,
+        ResourceRegistryPersistedState,
+    },
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
 
-static RESOURCE_REGISTRY: OnceLock<RwLock<BTreeMap<String, ResourceRegistryRecord>>> =
-    OnceLock::new();
-static RESOURCE_BINDINGS: OnceLock<RwLock<BTreeMap<String, ResourceRoleBindingRecord>>> =
-    OnceLock::new();
+const DEFAULT_RESOURCE_REGISTRY_STATE_PATH: &str = ".datum-resource-registry-state.json";
+const RESOURCE_REGISTRY_STATE_PATH_ENV: &str = "DATUM_RESOURCE_REGISTRY_STATE_PATH";
 
-fn resource_store() -> &'static RwLock<BTreeMap<String, ResourceRegistryRecord>> {
-    RESOURCE_REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
+static RESOURCE_STATE: OnceLock<RwLock<ResourceRegistryPersistedState>> = OnceLock::new();
+static PERSISTENCE_PATH: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+static STATE_TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
+static PERSISTENCE_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+fn resource_state_store() -> &'static RwLock<ResourceRegistryPersistedState> {
+    RESOURCE_STATE.get_or_init(|| RwLock::new(ResourceRegistryPersistedState::empty()))
 }
 
-fn binding_store() -> &'static RwLock<BTreeMap<String, ResourceRoleBindingRecord>> {
-    RESOURCE_BINDINGS.get_or_init(|| RwLock::new(BTreeMap::new()))
+fn persistence_path_store() -> &'static RwLock<Option<PathBuf>> {
+    PERSISTENCE_PATH.get_or_init(|| RwLock::new(None))
+}
+
+fn state_transaction() -> &'static Mutex<()> {
+    STATE_TRANSACTION.get_or_init(|| Mutex::new(()))
+}
+
+fn ensure_resource_registry_persistence_initialized() {
+    PERSISTENCE_INITIALIZED.get_or_init(|| {
+        let path = env::var(RESOURCE_REGISTRY_STATE_PATH_ENV)
+            .unwrap_or_else(|_| DEFAULT_RESOURCE_REGISTRY_STATE_PATH.to_string());
+        match initialize_resource_registry_persistence(FsPath::new(&path)) {
+            Ok(true) => {
+                println!("restored resource registry and bindings from {path}");
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!(
+                    "resource registry persisted state was not activated from {path}: {error}; starting resource registry empty"
+                );
+            }
+        }
+    });
+}
+
+pub fn initialize_resource_registry_persistence(path: &FsPath) -> Result<bool, String> {
+    let _transaction = state_transaction()
+        .lock()
+        .map_err(|error| format!("resource registry state transaction lock poisoned: {error}"))?;
+
+    {
+        let mut configured = persistence_path_store()
+            .write()
+            .map_err(|error| format!("resource registry persistence path lock poisoned: {error}"))?;
+        *configured = Some(path.to_path_buf());
+    }
+
+    match load_resource_registry_persisted_state(path) {
+        Ok(Some(state)) => {
+            replace_in_memory_state_string(&state)?;
+            Ok(true)
+        }
+        Ok(None) => {
+            replace_in_memory_state_string(&ResourceRegistryPersistedState::empty())?;
+            Ok(false)
+        }
+        Err(error) => {
+            replace_in_memory_state_string(&ResourceRegistryPersistedState::empty())?;
+            Err(error)
+        }
+    }
 }
 
 pub async fn post_resource_discovery(
     headers: HeaderMap,
     Json(payload): Json<ResourceDiscoveryRequest>,
 ) -> Result<JsonResponse<ResourceRegistryRecord>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
     let (resource_id, _, _) = derive_resource_identity(&payload).map_err(bad_request)?;
     let key = registry_key(&project_id, &resource_id);
     let now = Utc::now();
+    let _transaction = state_transaction().lock().map_err(lock_error)?;
 
-    let record = {
-        let mut store = resource_store().write().map_err(lock_error)?;
-        let existing = store.get(&key).cloned();
-        let record = build_resource_registry_record(
-            &project_id,
-            payload,
-            existing.as_ref(),
-            now,
-        )
-        .map_err(bad_request)?;
-        store.insert(key, record.clone());
-        record
-    };
+    let mut candidate = resource_state_store().read().map_err(lock_error)?.clone();
+    let existing = candidate.resources.get(&key).cloned();
+    let record = build_resource_registry_record(
+        &project_id,
+        payload,
+        existing.as_ref(),
+        now,
+    )
+    .map_err(bad_request)?;
+    candidate.resources.insert(key, record.clone());
+
+    persist_candidate(&candidate)?;
+    replace_in_memory_state(&candidate)?;
 
     Ok(JsonResponse(record))
 }
@@ -67,6 +127,7 @@ pub async fn post_resource_binding(
     headers: HeaderMap,
     Json(payload): Json<BindResourceRequest>,
 ) -> Result<JsonResponse<ResourceRoleBindingRecord>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
     let resource_id = resource_id.trim();
     if resource_id.is_empty() {
@@ -77,21 +138,24 @@ pub async fn post_resource_binding(
         return Err(bad_request("resource binding node_id must not be empty".to_string()));
     }
 
+    let _transaction = state_transaction().lock().map_err(lock_error)?;
+    let mut candidate = resource_state_store().read().map_err(lock_error)?.clone();
     let resource_key = registry_key(&project_id, resource_id);
-    let mut resources = resource_store().write().map_err(lock_error)?;
-    let resource = resources.get_mut(&resource_key).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            JsonResponse(json!({
-                "error": format!(
-                    "resource '{}' not found for project '{}'",
-                    resource_id, project_id
-                )
-            })),
-        )
-    })?;
-
-    let mut bindings = binding_store().write().map_err(lock_error)?;
+    let resource = candidate
+        .resources
+        .get(&resource_key)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({
+                    "error": format!(
+                        "resource '{}' not found for project '{}'",
+                        resource_id, project_id
+                    )
+                })),
+            )
+        })?;
 
     if let Some(assigned) = resource.assigned_node_id.as_deref() {
         if assigned != node_id {
@@ -100,7 +164,7 @@ pub async fn post_resource_binding(
                 resource_id, assigned
             )));
         }
-        if let Some(existing) = bindings.values().find(|binding| {
+        if let Some(existing) = candidate.bindings.values().find(|binding| {
             binding.project_id == project_id
                 && binding.resource_id == resource_id
                 && binding.node_id == node_id
@@ -114,7 +178,7 @@ pub async fn post_resource_binding(
         )));
     }
 
-    if let Some(existing) = bindings.values().find(|binding| {
+    if let Some(existing) = candidate.bindings.values().find(|binding| {
         binding.project_id == project_id
             && binding.resource_id == resource_id
             && binding.status == "active"
@@ -125,7 +189,7 @@ pub async fn post_resource_binding(
         )));
     }
 
-    if let Some(existing) = bindings.values().find(|binding| {
+    if let Some(existing) = candidate.bindings.values().find(|binding| {
         binding.project_id == project_id
             && binding.node_id == node_id
             && binding.status == "active"
@@ -136,13 +200,22 @@ pub async fn post_resource_binding(
         )));
     }
 
-    let binding = build_initial_binding(&project_id, resource, &payload, Utc::now())
+    let binding = build_initial_binding(&project_id, &resource, &payload, Utc::now())
         .map_err(bad_request)?;
 
-    resource.state = "bound".to_string();
-    resource.assigned_node_id = Some(binding.node_id.clone());
-    let binding_key = binding_key(&project_id, &binding.binding_id);
-    bindings.insert(binding_key, binding.clone());
+    let mutable_resource = candidate
+        .resources
+        .get_mut(&resource_key)
+        .expect("candidate resource cloned from same key must still exist");
+    mutable_resource.state = "bound".to_string();
+    mutable_resource.assigned_node_id = Some(binding.node_id.clone());
+    candidate.bindings.insert(
+        binding_key(&project_id, &binding.binding_id),
+        binding.clone(),
+    );
+
+    persist_candidate(&candidate)?;
+    replace_in_memory_state(&candidate)?;
 
     Ok(JsonResponse(binding))
 }
@@ -151,11 +224,13 @@ pub async fn get_resource_binding(
     Path(resource_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<JsonResponse<ResourceRoleBindingRecord>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
     let resource_id = resource_id.trim();
-    let binding = binding_store()
+    let binding = resource_state_store()
         .read()
         .map_err(lock_error)?
+        .bindings
         .values()
         .find(|binding| {
             binding.project_id == project_id
@@ -180,10 +255,12 @@ pub async fn get_resource_binding(
 pub async fn list_resource_bindings(
     headers: HeaderMap,
 ) -> Result<JsonResponse<Value>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
-    let mut bindings = binding_store()
+    let mut bindings = resource_state_store()
         .read()
         .map_err(lock_error)?
+        .bindings
         .values()
         .filter(|binding| binding.project_id == project_id)
         .cloned()
@@ -206,11 +283,13 @@ pub async fn get_resource(
     Path(resource_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<JsonResponse<ResourceRegistryRecord>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
     let key = registry_key(&project_id, resource_id.trim());
-    let record = resource_store()
+    let record = resource_state_store()
         .read()
         .map_err(lock_error)?
+        .resources
         .get(&key)
         .cloned()
         .ok_or_else(|| {
@@ -230,11 +309,13 @@ pub async fn get_resource(
 pub async fn list_resources(
     headers: HeaderMap,
 ) -> Result<JsonResponse<Value>, ApiError> {
+    ensure_resource_registry_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
     let prefix = format!("{}|", project_id.trim());
-    let mut resources = resource_store()
+    let mut resources = resource_state_store()
         .read()
         .map_err(lock_error)?
+        .resources
         .iter()
         .filter(|(key, _)| key.starts_with(&prefix))
         .map(|(_, record)| record.clone())
@@ -260,16 +341,41 @@ pub async fn list_resources(
 }
 
 pub fn resource_registry_snapshot(project_id: &str) -> Result<Vec<ResourceRegistryRecord>, String> {
+    ensure_resource_registry_persistence_initialized();
     let prefix = format!("{}|", project_id.trim());
-    let mut resources = resource_store()
+    let mut resources = resource_state_store()
         .read()
         .map_err(|error| format!("resource registry state lock poisoned: {error}"))?
+        .resources
         .iter()
         .filter(|(key, _)| key.starts_with(&prefix))
         .map(|(_, record)| record.clone())
         .collect::<Vec<_>>();
     resources.sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
     Ok(resources)
+}
+
+fn persist_candidate(candidate: &ResourceRegistryPersistedState) -> Result<(), ApiError> {
+    let path = persistence_path_store()
+        .read()
+        .map_err(lock_error)?
+        .clone()
+        .ok_or_else(|| internal_error("resource registry persistence path is not initialized".to_string()))?;
+    persist_resource_registry_state(&path, candidate).map_err(internal_error)
+}
+
+fn replace_in_memory_state(candidate: &ResourceRegistryPersistedState) -> Result<(), ApiError> {
+    let mut state = resource_state_store().write().map_err(lock_error)?;
+    *state = candidate.clone();
+    Ok(())
+}
+
+fn replace_in_memory_state_string(candidate: &ResourceRegistryPersistedState) -> Result<(), String> {
+    let mut state = resource_state_store()
+        .write()
+        .map_err(|error| format!("resource registry state lock poisoned: {error}"))?;
+    *state = candidate.clone();
+    Ok(())
 }
 
 fn registry_key(project_id: &str, resource_id: &str) -> String {
