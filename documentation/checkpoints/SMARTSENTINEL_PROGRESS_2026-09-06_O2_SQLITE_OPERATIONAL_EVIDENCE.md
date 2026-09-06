@@ -19,7 +19,7 @@ Baseline main: `8f9ab4c2a90ba59ce199c30558404f5dee506e6a`
 - 59/100 — LIVE PASS.
 - 60/100 — LIVE PASS.
 - 61/100 — LIVE PASS.
-- 62/100 — IMPLEMENTED, pending compile/live restart validation.
+- 62/100 — LIVE PASS.
 
 ## Step 62 — durable operational evidence in SQLite
 
@@ -59,9 +59,32 @@ Columns retain queryable causal/context fields:
 - `side_effects_performed`;
 - original event `payload` serialized as JSON.
 
-`UNIQUE(project_id, event_id)` preserves the existing duplicate-event rejection rule across dserver restarts.
+`UNIQUE(project_id, event_id)` preserves duplicate-event rejection across dserver restarts.
 
 Indexes cover project/time, resource, node, D-Graph revision and event kind.
+
+## Live validation
+
+Live validation used project `monitor-f49c8`, node `fog-01`, active D-Graph revision 4 and resource `resource:os:9d564a4d83804cff3b62e84394a8da53d8610c717cd892623a2242ebaabb6e09`.
+
+Validation event:
+
+- `event_id=opev:step62-live-1788724605`;
+- `event_kind=step62_validation_probe`;
+- `dgraph_revision=4`;
+- `sequence=1`;
+- `side_effects_performed=false`;
+- payload recorded `validation_step=62` and `purpose=sqlite_restart_durability`.
+
+Observed proof:
+
+1. POST accepted and returned the expected event identity/context;
+2. GET filtered by `event_kind=step62_validation_probe` returned exactly the persisted event;
+3. reposting the same `event_id` returned HTTP 409 with duplicate-event error;
+4. dserver was stopped and restarted without reposting the event;
+5. the same event was returned after restart from SQLite with the same event id, revision, kind and payload.
+
+This proves both event durability and duplicate protection survive dserver process restart.
 
 ## Storage semantics
 
@@ -71,20 +94,6 @@ The evidence table is intentionally separate from `control_state_history`.
 - `operational_evidence` answers what operational events/observations/reconciliations were reported.
 
 This avoids conflating desired/governed state history with event/evidence history while keeping both in the same embedded `datum-control-plane.db` file.
-
-## Planned live proof
-
-1. update to `agent/o2-sqlite-operational-evidence`;
-2. build/test with the existing locked dependencies;
-3. start dserver with `DATUM_CONTROL_STATE_DB_PATH=C:\DatumState\datum-control-plane.db`;
-4. POST one clearly marked step-62 validation evidence event for `monitor-f49c8/fog-01`, revision 4;
-5. GET/filter it through the existing REST endpoint;
-6. POST the same `event_id` again and verify HTTP 409;
-7. stop/restart dserver without reposting the event;
-8. GET/filter the event again and verify it survived restart;
-9. verify Resource Registry binding, D-Graph rev4 and GraphQL current/history queries remain unchanged.
-
-PASS proves operational evidence is durable and independently queryable without altering SmartSentinel observation ownership, D-Graph governance, or GraphQL mutation boundaries.
 
 ## Architecture statement
 
