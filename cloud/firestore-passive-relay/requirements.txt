@@ -1,0 +1,4 @@
+functions-framework>=3.8,<4
+cloudevents>=1.11,<2
+google-cloud-pubsub>=2.27,<3
+google-events>=0.13,<1
