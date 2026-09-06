@@ -13,9 +13,9 @@ Baseline main: `1bf29169a0bc4ea903fcf753ab2914b480fbe738`
 - 53/100 — LIVE PASS.
 - 54/100 — LIVE PASS.
 - 55/100 — LIVE PASS.
-- 56/100 — IMPLEMENTED, pending compile/live restart validation.
+- 56/100 — LIVE PASS.
 
-The validated 55/100 baseline is on `main`. Step 56 is isolated in this branch.
+Step 56 is closed after compile/test plus live restart validation on the real dserver/fog-01 environment.
 
 ## Step 56 — durable Resource Registry + role-binding state
 
@@ -55,7 +55,7 @@ Resource discovery payloads are revalidated when durable state is loaded.
 
 ### Transaction semantics
 
-Resource discovery and initial binding mutations now use a transaction lock and candidate-state workflow:
+Resource discovery and initial binding mutations use a transaction lock and candidate-state workflow:
 
 1. clone current in-memory state;
 2. apply and validate the candidate mutation;
@@ -114,21 +114,37 @@ The persistence module includes tests for:
 - bound-resource/binding consistency validation;
 - JSON persistence round-trip through the atomic file lifecycle.
 
-### Planned live restart proof
+## Live restart validation — PASS
 
-Because the currently running dserver predates step 56 and holds its Resource Registry only in process memory, the first restart into the step-56 binary cannot retroactively persist that old memory.
+The step-56 dserver was seeded once after moving from the pre-persistence binary. The fog-01 identity before the durability restart was:
 
-The intended live proof is therefore:
+- resource: `resource:os:9d564a4d83804cff3b62e84394a8da53d8610c717cd892623a2242ebaabb6e09`;
+- assigned node: `fog-01`;
+- binding: `binding:af8d1eb7-10e4-499a-b0f5-248e4bbe30f4`.
 
-1. stop the old dserver only when ready for the step-56 test;
-2. build/start the step-56 dserver;
-3. rehydrate the existing fog-01 resource/binding once;
-4. confirm `.datum-resource-registry-state.json` contains the bound fog resource and active binding;
-5. stop and restart the step-56 dserver a second time without running the rehydrate script;
-6. confirm `GET /api/v1/resources` and `GET /api/v1/resource-bindings` immediately restore the same resource/binding identity;
-7. confirm Operational D-Graph is absent after the second restart, documenting the intentional step-56 boundary rather than treating it as a failure.
+After stopping and restarting the step-56 dserver without running the rehydration script:
 
-The key PASS criterion is that the same `resource_id`, `assigned_node_id=fog-01`, and `binding_id` survive the second process restart without rehydration.
+- `GET /api/v1/resources` immediately returned one resource with `bound_count=1`;
+- the same resource ID remained `state=bound` and `assigned_node_id=fog-01`;
+- `GET /api/v1/resource-bindings` immediately returned one active binding;
+- the restored binding ID was exactly `binding:af8d1eb7-10e4-499a-b0f5-248e4bbe30f4`;
+- the explicit before/after comparison printed `BINDING_PERSISTENCE_PASS`.
+
+This proves Resource Registry and explicit role-binding identity survived a real dserver process restart without rehydration.
+
+The same post-restart session intentionally queried `GET /api/v1/operational-dgraph` and received HTTP 404 with `operational D-Graph not found`. This is also a PASS result for the step boundary: Operational D-Graph remained process-local exactly as documented and becomes the next durable-control-plane target.
+
+### Closure boundary after step 56
+
+After a dserver restart:
+
+- Resource Registry — durable / restored;
+- role bindings — durable / restored with the same binding identity;
+- Operational D-Graph — still process-local;
+- operational reconciliation authorization — still process-local;
+- remote operational evidence — still process-local.
+
+Step 56 is therefore CLOSED / LIVE PASS. Step 57 should persist the active Operational D-Graph and revision while retaining the existing revision/idempotency/invalidation semantics.
 
 ## Architecture statement
 
