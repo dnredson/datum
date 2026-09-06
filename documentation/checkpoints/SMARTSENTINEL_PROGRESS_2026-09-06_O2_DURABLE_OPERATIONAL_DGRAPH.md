@@ -14,9 +14,9 @@ Baseline main: `95fa481ffd114b7bb37cd7c9a506432397f14ec1`
 - 54/100 — LIVE PASS.
 - 55/100 — LIVE PASS.
 - 56/100 — LIVE PASS.
-- 57/100 — IMPLEMENTED, pending compile/live restart validation.
+- 57/100 — LIVE PASS.
 
-The validated 56/100 baseline is on `main`. Step 57 is isolated in this branch.
+The validated step-57 state is ready to advance to `main`.
 
 ## Step 57 — durable active Operational D-Graph
 
@@ -35,7 +35,7 @@ Step 57 deliberately does **not** persist:
 - operational reconciliation authorizations;
 - remote operational evidence.
 
-This means a restart restores desired state but does not resurrect a previous host-mutation authorization. A restored node slice must therefore carry the desired services and D-Graph revision while `authorization` remains absent until the control plane explicitly authorizes the current revision again.
+This means a restart restores desired state but does not resurrect a previous host-mutation authorization. A restored node slice therefore carries the desired services and D-Graph revision while `authorization` remains absent until the control plane explicitly authorizes the current revision again.
 
 ### Persistence contract
 
@@ -45,44 +45,19 @@ Persistence version: `0.1.0`.
 
 The persisted document contains a map of project ID to validated `OperationalDGraph`.
 
-Validation rejects:
-
-- unsupported persistence versions;
-- graph payloads that fail the normal Operational D-Graph validator;
-- project map keys that do not match `graph.project_id`.
+Validation rejects unsupported persistence versions, invalid Operational D-Graph payloads, and project map keys that do not match `graph.project_id`.
 
 ### File durability
 
-The file lifecycle matches the previously validated dserver persistence discipline:
+The file lifecycle matches the previously validated dserver persistence discipline: pretty JSON serialization, sibling `.tmp` write, `sync_all`, previous primary moved to `.bak`, activation by rename, backup restoration attempt on activation failure, and best-effort cleanup after success.
 
-- pretty JSON serialization;
-- sibling `.tmp` write;
-- `sync_all` before activation;
-- previous primary moved to `.bak` when present;
-- temporary file renamed to the primary;
-- backup restoration attempt if activation fails;
-- successful backup cleanup is best-effort.
+Default path: `.datum-operational-dgraph-state.json`.
 
-Default path:
-
-`.datum-operational-dgraph-state.json`
-
-Optional override:
-
-`DATUM_OPERATIONAL_DGRAPH_STATE_PATH`
-
-Primary, `.tmp`, and `.bak` files are ignored by Git.
+Optional override: `DATUM_OPERATIONAL_DGRAPH_STATE_PATH`.
 
 ### Transaction semantics
 
-`PUT /api/v1/operational-dgraph` now uses a transaction lock and candidate-state flow:
-
-1. validate the incoming graph and project contract;
-2. apply existing revision rules against the active graph;
-3. build a complete candidate persisted graph map;
-4. persist and validate the candidate;
-5. only after persistence succeeds, replace in-memory active graphs;
-6. if a higher revision replaced an existing graph, invalidate process-local operational authorizations for that project.
+`PUT /api/v1/operational-dgraph` now uses a transaction lock and candidate-state flow: validate, apply revision rules, construct complete candidate, persist candidate, then replace in-memory graphs. A higher revision invalidates current process-local operational authorizations only after the durable graph commit succeeds.
 
 The existing revision semantics remain unchanged:
 
@@ -93,58 +68,24 @@ The existing revision semantics remain unchanged:
 
 ### Lazy restore
 
-Operational D-Graph persistence is initialized lazily on first Operational D-Graph API use.
+Operational D-Graph persistence is initialized lazily on first Operational D-Graph API use. Valid graphs are restored, while process-local authorizations are explicitly cleared. Missing or invalid persisted state starts fail-closed with empty graph/authorization memory.
 
-On valid restore:
+### Live restart validation — PASS
 
-- active graphs are restored;
-- process-local authorizations are explicitly cleared.
+The live proof used the already durable fog-01 Resource Registry/binding state from step 56.
 
-On missing persisted state:
+After publishing and authorizing D-Graph revision 3, dserver was stopped and restarted without republishing or rehydrating graph/resource/binding state.
 
-- active graph state starts empty;
-- authorizations start empty.
+Observed after restart:
 
-On invalid/corrupt persisted state:
+- dserver logged restoration of `.datum-operational-dgraph-state.json`;
+- dserver also restored `.datum-resource-registry-state.json`;
+- `GET /api/v1/operational-dgraph` immediately returned `dgraph:o2-mqtt-role-1`, `revision=3`, `project_id=monitor-f49c8`;
+- `GET /api/v1/nodes/fog-01/operational-dgraph-slice` immediately returned revision 3 and MQTT `container/running` desired state;
+- the restored slice returned `authorization=null`, proving the prior host-mutation authorization did not survive restart;
+- attempting to publish the revision-2 fixture returned HTTP `409` with `operational D-Graph revision regression: active revision is 3, received 2`.
 
-- persisted state is not trusted;
-- active graph and authorization state start empty.
-
-### Compatibility
-
-The existing HTTP contracts remain unchanged:
-
-- `PUT/GET /api/v1/operational-dgraph`;
-- `GET /api/v1/nodes/:node_id/operational-dgraph-slice`;
-- `POST /api/v1/nodes/:node_id/operational-reconciliation/authorize`.
-
-Resource Registry/binding persistence from 56 remains independent and unchanged.
-
-### Automated validation
-
-The persistence module includes tests for:
-
-- project-key / graph-project consistency;
-- persistence round-trip preserving revision 3.
-
-### Planned live restart proof
-
-The intended proof uses the already durable fog-01 Resource Registry/binding state from step 56:
-
-1. stop dserver only when ready to build the step-57 binary;
-2. build/test step 57;
-3. start dserver with both durable Resource Registry and Operational D-Graph paths configured;
-4. publish revision 3 once (no resource/binding rehydration should be needed);
-5. authorize revision 3 and confirm the slice carries the authorization before restart;
-6. confirm `.datum-operational-dgraph-state.json` records revision 3;
-7. stop/restart dserver without publishing or rehydrating any graph/resource/binding state;
-8. confirm `GET /api/v1/operational-dgraph` immediately returns the same D-Graph ID and revision 3;
-9. confirm the fog-01 slice still contains MQTT desired running and revision 3;
-10. confirm the restored slice has no authorization;
-11. confirm a revision-2 PUT is rejected with 409 after restart, proving the restored revision participates in normal regression protection;
-12. explicitly authorize revision 3 again and confirm the authorization reappears.
-
-PASS means desired state/revision survives the process restart while host-mutation authorization remains fail-closed and requires explicit renewal.
+These results prove the restored revision is active control-plane state, not merely archived JSON, while authorization remains fail-closed across restart.
 
 ## Architecture statement
 
