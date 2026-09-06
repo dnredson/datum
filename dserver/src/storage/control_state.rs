@@ -8,11 +8,20 @@ use std::{
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
 
 pub const CONTROL_STATE_DB_PATH_ENV: &str = "DATUM_CONTROL_STATE_DB_PATH";
 pub const CONTROL_STATE_SCHEMA_VERSION: &str = "0.1.0";
 pub const DOMAIN_RESOURCE_REGISTRY: &str = "resource_registry";
 pub const DOMAIN_OPERATIONAL_DGRAPH: &str = "operational_dgraph";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlStateHistoryEntry {
+    pub id: i64,
+    pub domain: String,
+    pub payload: Value,
+    pub recorded_at_utc: String,
+}
 
 pub fn configured_control_state_db_path() -> Option<PathBuf> {
     env::var(CONTROL_STATE_DB_PATH_ENV)
@@ -94,6 +103,57 @@ pub fn domain_history_count(db_path: &Path, domain: &str) -> Result<u64, String>
     u64::try_from(count).map_err(|_| {
         format!("SQLite control-state history domain '{domain}' returned a negative count")
     })
+}
+
+pub fn load_domain_history(
+    db_path: &Path,
+    domain: &str,
+    limit: u32,
+) -> Result<Vec<ControlStateHistoryEntry>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let connection = open_database(db_path)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, domain, payload_json, recorded_at_utc
+             FROM control_state_history
+             WHERE domain = ?1
+             ORDER BY id DESC
+             LIMIT ?2",
+        )
+        .map_err(|error| format!("prepare SQLite control-state history query: {error}"))?;
+
+    let rows = statement
+        .query_map(params![domain, i64::from(limit)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| format!("query SQLite control-state history domain '{domain}': {error}"))?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, row_domain, payload_json, recorded_at_utc) = row
+            .map_err(|error| format!("read SQLite control-state history domain '{domain}': {error}"))?;
+        let payload = serde_json::from_str(&payload_json).map_err(|error| {
+            format!(
+                "parse SQLite control-state history domain '{domain}' entry {id}: {error}"
+            )
+        })?;
+        entries.push(ControlStateHistoryEntry {
+            id,
+            domain: row_domain,
+            payload,
+            recorded_at_utc,
+        });
+    }
+
+    Ok(entries)
 }
 
 pub fn list_current_domains(db_path: &Path) -> Result<Vec<(String, String)>, String> {
@@ -220,6 +280,17 @@ mod tests {
             .expect("sample state should exist");
         assert_eq!(restored, second);
         assert_eq!(domain_history_count(&path, "sample").unwrap(), 2);
+
+        let history = load_domain_history(&path, "sample", 10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].payload["revision"], 2);
+        assert_eq!(history[0].payload["label"], "second");
+        assert_eq!(history[1].payload["revision"], 1);
+        assert_eq!(history[1].payload["label"], "first");
+
+        let latest_only = load_domain_history(&path, "sample", 1).unwrap();
+        assert_eq!(latest_only.len(), 1);
+        assert_eq!(latest_only[0].payload["revision"], 2);
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("db-wal"));
