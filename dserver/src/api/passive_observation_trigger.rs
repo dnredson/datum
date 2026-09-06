@@ -88,7 +88,7 @@ pub async fn process_passive_observation_trigger(
             latest_observed_at_utc: None,
             notification_matches_latest: None,
             assessment: None,
-            analysis_error: Some(error),
+            analysis_error: Some(error.to_string()),
             side_effects_performed: false,
         },
     }
