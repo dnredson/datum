@@ -16,7 +16,7 @@ Baseline main: `7874eebaba68aba207c0a4082a6b08ce65bc03bd`
 - 56/100 — LIVE PASS.
 - 57/100 — LIVE PASS.
 - 58/100 — LIVE PASS.
-- 59/100 — IMPLEMENTED, pending compile/live storage-migration validation.
+- 59/100 — LIVE PASS.
 
 ## Step 59 — storage abstraction + SQLite local control-plane backend
 
@@ -45,6 +45,8 @@ The path is intentionally runtime-configurable so a Windows dserver may store th
 Recommended live path:
 
 `C:\DatumState\datum-control-plane.db`
+
+SQLite is embedded through `rusqlite` with the bundled SQLite library. It is not a separate daemon or network service; starting dserver opens/creates the configured database file directly.
 
 ## SQLite schema
 
@@ -120,24 +122,41 @@ It reports:
 
 This avoids requiring a standalone SQLite CLI on the Windows host.
 
-## Planned live proof
+## Live storage-migration validation — PASS
 
-1. stop dserver only when ready to build step 59;
-2. build/tests without `--locked` once so the new bundled SQLite dependency updates `dserver/Cargo.lock`;
-3. preserve the validated step-58 JSON files containing the durable Resource Registry/binding and revision-4 Operational D-Graph state;
-4. configure `DATUM_CONTROL_STATE_DB_PATH` to a new empty database path outside OneDrive;
-5. start dserver with the existing legacy JSON paths still configured;
-6. query Resource Registry and Operational D-Graph so both domains initialize;
-7. verify the SQLite inspector reports both `resource_registry` and `operational_dgraph` domains;
-8. stop dserver;
-9. temporarily rename the legacy JSON state files so they cannot be used;
-10. restart dserver with only the existing SQLite database available;
-11. confirm the same resource/binding identity and Operational D-Graph revision 4 are restored;
-12. confirm authorization remains null because the revision-3 durable lease was invalidated in step 58;
-13. publish an idempotent/current-state update or a later controlled mutation and verify the relevant SQLite history count increases;
-14. restore/retain legacy JSON files only as recovery artifacts, not as the active backend.
+The live Windows migration proof completed successfully on 2026-09-06 using:
 
-PASS proves that the storage backend can change from atomic JSON files to embedded SQLite without changing the already validated control-plane semantics.
+`C:\DatumState\datum-control-plane.db`
+
+The validated step-58 Resource Registry/binding state and revision-4 Operational D-Graph state were imported from the existing JSON persistence into a new SQLite database.
+
+After temporarily removing the legacy JSON files from their configured paths and restarting dserver, the control plane restored the same durable state from SQLite alone:
+
+- Resource Registry remained bound to `fog-01`;
+- the previously validated binding identity remained intact;
+- Operational D-Graph revision 4 remained active;
+- MQTT remained desired/running;
+- the invalidated revision-3 authorization did not reappear.
+
+The final SQLite inspector output was:
+
+```text
+control_state_db=C:\DatumState\datum-control-plane.db
+schema_version=0.1.0
+current_domain_count=2
+domain=operational_dgraph updated_at_utc=2026-09-06T12:50:12.811547300+00:00 history_count=1
+domain=resource_registry updated_at_utc=2026-09-06T12:51:25.701613900+00:00 history_count=2
+```
+
+The second Resource Registry history entry resulted from a subsequent accepted Resource Registry update, proving that the SQLite backend stores an append-only control-state history in addition to the current snapshot.
+
+PASS therefore proves:
+
+- automatic validated JSON -> SQLite bootstrap works;
+- subsequent restart does not require the JSON files;
+- control-plane binding and D-Graph semantics are unchanged;
+- invalidated authorization remains fail-closed;
+- accepted state transitions append to SQLite history.
 
 ## Scope boundary
 
@@ -149,8 +168,8 @@ Step 59 does not yet:
 - expose GraphQL;
 - alter SmartSentinel publish/reconciliation contracts.
 
-Those follow after the storage migration itself is live validated.
+GraphQL is an API/query layer rather than a third database. It is intentionally introduced only after this storage migration is proven, so it can compose the already stable SQLite control state and Firebase observation state without entering the reconciliation mutation path.
 
 ## Architecture statement
 
-`SmartSentinel publishes distributed observation evidence -> Firebase preserves shared observation context; dserver accepts/governs bindings, D-Graph revisions, and authorization leases -> SQLite preserves accepted local control-plane truth; future GraphQL composes both as a unified query context. External AI remains responsible for placement/reasoning; DATUM remains the conceptual framework.`
+`SmartSentinel publishes distributed observation evidence -> Firebase preserves shared observation context; dserver accepts/governs bindings, D-Graph revisions, and authorization leases -> SQLite preserves accepted local control-plane truth; GraphQL composes both as a unified query context. External AI remains responsible for placement/reasoning; DATUM remains the conceptual framework.`
