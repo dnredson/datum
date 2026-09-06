@@ -5,7 +5,11 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::{core::model::SnapshotEnvelope, AppState};
+use crate::{
+    api::passive_observation_trigger::process_passive_observation_trigger,
+    core::model::SnapshotEnvelope,
+    AppState,
+};
 
 pub async fn ingest_snapshot(
     State(state): State<AppState>,
@@ -75,11 +79,46 @@ pub async fn ingest_snapshot(
             )
         })?;
 
+    // Snapshot persistence owns the ingest outcome. Passive assessment is fail-soft:
+    // a missing D-Graph or temporary analysis problem must not reject telemetry that
+    // has already been durably accepted by Firebase.
+    let passive_trigger = process_passive_observation_trigger(
+        &state,
+        &project_id,
+        &payload.snapshot.meta.node_id,
+        &payload.snapshot.meta.cycle_id,
+        &payload.snapshot.meta.observed_at_utc,
+        "dserver_snapshot_ingest",
+    )
+    .await;
+
+    let passive_analysis = json!({
+        "trigger_source": passive_trigger.trigger_source,
+        "analysis_status": passive_trigger.analysis_status,
+        "latest_cycle_id": passive_trigger.latest_cycle_id,
+        "latest_observed_at_utc": passive_trigger.latest_observed_at_utc,
+        "notification_matches_latest": passive_trigger.notification_matches_latest,
+        "telemetry_freshness": passive_trigger
+            .assessment
+            .as_ref()
+            .and_then(|assessment| assessment.nodes.first())
+            .map(|node| node.telemetry_freshness.clone()),
+        "service_comparisons": passive_trigger
+            .assessment
+            .as_ref()
+            .and_then(|assessment| assessment.nodes.first())
+            .map(|node| node.service_comparisons.clone())
+            .unwrap_or_default(),
+        "analysis_error": passive_trigger.analysis_error,
+        "side_effects_performed": false
+    });
+
     Ok(Json(json!({
         "accepted": true,
         "project_id": project_id,
         "node_id": payload.snapshot.meta.node_id,
         "cycle_id": payload.snapshot.meta.cycle_id,
-        "observed_at_utc": payload.snapshot.meta.observed_at_utc
+        "observed_at_utc": payload.snapshot.meta.observed_at_utc,
+        "passive_analysis": passive_analysis
     })))
 }
