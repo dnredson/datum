@@ -35,6 +35,7 @@ pub mod local_mapping_patch_proposals;
 pub mod local_mapping_preflight;
 pub mod local_mapping_recommendations;
 pub mod model;
+pub mod operational_analysis_context;
 pub mod operational_dgraph;
 pub mod operational_dgraph_persistence;
 pub mod operational_evidence;
