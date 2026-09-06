@@ -33,31 +33,42 @@ pub async fn acquire_passive_analysis_context(
         return Err(bad_request("node_id must not be empty".to_string()));
     }
 
-    let graph = operational_dgraph_snapshot(&project_id)
-        .map_err(internal_error)?
-        .ok_or_else(|| {
-            not_found(format!(
-                "operational D-Graph not found for project '{}'",
-                project_id
-            ))
-        })?;
+    let context = acquire_passive_analysis_context_for_node(&state, &project_id, &node_id)
+        .await
+        .map_err(not_found)?;
+    Ok(Json(context))
+}
 
+pub async fn acquire_passive_analysis_context_for_node(
+    state: &AppState,
+    project_id: &str,
+    node_id: &str,
+) -> Result<OperationalAnalysisContext, String> {
+    let project_id = project_id.trim();
+    let node_id = node_id.trim();
+    if project_id.is_empty() {
+        return Err("project_id must not be empty".to_string());
+    }
+    if node_id.is_empty() {
+        return Err("node_id must not be empty".to_string());
+    }
+
+    let graph = operational_dgraph_snapshot(project_id)?
+        .ok_or_else(|| format!("operational D-Graph not found for project '{}'", project_id))?;
     let telemetry = state
         .firebase
-        .get_latest_snapshot(&project_id, &node_id)
+        .get_latest_snapshot(project_id, node_id)
         .await
         .map_err(|error| error.to_string());
+    let freshness_max_age_seconds = telemetry_freshness_max_age_seconds_string()?;
 
-    let freshness_max_age_seconds = telemetry_freshness_max_age_seconds()?;
-    let context = build_passive_analysis_context(
+    build_passive_analysis_context(
         &graph,
-        &node_id,
+        node_id,
         telemetry,
         Utc::now(),
         freshness_max_age_seconds,
     )
-    .map_err(not_found)?;
-    Ok(Json(context))
 }
 
 pub async fn acquire_active_analysis_context(
@@ -113,25 +124,29 @@ pub async fn acquire_active_analysis_context(
     Ok(Json(context))
 }
 
-fn telemetry_freshness_max_age_seconds() -> Result<u64, ApiError> {
+fn telemetry_freshness_max_age_seconds_string() -> Result<u64, String> {
     match env::var(TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV) {
         Ok(value) if !value.trim().is_empty() => {
             let parsed = value.trim().parse::<u64>().map_err(|error| {
-                internal_error(format!(
+                format!(
                     "invalid {}='{}': expected positive integer seconds: {}",
                     TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV, value, error
-                ))
+                )
             })?;
             if parsed == 0 {
-                return Err(internal_error(format!(
+                return Err(format!(
                     "invalid {}='0': freshness max age must be greater than zero",
                     TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV
-                )));
+                ));
             }
             Ok(parsed)
         }
         _ => Ok(DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS),
     }
+}
+
+fn telemetry_freshness_max_age_seconds() -> Result<u64, ApiError> {
+    telemetry_freshness_max_age_seconds_string().map_err(internal_error)
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
