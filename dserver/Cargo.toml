@@ -7,6 +7,13 @@ default-run = "DServer"
 [dependencies]
 anyhow = "1"
 async-graphql = "=7.0.2"
+# Keep async-graphql's internal crates on the exact same release. The 7.0.2
+# package declares semver-compatible ranges for these crates, which can otherwise
+# resolve to a newer 7.x derive/parser/value set whose generated metadata no
+# longer matches the 7.0.2 core types.
+async-graphql-derive = "=7.0.2"
+async-graphql-parser = "=7.0.2"
+async-graphql-value = "=7.0.2"
 axum = "0.7"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
