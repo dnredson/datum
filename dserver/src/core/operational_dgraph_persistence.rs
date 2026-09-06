@@ -8,9 +8,15 @@ use std::{
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::core::operational_dgraph::{
-    validate_operational_dgraph, OperationalDGraph, OperationalReconciliationAuthorization,
-    AUTHORIZATION_SCOPE_DURABLE,
+use crate::{
+    core::operational_dgraph::{
+        validate_operational_dgraph, OperationalDGraph, OperationalReconciliationAuthorization,
+        AUTHORIZATION_SCOPE_DURABLE,
+    },
+    storage::control_state::{
+        configured_control_state_db_path, load_domain_json, persist_domain_json,
+        DOMAIN_OPERATIONAL_DGRAPH,
+    },
 };
 
 pub const OPERATIONAL_DGRAPH_PERSISTENCE_VERSION: &str = "0.1.0";
@@ -138,6 +144,42 @@ pub fn validate_operational_dgraph_persisted_state(
 pub fn load_operational_dgraph_persisted_state(
     path: &Path,
 ) -> Result<Option<OperationalDGraphPersistedState>, String> {
+    if let Some(db_path) = configured_control_state_db_path() {
+        if let Some(state) = load_domain_json::<OperationalDGraphPersistedState>(
+            &db_path,
+            DOMAIN_OPERATIONAL_DGRAPH,
+        )? {
+            validate_operational_dgraph_persisted_state(&state)?;
+            return Ok(Some(state));
+        }
+
+        if let Some(legacy) = load_operational_dgraph_json_state(path)? {
+            validate_operational_dgraph_persisted_state(&legacy)?;
+            persist_domain_json(&db_path, DOMAIN_OPERATIONAL_DGRAPH, &legacy)?;
+            return Ok(Some(legacy));
+        }
+        return Ok(None);
+    }
+
+    load_operational_dgraph_json_state(path)
+}
+
+pub fn persist_operational_dgraph_state(
+    path: &Path,
+    state: &OperationalDGraphPersistedState,
+) -> Result<(), String> {
+    validate_operational_dgraph_persisted_state(state)?;
+
+    if let Some(db_path) = configured_control_state_db_path() {
+        return persist_domain_json(&db_path, DOMAIN_OPERATIONAL_DGRAPH, state);
+    }
+
+    persist_operational_dgraph_json_state(path, state)
+}
+
+fn load_operational_dgraph_json_state(
+    path: &Path,
+) -> Result<Option<OperationalDGraphPersistedState>, String> {
     let candidate = if path.exists() {
         path.to_path_buf()
     } else {
@@ -165,12 +207,10 @@ pub fn load_operational_dgraph_persisted_state(
     Ok(Some(state))
 }
 
-pub fn persist_operational_dgraph_state(
+fn persist_operational_dgraph_json_state(
     path: &Path,
     state: &OperationalDGraphPersistedState,
 ) -> Result<(), String> {
-    validate_operational_dgraph_persisted_state(state)?;
-
     if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -313,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_graph_round_trips_with_revision_and_durable_auth() {
+    fn persisted_json_graph_round_trips_with_revision_and_durable_auth() {
         let path = std::env::temp_dir().join(format!(
             "datum-operational-dgraph-persistence-{}.json",
             Uuid::new_v4()
@@ -325,8 +365,8 @@ mod tests {
             .authorizations
             .insert(authorization_key(&auth.project_id, &auth.node_id), auth.clone());
 
-        persist_operational_dgraph_state(&path, &state).unwrap();
-        let restored = load_operational_dgraph_persisted_state(&path)
+        persist_operational_dgraph_json_state(&path, &state).unwrap();
+        let restored = load_operational_dgraph_json_state(&path)
             .unwrap()
             .expect("state should exist");
         assert_eq!(restored, state);
