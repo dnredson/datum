@@ -30,59 +30,26 @@ Step 63 formalizes the two dserver observation-analysis acquisition modes withou
 
 `POST /api/v1/analysis-context/passive/:node_id`
 
-The caller identifies the node whose new observation triggered analysis. dserver:
-
-1. loads the accepted active Operational D-Graph from local control state;
-2. verifies the trigger node belongs to that active D-Graph revision;
-3. reads only that node's latest telemetry document from Firebase/Firestore;
-4. returns a scoped analysis context containing desired services plus observed telemetry.
-
-This models event-driven/passive analysis: dserver reacts to a notification rather than scanning the graph itself.
+The caller identifies the node whose new observation triggered analysis. dserver loads the accepted active Operational D-Graph, verifies that the trigger node belongs to that revision, reads only that node's latest Firebase/Firestore telemetry document, and returns a scoped desired-plus-observed context.
 
 ### Active mode
 
 `POST /api/v1/analysis-context/active`
 
-dserver:
+dserver loads the accepted active Operational D-Graph, traverses every node in that revision, starts latest-telemetry reads concurrently using Tokio tasks, and returns one desired-plus-observed context per graph node.
 
-1. loads the accepted active Operational D-Graph;
-2. traverses every node in that graph revision;
-3. starts Firebase latest-telemetry reads for all graph nodes concurrently using Tokio tasks;
-4. returns one context containing desired state and telemetry acquisition result per graph node.
+### Live validation
 
-This models server-initiated/active analysis while avoiding serial network latency across graph nodes.
+Live validation passed for project `monitor-f49c8`, Operational D-Graph `dgraph:o2-mqtt-role-1`, revision 4.
 
-## Context contract
+Passive acquisition for `fog-01` returned one node, desired MQTT/container/running, Firebase telemetry available at `2026-09-05T00:02:52.057683316Z`, no telemetry error, and `side_effects_performed=false`.
 
-The response includes:
+Active acquisition returned the same accepted revision and desired MQTT service, one node for the current single-node graph, the same available Firebase observation, no telemetry error, `trigger_node_id=null`, and `side_effects_performed=false`.
 
-- `schema_version=0.1.0`;
-- `acquisition_mode=passive|active`;
-- project, D-Graph id and active revision;
-- generation timestamp;
-- passive `trigger_node_id` when applicable;
-- node count;
-- `side_effects_performed=false`;
-- per node: desired services, telemetry source, availability, observed timestamp when present, raw latest telemetry, and retrieval error when unavailable.
+This proves event-scoped passive acquisition and server-initiated graph traversal are distinct while preserving the same accepted desired-state context and performing no host or control-plane mutation.
 
-Firebase failure is fail-soft at node level: accepted local desired state remains present even when telemetry is unavailable.
+### Architecture boundary
 
-No freshness classification is invented in step 63. The raw telemetry observation timestamp is exposed so a later explicit policy can classify fresh/stale/missing.
-
-## Live validation
-
-Live validation passed for project `monitor-f49c8` against accepted Operational D-Graph `dgraph:o2-mqtt-role-1` revision 4.
-
-Passive acquisition for `fog-01` returned `acquisition_mode=passive`, `trigger_node_id=fog-01`, `node_count=1`, desired MQTT/container/running, Firebase telemetry available, observation timestamp `2026-09-05T00:02:52.057683316Z`, no telemetry error, and `side_effects_performed=false`.
-
-Active acquisition returned `acquisition_mode=active`, `trigger_node_id=null`, the same accepted D-Graph revision 4, `node_count=1` for the current single-node revision, the same desired MQTT service, the same available Firebase observation, no telemetry error, and `side_effects_performed=false`.
-
-The outputs prove the distinction between event-scoped passive acquisition and server-initiated graph traversal while preserving identical accepted desired-state context and performing no mutation/reconciliation side effects.
-
-## Architecture boundary
-
-Step 63 does not place workloads, choose another node/cloud target, mutate D-Graph state, authorize host mutation, execute reconciliation, write telemetry, or invoke an AI/GNN decision. It only acquires and composes the context that a later analyzer/AI may consume.
-
-## Architecture statement
+Step 63 does not place workloads, choose a target, mutate D-Graph state, authorize host mutation, execute reconciliation, write telemetry, or invoke AI/GNN placement reasoning. It only acquires and composes context.
 
 `SmartSentinel observes -> Firebase preserves distributed telemetry; dserver may react passively to an observation notification or actively traverse the accepted D-Graph to acquire latest telemetry; these modes build context only. External AI/GNN remains responsible for placement/reasoning, dserver governs accepted state, SmartSentinel/WASM reconciles only when authorized, and DATUM remains the conceptual framework.`
