@@ -18,7 +18,7 @@ Baseline main: `f6f7d6207b4ca5d3ca2b1b4daca4222c8baa90f5`
 - 58/100 — LIVE PASS.
 - 59/100 — LIVE PASS.
 - 60/100 — LIVE PASS.
-- 61/100 — IMPLEMENTED, pending compile/live history-query validation.
+- 61/100 — LIVE PASS.
 
 ## Step 61 — SQLite control-state history through GraphQL
 
@@ -32,7 +32,7 @@ No storage ownership changes are introduced:
 
 ## New SQLite read capability
 
-`dserver/src/storage/control_state.rs` now exposes a typed `ControlStateHistoryEntry` and a bounded history loader.
+`dserver/src/storage/control_state.rs` exposes a typed `ControlStateHistoryEntry` and a bounded history loader.
 
 History reads:
 
@@ -71,6 +71,36 @@ Each history entry returns:
 
 When `DATUM_CONTROL_STATE_DB_PATH` is absent, these SQLite-history queries fail explicitly rather than silently reading legacy JSON files.
 
+## Live validation — PASS
+
+The Windows dserver used the step-59 SQLite database at `C:\DatumState\datum-control-plane.db` and the existing locked GraphQL dependency set.
+
+`controlStateDomains` returned the same durable domains and counts previously shown by the SQLite inspector:
+
+- `operational_dgraph`: `historyCount=1`, updated at `2026-09-06T12:50:12.811547300+00:00`;
+- `resource_registry`: `historyCount=2`, updated at `2026-09-06T12:51:25.701613900+00:00`.
+
+`controlStateHistory(domain: OPERATIONAL_DGRAPH, limit: 5)` returned newest history row `id=2` with:
+
+- `dgraph_id=dgraph:o2-mqtt-role-1`;
+- active `revision=4`;
+- no GraphQL errors.
+
+`controlStateHistory(domain: RESOURCE_REGISTRY, limit: 5)` returned newest-first rows `id=3` then `id=1`, proving append-order history. Both rows retained the same durable binding:
+
+`binding:af8d1eb7-10e4-499a-b0f5-248e4bbe30f4 -> fog-01 -> active`
+
+while the resource observation history evolved from:
+
+- row `id=1`: `observation_count=1`;
+- row `id=3`: `observation_count=2`.
+
+The same resource identity remained bound throughout:
+
+`resource:os:9d564a4d83804cff3b62e84394a8da53d8610c717cd892623a2242ebaabb6e09`.
+
+This proves the GraphQL read plane can retrieve both current unified context and historical accepted control-plane state without changing the Firebase/SQLite ownership boundary.
+
 ## Read-only boundary
 
 Step 61 adds no GraphQL mutation or subscription.
@@ -83,19 +113,6 @@ It cannot:
 - execute reconciliation;
 - modify SQLite history;
 - write Firebase telemetry.
-
-## Planned live proof
-
-1. update to `agent/o2-graphql-control-history`;
-2. build/test dserver using the already locked GraphQL dependency set;
-3. start dserver with `DATUM_CONTROL_STATE_DB_PATH=C:\DatumState\datum-control-plane.db`;
-4. query `controlStateDomains` and verify the same counts already observed by `control-state-inspect` (`operational_dgraph` and `resource_registry`);
-5. query `controlStateHistory(domain: OPERATIONAL_DGRAPH, limit: 5)` and verify the newest payload contains active Operational D-Graph revision 4;
-6. query `controlStateHistory(domain: RESOURCE_REGISTRY, limit: 5)` and verify the newest payload contains the durable fog-01 resource/binding and current observation count;
-7. verify ordering is newest-first and the requested limit is honored;
-8. repeat the step-60 compact `node(...)` query to ensure unified current context remains unchanged.
-
-PASS proves the dserver can expose both current unified context and durable accepted-state history through one read-only GraphQL plane while preserving Firebase/SQLite ownership boundaries.
 
 ## Architecture statement
 
