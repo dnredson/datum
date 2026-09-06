@@ -11,8 +11,17 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::operational_evidence::{
-    validate_operational_evidence_event, OperationalEvidenceEvent,
+use crate::{
+    core::operational_evidence::{
+        validate_operational_evidence_event, OperationalEvidenceEvent,
+    },
+    storage::{
+        control_state::configured_control_state_db_path,
+        operational_evidence::{
+            append_operational_evidence, load_operational_evidence,
+            AppendOperationalEvidenceOutcome, OperationalEvidenceFilter,
+        },
+    },
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
@@ -48,6 +57,18 @@ pub async fn post_operational_evidence(
     payload.project_id = project_id.clone();
     validate_operational_evidence_event(&payload).map_err(bad_request)?;
 
+    if let Some(db_path) = configured_control_state_db_path() {
+        match append_operational_evidence(&db_path, &payload).map_err(internal_error)? {
+            AppendOperationalEvidenceOutcome::Inserted => return Ok(JsonResponse(payload)),
+            AppendOperationalEvidenceOutcome::Duplicate => {
+                return Err(conflict(format!(
+                    "operational evidence event_id '{}' already exists",
+                    payload.event_id
+                )))
+            }
+        }
+    }
+
     let mut evidence = store().write().map_err(lock_error)?;
     let events = evidence.entry(project_id).or_default();
     if events.iter().any(|event| event.event_id == payload.event_id) {
@@ -67,27 +88,45 @@ pub async fn list_operational_evidence(
 ) -> Result<JsonResponse<Value>, ApiError> {
     let project_id = extract_project_id(&headers)?;
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
-    let evidence = store().read().map_err(lock_error)?;
-    let mut events = evidence
-        .get(&project_id)
-        .into_iter()
-        .flat_map(|events| events.iter())
-        .filter(|event| {
-            matches_optional(query.resource_id.as_deref(), Some(event.resource_id.as_str()))
-                && matches_optional(query.node_id.as_deref(), event.node_id.as_deref())
-                && matches_optional(query.dgraph_id.as_deref(), event.dgraph_id.as_deref())
-                && query
-                    .dgraph_revision
-                    .map(|revision| event.dgraph_revision == Some(revision))
-                    .unwrap_or(true)
-                && matches_optional(query.event_kind.as_deref(), Some(event.event_kind.as_str()))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
 
-    if events.len() > limit {
-        events = events.split_off(events.len() - limit);
-    }
+    let events = if let Some(db_path) = configured_control_state_db_path() {
+        load_operational_evidence(
+            &db_path,
+            OperationalEvidenceFilter {
+                project_id: &project_id,
+                resource_id: query.resource_id.as_deref(),
+                node_id: query.node_id.as_deref(),
+                dgraph_id: query.dgraph_id.as_deref(),
+                dgraph_revision: query.dgraph_revision,
+                event_kind: query.event_kind.as_deref(),
+                limit: limit as u32,
+            },
+        )
+        .map_err(internal_error)?
+    } else {
+        let evidence = store().read().map_err(lock_error)?;
+        let mut events = evidence
+            .get(&project_id)
+            .into_iter()
+            .flat_map(|events| events.iter())
+            .filter(|event| {
+                matches_optional(query.resource_id.as_deref(), Some(event.resource_id.as_str()))
+                    && matches_optional(query.node_id.as_deref(), event.node_id.as_deref())
+                    && matches_optional(query.dgraph_id.as_deref(), event.dgraph_id.as_deref())
+                    && query
+                        .dgraph_revision
+                        .map(|revision| event.dgraph_revision == Some(revision))
+                        .unwrap_or(true)
+                    && matches_optional(query.event_kind.as_deref(), Some(event.event_kind.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if events.len() > limit {
+            events = events.split_off(events.len() - limit);
+        }
+        events
+    };
 
     Ok(JsonResponse(json!({
         "project_id": project_id,
@@ -119,6 +158,13 @@ fn bad_request(message: String) -> ApiError {
 
 fn conflict(message: String) -> ApiError {
     (StatusCode::CONFLICT, JsonResponse(json!({"error": message})))
+}
+
+fn internal_error(message: String) -> ApiError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({"error": message})),
+    )
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> ApiError {
