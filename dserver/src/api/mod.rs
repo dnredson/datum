@@ -21,6 +21,7 @@ pub mod dispatch;
 pub mod dmap;
 pub mod events;
 pub mod graph;
+pub mod graphql;
 pub mod health;
 pub mod ingest;
 pub mod installation_plan;
