@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{env, sync::Arc};
 
 use async_graphql::{
     http::GraphiQLSource, Context, EmptyMutation, EmptySubscription, Enum, Json, Object, Schema,
@@ -9,14 +9,19 @@ use axum::{
     response::Html,
     Json as AxumJson,
 };
+use chrono::Utc;
 use serde_json::Value;
 
 use crate::{
     api::{
-        operational_dgraph::operational_dgraph_slice_snapshot,
+        operational_dgraph::{operational_dgraph_slice_snapshot, operational_dgraph_snapshot},
         resource_registry::{active_resource_binding_for_node, resource_registry_snapshot},
     },
     core::{
+        operational_analysis_context::{
+            build_passive_analysis_context, OperationalAnalysisContext,
+            OperationalServiceComparison, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
+        },
         operational_dgraph::{
             OperationalDGraphSlice, OperationalDesiredService,
             OperationalReconciliationAuthorization,
@@ -34,6 +39,9 @@ use crate::{
     },
     AppState,
 };
+
+const TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV: &str =
+    "DATUM_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS";
 
 pub type DatumSchema = Schema<QueryRoot, EmptyMutation, EmptySubscription>;
 
@@ -93,13 +101,35 @@ impl QueryRoot {
 
         let slice = operational_dgraph_slice_snapshot(&project_id, &node_id)
             .map_err(async_graphql::Error::new)?;
+        let graph = operational_dgraph_snapshot(&project_id)
+            .map_err(async_graphql::Error::new)?;
 
         let firebase = ctx.data::<Arc<FirebaseClient>>()?;
-        let (latest_telemetry, telemetry_available, telemetry_error) =
-            match firebase.get_latest_snapshot(&project_id, &node_id).await {
-                Ok(value) => (Some(Json(value)), true, None),
-                Err(error) => (None, false, Some(error.to_string())),
-            };
+        let telemetry = firebase
+            .get_latest_snapshot(&project_id, &node_id)
+            .await
+            .map_err(|error| error.to_string());
+
+        let assessment = if let Some(graph) = graph.as_ref() {
+            let freshness_max_age_seconds = graphql_telemetry_freshness_max_age_seconds()?;
+            match build_passive_analysis_context(
+                graph,
+                &node_id,
+                telemetry.clone(),
+                Utc::now(),
+                freshness_max_age_seconds,
+            ) {
+                Ok(context) => NodeAssessmentView::from_context(context),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        let (latest_telemetry, telemetry_available, telemetry_error) = match telemetry {
+            Ok(value) => (Some(Json(value)), true, None),
+            Err(error) => (None, false, Some(error)),
+        };
 
         Ok(NodeContextView {
             project_id,
@@ -111,6 +141,7 @@ impl QueryRoot {
                 .as_ref()
                 .and_then(|slice| slice.authorization.as_ref())
                 .map(AuthorizationView::from),
+            assessment,
             latest_telemetry,
             telemetry_available,
             telemetry_source: "firebase".to_string(),
@@ -163,6 +194,27 @@ impl QueryRoot {
     }
 }
 
+fn graphql_telemetry_freshness_max_age_seconds() -> async_graphql::Result<u64> {
+    match env::var(TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV) {
+        Ok(value) if !value.trim().is_empty() => {
+            let parsed = value.trim().parse::<u64>().map_err(|error| {
+                async_graphql::Error::new(format!(
+                    "invalid {}='{}': expected positive integer seconds: {}",
+                    TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV, value, error
+                ))
+            })?;
+            if parsed == 0 {
+                return Err(async_graphql::Error::new(format!(
+                    "invalid {}='0': freshness max age must be greater than zero",
+                    TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV
+                )));
+            }
+            Ok(parsed)
+        }
+        _ => Ok(DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS),
+    }
+}
+
 #[derive(SimpleObject)]
 pub struct NodeContextView {
     pub project_id: String,
@@ -171,10 +223,78 @@ pub struct NodeContextView {
     pub binding: Option<BindingView>,
     pub desired: Option<DesiredView>,
     pub authorization: Option<AuthorizationView>,
+    pub assessment: Option<NodeAssessmentView>,
     pub latest_telemetry: Option<Json<Value>>,
     pub telemetry_available: bool,
     pub telemetry_source: String,
     pub telemetry_error: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct NodeAssessmentView {
+    pub schema_version: String,
+    pub generated_at_utc: String,
+    pub freshness_max_age_seconds: i64,
+    pub telemetry_freshness: String,
+    pub telemetry_age_seconds: Option<i64>,
+    pub telemetry_observed_at_utc: Option<String>,
+    pub service_comparisons: Vec<ServiceComparisonView>,
+    pub side_effects_performed: bool,
+}
+
+impl NodeAssessmentView {
+    fn from_context(mut context: OperationalAnalysisContext) -> Option<Self> {
+        let node = context.nodes.pop()?;
+        Some(Self {
+            schema_version: context.schema_version,
+            generated_at_utc: context.generated_at_utc,
+            freshness_max_age_seconds: context
+                .freshness_max_age_seconds
+                .min(i64::MAX as u64) as i64,
+            telemetry_freshness: node.telemetry_freshness,
+            telemetry_age_seconds: node
+                .telemetry_age_seconds
+                .map(|age| age.min(i64::MAX as u64) as i64),
+            telemetry_observed_at_utc: node.telemetry_observed_at_utc,
+            service_comparisons: node
+                .service_comparisons
+                .into_iter()
+                .map(ServiceComparisonView::from)
+                .collect(),
+            side_effects_performed: context.side_effects_performed,
+        })
+    }
+}
+
+#[derive(SimpleObject)]
+pub struct ServiceComparisonView {
+    pub service_id: String,
+    pub runtime: String,
+    pub desired_state: String,
+    pub comparison_status: String,
+    pub reason: String,
+    pub service_entity_present: bool,
+    pub observed_service_status: Option<String>,
+    pub observed_runtime_state: Option<String>,
+    pub observed_target_id: Option<String>,
+    pub observed_binding_bound: Option<bool>,
+}
+
+impl From<OperationalServiceComparison> for ServiceComparisonView {
+    fn from(comparison: OperationalServiceComparison) -> Self {
+        Self {
+            service_id: comparison.service_id,
+            runtime: comparison.runtime,
+            desired_state: comparison.desired_state,
+            comparison_status: comparison.comparison_status,
+            reason: comparison.reason,
+            service_entity_present: comparison.service_entity_present,
+            observed_service_status: comparison.observed_service_status,
+            observed_runtime_state: comparison.observed_runtime_state,
+            observed_target_id: comparison.observed_target_id,
+            observed_binding_bound: comparison.observed_binding_bound,
+        }
+    }
 }
 
 #[derive(SimpleObject)]
