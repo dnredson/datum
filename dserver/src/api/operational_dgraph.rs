@@ -221,6 +221,54 @@ pub async fn get_operational_dgraph_slice(
     Ok(JsonResponse(slice))
 }
 
+pub fn operational_dgraph_snapshot(project_id: &str) -> Result<Option<OperationalDGraph>, String> {
+    ensure_operational_dgraph_persistence_initialized();
+    graph_store()
+        .read()
+        .map_err(|error| format!("operational D-Graph state lock poisoned: {error}"))
+        .map(|graphs| graphs.get(project_id.trim()).cloned())
+}
+
+pub fn operational_dgraph_slice_snapshot(
+    project_id: &str,
+    node_id: &str,
+) -> Result<Option<OperationalDGraphSlice>, String> {
+    ensure_operational_dgraph_persistence_initialized();
+    let project_id = project_id.trim();
+    let node_id = node_id.trim();
+    let Some(graph) = graph_store()
+        .read()
+        .map_err(|error| format!("operational D-Graph state lock poisoned: {error}"))?
+        .get(project_id)
+        .cloned()
+    else {
+        return Ok(None);
+    };
+
+    let binding = active_resource_binding_for_node(project_id, node_id)?;
+    let authorization = authorization_store()
+        .read()
+        .map_err(|error| format!("operational authorization state lock poisoned: {error}"))?
+        .get(&authorization_key(project_id, node_id))
+        .cloned()
+        .filter(|authorization| {
+            binding.as_ref().is_some_and(|binding| {
+                authorization_is_valid_for_context(
+                    authorization,
+                    &graph,
+                    node_id,
+                    &binding.binding_id,
+                    Utc::now(),
+                )
+            })
+        });
+
+    match build_operational_slice(&graph, node_id, authorization.as_ref()) {
+        Ok(slice) => Ok(Some(slice)),
+        Err(_) => Ok(None),
+    }
+}
+
 pub async fn post_operational_reconciliation_authorization(
     Path(node_id): Path<String>,
     headers: HeaderMap,
