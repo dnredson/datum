@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, env};
 
 use axum::{
     extract::{Path, State},
@@ -12,11 +12,15 @@ use crate::{
     api::operational_dgraph::operational_dgraph_snapshot,
     core::operational_analysis_context::{
         build_active_analysis_context, build_passive_analysis_context, OperationalAnalysisContext,
+        DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
     },
     AppState,
 };
 
 type ApiError = (StatusCode, Json<Value>);
+
+const TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV: &str =
+    "DATUM_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS";
 
 pub async fn acquire_passive_analysis_context(
     State(state): State<AppState>,
@@ -44,8 +48,15 @@ pub async fn acquire_passive_analysis_context(
         .await
         .map_err(|error| error.to_string());
 
-    let context = build_passive_analysis_context(&graph, &node_id, telemetry, Utc::now())
-        .map_err(not_found)?;
+    let freshness_max_age_seconds = telemetry_freshness_max_age_seconds()?;
+    let context = build_passive_analysis_context(
+        &graph,
+        &node_id,
+        telemetry,
+        Utc::now(),
+        freshness_max_age_seconds,
+    )
+    .map_err(not_found)?;
     Ok(Json(context))
 }
 
@@ -91,9 +102,36 @@ pub async fn acquire_active_analysis_context(
         telemetry_by_node.insert(node_id, telemetry);
     }
 
-    let context = build_active_analysis_context(&graph, telemetry_by_node, Utc::now())
-        .map_err(internal_error)?;
+    let freshness_max_age_seconds = telemetry_freshness_max_age_seconds()?;
+    let context = build_active_analysis_context(
+        &graph,
+        telemetry_by_node,
+        Utc::now(),
+        freshness_max_age_seconds,
+    )
+    .map_err(internal_error)?;
     Ok(Json(context))
+}
+
+fn telemetry_freshness_max_age_seconds() -> Result<u64, ApiError> {
+    match env::var(TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV) {
+        Ok(value) if !value.trim().is_empty() => {
+            let parsed = value.trim().parse::<u64>().map_err(|error| {
+                internal_error(format!(
+                    "invalid {}='{}': expected positive integer seconds: {}",
+                    TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV, value, error
+                ))
+            })?;
+            if parsed == 0 {
+                return Err(internal_error(format!(
+                    "invalid {}='0': freshness max age must be greater than zero",
+                    TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV
+                )));
+            }
+            Ok(parsed)
+        }
+        _ => Ok(DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS),
+    }
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
