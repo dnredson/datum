@@ -20,7 +20,7 @@ Baseline main: `3e73826f59ea9a6f6609d6149fb9e8aaf50852bc`
 - 60/100 — LIVE PASS.
 - 61/100 — LIVE PASS.
 - 62/100 — LIVE PASS.
-- 63/100 — IMPLEMENTED, pending compile/live validation.
+- 63/100 — LIVE PASS.
 
 ## Step 63 — explicit passive and active Firebase analysis acquisition modes
 
@@ -69,6 +69,35 @@ Firebase failure is fail-soft at node level: accepted local desired state remain
 
 No freshness classification is invented in step 63. The raw telemetry observation timestamp is exposed so a later explicit policy can classify fresh/stale/missing.
 
+## Live validation
+
+Live validation passed for project `monitor-f49c8` against accepted Operational D-Graph `dgraph:o2-mqtt-role-1` revision 4.
+
+Passive acquisition for `fog-01` returned:
+
+- `acquisition_mode=passive`;
+- `trigger_node_id=fog-01`;
+- `node_count=1`;
+- desired MQTT service with runtime `container` and desired state `running`;
+- `telemetry_source=firebase`;
+- `telemetry_available=true`;
+- `telemetry_observed_at_utc=2026-09-05T00:02:52.057683316Z`;
+- `telemetry_error=null`;
+- `side_effects_performed=false`.
+
+Active acquisition returned:
+
+- `acquisition_mode=active`;
+- `trigger_node_id=null`;
+- accepted D-Graph revision 4;
+- `node_count=1` for the current single-node revision;
+- the same desired MQTT service;
+- Firebase telemetry available for `fog-01` with the same observation timestamp;
+- `telemetry_error=null`;
+- `side_effects_performed=false`.
+
+The outputs prove the distinction between event-scoped passive acquisition and server-initiated graph traversal while preserving identical accepted desired-state context and performing no mutation/reconciliation side effects.
+
 ## Architecture boundary
 
 Step 63 does not:
@@ -82,17 +111,6 @@ Step 63 does not:
 - invoke an AI/GNN decision.
 
 It only acquires and composes the context that a later analyzer/AI may consume.
-
-## Planned live proof
-
-1. build/test the new pure analysis-context model;
-2. start dserver with the existing step-59+ SQLite database and Firebase configuration;
-3. call passive mode for `monitor-f49c8/fog-01` and verify D-Graph revision 4, MQTT desired/running, one node, Firebase telemetry available and `side_effects_performed=false`;
-4. call active mode and verify it traverses the current rev4 graph, returns every graph node, preserves desired state and retrieves each latest Firebase telemetry independently;
-5. verify both modes report the telemetry observation timestamp when Firestore provides it;
-6. verify existing GraphQL current/history and operational evidence endpoints remain unchanged.
-
-PASS proves dserver can obtain observation context in both event-driven and server-initiated forms without collapsing observation, governance and placement responsibilities.
 
 ## Architecture statement
 
