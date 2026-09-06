@@ -44,12 +44,7 @@ pub async fn graphql_post(
 }
 
 pub async fn graphiql() -> Html<String> {
-    Html(
-        GraphiQLSource::build()
-            .endpoint("/graphql")
-            .title("DATUM dserver GraphQL")
-            .finish(),
-    )
+    Html(GraphiQLSource::build().endpoint("/graphql").finish())
 }
 
 pub struct QueryRoot;
