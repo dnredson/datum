@@ -1,11 +1,9 @@
-#[path = "../storage/mod.rs"]
-mod storage;
+#[path = "../storage/control_state.rs"]
+mod control_state;
 
 use std::{env, path::PathBuf};
 
-use storage::control_state::{
-    domain_history_count, list_current_domains, CONTROL_STATE_SCHEMA_VERSION,
-};
+use control_state::{domain_history_count, list_current_domains, CONTROL_STATE_SCHEMA_VERSION};
 
 fn main() {
     let db_path = parse_db_path().unwrap_or_else(|error| {
