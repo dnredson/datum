@@ -24,32 +24,12 @@ Baseline main: `3e73826f59ea9a6f6609d6149fb9e8aaf50852bc`
 
 ## Step 63 — explicit passive and active Firebase analysis acquisition modes
 
-Step 63 formalizes the two dserver observation-analysis acquisition modes without adding placement reasoning or reconciliation side effects.
+`POST /api/v1/analysis-context/passive/:node_id` models event-driven acquisition: the caller identifies the node whose observation triggered analysis, dserver loads the accepted active Operational D-Graph, verifies node membership, fetches only that node's latest Firebase telemetry, and returns a scoped desired-plus-observed context.
 
-### Passive mode
+`POST /api/v1/analysis-context/active` models server-initiated acquisition: dserver loads the accepted D-Graph, traverses every node in that revision, launches latest Firebase telemetry reads concurrently with Tokio tasks, and returns a context for every graph node.
 
-`POST /api/v1/analysis-context/passive/:node_id`
+Live validation passed for `monitor-f49c8`, `dgraph:o2-mqtt-role-1`, revision 4. Passive mode returned `fog-01`, MQTT/container/running, Firebase telemetry available at `2026-09-05T00:02:52.057683316Z`, and `side_effects_performed=false`. Active mode returned the same desired/observed context for the current one-node graph with `trigger_node_id=null` and `side_effects_performed=false`.
 
-The caller identifies the node whose new observation triggered analysis. dserver loads the accepted active Operational D-Graph, verifies that the trigger node belongs to that revision, reads only that node's latest Firebase/Firestore telemetry document, and returns a scoped desired-plus-observed context.
+The modes are acquisition/context-building mechanisms only. They do not place workloads, choose targets, mutate D-Graph state, authorize host mutation, execute reconciliation, write telemetry, or invoke AI/GNN placement reasoning.
 
-### Active mode
-
-`POST /api/v1/analysis-context/active`
-
-dserver loads the accepted active Operational D-Graph, traverses every node in that revision, starts latest-telemetry reads concurrently using Tokio tasks, and returns one desired-plus-observed context per graph node.
-
-### Live validation
-
-Live validation passed for project `monitor-f49c8`, Operational D-Graph `dgraph:o2-mqtt-role-1`, revision 4.
-
-Passive acquisition for `fog-01` returned one node, desired MQTT/container/running, Firebase telemetry available at `2026-09-05T00:02:52.057683316Z`, no telemetry error, and `side_effects_performed=false`.
-
-Active acquisition returned the same accepted revision and desired MQTT service, one node for the current single-node graph, the same available Firebase observation, no telemetry error, `trigger_node_id=null`, and `side_effects_performed=false`.
-
-This proves event-scoped passive acquisition and server-initiated graph traversal are distinct while preserving the same accepted desired-state context and performing no host or control-plane mutation.
-
-### Architecture boundary
-
-Step 63 does not place workloads, choose a target, mutate D-Graph state, authorize host mutation, execute reconciliation, write telemetry, or invoke AI/GNN placement reasoning. It only acquires and composes context.
-
-`SmartSentinel observes -> Firebase preserves distributed telemetry; dserver may react passively to an observation notification or actively traverse the accepted D-Graph to acquire latest telemetry; these modes build context only. External AI/GNN remains responsible for placement/reasoning, dserver governs accepted state, SmartSentinel/WASM reconciles only when authorized, and DATUM remains the conceptual framework.`
+Architecture: `SmartSentinel observes -> Firebase preserves distributed telemetry; dserver may react passively to an observation notification or actively traverse the accepted D-Graph to acquire latest telemetry; these modes build context only. External AI/GNN remains responsible for placement/reasoning, dserver governs accepted state, SmartSentinel/WASM reconciles only when authorized, and DATUM remains the conceptual framework.`
