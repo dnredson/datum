@@ -28,3 +28,11 @@ scripts/.smoke-output/
 .datum-operational-dgraph-state.json
 .datum-operational-dgraph-state.json.tmp
 .datum-operational-dgraph-state.json.bak
+
+# O2 SQLite local control-plane state.
+datum-control-plane.db
+datum-control-plane.db-wal
+datum-control-plane.db-shm
+*.datum-control-plane.db
+*.datum-control-plane.db-wal
+*.datum-control-plane.db-shm
