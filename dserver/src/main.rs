@@ -42,6 +42,7 @@ use api::dgraph_rollback_audit::get_dgraph_rollback_audit_contract;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::graph::{get_latest_graph, get_materialized_graph};
+use api::graphql::{build_schema, graphiql, graphql_post, DatumSchema};
 use api::installation_plan::{get_installation_plan_for_node, get_latest_installation_plan};
 use api::installation_tasks::{
     get_installation_task, get_installation_task_assisted_execution_state,
@@ -95,10 +96,12 @@ use api::{
 };
 use config::AppConfig;
 use storage::firebase::FirebaseClient;
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub firebase: Arc<FirebaseClient>,
+    pub graphql: DatumSchema,
 }
 
 #[tokio::main]
@@ -107,13 +110,17 @@ async fn main() {
 
     let config = Arc::new(AppConfig::from_file("config.toml").expect("failed to load config"));
 
-    let firebase = FirebaseClient::new(config.clone())
-        .await
-        .expect("failed to initialize firebase");
+    let firebase = Arc::new(
+        FirebaseClient::new(config.clone())
+            .await
+            .expect("failed to initialize firebase"),
+    );
+    let graphql = build_schema(firebase.clone());
 
     let state = AppState {
         config: config.clone(),
-        firebase: Arc::new(firebase),
+        firebase,
+        graphql,
     };
 
     let bind_addr = state
@@ -124,6 +131,8 @@ async fn main() {
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
     let mut app = Router::new()
+        .route("/graphql", post(graphql_post))
+        .route("/graphiql", get(graphiql))
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
         .route("/api/v1/resources", get(list_resources))
