@@ -15,7 +15,7 @@ Baseline main: `dfe626e2aaa5ea7717a52e57bbfff85949441e0e`
 - 55/100 — LIVE PASS.
 - 56/100 — LIVE PASS.
 - 57/100 — LIVE PASS.
-- 58/100 — IMPLEMENTED, pending compile/live restart validation.
+- 58/100 — LIVE PASS.
 
 ## Step 58 — durable, finite, revision- and binding-scoped authorization leases
 
@@ -111,21 +111,35 @@ Core tests cover:
 - persistence round-trip containing graph revision and durable authorization;
 - rejection of process-scoped authorizations in persisted state.
 
-### Live validation plan
+### Live validation — PASS
 
-The planned live proof starts from the durable revision-3 graph and durable fog-01 binding already validated in steps 56–57.
+The live restart proof completed successfully on 2026-09-06.
 
-1. build/test the step-58 dserver without deleting existing persistence files;
-2. confirm the old step-57 file migrates additively and still restores revision 3;
-3. issue a legacy/process authorization without the new fields and confirm `persistence_scope=process` plus current `binding_id`;
-4. restart dserver and confirm that process authorization is absent;
-5. issue a durable revision-3 authorization with a finite lease and record its `authorization_id`, `binding_id`, and expiry;
-6. restart dserver before expiry and confirm the exact same authorization is restored in the fog-01 slice;
-7. publish revision 4 using `scripts/fixtures/o2-operational-mqtt-dgraph-rev4.json`;
-8. confirm the slice immediately returns no authorization;
-9. restart again and confirm revision 4 persists while the old revision-3 authorization does not reappear.
+Observed durable lease before restart:
 
-PASS means durable authorization survives only when explicitly requested, finite, unexpired, revision-matching, and bound to the same physical-resource role binding.
+- `authorization_id=opauth:fe8478f9-1376-4514-9a53-3bd39fcbf9a7`;
+- `dgraph_revision=3`;
+- `node_id=fog-01`;
+- `binding_id=binding:af8d1eb7-10e4-499a-b0f5-248e4bbe30f4`;
+- `persistence_scope=durable`;
+- `expires_at_utc=2026-09-06T12:49:25.404885400+00:00`;
+- `allow_host_mutation=true`.
+
+Desktop inspection confirmed the same authorization persisted in `.datum-operational-dgraph-state.json`.
+
+After restarting dserver before lease expiry, the fog-01 slice restored the exact same authorization ID and binding ID. The explicit comparison returned:
+
+`DURABLE_AUTH_RESTART_PASS`
+
+Publishing Operational D-Graph revision 4 then immediately removed the revision-3 authorization from the active slice while retaining MQTT as desired/running. A subsequent dserver restart restored revision 4 and did not restore the old authorization.
+
+PASS criteria therefore hold:
+
+- durable authorization survives restart only when explicitly requested and unexpired;
+- exact `authorization_id` survives restart;
+- binding lineage survives and remains checked;
+- a new D-Graph revision invalidates the prior durable lease immediately;
+- invalidated authorization does not reappear after another restart.
 
 ## Architecture statement
 
