@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    http::GraphiQLSource, Context, EmptyMutation, EmptySubscription, Json, Object, Schema,
+    http::GraphiQLSource, Context, EmptyMutation, EmptySubscription, Enum, Json, Object, Schema,
     SimpleObject,
 };
 use axum::{
@@ -24,7 +24,14 @@ use crate::{
         resource_binding::ResourceRoleBindingRecord,
         resource_registry::ResourceRegistryRecord,
     },
-    storage::firebase::FirebaseClient,
+    storage::{
+        control_state::{
+            configured_control_state_db_path, domain_history_count, list_current_domains,
+            load_domain_history, ControlStateHistoryEntry, DOMAIN_OPERATIONAL_DGRAPH,
+            DOMAIN_RESOURCE_REGISTRY,
+        },
+        firebase::FirebaseClient,
+    },
     AppState,
 };
 
@@ -109,6 +116,50 @@ impl QueryRoot {
             telemetry_source: "firebase".to_string(),
             telemetry_error,
         })
+    }
+
+    async fn control_state_domains(&self) -> async_graphql::Result<Vec<ControlStateDomainView>> {
+        let db_path = configured_control_state_db_path().ok_or_else(|| {
+            async_graphql::Error::new(
+                "DATUM_CONTROL_STATE_DB_PATH is not configured; SQLite control-state history is unavailable",
+            )
+        })?;
+        let domains = list_current_domains(&db_path).map_err(async_graphql::Error::new)?;
+
+        domains
+            .into_iter()
+            .map(|(domain, updated_at_utc)| {
+                let history_count =
+                    domain_history_count(&db_path, &domain).map_err(async_graphql::Error::new)?;
+                Ok(ControlStateDomainView {
+                    domain,
+                    updated_at_utc,
+                    history_count: history_count.min(i64::MAX as u64) as i64,
+                })
+            })
+            .collect()
+    }
+
+    async fn control_state_history(
+        &self,
+        domain: ControlStateDomain,
+        limit: Option<i32>,
+    ) -> async_graphql::Result<Vec<ControlStateHistoryView>> {
+        let limit = limit.unwrap_or(20);
+        if !(1..=100).contains(&limit) {
+            return Err("limit must be between 1 and 100".into());
+        }
+        let db_path = configured_control_state_db_path().ok_or_else(|| {
+            async_graphql::Error::new(
+                "DATUM_CONTROL_STATE_DB_PATH is not configured; SQLite control-state history is unavailable",
+            )
+        })?;
+        let entries = load_domain_history(&db_path, domain.as_storage_name(), limit as u32)
+            .map_err(async_graphql::Error::new)?;
+        Ok(entries
+            .into_iter()
+            .map(ControlStateHistoryView::from)
+            .collect())
     }
 }
 
@@ -254,6 +305,49 @@ impl From<&OperationalReconciliationAuthorization> for AuthorizationView {
             allow_host_mutation: authorization.allow_host_mutation,
             persistence_scope: authorization.persistence_scope.clone(),
             expires_at_utc: authorization.expires_at_utc.clone(),
+        }
+    }
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ControlStateDomain {
+    #[graphql(name = "RESOURCE_REGISTRY")]
+    ResourceRegistry,
+    #[graphql(name = "OPERATIONAL_DGRAPH")]
+    OperationalDgraph,
+}
+
+impl ControlStateDomain {
+    fn as_storage_name(self) -> &'static str {
+        match self {
+            Self::ResourceRegistry => DOMAIN_RESOURCE_REGISTRY,
+            Self::OperationalDgraph => DOMAIN_OPERATIONAL_DGRAPH,
+        }
+    }
+}
+
+#[derive(SimpleObject)]
+pub struct ControlStateDomainView {
+    pub domain: String,
+    pub updated_at_utc: String,
+    pub history_count: i64,
+}
+
+#[derive(SimpleObject)]
+pub struct ControlStateHistoryView {
+    pub id: i64,
+    pub domain: String,
+    pub recorded_at_utc: String,
+    pub payload: Json<Value>,
+}
+
+impl From<ControlStateHistoryEntry> for ControlStateHistoryView {
+    fn from(entry: ControlStateHistoryEntry) -> Self {
+        Self {
+            id: entry.id,
+            domain: entry.domain,
+            recorded_at_utc: entry.recorded_at_utc,
+            payload: Json(entry.payload),
         }
     }
 }
