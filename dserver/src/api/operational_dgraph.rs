@@ -257,10 +257,20 @@ pub async fn post_operational_reconciliation_authorization(
     .map_err(bad_request)?;
 
     let key = authorization_key(&project_id, node_id);
-    if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
+    let existing_durable = authorization_store()
+        .read()
+        .map_err(lock_error)?
+        .get(&key)
+        .is_some_and(|current| current.persistence_scope == AUTHORIZATION_SCOPE_DURABLE);
+
+    if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE || existing_durable {
         let _transaction = state_transaction().lock().map_err(lock_error)?;
         let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
-        candidate.authorizations.insert(key.clone(), authorization.clone());
+        if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
+            candidate.authorizations.insert(key.clone(), authorization.clone());
+        } else {
+            candidate.authorizations.remove(&key);
+        }
         persist_candidate(&candidate).map_err(internal_error)?;
     }
 
