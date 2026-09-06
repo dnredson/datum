@@ -7,11 +7,17 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{
-    resource_binding::{ResourceRoleBindingRecord, RESOURCE_BINDING_SCHEMA_VERSION},
-    resource_registry::{
-        validate_resource_discovery_request, ResourceRegistryRecord,
-        RESOURCE_REGISTRY_SCHEMA_VERSION,
+use crate::{
+    core::{
+        resource_binding::{ResourceRoleBindingRecord, RESOURCE_BINDING_SCHEMA_VERSION},
+        resource_registry::{
+            validate_resource_discovery_request, ResourceRegistryRecord,
+            RESOURCE_REGISTRY_SCHEMA_VERSION,
+        },
+    },
+    storage::control_state::{
+        configured_control_state_db_path, load_domain_json, persist_domain_json,
+        DOMAIN_RESOURCE_REGISTRY,
     },
 };
 
@@ -141,6 +147,42 @@ pub fn validate_resource_registry_persisted_state(
 pub fn load_resource_registry_persisted_state(
     path: &Path,
 ) -> Result<Option<ResourceRegistryPersistedState>, String> {
+    if let Some(db_path) = configured_control_state_db_path() {
+        if let Some(state) = load_domain_json::<ResourceRegistryPersistedState>(
+            &db_path,
+            DOMAIN_RESOURCE_REGISTRY,
+        )? {
+            validate_resource_registry_persisted_state(&state)?;
+            return Ok(Some(state));
+        }
+
+        if let Some(legacy) = load_resource_registry_json_state(path)? {
+            validate_resource_registry_persisted_state(&legacy)?;
+            persist_domain_json(&db_path, DOMAIN_RESOURCE_REGISTRY, &legacy)?;
+            return Ok(Some(legacy));
+        }
+        return Ok(None);
+    }
+
+    load_resource_registry_json_state(path)
+}
+
+pub fn persist_resource_registry_state(
+    path: &Path,
+    state: &ResourceRegistryPersistedState,
+) -> Result<(), String> {
+    validate_resource_registry_persisted_state(state)?;
+
+    if let Some(db_path) = configured_control_state_db_path() {
+        return persist_domain_json(&db_path, DOMAIN_RESOURCE_REGISTRY, state);
+    }
+
+    persist_resource_registry_json_state(path, state)
+}
+
+fn load_resource_registry_json_state(
+    path: &Path,
+) -> Result<Option<ResourceRegistryPersistedState>, String> {
     let candidate = if path.exists() {
         path.to_path_buf()
     } else {
@@ -168,12 +210,10 @@ pub fn load_resource_registry_persisted_state(
     Ok(Some(state))
 }
 
-pub fn persist_resource_registry_state(
+fn persist_resource_registry_json_state(
     path: &Path,
     state: &ResourceRegistryPersistedState,
 ) -> Result<(), String> {
-    validate_resource_registry_persisted_state(state)?;
-
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -352,14 +392,14 @@ mod tests {
     }
 
     #[test]
-    fn persisted_state_round_trips() {
+    fn persisted_json_state_round_trips() {
         let path = std::env::temp_dir().join(format!(
             "datum-resource-registry-persistence-{}.json",
             Uuid::new_v4()
         ));
         let state = bound_state();
-        persist_resource_registry_state(&path, &state).unwrap();
-        let restored = load_resource_registry_persisted_state(&path)
+        persist_resource_registry_json_state(&path, &state).unwrap();
+        let restored = load_resource_registry_json_state(&path)
             .unwrap()
             .expect("state should exist");
         assert_eq!(restored, state);
