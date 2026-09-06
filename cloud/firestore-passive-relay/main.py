@@ -21,7 +21,10 @@ def _string_field(document: Any, name: str) -> str:
     return field.string_value.strip()
 
 
-def _notification_from_event(cloud_event: CloudEvent, payload: firestore.DocumentEventData) -> dict[str, Any]:
+def _notification_from_event(
+    cloud_event: CloudEvent,
+    payload: firestore.DocumentEventData,
+) -> dict[str, Any]:
     document = payload.value
     if not document.name:
         raise ValueError("Firestore event does not contain a current document value")
@@ -57,6 +60,23 @@ def relay_firestore_latest(cloud_event: CloudEvent) -> None:
 
     payload = firestore.DocumentEventData()
     payload._pb.ParseFromString(cloud_event.data)
+
+    # A `written` Eventarc trigger also receives deletes. A deleted latest
+    # document has no current value to assess, so ignore it explicitly instead
+    # of poisoning the relay/retry path.
+    if not payload.value.name:
+        print(
+            json.dumps(
+                {
+                    "relayed": False,
+                    "ignored": "deleted_document",
+                    "provider_event_id": str(cloud_event["id"]),
+                    "provider_event_type": str(cloud_event["type"]),
+                },
+                sort_keys=True,
+            )
+        )
+        return
 
     notification = _notification_from_event(cloud_event, payload)
 
