@@ -5,9 +5,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::core::operational_dgraph::{validate_operational_dgraph, OperationalDGraph};
+use crate::core::operational_dgraph::{
+    validate_operational_dgraph, OperationalDGraph, OperationalReconciliationAuthorization,
+    AUTHORIZATION_SCOPE_DURABLE,
+};
 
 pub const OPERATIONAL_DGRAPH_PERSISTENCE_VERSION: &str = "0.1.0";
 
@@ -16,6 +20,8 @@ pub struct OperationalDGraphPersistedState {
     pub persistence_version: String,
     #[serde(default)]
     pub graphs: BTreeMap<String, OperationalDGraph>,
+    #[serde(default)]
+    pub authorizations: BTreeMap<String, OperationalReconciliationAuthorization>,
 }
 
 impl OperationalDGraphPersistedState {
@@ -23,6 +29,7 @@ impl OperationalDGraphPersistedState {
         Self {
             persistence_version: OPERATIONAL_DGRAPH_PERSISTENCE_VERSION.to_string(),
             graphs: BTreeMap::new(),
+            authorizations: BTreeMap::new(),
         }
     }
 }
@@ -48,6 +55,79 @@ pub fn validate_operational_dgraph_persisted_state(
             return Err(format!(
                 "persisted operational D-Graph key '{}' does not match graph project_id '{}'",
                 project_key, graph.project_id
+            ));
+        }
+    }
+
+    for (key, authorization) in &state.authorizations {
+        let expected_key = authorization_key(&authorization.project_id, &authorization.node_id);
+        if key != &expected_key {
+            return Err(format!(
+                "persisted operational authorization key '{}' does not match record key '{}'",
+                key, expected_key
+            ));
+        }
+        if authorization.persistence_scope != AUTHORIZATION_SCOPE_DURABLE {
+            return Err(format!(
+                "persisted operational authorization '{}' must use persistence_scope=durable",
+                authorization.authorization_id
+            ));
+        }
+        if !authorization.allow_host_mutation {
+            return Err(format!(
+                "persisted operational authorization '{}' must allow host mutation",
+                authorization.authorization_id
+            ));
+        }
+        let binding_id = authorization
+            .binding_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "persisted operational authorization '{}' requires binding_id",
+                    authorization.authorization_id
+                )
+            })?;
+        if binding_id.is_empty() {
+            return Err("persisted operational authorization binding_id must not be empty".to_string());
+        }
+        let expires = authorization.expires_at_utc.as_deref().ok_or_else(|| {
+            format!(
+                "persisted operational authorization '{}' requires expires_at_utc",
+                authorization.authorization_id
+            )
+        })?;
+        DateTime::parse_from_rfc3339(expires).map_err(|error| {
+            format!(
+                "persisted operational authorization '{}' expires_at_utc is invalid: {error}",
+                authorization.authorization_id
+            )
+        })?;
+        DateTime::parse_from_rfc3339(&authorization.authorized_at_utc).map_err(|error| {
+            format!(
+                "persisted operational authorization '{}' authorized_at_utc is invalid: {error}",
+                authorization.authorization_id
+            )
+        })?;
+
+        let graph = state.graphs.get(&authorization.project_id).ok_or_else(|| {
+            format!(
+                "persisted operational authorization '{}' references missing project graph '{}'",
+                authorization.authorization_id, authorization.project_id
+            )
+        })?;
+        if authorization.dgraph_id != graph.dgraph_id
+            || authorization.dgraph_revision != graph.revision
+            || !graph
+                .nodes
+                .iter()
+                .any(|node| node.node_id.trim() == authorization.node_id.trim())
+        {
+            return Err(format!(
+                "persisted operational authorization '{}' does not match active graph identity/revision/node",
+                authorization.authorization_id
             ));
         }
     }
@@ -91,10 +171,7 @@ pub fn persist_operational_dgraph_state(
 ) -> Result<(), String> {
     validate_operational_dgraph_persisted_state(state)?;
 
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "create operational D-Graph persistence directory '{}': {error}",
@@ -168,6 +245,10 @@ pub fn persist_operational_dgraph_state(
     Ok(())
 }
 
+pub fn authorization_key(project_id: &str, node_id: &str) -> String {
+    format!("{}|{}", project_id.trim(), node_id.trim())
+}
+
 fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
     let file_name = path
         .file_name()
@@ -179,10 +260,12 @@ fn sibling_path(path: &Path, suffix: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Duration, Utc};
     use uuid::Uuid;
 
     use crate::core::operational_dgraph::{
-        OperationalDesiredService, OperationalNodeDesiredState, OPERATIONAL_DGRAPH_SCHEMA_VERSION,
+        OperationalDesiredService, OperationalNodeDesiredState,
+        OperationalReconciliationAuthorization, OPERATIONAL_DGRAPH_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -205,6 +288,23 @@ mod tests {
         }
     }
 
+    fn durable_authorization() -> OperationalReconciliationAuthorization {
+        let now = Utc::now();
+        OperationalReconciliationAuthorization {
+            authorization_id: "opauth:test".to_string(),
+            project_id: "monitor-f49c8".to_string(),
+            dgraph_id: "dgraph:o2-mqtt-role-1".to_string(),
+            dgraph_revision: 3,
+            node_id: "fog-01".to_string(),
+            binding_id: Some("binding:test".to_string()),
+            authorized_by: "operator:test".to_string(),
+            authorized_at_utc: now.to_rfc3339(),
+            allow_host_mutation: true,
+            persistence_scope: AUTHORIZATION_SCOPE_DURABLE.to_string(),
+            expires_at_utc: Some((now + Duration::minutes(10)).to_rfc3339()),
+        }
+    }
+
     #[test]
     fn persisted_graph_key_must_match_project() {
         let mut state = OperationalDGraphPersistedState::empty();
@@ -213,15 +313,17 @@ mod tests {
     }
 
     #[test]
-    fn persisted_graph_round_trips_with_revision() {
+    fn persisted_graph_round_trips_with_revision_and_durable_auth() {
         let path = std::env::temp_dir().join(format!(
             "datum-operational-dgraph-persistence-{}.json",
             Uuid::new_v4()
         ));
         let mut state = OperationalDGraphPersistedState::empty();
+        state.graphs.insert("monitor-f49c8".to_string(), graph(3));
+        let auth = durable_authorization();
         state
-            .graphs
-            .insert("monitor-f49c8".to_string(), graph(3));
+            .authorizations
+            .insert(authorization_key(&auth.project_id, &auth.node_id), auth.clone());
 
         persist_operational_dgraph_state(&path, &state).unwrap();
         let restored = load_operational_dgraph_persisted_state(&path)
@@ -229,6 +331,20 @@ mod tests {
             .expect("state should exist");
         assert_eq!(restored, state);
         assert_eq!(restored.graphs["monitor-f49c8"].revision, 3);
+        assert_eq!(restored.authorizations.len(), 1);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn process_scoped_authorization_cannot_be_persisted() {
+        let mut state = OperationalDGraphPersistedState::empty();
+        state.graphs.insert("monitor-f49c8".to_string(), graph(3));
+        let mut auth = durable_authorization();
+        auth.persistence_scope = "process".to_string();
+        auth.expires_at_utc = None;
+        state
+            .authorizations
+            .insert(authorization_key(&auth.project_id, &auth.node_id), auth);
+        assert!(validate_operational_dgraph_persisted_state(&state).is_err());
     }
 }
