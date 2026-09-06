@@ -23,3 +23,8 @@ scripts/.smoke-output/
 .datum-resource-registry-state.json
 .datum-resource-registry-state.json.tmp
 .datum-resource-registry-state.json.bak
+
+# O2 durable Operational D-Graph desired state.
+.datum-operational-dgraph-state.json
+.datum-operational-dgraph-state.json.tmp
+.datum-operational-dgraph-state.json.bak
