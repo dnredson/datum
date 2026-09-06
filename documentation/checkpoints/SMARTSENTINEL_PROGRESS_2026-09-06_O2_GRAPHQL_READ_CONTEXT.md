@@ -17,7 +17,7 @@ Baseline main: `f77c3c682f11b46beeb7e19bc3e16b755a6c4a12`
 - 57/100 — LIVE PASS.
 - 58/100 — LIVE PASS.
 - 59/100 — LIVE PASS.
-- 60/100 — IMPLEMENTED, pending compile/live GraphQL validation.
+- 60/100 — LIVE PASS.
 
 ## Step 60 — read-only GraphQL unified node context
 
@@ -34,11 +34,11 @@ Storage/context split remains:
 New routes on the existing dserver listener:
 
 - `POST /graphql` — GraphQL queries;
-- `GET /graphiql` — interactive GraphiQL browser UI.
+- `GET /graphiql` — GraphiQL browser helper page.
 
-No additional daemon, port, container, or GraphQL server process is required.
+No additional daemon, port, container, or GraphQL server process is required. GraphQL is compiled into the existing dserver through `async-graphql`.
 
-The dserver uses `async-graphql` directly with the existing Axum 0.7 JSON handler rather than introducing another Axum integration layer.
+The dserver uses `async-graphql` directly with the existing Axum 0.7 JSON handler. The async-graphql 7.0.2 core/derive/parser/value crates are pinned to the same exact release after live Windows compilation exposed an incompatible mixed 7.x dependency resolution.
 
 ## Initial schema
 
@@ -91,25 +91,33 @@ GraphQL cannot in this step:
 
 Existing REST/control contracts remain authoritative for mutation paths.
 
-## Planned live proof
+## Live validation — PASS
 
-1. update the branch and run Cargo without `--locked` once to resolve the newly pinned `async-graphql` dependency;
-2. build/test the dserver;
-3. start dserver with `DATUM_CONTROL_STATE_DB_PATH` pointing to the step-59 SQLite database;
-4. verify `GET /graphiql` returns HTTP 200 and GraphiQL HTML;
-5. execute the GraphQL `node(projectId:"monitor-f49c8", nodeId:"fog-01")` query;
-6. verify Resource Registry state returns the same fog-01 resource and active binding proven in steps 56/59;
-7. verify desired state returns Operational D-Graph revision 4 and MQTT desired/running;
-8. verify authorization is null because the revision-3 durable authorization was invalidated by revision 4 in step 58;
-9. inspect `telemetryAvailable/latestTelemetry` from the existing Firebase latest snapshot path;
-10. verify the existing REST endpoints still return the same resource binding and Operational D-Graph revision after GraphQL queries;
-11. optional fail-soft proof: query a node with no Firebase latest document (or otherwise induce only Firebase lookup failure) and verify local control state remains present while telemetry reports unavailable.
+Windows dserver compile/tests passed after pinning the complete `async-graphql` internal crate family to version `7.0.2` and committing the validated Cargo lockfile.
+
+Live GraphQL proof against `monitor-f49c8` / `fog-01` returned in one query:
+
+- project/node context: `monitor-f49c8` / `fog-01`;
+- durable resource: `resource:os:9d564a4d83804cff3b62e84394a8da53d8610c717cd892623a2242ebaabb6e09`;
+- resource state: `bound` and assigned to `fog-01`;
+- observation count: `2`;
+- active binding: `binding:af8d1eb7-10e4-499a-b0f5-248e4bbe30f4`;
+- Operational D-Graph: `dgraph:o2-mqtt-role-1`, revision `4`;
+- desired service: `mqtt`, runtime `container`, desired state `running`;
+- authorization: `null`, preserving the revision-4 invalidation of the former revision-3 durable lease;
+- telemetry source: `firebase`;
+- `telemetryAvailable=true`;
+- latest Firebase snapshot successfully returned the fog-01 host/container/service/network observation document.
+
+A second compact GraphQL query returned the same binding, revision 4, MQTT desired state, null authorization, and Firebase telemetry availability.
+
+`GET /graphiql` returned HTTP 200. The browser helper UI remained on loading, treated as a non-blocking development-UI issue because the real `POST /graphql` endpoint executed live queries successfully. The GraphiQL helper may later be replaced by an offline-safe/local console if useful.
 
 PASS proves GraphQL composes accepted control state and distributed observation context without changing storage ownership or reconciliation authority.
 
 ## Next scope
 
-After step 60, likely follow-on work is:
+After step 60:
 
 - expose SQLite control-state history/read models through GraphQL;
 - persist/query operational evidence history locally;
