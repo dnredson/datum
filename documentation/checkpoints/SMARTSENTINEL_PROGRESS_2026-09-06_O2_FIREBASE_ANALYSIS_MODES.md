@@ -73,44 +73,15 @@ No freshness classification is invented in step 63. The raw telemetry observatio
 
 Live validation passed for project `monitor-f49c8` against accepted Operational D-Graph `dgraph:o2-mqtt-role-1` revision 4.
 
-Passive acquisition for `fog-01` returned:
+Passive acquisition for `fog-01` returned `acquisition_mode=passive`, `trigger_node_id=fog-01`, `node_count=1`, desired MQTT/container/running, Firebase telemetry available, observation timestamp `2026-09-05T00:02:52.057683316Z`, no telemetry error, and `side_effects_performed=false`.
 
-- `acquisition_mode=passive`;
-- `trigger_node_id=fog-01`;
-- `node_count=1`;
-- desired MQTT service with runtime `container` and desired state `running`;
-- `telemetry_source=firebase`;
-- `telemetry_available=true`;
-- `telemetry_observed_at_utc=2026-09-05T00:02:52.057683316Z`;
-- `telemetry_error=null`;
-- `side_effects_performed=false`.
-
-Active acquisition returned:
-
-- `acquisition_mode=active`;
-- `trigger_node_id=null`;
-- accepted D-Graph revision 4;
-- `node_count=1` for the current single-node revision;
-- the same desired MQTT service;
-- Firebase telemetry available for `fog-01` with the same observation timestamp;
-- `telemetry_error=null`;
-- `side_effects_performed=false`.
+Active acquisition returned `acquisition_mode=active`, `trigger_node_id=null`, the same accepted D-Graph revision 4, `node_count=1` for the current single-node revision, the same desired MQTT service, the same available Firebase observation, no telemetry error, and `side_effects_performed=false`.
 
 The outputs prove the distinction between event-scoped passive acquisition and server-initiated graph traversal while preserving identical accepted desired-state context and performing no mutation/reconciliation side effects.
 
 ## Architecture boundary
 
-Step 63 does not:
-
-- place workloads;
-- choose another node/cloud target;
-- mutate D-Graph state;
-- authorize host mutation;
-- execute reconciliation;
-- write telemetry;
-- invoke an AI/GNN decision.
-
-It only acquires and composes the context that a later analyzer/AI may consume.
+Step 63 does not place workloads, choose another node/cloud target, mutate D-Graph state, authorize host mutation, execute reconciliation, write telemetry, or invoke an AI/GNN decision. It only acquires and composes the context that a later analyzer/AI may consume.
 
 ## Architecture statement
 
