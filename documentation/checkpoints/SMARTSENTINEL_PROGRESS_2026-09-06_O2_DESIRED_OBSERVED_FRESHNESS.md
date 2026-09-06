@@ -21,7 +21,7 @@ Baseline main: step 63 LIVE PASS
 - 61/100 — LIVE PASS.
 - 62/100 — LIVE PASS.
 - 63/100 — LIVE PASS.
-- 64/100 — IMPLEMENTED, pending compile/live validation.
+- 64/100 — LIVE PASS.
 
 ## Step 64 — correlate desired state with observed telemetry under an explicit freshness policy
 
@@ -88,19 +88,39 @@ Both remain context acquisition/assessment only:
 
 `side_effects_performed=false`.
 
-## Planned live proof
+## Live validation — PASS
 
-1. update to `agent/o2-desired-observed-freshness`;
-2. run the new pure context tests and build with locked dependencies;
-3. start dserver with the existing SQLite/Firebase configuration and default 120-second freshness policy;
-4. call passive context for `monitor-f49c8/fog-01`;
-5. verify rev4 and MQTT desired `running` remain unchanged;
-6. because the currently stored Firebase snapshot was observed on 2026-09-05, verify it is classified `stale` under the default policy;
-7. verify the service correlation still extracts the last observed MQTT runtime target as `running`, while comparison remains `unknown/stale_telemetry`;
-8. call active mode and verify the same freshness/correlation semantics with zero side effects;
-9. unit tests prove fresh `running` telemetry yields `converged`, while missing telemetry yields `unknown/missing_telemetry`.
+Live validation used project `monitor-f49c8`, node `fog-01`, active D-Graph `dgraph:o2-mqtt-role-1` revision 4, and freshness policy `120` seconds.
 
-PASS proves dserver can distinguish last-known observed state from sufficiently fresh evidence and can correlate desired service state to concrete SmartSentinel runtime observations without taking placement or reconciliation responsibility.
+Passive context returned:
+
+- `schema_version=0.2.0`;
+- `acquisition_mode=passive`;
+- `dgraph_revision=4`;
+- `freshness_max_age_seconds=120`;
+- `side_effects_performed=false`;
+- `telemetry_available=true`;
+- `telemetry_freshness=stale`;
+- telemetry observation timestamp `2026-09-05T00:02:52.057683316Z`;
+- telemetry age approximately `159352` seconds at validation time;
+- desired MQTT service `runtime=container`, `desired_state=running`;
+- concrete observed target `container:docker:2787bb511ae943e0eb522fed9237925bf8dd5c9ad166bc9821a96652fc61dac1`;
+- `observed_binding_bound=true`;
+- last observed runtime state `running`;
+- comparison conservatively remained `unknown` with `reason=stale_telemetry`.
+
+Active context returned the same revision, freshness policy, desired service and runtime observation for the current one-node rev4 graph, with:
+
+- `acquisition_mode=active`;
+- `node_count=1`;
+- telemetry age approximately `159358` seconds;
+- `comparison_status=unknown`;
+- `reason=stale_telemetry`;
+- `side_effects_performed=false`.
+
+The six-second difference in reported telemetry age between passive and active calls is expected because age is evaluated at request time.
+
+PASS proves dserver distinguishes last-known observed state from sufficiently fresh evidence and correlates desired service state to concrete SmartSentinel runtime observations without taking placement or reconciliation responsibility.
 
 ## Architecture statement
 
