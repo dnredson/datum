@@ -6,6 +6,7 @@ default-run = "DServer"
 
 [dependencies]
 anyhow = "1"
+async-graphql = "=7.0.2"
 axum = "0.7"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
