@@ -65,6 +65,9 @@ use api::local_dgraph_snapshot::{
     get_latest_local_dgraph_snapshot, list_latest_local_dgraph_snapshots,
     post_local_dgraph_snapshot,
 };
+use api::operational_analysis_context::{
+    acquire_active_analysis_context, acquire_passive_analysis_context,
+};
 use api::operational_dgraph::{
     get_operational_dgraph, get_operational_dgraph_slice,
     post_operational_reconciliation_authorization, put_operational_dgraph,
@@ -158,6 +161,14 @@ async fn main() {
         .route(
             "/api/v1/operational-evidence",
             post(post_operational_evidence).get(list_operational_evidence),
+        )
+        .route(
+            "/api/v1/analysis-context/passive/:node_id",
+            post(acquire_passive_analysis_context),
+        )
+        .route(
+            "/api/v1/analysis-context/active",
+            post(acquire_active_analysis_context),
         )
         .route("/api/v1/sentinels", get(list_sentinel_registrations))
         .route(
