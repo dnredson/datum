@@ -14,16 +14,18 @@ use chrono::Utc;
 use serde_json::{json, Value};
 
 use crate::{
-    api::resource_registry::resource_registry_snapshot,
+    api::resource_registry::active_resource_binding_for_node,
     core::{
         operational_dgraph::{
-            build_operational_slice, build_reconciliation_authorization, validate_operational_dgraph,
-            OperationalDGraph, OperationalDGraphSlice, OperationalReconciliationAuthorization,
-            OperationalReconciliationAuthorizationRequest,
+            authorization_is_valid_for_context, build_operational_slice,
+            build_reconciliation_authorization, validate_operational_dgraph, OperationalDGraph,
+            OperationalDGraphSlice, OperationalReconciliationAuthorization,
+            OperationalReconciliationAuthorizationRequest, AUTHORIZATION_SCOPE_DURABLE,
         },
         operational_dgraph_persistence::{
-            load_operational_dgraph_persisted_state, persist_operational_dgraph_state,
-            OperationalDGraphPersistedState, OPERATIONAL_DGRAPH_PERSISTENCE_VERSION,
+            authorization_key, load_operational_dgraph_persisted_state,
+            persist_operational_dgraph_state, OperationalDGraphPersistedState,
+            OPERATIONAL_DGRAPH_PERSISTENCE_VERSION,
         },
     },
 };
@@ -63,15 +65,11 @@ fn ensure_operational_dgraph_persistence_initialized() {
         let path = env::var(OPERATIONAL_DGRAPH_STATE_PATH_ENV)
             .unwrap_or_else(|_| DEFAULT_OPERATIONAL_DGRAPH_STATE_PATH.to_string());
         match initialize_operational_dgraph_persistence(FsPath::new(&path)) {
-            Ok(true) => {
-                println!("restored operational D-Graph state from {path}");
-            }
+            Ok(true) => println!("restored operational D-Graph state from {path}"),
             Ok(false) => {}
-            Err(error) => {
-                eprintln!(
-                    "operational D-Graph persisted state was not activated from {path}: {error}; starting operational D-Graph state empty"
-                );
-            }
+            Err(error) => eprintln!(
+                "operational D-Graph persisted state was not activated from {path}: {error}; starting operational D-Graph state empty"
+            ),
         }
     });
 }
@@ -91,7 +89,7 @@ pub fn initialize_operational_dgraph_persistence(path: &FsPath) -> Result<bool, 
     match load_operational_dgraph_persisted_state(path) {
         Ok(Some(state)) => {
             replace_in_memory_graphs(&state)?;
-            clear_in_memory_authorizations()?;
+            restore_in_memory_authorizations(&state)?;
             Ok(true)
         }
         Ok(None) => {
@@ -143,11 +141,14 @@ pub async fn put_operational_dgraph(
     }
 
     let replacing_existing = current_graphs.contains_key(&project_id);
-    let mut candidate = OperationalDGraphPersistedState {
-        persistence_version: OPERATIONAL_DGRAPH_PERSISTENCE_VERSION.to_string(),
-        graphs: current_graphs,
-    };
+    let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
     candidate.graphs.insert(project_id.clone(), graph.clone());
+    if replacing_existing {
+        let prefix = format!("{}|", project_id);
+        candidate
+            .authorizations
+            .retain(|key, _| !key.starts_with(&prefix));
+    }
 
     persist_candidate(&candidate).map_err(internal_error)?;
     replace_in_memory_graphs(&candidate).map_err(internal_error)?;
@@ -186,6 +187,7 @@ pub async fn get_operational_dgraph_slice(
 ) -> Result<JsonResponse<OperationalDGraphSlice>, ApiError> {
     ensure_operational_dgraph_persistence_initialized();
     let project_id = extract_project_id(&headers)?;
+    let node_id = node_id.trim();
     let graph = graph_store()
         .read()
         .map_err(lock_error)?
@@ -196,13 +198,25 @@ pub async fn get_operational_dgraph_slice(
             project_id
         )))?;
 
+    let binding = active_resource_binding_for_node(&project_id, node_id).map_err(internal_error)?;
     let authorization = authorization_store()
         .read()
         .map_err(lock_error)?
-        .get(&authorization_key(&project_id, node_id.trim()))
-        .cloned();
+        .get(&authorization_key(&project_id, node_id))
+        .cloned()
+        .filter(|authorization| {
+            binding.as_ref().is_some_and(|binding| {
+                authorization_is_valid_for_context(
+                    authorization,
+                    &graph,
+                    node_id,
+                    &binding.binding_id,
+                    Utc::now(),
+                )
+            })
+        });
 
-    let slice = build_operational_slice(&graph, node_id.trim(), authorization.as_ref())
+    let slice = build_operational_slice(&graph, node_id, authorization.as_ref())
         .map_err(not_found)?;
     Ok(JsonResponse(slice))
 }
@@ -216,19 +230,12 @@ pub async fn post_operational_reconciliation_authorization(
     let project_id = extract_project_id(&headers)?;
     let node_id = node_id.trim();
 
-    let resource_bound_to_node = resource_registry_snapshot(&project_id)
+    let binding = active_resource_binding_for_node(&project_id, node_id)
         .map_err(internal_error)?
-        .into_iter()
-        .any(|resource| {
-            resource.state == "bound"
-                && resource.assigned_node_id.as_deref() == Some(node_id)
-        });
-    if !resource_bound_to_node {
-        return Err(conflict(format!(
+        .ok_or_else(|| conflict(format!(
             "cannot authorize operational reconciliation for node '{}': no active Resource Registry binding exists",
             node_id
-        )));
-    }
+        )))?;
 
     let graph = graph_store()
         .read()
@@ -243,20 +250,45 @@ pub async fn post_operational_reconciliation_authorization(
     let authorization = build_reconciliation_authorization(
         &graph,
         node_id,
+        &binding.binding_id,
         &request,
         Utc::now(),
     )
     .map_err(bad_request)?;
 
+    let key = authorization_key(&project_id, node_id);
+    if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
+        let _transaction = state_transaction().lock().map_err(lock_error)?;
+        let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
+        candidate.authorizations.insert(key.clone(), authorization.clone());
+        persist_candidate(&candidate).map_err(internal_error)?;
+    }
+
     authorization_store()
         .write()
         .map_err(lock_error)?
-        .insert(
-            authorization_key(&project_id, node_id),
-            authorization.clone(),
-        );
+        .insert(key, authorization.clone());
 
     Ok(JsonResponse(authorization))
+}
+
+fn persisted_candidate_from_memory() -> Result<OperationalDGraphPersistedState, String> {
+    let graphs = graph_store()
+        .read()
+        .map_err(|error| format!("operational D-Graph state lock poisoned: {error}"))?
+        .clone();
+    let authorizations = authorization_store()
+        .read()
+        .map_err(|error| format!("operational authorization state lock poisoned: {error}"))?
+        .iter()
+        .filter(|(_, authorization)| authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE)
+        .map(|(key, authorization)| (key.clone(), authorization.clone()))
+        .collect::<BTreeMap<_, _>>();
+    Ok(OperationalDGraphPersistedState {
+        persistence_version: OPERATIONAL_DGRAPH_PERSISTENCE_VERSION.to_string(),
+        graphs,
+        authorizations,
+    })
 }
 
 fn persist_candidate(state: &OperationalDGraphPersistedState) -> Result<(), String> {
@@ -276,16 +308,42 @@ fn replace_in_memory_graphs(state: &OperationalDGraphPersistedState) -> Result<(
     Ok(())
 }
 
+fn restore_in_memory_authorizations(state: &OperationalDGraphPersistedState) -> Result<(), String> {
+    let now = Utc::now();
+    let mut restored = BTreeMap::new();
+    for (key, authorization) in &state.authorizations {
+        let Some(graph) = state.graphs.get(&authorization.project_id) else {
+            continue;
+        };
+        let Some(binding) = active_resource_binding_for_node(
+            &authorization.project_id,
+            &authorization.node_id,
+        )? else {
+            continue;
+        };
+        if authorization_is_valid_for_context(
+            authorization,
+            graph,
+            &authorization.node_id,
+            &binding.binding_id,
+            now,
+        ) {
+            restored.insert(key.clone(), authorization.clone());
+        }
+    }
+    let mut store = authorization_store()
+        .write()
+        .map_err(|error| format!("operational authorization state lock poisoned: {error}"))?;
+    *store = restored;
+    Ok(())
+}
+
 fn clear_in_memory_authorizations() -> Result<(), String> {
     authorization_store()
         .write()
         .map_err(|error| format!("operational authorization state lock poisoned: {error}"))?
         .clear();
     Ok(())
-}
-
-fn authorization_key(project_id: &str, node_id: &str) -> String {
-    format!("{}|{}", project_id.trim(), node_id.trim())
 }
 
 fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -301,27 +359,18 @@ fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
 fn bad_request(message: String) -> ApiError {
     (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message})))
 }
-
 fn conflict(message: String) -> ApiError {
     (StatusCode::CONFLICT, JsonResponse(json!({"error": message})))
 }
-
 fn not_found(message: String) -> ApiError {
     (StatusCode::NOT_FOUND, JsonResponse(json!({"error": message})))
 }
-
 fn internal_error(message: String) -> ApiError {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        JsonResponse(json!({"error": message})),
-    )
+    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message})))
 }
-
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> ApiError {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        JsonResponse(json!({
-            "error": format!("operational D-Graph state lock poisoned: {error}")
-        })),
+        JsonResponse(json!({"error":format!("operational D-Graph state lock poisoned: {error}")})),
     )
 }
