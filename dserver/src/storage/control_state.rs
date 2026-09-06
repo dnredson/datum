@@ -64,7 +64,7 @@ pub fn persist_domain_json<T: Serialize>(
              ON CONFLICT(domain) DO UPDATE SET
                  payload_json = excluded.payload_json,
                  updated_at_utc = excluded.updated_at_utc",
-            params![domain, payload, now],
+            params![domain, &payload, &now],
         )
         .map_err(|error| format!("persist SQLite control-state current domain '{domain}': {error}"))?;
 
@@ -72,7 +72,7 @@ pub fn persist_domain_json<T: Serialize>(
         .execute(
             "INSERT INTO control_state_history(domain, payload_json, recorded_at_utc)
              VALUES (?1, ?2, ?3)",
-            params![domain, payload, now],
+            params![domain, &payload, &now],
         )
         .map_err(|error| format!("append SQLite control-state history domain '{domain}': {error}"))?;
 
@@ -84,13 +84,16 @@ pub fn persist_domain_json<T: Serialize>(
 
 pub fn domain_history_count(db_path: &Path, domain: &str) -> Result<u64, String> {
     let connection = open_database(db_path)?;
-    connection
+    let count = connection
         .query_row(
             "SELECT COUNT(*) FROM control_state_history WHERE domain = ?1",
             params![domain],
-            |row| row.get::<_, u64>(0),
+            |row| row.get::<_, i64>(0),
         )
-        .map_err(|error| format!("count SQLite control-state history domain '{domain}': {error}"))
+        .map_err(|error| format!("count SQLite control-state history domain '{domain}': {error}"))?;
+    u64::try_from(count).map_err(|_| {
+        format!("SQLite control-state history domain '{domain}' returned a negative count")
+    })
 }
 
 pub fn list_current_domains(db_path: &Path) -> Result<Vec<(String, String)>, String> {
