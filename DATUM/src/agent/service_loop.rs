@@ -14,6 +14,7 @@ use serde_json::json;
 
 use crate::config::{self, FileJsonConfig};
 use crate::core::cycle::run_cycle_for_node_identity;
+use crate::telemetry::{attach_host_telemetry, write_telemetry_atomic};
 use crate::core::model::Snapshot;
 use crate::outputs::file_json::FileJsonOutput;
 use crate::outputs::http_json::HttpJsonOutput;
@@ -38,6 +39,7 @@ pub struct ServiceLoopOptions {
     pub http_url_override: Option<String>,
     pub http_project_id_override: Option<String>,
     pub http_timeout_s_override: Option<u64>,
+    pub telemetry_out_override: Option<PathBuf>,
 }
 
 impl Default for ServiceLoopOptions {
@@ -54,6 +56,7 @@ impl Default for ServiceLoopOptions {
             http_url_override: None,
             http_project_id_override: None,
             http_timeout_s_override: None,
+            telemetry_out_override: None,
         }
     }
 }
@@ -263,6 +266,34 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                     started_at.elapsed(),
                 );
 
+                let telemetry_project_id = options
+                    .http_project_id_override
+                    .as_deref()
+                    .or_else(|| {
+                        cfg.outputs
+                            .http
+                            .as_ref()
+                            .and_then(|http| http.project_id.as_deref())
+                    });
+                let telemetry = match attach_host_telemetry(
+                    &mut snapshot,
+                    telemetry_project_id,
+                    collection_sequence,
+                ) {
+                    Ok(telemetry) => telemetry,
+                    Err(error) => {
+                        println!(
+                            "mode=smartsentinel event=collection seq={} status=telemetry_error dur_ms={} uptime_ms={} heartbeat_seq={} err={} side_effects=false",
+                            collection_sequence,
+                            cycle_started.elapsed().as_millis(),
+                            started_at.elapsed().as_millis(),
+                            heartbeat_sequence.load(Ordering::Relaxed),
+                            error
+                        );
+                        continue;
+                    }
+                };
+
                 let mut out_status = Vec::new();
 
                 match &file_output {
@@ -279,6 +310,13 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                         Err(e) => out_status.push(format!("http_json=err({})", e)),
                     },
                     None => out_status.push("http_json=disabled".to_string()),
+                }
+
+                if let Some(path) = &options.telemetry_out_override {
+                    match write_telemetry_atomic(path, &telemetry) {
+                        Ok(_) => out_status.push("telemetry_json=ok".to_string()),
+                        Err(error) => out_status.push(format!("telemetry_json=err({})", error)),
+                    }
                 }
 
                 println!(
