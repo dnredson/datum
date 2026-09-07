@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    api::operational_dgraph::operational_dgraph_snapshot,
+    api::operational_dgraph::{operational_dgraph_slice_snapshot, operational_dgraph_snapshot},
     core::{
         active_ai_context::build_active_ai_context,
         operational_analysis_context::{
@@ -18,6 +18,7 @@ use crate::{
             OperationalAnalysisContext, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
         },
         operational_dgraph::OperationalDGraph,
+        operational_dgraph_acquisition::build_active_operational_dgraph_acquisition,
     },
     AppState,
 };
@@ -110,24 +111,64 @@ pub async fn acquire_passive_analysis_context_for_node(
 
 /// Without a format, retain the existing 0.2.0 analysis response. With
 /// format=ai, export the same acquisition together with the complete accepted
-/// Operational D-Graph and decoded snapshot envelopes. No inference is run.
+/// Operational D-Graph and decoded snapshot envelopes. With format=dgraph,
+/// return the accepted complete D-Graph, an explicit multi-node topology and
+/// one compatible node slice per node. No inference or reconciliation is run.
 pub async fn acquire_active_analysis_context(
     State(state): State<AppState>,
     Query(query): Query<ActiveAnalysisQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = extract_project_id(&headers)?;
-    let ai_format = match query.format.as_deref() {
-        None | Some("analysis") => false,
-        Some("ai") => true,
-        Some(_) => return Err(bad_request("format must be 'analysis' or 'ai'".to_string())),
-    };
-    let (graph, context) = acquire_active_analysis_context_for_project(&state, &project_id).await?;
-    if ai_format {
-        let package = build_active_ai_context(graph, context).map_err(internal_error)?;
-        Ok(Json(serde_json::to_value(package).map_err(|error| internal_error(error.to_string()))?))
-    } else {
-        Ok(Json(serde_json::to_value(context).map_err(|error| internal_error(error.to_string()))?))
+    match query.format.as_deref() {
+        Some("dgraph") => {
+            let graph = operational_dgraph_snapshot(&project_id)
+                .map_err(internal_error)?
+                .ok_or_else(|| {
+                    not_found(format!(
+                        "operational D-Graph not found for project '{}'",
+                        project_id
+                    ))
+                })?;
+            let mut slices = Vec::with_capacity(graph.nodes.len());
+            for node in &graph.nodes {
+                let slice = operational_dgraph_slice_snapshot(&project_id, &node.node_id)
+                    .map_err(internal_error)?
+                    .ok_or_else(|| {
+                        internal_error(format!(
+                            "failed to materialize compatible operational D-Graph slice for node '{}'",
+                            node.node_id
+                        ))
+                    })?;
+                slices.push(slice);
+            }
+            let package = build_active_operational_dgraph_acquisition(graph, slices, Utc::now())
+                .map_err(internal_error)?;
+            Ok(Json(
+                serde_json::to_value(package)
+                    .map_err(|error| internal_error(error.to_string()))?,
+            ))
+        }
+        None | Some("analysis") | Some("ai") => {
+            let ai_format = matches!(query.format.as_deref(), Some("ai"));
+            let (graph, context) =
+                acquire_active_analysis_context_for_project(&state, &project_id).await?;
+            if ai_format {
+                let package = build_active_ai_context(graph, context).map_err(internal_error)?;
+                Ok(Json(
+                    serde_json::to_value(package)
+                        .map_err(|error| internal_error(error.to_string()))?,
+                ))
+            } else {
+                Ok(Json(
+                    serde_json::to_value(context)
+                        .map_err(|error| internal_error(error.to_string()))?,
+                ))
+            }
+        }
+        Some(_) => Err(bad_request(
+            "format must be 'analysis', 'ai', or 'dgraph'".to_string(),
+        )),
     }
 }
 
