@@ -1,14 +1,15 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use datum::config::load_config;
+use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
 use datum::core::cycle::run_cycle_for_node_identity;
 use datum::outputs::http_json::HttpJsonOutput;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-observe")]
-#[command(about = "Collect and publish one read-only SmartSentinel observation cycle")]
+#[command(about = "Collect and publish read-only SmartSentinel observation cycles")]
 struct Args {
     #[arg(long, default_value = "config.toml")]
     config: String,
@@ -30,10 +31,61 @@ struct Args {
 
     #[arg(long, default_value = "smartsentinel-observe.json")]
     out: String,
+
+    /// Keep collecting and publishing until Ctrl+C, a stop file, or max-cycles.
+    #[arg(long, default_value_t = false)]
+    continuous: bool,
+
+    #[arg(long)]
+    cycle_s: Option<u64>,
+
+    #[arg(long, default_value_t = 1)]
+    heartbeat_s: u64,
+
+    #[arg(long, default_value = ".smartsentinel-stop")]
+    stop_file: PathBuf,
+
+    #[arg(long)]
+    max_cycles: Option<u64>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.continuous {
+        let project_id = args
+            .project_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--continuous requires --project-id"))?;
+
+        if args.max_cycles == Some(0) {
+            bail!("--max-cycles must be greater than zero when provided");
+        }
+        if args.heartbeat_s == 0 {
+            bail!("--heartbeat-s must be greater than zero");
+        }
+
+        let publish_url = format!(
+            "{}/api/v1/snapshots",
+            args.dserver_url.trim().trim_end_matches('/')
+        );
+
+        return run_service_loop(ServiceLoopOptions {
+            config_path: args.config,
+            out_override: Some(args.out),
+            cycle_s_override: args.cycle_s,
+            heartbeat_s: args.heartbeat_s,
+            node_id_override: args.node_id,
+            hostname_override: args.hostname,
+            stop_file: args.stop_file,
+            max_cycles: args.max_cycles,
+            http_url_override: Some(publish_url),
+            http_project_id_override: Some(project_id),
+            http_timeout_s_override: Some(args.timeout_s),
+        });
+    }
+
     let cfg = load_config(&args.config)?;
 
     let node_id = args

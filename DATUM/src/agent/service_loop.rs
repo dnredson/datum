@@ -34,6 +34,10 @@ pub struct ServiceLoopOptions {
     pub hostname_override: Option<String>,
     pub stop_file: PathBuf,
     pub max_cycles: Option<u64>,
+    /// Optional command-line override for the read-only HTTP observation sink.
+    pub http_url_override: Option<String>,
+    pub http_project_id_override: Option<String>,
+    pub http_timeout_s_override: Option<u64>,
 }
 
 impl Default for ServiceLoopOptions {
@@ -47,6 +51,9 @@ impl Default for ServiceLoopOptions {
             hostname_override: None,
             stop_file: PathBuf::from(".smartsentinel-stop"),
             max_cycles: None,
+            http_url_override: None,
+            http_project_id_override: None,
+            http_timeout_s_override: None,
         }
     }
 }
@@ -169,19 +176,39 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         None
     };
 
-    let http_output = match cfg.outputs.http.clone() {
-        Some(http_cfg) if http_cfg.enabled => {
-            let project_id = http_cfg
-                .project_id
-                .clone()
-                .unwrap_or_else(|| "default-project".to_string());
-            Some(HttpJsonOutput::new(
-                http_cfg.url,
-                project_id,
-                http_cfg.timeout_s.unwrap_or(10),
-            )?)
+    let http_output = if options.http_url_override.is_some()
+        || options.http_project_id_override.is_some()
+    {
+        let url = options
+            .http_url_override
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("SmartSentinel HTTP publishing requires a non-empty URL"))?;
+        let project_id = options
+            .http_project_id_override
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("SmartSentinel HTTP publishing requires a non-empty project id"))?;
+        Some(HttpJsonOutput::new(
+            url,
+            project_id,
+            options.http_timeout_s_override.unwrap_or(10),
+        )?)
+    } else {
+        match cfg.outputs.http.clone() {
+            Some(http_cfg) if http_cfg.enabled => {
+                let project_id = http_cfg
+                    .project_id
+                    .clone()
+                    .unwrap_or_else(|| "default-project".to_string());
+                Some(HttpJsonOutput::new(
+                    http_cfg.url,
+                    project_id,
+                    http_cfg.timeout_s.unwrap_or(10),
+                )?)
+            }
+            _ => None,
         }
-        _ => None,
     };
 
     let started_at_utc = Utc::now();
