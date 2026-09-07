@@ -6,7 +6,7 @@ use datum::config::load_config;
 use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
 use datum::core::cycle::run_cycle_for_node_identity;
 use datum::outputs::http_json::HttpJsonOutput;
-use datum::telemetry::{attach_host_telemetry, write_telemetry_atomic};
+use datum::telemetry::{attach_host_telemetry_with_control_plane, write_telemetry_atomic};
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-observe")]
@@ -119,7 +119,12 @@ fn main() -> Result<()> {
         &cfg,
     )?;
 
-    let telemetry = attach_host_telemetry(&mut snapshot, Some(&project_id), 1)
+    let telemetry = attach_host_telemetry_with_control_plane(
+        &mut snapshot,
+        Some(&project_id),
+        1,
+        Some(&args.dserver_url),
+    )
         .map_err(|error| anyhow::anyhow!("build SmartSentinel telemetry: {error}"))?;
     if let Some(path) = args.telemetry_out.as_deref() {
         write_telemetry_atomic(path, &telemetry)
