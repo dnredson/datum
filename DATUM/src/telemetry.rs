@@ -177,7 +177,7 @@ pub fn build_host_telemetry(
         .find(|entity| entity.id == snapshot.meta.host_id)
         .ok_or_else(|| "SmartSentinel telemetry requires a host entity".to_string())?;
 
-    let system = host.attrs.get("system").filter(Value::is_object);
+    let system = host.attrs.get("system").filter(|value| value.is_object());
     let hostname = host
         .attrs
         .get("hostname")
@@ -331,7 +331,7 @@ fn validate_capacity(
 
 fn required(label: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
-        Err(format!("SmartSentinel telemetry {label} must not be empty".to_string()))
+        Err(format!("SmartSentinel telemetry {label} must not be empty"))
     } else {
         Ok(())
     }
