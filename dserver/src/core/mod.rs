@@ -1,6 +1,7 @@
 pub mod action_feedback;
 pub mod action_results;
 pub mod active_ai_context;
+pub mod gnn_dry_run;
 pub mod ai_gnn_data_contract;
 pub mod analyzer;
 pub mod capabilities;
