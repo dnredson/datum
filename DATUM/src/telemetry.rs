@@ -986,4 +986,33 @@ mod tests {
     fn zero_sequence_is_rejected() {
         assert!(build_host_telemetry(&snapshot(), Some("project-a"), 0).is_err());
     }
+
+    #[test]
+    fn peer_target_parser_accepts_inline_port_and_default_port() {
+        assert_eq!(split_probe_target("192.168.10.108:22", 80), ("192.168.10.108".to_string(), 22));
+        assert_eq!(split_probe_target("cloud-01", 22), ("cloud-01".to_string(), 22));
+    }
+
+    #[test]
+    fn peer_probe_skips_the_current_node() {
+        let targets = vec![
+            PeerTargetConfig {
+                node_id: "fog-01".to_string(),
+                target: "127.0.0.1".to_string(),
+                port: Some(1),
+                timeout_s: Some(1),
+            },
+            PeerTargetConfig {
+                node_id: "cloud-01".to_string(),
+                target: "127.0.0.1".to_string(),
+                port: Some(1),
+                timeout_s: Some(1),
+            },
+        ];
+        let peers = probe_peer_targets("fog-01", &targets);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "cloud-01");
+        assert!(!peers[0].reachable);
+        assert_eq!(peers[0].consecutive_failures, 1);
+    }
 }
