@@ -38,6 +38,7 @@ pub mod local_mapping_recommendations;
 pub mod model;
 pub mod operational_analysis_context;
 pub mod operational_dgraph;
+pub mod operational_dgraph_acquisition;
 pub mod operational_dgraph_persistence;
 pub mod operational_evidence;
 pub mod planner;
