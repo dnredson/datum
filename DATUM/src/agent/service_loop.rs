@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::config::{self, FileJsonConfig};
 use crate::core::cycle::run_cycle_for_node_identity;
-use crate::telemetry::{attach_host_telemetry_with_control_plane, write_telemetry_atomic};
+use crate::telemetry::{attach_host_telemetry_with_peers, write_telemetry_atomic};
 use crate::core::model::Snapshot;
 use crate::outputs::file_json::FileJsonOutput;
 use crate::outputs::http_json::HttpJsonOutput;
@@ -296,11 +296,18 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                     .http_url_override
                     .as_deref()
                     .or_else(|| cfg.outputs.http.as_ref().map(|http| http.url.as_str()));
-                let telemetry = match attach_host_telemetry_with_control_plane(
+                let peer_targets = cfg
+                    .collectors
+                    .as_ref()
+                    .and_then(|collectors| collectors.connection_ping.as_ref())
+                    .map(|ping| ping.peer_targets.as_slice())
+                    .unwrap_or(&[]);
+                let telemetry = match attach_host_telemetry_with_peers(
                     &mut snapshot,
                     telemetry_project_id,
                     collection_sequence,
                     control_plane_url,
+                    peer_targets,
                 ) {
                     Ok(telemetry) => telemetry,
                     Err(error) => {
