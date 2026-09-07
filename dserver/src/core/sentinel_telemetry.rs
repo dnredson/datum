@@ -116,10 +116,24 @@ pub fn ingest_telemetry(
                     history.len(),
                 ));
             }
-            return Err(format!(
-                "telemetry sequence must increase for node '{}' and sentinel instance '{}'; previous={}, received={}",
-                node_id, sentinel_instance_id, previous.sequence, sequence
-            ));
+
+            // The shipped observer keeps a stable logical instance id per node.
+            // A later cycle with a new cycle_id is therefore a valid process epoch
+            // even when its local sequence starts again at one. Older timestamps or
+            // reused cycles remain rejected as replay/non-monotonic evidence.
+            let new_cycle = optional_field(&payload, "cycle_id");
+            let previous_cycle = optional_field(&previous.payload, "cycle_id");
+            let is_new_epoch = sequence <= previous.sequence
+                && observed_at_utc > previous.observed_at_utc
+                && new_cycle.is_some()
+                && new_cycle != previous_cycle;
+
+            if !is_new_epoch {
+                return Err(format!(
+                    "telemetry sequence must increase for node '{}' and sentinel instance '{}'; previous={}, received={}",
+                    node_id, sentinel_instance_id, previous.sequence, sequence
+                ));
+            }
         }
     }
 
