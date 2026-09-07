@@ -6,6 +6,7 @@ use datum::config::load_config;
 use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
 use datum::core::cycle::run_cycle_for_node_identity;
 use datum::outputs::http_json::HttpJsonOutput;
+use datum::outputs::telemetry_http::TelemetryHttpOutput;
 use datum::telemetry::{attach_host_telemetry_with_control_plane, write_telemetry_atomic};
 
 #[derive(Parser, Debug)]
