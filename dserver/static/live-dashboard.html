@@ -3,40 +3,102 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DATUM live observability</title>
+  <title>DATUM live topology</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #f4f7fb; color: #172033; }
-    header { padding: 20px 28px; background: #15233b; color: white; }
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #172033;
+      --muted: #68758a;
+      --line: #dce4ef;
+      --panel: #ffffff;
+      --background: #f4f7fb;
+      --navy: #15233b;
+      --green: #1d9a62;
+      --amber: #d08a16;
+      --orange: #d4661f;
+      --red: #c53b3b;
+      --gray: #8793a3;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--background); color: var(--ink); }
+    header { padding: 20px 28px; background: var(--navy); color: white; }
     h1 { margin: 0 0 6px; font-size: 22px; }
-    #meta { opacity: .8; font-size: 13px; }
-    main { max-width: 1180px; margin: 24px auto; padding: 0 18px; }
-    .toolbar { display: flex; gap: 8px; margin-bottom: 18px; }
-    input, button { border: 1px solid #c9d3e2; border-radius: 6px; padding: 9px 11px; font: inherit; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    #meta { opacity: .82; font-size: 13px; overflow-wrap: anywhere; }
+    main { max-width: 1280px; margin: 24px auto; padding: 0 18px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    input, button {
+      border: 1px solid #c9d3e2;
+      border-radius: 6px;
+      padding: 9px 11px;
+      font: inherit;
+    }
+    input { min-width: 270px; flex: 1; }
     button { background: #2457a6; color: white; cursor: pointer; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 2px 7px #1b35530d;
+    }
+    .topology-card { margin-bottom: 14px; }
+    #topology-summary { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+    #topology {
+      display: block;
+      width: 100%;
+      min-height: 330px;
+      border: 1px solid #e5eaf2;
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+    .graph-edge { stroke-width: 3; fill: none; }
+    .graph-edge.up { stroke: var(--green); color: var(--green); }
+    .graph-edge.stale { stroke: var(--amber); color: var(--amber); stroke-dasharray: 8 6; }
+    .graph-edge.degraded { stroke: var(--orange); color: var(--orange); stroke-dasharray: 4 5; }
+    .graph-edge.down { stroke: var(--red); color: var(--red); }
+    .graph-edge.unknown { stroke: var(--gray); color: var(--gray); stroke-dasharray: 3 5; }
+    .graph-edge-label { font-size: 12px; fill: var(--ink); text-anchor: middle; }
+    .graph-node circle { stroke-width: 4; fill: white; }
+    .graph-node.fresh circle { stroke: var(--green); }
+    .graph-node.stale circle { stroke: var(--amber); }
+    .graph-node.missing circle { stroke: var(--gray); }
+    .graph-node.invalid circle { stroke: var(--red); }
+    .graph-node text { text-anchor: middle; fill: var(--ink); }
+    .graph-node .node-label { font-size: 14px; font-weight: 700; }
+    .graph-node .node-status { font-size: 11px; fill: var(--muted); }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .swatch { width: 22px; height: 3px; display: inline-block; background: var(--gray); }
+    .swatch.up { background: var(--green); }
+    .swatch.stale { background: var(--amber); border-top: 3px dashed var(--amber); height: 0; }
+    .swatch.degraded { background: var(--orange); border-top: 3px dotted var(--orange); height: 0; }
+    .swatch.down { background: var(--red); }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-    .card { background: white; border: 1px solid #dce4ef; border-radius: 10px; padding: 16px; box-shadow: 0 2px 7px #1b35530d; }
-    .node { border-left: 6px solid #8b98a8; }
-    .node.fresh { border-left-color: #1d9a62; }
-    .node.stale { border-left-color: #d08a16; }
-    .node.missing { border-left-color: #8793a3; }
-    .node.invalid { border-left-color: #c53b3b; }
+    .node { border-left: 6px solid var(--gray); }
+    .node.fresh { border-left-color: var(--green); }
+    .node.stale { border-left-color: var(--amber); }
+    .node.missing { border-left-color: var(--gray); }
+    .node.invalid { border-left-color: var(--red); }
     .status { font-weight: 700; }
     .fresh .status { color: #187a4e; }
     .stale .status { color: #a7650e; }
     .missing .status { color: #697789; }
     .invalid .status { color: #ad2c2c; }
     dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 14px 0 0; font-size: 13px; }
-    dt { color: #68758a; } dd { margin: 0; text-align: right; }
+    dt { color: var(--muted); }
+    dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 9px 6px; border-bottom: 1px solid #e5eaf2; text-align: left; }
-    .ok { color: #187a4e; } .warn { color: #a7650e; }
-    .error { color: #ad2c2c; white-space: pre-wrap; }
+    .ok { color: #187a4e; }
+    .warn { color: #a7650e; }
+    .error { color: var(--red); white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <header>
-    <h1>DATUM — live observability</h1>
+    <h1>DATUM — live topology observability</h1>
     <div id="meta">loading...</div>
   </header>
   <main>
@@ -44,72 +106,228 @@
       <input id="project" placeholder="project id" value="monitor-f49c8">
       <button id="refresh">Refresh</button>
     </div>
+
+    <section class="card topology-card">
+      <h2>Observed topology</h2>
+      <div id="topology-summary">loading graph...</div>
+      <svg id="topology" role="img" aria-label="Observed DATUM topology graph"></svg>
+      <div class="legend">
+        <span><i class="swatch up"></i> up: reachable and fresh</span>
+        <span><i class="swatch stale"></i> stale: reachable, old evidence</span>
+        <span><i class="swatch degraded"></i> degraded: unreachable, old evidence</span>
+        <span><i class="swatch down"></i> down: unreachable and fresh</span>
+      </div>
+    </section>
+
     <section id="nodes" class="grid"></section>
+
     <section class="card" style="margin-top:14px">
       <h2>Measured peer connectivity</h2>
       <table>
-        <thead><tr><th>From</th><th>To</th><th>Reachable</th><th>RTT</th><th>Freshness</th></tr></thead>
+        <thead>
+          <tr><th>From</th><th>To</th><th>Status</th><th>Reachable</th><th>RTT</th><th>Freshness</th></tr>
+        </thead>
         <tbody id="peers"></tbody>
       </table>
     </section>
     <p id="error" class="error"></p>
   </main>
+
   <script>
     const projectInput = document.getElementById("project");
     const nodes = document.getElementById("nodes");
     const peers = document.getElementById("peers");
+    const topology = document.getElementById("topology");
+    const topologySummary = document.getElementById("topology-summary");
     const meta = document.getElementById("meta");
     const error = document.getElementById("error");
 
-    const value = (v, suffix = "") => v === null || v === undefined ? "—" : String(v) + suffix;
-    const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, c => ({
-      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
-    }[c]));
+    const value = (v, suffix = "") =>
+      v === null || v === undefined ? "—" : String(v) + suffix;
+
+    const edgeColor = {
+      up: "#1d9a62",
+      stale: "#d08a16",
+      degraded: "#d4661f",
+      down: "#c53b3b",
+      unknown: "#8793a3"
+    };
+
+    function svgElement(name, attributes = {}) {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+      for (const [key, val] of Object.entries(attributes)) {
+        element.setAttribute(key, val);
+      }
+      return element;
+    }
+
+    function renderTopology(graph) {
+      const graphNodes = graph.nodes || [];
+      const graphEdges = graph.edges || [];
+      const width = 980;
+      const columns = Math.min(4, Math.max(1, graphNodes.length));
+      const rows = Math.max(1, Math.ceil(graphNodes.length / columns));
+      const height = Math.max(330, rows * 175);
+      topology.setAttribute("viewBox", "0 0 " + width + " " + height);
+      topology.replaceChildren();
+
+      const defs = svgElement("defs");
+      const marker = svgElement("marker", {
+        id: "arrow",
+        viewBox: "0 0 10 10",
+        refX: "9",
+        refY: "5",
+        markerWidth: "7",
+        markerHeight: "7",
+        orient: "auto-start-reverse"
+      });
+      marker.appendChild(svgElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "context-stroke" }));
+      defs.appendChild(marker);
+      topology.appendChild(defs);
+
+      const positions = new Map();
+      graphNodes.forEach((node, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        positions.set(node.node_id, {
+          x: 130 + column * ((width - 260) / Math.max(1, columns - 1)),
+          y: 88 + row * 155
+        });
+      });
+
+      graphEdges.forEach(edge => {
+        const from = positions.get(edge.from);
+        const to = positions.get(edge.to);
+        if (!from || !to) return;
+
+        const status = edge.edge_status || "unknown";
+        const line = svgElement("line", {
+          x1: from.x,
+          y1: from.y,
+          x2: to.x,
+          y2: to.y,
+          class: "graph-edge " + status,
+          "marker-end": "url(#arrow)"
+        });
+        topology.appendChild(line);
+
+        const label = svgElement("text", {
+          x: (from.x + to.x) / 2,
+          y: (from.y + to.y) / 2 - 8,
+          class: "graph-edge-label"
+        });
+        label.textContent = (edge.rtt_ms === null || edge.rtt_ms === undefined)
+          ? status
+          : status + " · " + Number(edge.rtt_ms).toFixed(1) + " ms";
+        topology.appendChild(label);
+      });
+
+      graphNodes.forEach(node => {
+        const position = positions.get(node.node_id);
+        const status = node.status || "missing";
+        const group = svgElement("g", {
+          class: "graph-node " + status,
+          transform: "translate(" + position.x + " " + position.y + ")"
+        });
+        group.appendChild(svgElement("circle", { r: "38" }));
+
+        const label = svgElement("text", { y: "-3", class: "node-label" });
+        label.textContent = node.node_id;
+        group.appendChild(label);
+
+        const nodeStatus = svgElement("text", { y: "16", class: "node-status" });
+        nodeStatus.textContent = status + " · " + (node.telemetry_freshness || "missing");
+        group.appendChild(nodeStatus);
+        topology.appendChild(group);
+      });
+
+      const summary = graph.summary || {};
+      topologySummary.textContent =
+        "nodes=" + value(summary.node_count)
+        + " · edges=" + value(summary.edge_count)
+        + " · up=" + value(summary.up_edge_count)
+        + " · stale=" + value(summary.stale_edge_count)
+        + " · degraded=" + value(summary.degraded_edge_count)
+        + " · down=" + value(summary.down_edge_count)
+        + " · path=" + value(graph.path_status);
+    }
+
+    function renderNodeCards(graph) {
+      nodes.innerHTML = (graph.nodes || []).map(node => {
+        const observed = node.observed || {};
+        const status = observed.status || "missing";
+        const telemetry = observed.telemetry || {};
+        const host = telemetry.host || {};
+        const cpu = host.cpu || {};
+        const memory = host.memory || {};
+        return '<article class="card node ' + status + '">'
+          + '<h2>' + node.node_id + '</h2>'
+          + '<div class="status">' + status + ' · ' + (observed.telemetry_freshness || "missing") + '</div>'
+          + '<dl><dt>age</dt><dd>' + value(observed.telemetry_age_seconds, "s") + '</dd>'
+          + '<dt>sequence</dt><dd>' + value(observed.sequence) + '</dd>'
+          + '<dt>CPU</dt><dd>' + value(cpu.usage_percent, "%") + '</dd>'
+          + '<dt>memory available</dt><dd>' + value(memory.available_bytes) + '</dd>'
+          + '<dt>services desired</dt><dd>' + value((node.desired_services || []).length) + '</dd></dl>'
+          + '</article>';
+      }).join("");
+    }
+
+    function renderPeerTable(graph) {
+      const edgeRows = (graph.measured_peer_edges || []).map(edge => {
+        const status = (graph.graph_overview_edges || []).find(candidate =>
+          candidate.from === edge.from && candidate.to === edge.to
+        )?.edge_status || "unknown";
+        return '<tr><td>' + edge.from + '</td><td>' + edge.to + '</td>'
+          + '<td class="' + (status === "up" ? "ok" : "warn") + '">' + status + '</td>'
+          + '<td>' + value(edge.reachable) + '</td>'
+          + '<td>' + value(edge.rtt_ms, " ms") + '</td>'
+          + '<td>' + value(edge.telemetry_freshness) + '</td></tr>';
+      });
+      peers.innerHTML = edgeRows.length ? edgeRows.join("") :
+        '<tr><td colspan="6">No configured peer probes in the latest telemetry.</td></tr>';
+    }
 
     async function refresh() {
       error.textContent = "";
       const project = projectInput.value.trim();
-      if (!project) { error.textContent = "Project id is required."; return; }
+      if (!project) {
+        error.textContent = "Project id is required.";
+        return;
+      }
+
       try {
-        const response = await fetch("/api/v1/dashboard/live?project=" + encodeURIComponent(project), {
-          headers: {"X-Datum-Project": project}
-        });
+        const response = await fetch(
+          "/api/v1/dashboard/live?project=" + encodeURIComponent(project),
+          { headers: {"X-Datum-Project": project} }
+        );
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || "dashboard request failed");
+
         const graph = body.observed_dgraph;
+        const overview = body.graph_overview || {
+          nodes: [],
+          edges: [],
+          summary: {},
+          path_status: graph.path_status
+        };
+
         meta.textContent = "project=" + graph.project_id
           + " · graph=" + graph.dgraph_id
           + " · revision=" + graph.revision
           + " · path=" + graph.path_status
           + " · generated=" + body.generated_at_utc;
-        nodes.innerHTML = graph.nodes.map(node => {
-          const observed = node.observed || {};
-          const status = observed.status || "missing";
-          const telemetry = observed.telemetry || {};
-          const host = telemetry.host || {};
-          const cpu = host.cpu || {};
-          const memory = host.memory || {};
-          return '<article class="card node ' + esc(status) + '">'
-            + '<h2>' + esc(node.node_id) + '</h2>'
-            + '<div class="status">' + esc(status) + ' · ' + esc(observed.telemetry_freshness || "missing") + '</div>'
-            + '<dl><dt>age</dt><dd>' + value(observed.telemetry_age_seconds, "s") + '</dd>'
-            + '<dt>sequence</dt><dd>' + value(observed.sequence) + '</dd>'
-            + '<dt>CPU</dt><dd>' + value(cpu.usage_percent, "%") + '</dd>'
-            + '<dt>memory available</dt><dd>' + value(memory.available_bytes) + '</dd>'
-            + '<dt>services desired</dt><dd>' + value((node.desired_services || []).length) + '</dd></dl>'
-            + '</article>';
-        }).join("");
-        const edgeRows = (graph.measured_peer_edges || []).map(edge =>
-          '<tr><td>' + esc(edge.from) + '</td><td>' + esc(edge.to) + '</td>'
-          + '<td class="' + (edge.reachable ? "ok" : "warn") + '">' + value(edge.reachable) + '</td>'
-          + '<td>' + value(edge.rtt_ms, " ms") + '</td><td>' + esc(edge.telemetry_freshness) + '</td></tr>'
-        );
-        peers.innerHTML = edgeRows.length ? edgeRows.join("") :
-          '<tr><td colspan="5">No configured peer probes in the latest telemetry.</td></tr>';
+
+        renderTopology(overview);
+        renderNodeCards(graph);
+        renderPeerTable({
+          measured_peer_edges: graph.measured_peer_edges || [],
+          graph_overview_edges: overview.edges || []
+        });
       } catch (e) {
         error.textContent = e.message;
       }
     }
+
     document.getElementById("refresh").addEventListener("click", refresh);
     setInterval(refresh, 2000);
     refresh();
