@@ -67,7 +67,7 @@ impl Plugin for HostTelemetryLinuxPlugin {
             &fs::read_to_string("/proc/loadavg").unwrap_or_default(),
         );
 
-        let system_json: JsonValue = json!({
+        let mut system_json: JsonValue = json!({
             "os_name": os_name,
             "os_version": os_version,
             "kernel": kernel,
@@ -98,6 +98,19 @@ impl Plugin for HostTelemetryLinuxPlugin {
                 "available_bytes": disk_free_kb.saturating_mul(1024)
             }],
         });
+
+        if let Some(previous_system) = host_ent.attrs.get("system").and_then(JsonValue::as_object) {
+            for key in [
+                "container_runtime",
+                "container_runtime_available",
+                "container_count",
+                "container_runtime_error",
+            ] {
+                if let Some(value) = previous_system.get(key) {
+                    system_json[key] = value.clone();
+                }
+            }
+        }
 
         if !host_ent.attrs.is_object() {
             host_ent.attrs = json!({});
