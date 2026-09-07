@@ -40,6 +40,7 @@ pub mod operational_analysis_context;
 pub mod operational_dgraph;
 pub mod operational_dgraph_acquisition;
 pub mod operational_dgraph_persistence;
+pub mod operational_dgraph_recovery;
 pub mod operational_evidence;
 pub mod planner;
 pub mod resource_binding;
