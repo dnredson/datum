@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde_json::{json, Value as JsonValue};
-use std::fs;
+use std::{fs, process::Command};
 
 use crate::core::model::Snapshot;
 use crate::core::plugin::Plugin;
@@ -43,8 +43,10 @@ impl Plugin for HostTelemetryLinuxPlugin {
 
         // Mem info
         let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
-        let (mem_total_kb, mem_available_kb) = parse_meminfo_kb(&meminfo);
+        let (mem_total_kb, mem_available_kb, swap_total_kb, swap_free_kb) =
+            parse_meminfo_kb(&meminfo);
         let mem_used_kb = mem_total_kb.saturating_sub(mem_available_kb);
+        let swap_used_kb = swap_total_kb.saturating_sub(swap_free_kb);
 
         // CPU logical
         let cpu_logical = std::thread::available_parallelism()
@@ -58,19 +60,42 @@ impl Plugin for HostTelemetryLinuxPlugin {
 
         // Disk usage (root)
         let (disk_total_kb, disk_used_kb, disk_free_kb) = disk_usage_root_kb();
+        let uptime_seconds = parse_uptime_seconds(&fs::read_to_string("/proc/uptime").unwrap_or_default());
+        let process_count = process_count();
+        let kernel = kernel_version();
+        let (load_1, load_5, load_15) = parse_load_average(
+            &fs::read_to_string("/proc/loadavg").unwrap_or_default(),
+        );
 
         let system_json: JsonValue = json!({
             "os_name": os_name,
             "os_version": os_version,
+            "kernel": kernel,
             "arch": arch,
             "cpu_logical": cpu_logical,
             "cpu_usage_pct": cpu_usage_pct,
+            "load_1": load_1,
+            "load_5": load_5,
+            "load_15": load_15,
+            "uptime_seconds": uptime_seconds,
             "mem_total_mb": (mem_total_kb as f64 / 1024.0).round(),
             "mem_used_mb": (mem_used_kb as f64 / 1024.0).round(),
             "mem_available_mb": (mem_available_kb as f64 / 1024.0).round(),
+            "mem_total_bytes": mem_total_kb.saturating_mul(1024),
+            "mem_used_bytes": mem_used_kb.saturating_mul(1024),
+            "mem_available_bytes": mem_available_kb.saturating_mul(1024),
+            "swap_total_bytes": swap_total_kb.saturating_mul(1024),
+            "swap_used_bytes": swap_used_kb.saturating_mul(1024),
+            "process_count": process_count,
             "disk_root_total_gb": (disk_total_kb as f64 / (1024.0*1024.0)).round(),
             "disk_root_used_gb": (disk_used_kb as f64 / (1024.0*1024.0)).round(),
             "disk_root_free_gb": (disk_free_kb as f64 / (1024.0*1024.0)).round(),
+            "filesystems": [{
+                "mount": "/",
+                "total_bytes": disk_total_kb.saturating_mul(1024),
+                "used_bytes": disk_used_kb.saturating_mul(1024),
+                "available_bytes": disk_free_kb.saturating_mul(1024)
+            }],
         });
 
         if !host_ent.attrs.is_object() {
@@ -99,17 +124,23 @@ fn parse_os_release(s: &str) -> (String, String) {
     (name, version)
 }
 
-fn parse_meminfo_kb(s: &str) -> (u64, u64) {
+fn parse_meminfo_kb(s: &str) -> (u64, u64, u64, u64) {
     let mut total = 0u64;
     let mut avail = 0u64;
+    let mut swap_total = 0u64;
+    let mut swap_free = 0u64;
     for line in s.lines() {
         if line.starts_with("MemTotal:") {
             total = extract_first_u64(line).unwrap_or(0);
         } else if line.starts_with("MemAvailable:") {
             avail = extract_first_u64(line).unwrap_or(0);
+        } else if line.starts_with("SwapTotal:") {
+            swap_total = extract_first_u64(line).unwrap_or(0);
+        } else if line.starts_with("SwapFree:") {
+            swap_free = extract_first_u64(line).unwrap_or(0);
         }
     }
-    (total, avail)
+    (total, avail, swap_total, swap_free)
 }
 
 fn extract_first_u64(s: &str) -> Option<u64> {
@@ -119,6 +150,44 @@ fn extract_first_u64(s: &str) -> Option<u64> {
         }
     }
     None
+}
+
+fn parse_uptime_seconds(s: &str) -> Option<u64> {
+    s.split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value.round() as u64)
+}
+
+fn parse_load_average(s: &str) -> (Option<f64>, Option<f64>, Option<f64>) {
+    let mut values = s
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|value| value.parse::<f64>().ok());
+    (values.next(), values.next(), values.next())
+}
+
+fn kernel_version() -> Option<String> {
+    Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn process_count() -> Option<u64> {
+    fs::read_dir("/proc").ok().map(|entries| {
+        entries
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter_map(|name| name.parse::<u64>().ok())
+            .count() as u64
+    })
 }
 
 fn parse_proc_stat_cpu(s: &str) -> Option<(u64, u64)> {
