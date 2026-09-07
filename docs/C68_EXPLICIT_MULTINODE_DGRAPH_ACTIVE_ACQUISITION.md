@@ -2,11 +2,13 @@
 
 ## Status
 
-Implementation complete on `agent/o2-c68-finalization`; live laboratory validation remains the next gate.
+**C68 — LIVE PASS**
+
+Implementation and laboratory validation completed on `agent/o2-c68-finalization`.
 
 This step is a read-only extension of the existing active analysis endpoint. It does not alter the accepted live Operational D-Graph, publish a new revision, create reconciliation authorizations, execute local reconciliation, or invoke an external AI/GNN.
 
-The finalization also hardens the control-plane boundary: persisted operational state is recovered read-only and fail-closed before the HTTP listener starts, and the complete acquisition uses one captured graph revision to materialize all compatible slices.
+The finalization hardens the control-plane boundary: persisted operational state is recovered read-only and fail-closed before the HTTP listener starts, and the complete acquisition uses one captured graph revision to materialize all compatible slices.
 
 ## Goal
 
@@ -113,6 +115,59 @@ C68 passes implementation validation when:
 - `format=dgraph` returns the exact accepted graph revision and compatible slice count equal to node count;
 - `side_effects_performed=false`;
 - no live D-Graph revision or host state changes merely from acquisition.
+
+## Final laboratory validation
+
+The final validation used the real `fog-01` observation:
+
+- cycle id: `9d19f022-99f0-40af-bfb0-1593dc3aaaca`;
+- observed at: `2026-09-07T18:17:04.965645695Z`;
+- entities: 8;
+- edges: 5;
+- events: 2;
+- actions: 0;
+- snapshot ingestion: `accepted=true`.
+
+The active AI export returned:
+
+```text
+schema_version=0.1.0
+acquisition_mode=active
+complete=true
+expected_node_count=1
+valid_snapshot_count=1
+fresh_node_count=1
+stale_node_count=0
+missing_node_count=0
+invalid_snapshot_count=0
+usable_node_count=1
+side_effects_performed=false
+```
+
+The exported `fog-01` cycle id exactly matched the ingested cycle id:
+
+```text
+INCOMING=9d19f022-99f0-40af-bfb0-1593dc3aaaca
+EXPORTED=9d19f022-99f0-40af-bfb0-1593dc3aaaca
+C68_EXACT_CYCLE_PASS
+```
+
+The compatibility checks also passed:
+
+- `format=dgraph`: accepted revision 4, one topology node, one compatible slice, no side effects;
+- legacy active analysis: schema `0.2.0`, one node, no side effects;
+- active AI context: fresh and complete, no side effects.
+
+Build validation completed successfully:
+
+```text
+Finished \`dev\` profile
+DServer warnings: 14
+control-state-inspect warnings: 8
+errors: 0
+```
+
+The warnings are non-blocking compiler warnings and do not invalidate the C68 result.
 
 ## FAIL criteria
 
