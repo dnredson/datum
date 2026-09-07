@@ -9,7 +9,7 @@ use datum::outputs::http_json::HttpJsonOutput;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-observe")]
-#[command(about = "Collect and publish one read-only SmartSentinel observation cycle")]
+#[command(about = "Collect and publish read-only SmartSentinel observation cycles")]
 struct Args {
     #[arg(long, default_value = "config.toml")]
     config: String,
