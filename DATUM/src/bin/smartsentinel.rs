@@ -182,5 +182,6 @@ fn main() -> Result<()> {
         http_url_override: None,
         http_project_id_override: None,
         http_timeout_s_override: None,
+        telemetry_out_override: None,
     })
 }
