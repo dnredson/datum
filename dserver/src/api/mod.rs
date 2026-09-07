@@ -27,6 +27,7 @@ pub mod ingest;
 pub mod installation_plan;
 pub mod installation_tasks;
 pub mod local_dgraph_snapshot;
+pub mod live_dashboard;
 pub mod middleware;
 pub mod nodes;
 pub mod operational_analysis_context;
