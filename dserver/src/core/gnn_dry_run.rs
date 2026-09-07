@@ -22,7 +22,7 @@ pub struct GnnDryRunResult {
     pub side_effects_performed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GnnModelDescriptor {
     pub kind: String,
     pub layers: u8,
@@ -80,7 +80,7 @@ pub fn run_gnn_dry_run(contract: &AiGnnDataContract) -> Result<GnnDryRunResult, 
             })
             .collect::<BTreeMap<_, _>>();
         let predicted_eligible = node_scores.values().all(|score| *score >= 0.5);
-        let accuracy = f64::from(predicted_eligible == expected_eligible);
+        let accuracy = if predicted_eligible == expected_eligible { 1.0 } else { 0.0 };
         GnnScenarioResult {
             scenario_id: scenario_id.to_string(),
             expected_eligible,
@@ -134,11 +134,7 @@ pub fn run_gnn_dry_run(contract: &AiGnnDataContract) -> Result<GnnDryRunResult, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ai_gnn_data_contract::build_ai_gnn_data_contract;
-    use crate::core::active_ai_context::ActiveAiContext;
-
     fn contract() -> AiGnnDataContract {
-        let _ = std::marker::PhantomData::<ActiveAiContext>;
         serde_json::from_value(serde_json::json!({
             "schema_version":"0.1.0","contract_kind":"datum_ai_gnn_input",
             "project_id":"project-a","dgraph_id":"dgraph:test","dgraph_revision":4,
