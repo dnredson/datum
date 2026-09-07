@@ -743,8 +743,10 @@ fn probe_control_plane(url: &str) -> ControlPlaneTelemetry {
         }
     };
 
-    let (host, port) = target.rsplit_once(':').unwrap_or((&target, 80));
-    let port = port.parse::<u16>().unwrap_or(80);
+    let (host, port) = target
+        .rsplit_once(':')
+        .map(|(host, port)| (host, port.parse::<u16>().unwrap_or(80)))
+        .unwrap_or((target.as_str(), 80));
     let started = Instant::now();
     let result = (host, port)
         .to_socket_addrs()
