@@ -21,6 +21,8 @@ pub struct OperationalDGraphRecoveryPolicy {
     pub allow_empty: bool,
     pub expected_project_id: Option<String>,
     pub expected_dgraph_id: Option<String>,
+    /// Minimum accepted revision for recovery. Forward revisions remain valid
+    /// as the operational D-Graph evolves; regressions are rejected.
     pub expected_revision: Option<u64>,
 }
 
@@ -88,7 +90,12 @@ impl OperationalDGraphRecoveryPolicy {
                 if &graph.dgraph_id != expected_id { return Err(format!("expected D-Graph id '{expected_id}', restored '{}'", graph.dgraph_id)); }
             }
             if let Some(expected_revision) = self.expected_revision {
-                if graph.revision != expected_revision { return Err(format!("expected D-Graph revision {expected_revision}, restored {}", graph.revision)); }
+                if graph.revision < expected_revision {
+                    return Err(format!(
+                        "minimum D-Graph revision {expected_revision} required, restored {}",
+                        graph.revision
+                    ));
+                }
             }
         }
         Ok(())
@@ -194,6 +201,14 @@ mod tests {
         assert!(strict().validate(Some(&wrong)).is_err());
         assert!(strict().validate(Some(&state(4))).is_ok());
         assert!(OperationalDGraphRecoveryPolicy::default().validate(None).is_err());
+    }
+    #[test]
+    fn c60_recovery_accepts_forward_revision_evolution_but_rejects_regression() {
+        let policy = strict();
+        assert!(policy.validate(Some(&state(4))).is_ok());
+        assert!(policy.validate(Some(&state(5))).is_ok());
+        assert!(policy.validate(Some(&state(6))).is_ok());
+        assert!(policy.validate(Some(&state(3))).is_err());
     }
     #[test]
     fn c68_recovery_allows_only_explicit_unpinned_empty_bootstrap() {
