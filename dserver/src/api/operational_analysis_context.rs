@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    api::operational_dgraph::{operational_dgraph_slice_snapshot, operational_dgraph_snapshot},
+    api::operational_dgraph::{
+        operational_dgraph_acquisition_snapshot, operational_dgraph_snapshot,
+    },
     core::{
         active_ai_context::build_active_ai_context,
         operational_analysis_context::{
@@ -109,11 +111,8 @@ pub async fn acquire_passive_analysis_context_for_node(
     .map_err(PassiveAnalysisAcquireError::NotFound)
 }
 
-/// Without a format, retain the existing 0.2.0 analysis response. With
-/// format=ai, export the same acquisition together with the complete accepted
-/// Operational D-Graph and decoded snapshot envelopes. With format=dgraph,
-/// return the accepted complete D-Graph, an explicit multi-node topology and
-/// one compatible node slice per node. No inference or reconciliation is run.
+/// Preserve the existing analysis and AI contracts. The complete D-Graph
+/// format uses one captured accepted revision and never performs reconciliation.
 pub async fn acquire_active_analysis_context(
     State(state): State<AppState>,
     Query(query): Query<ActiveAnalysisQuery>,
@@ -122,7 +121,7 @@ pub async fn acquire_active_analysis_context(
     let project_id = extract_project_id(&headers)?;
     match query.format.as_deref() {
         Some("dgraph") => {
-            let graph = operational_dgraph_snapshot(&project_id)
+            let (graph, slices) = operational_dgraph_acquisition_snapshot(&project_id)
                 .map_err(internal_error)?
                 .ok_or_else(|| {
                     not_found(format!(
@@ -130,18 +129,6 @@ pub async fn acquire_active_analysis_context(
                         project_id
                     ))
                 })?;
-            let mut slices = Vec::with_capacity(graph.nodes.len());
-            for node in &graph.nodes {
-                let slice = operational_dgraph_slice_snapshot(&project_id, &node.node_id)
-                    .map_err(internal_error)?
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "failed to materialize compatible operational D-Graph slice for node '{}'",
-                            node.node_id
-                        ))
-                    })?;
-                slices.push(slice);
-            }
             let package = build_active_operational_dgraph_acquisition(graph, slices, Utc::now())
                 .map_err(internal_error)?;
             Ok(Json(
@@ -173,9 +160,8 @@ pub async fn acquire_active_analysis_context(
 }
 
 /// Read one accepted revision and acquire every desired node concurrently.
-/// The resulting assessment is derived from that same revision, not a second
-/// graph read. Individual Firebase failures remain visible, rather than
-/// aborting the entire active scan.
+/// The assessment is derived from that same revision. Individual Firebase
+/// failures remain visible rather than aborting the entire active scan.
 async fn acquire_active_analysis_context_for_project(
     state: &AppState,
     project_id: &str,
