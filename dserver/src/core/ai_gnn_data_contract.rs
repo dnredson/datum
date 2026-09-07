@@ -302,7 +302,11 @@ fn validate_source_context(context: &ActiveAiContext) -> Result<(), String> {
     if context.acquisition_mode != "active"
         || context.side_effects_performed
         || context.project_id != context.operational_dgraph.project_id
-        || context.dgraph_identity_matches_context()
+        || context.analysis_context.project_id != context.project_id
+        || context.analysis_context.dgraph_id != context.operational_dgraph.dgraph_id
+        || context.analysis_context.dgraph_revision != context.operational_dgraph.revision
+        || context.analysis_context.node_count != context.operational_dgraph.nodes.len() as u64
+        || context.analysis_context.nodes.len() != context.operational_dgraph.nodes.len()
     {
         return Err("invalid active AI context for GNN export".to_string());
     }
