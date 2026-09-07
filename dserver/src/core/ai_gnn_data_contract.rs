@@ -624,7 +624,8 @@ mod tests {
             result.inference_eligibility.reason,
             "inference_requires_complete_fresh_usable_evidence"
         );
-        assert!(!result.node_features[0].numeric_mask["usable_for_inference"]);
+        assert_eq!(result.node_features[0].numeric["usable_for_inference"], Some(0.0));
+        assert!(result.node_features[0].numeric_mask["usable_for_inference"]);
         result.validate_read_only_boundary().unwrap();
     }
 
