@@ -9,11 +9,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    api::sentinel_telemetry::build_observed_dgraph,
-    core::{
+    api::{
         operational_dgraph::operational_dgraph_snapshot,
-        sentinel_telemetry::latest_telemetry_by_project,
+        sentinel_telemetry::build_observed_dgraph,
     },
+    core::sentinel_telemetry::latest_telemetry_by_project,
 };
 
 #[derive(Debug, Deserialize, Default)]
