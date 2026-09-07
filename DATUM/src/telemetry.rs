@@ -1,4 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    net::{TcpStream, ToSocketAddrs},
+    path::Path,
+    time::Instant,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,6 +23,10 @@ pub struct SmartSentinelTelemetryEnvelope {
     pub sequence: u64,
     pub observed_at_utc: DateTime<Utc>,
     pub host: HostTelemetry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkTelemetry>,
     pub safe_to_auto_execute: bool,
     pub side_effects_performed: bool,
 }
@@ -83,6 +92,117 @@ pub struct FilesystemTelemetry {
     pub available_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RuntimeTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_runtime_available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub containers: Vec<ContainerTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<ProcessTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceTelemetry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ContainerTelemetry {
+    pub entity_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ProcessTelemetry {
+    pub entity_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent_total: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_used_kb_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ServiceTelemetry {
+    pub entity_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_state: Option<String>,
+    pub observed_state: String,
+    pub bound: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<ServiceCheckTelemetry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ServiceCheckTelemetry {
+    pub kind: String,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NetworkTelemetry {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<NetworkInterfaceTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane: Option<ControlPlaneTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<NetworkProbeTelemetry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NetworkInterfaceTelemetry {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx_errors: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_errors: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ControlPlaneTelemetry {
+    pub target: String,
+    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NetworkProbeTelemetry {
+    pub target: String,
+    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_min_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_avg_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_max_ms: Option<f64>,
+}
+
 impl SmartSentinelTelemetryEnvelope {
     pub fn validate(&self) -> Result<(), String> {
         required("schema_version", &self.schema_version)?;
@@ -120,6 +240,37 @@ impl SmartSentinelTelemetryEnvelope {
             self.host.swap.used_bytes,
             None,
         )?;
+        if let Some(runtime) = &self.runtime {
+            for process in &runtime.processes {
+                if let Some(cpu) = process.cpu_percent_total {
+                    if !cpu.is_finite() || cpu < 0.0 {
+                        return Err(format!(
+                            "runtime process CPU must be finite and non-negative for '{}'",
+                            process.name
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(network) = &self.network {
+            if let Some(control_plane) = &network.control_plane {
+                if let Some(rtt) = control_plane.rtt_ms {
+                    if !rtt.is_finite() || rtt < 0.0 {
+                        return Err("control-plane RTT must be finite and non-negative".to_string());
+                    }
+                }
+            }
+            for probe in &network.probes {
+                if let Some(loss) = probe.loss_percent {
+                    if !loss.is_finite() || !(0.0..=100.0).contains(&loss) {
+                        return Err(format!(
+                            "network probe loss_percent must be between 0 and 100 for '{}'",
+                            probe.target
+                        ));
+                    }
+                }
+            }
+        }
         for filesystem in &self.host.filesystems {
             required("filesystem.mount", &filesystem.mount)?;
             validate_capacity(
@@ -144,7 +295,20 @@ pub fn attach_host_telemetry(
     project_id: Option<&str>,
     sequence: u64,
 ) -> Result<SmartSentinelTelemetryEnvelope, String> {
-    let telemetry = build_host_telemetry(snapshot, project_id, sequence)?;
+    attach_host_telemetry_with_control_plane(snapshot, project_id, sequence, None)
+}
+
+pub fn attach_host_telemetry_with_control_plane(
+    snapshot: &mut Snapshot,
+    project_id: Option<&str>,
+    sequence: u64,
+    control_plane_url: Option<&str>,
+) -> Result<SmartSentinelTelemetryEnvelope, String> {
+    let mut telemetry = build_host_telemetry(snapshot, project_id, sequence)?;
+    if let Some(network) = telemetry.network.as_mut() {
+        network.control_plane = control_plane_url.map(probe_control_plane);
+    }
+    telemetry.validate()?;
     let value = serde_json::to_value(&telemetry)
         .map_err(|error| format!("serialize SmartSentinel telemetry: {error}"))?;
 
@@ -274,6 +438,8 @@ pub fn build_host_telemetry(
                 .and_then(|value| value.get("process_count"))
                 .and_then(as_u64),
         },
+        runtime: Some(build_runtime_telemetry(snapshot)),
+        network: Some(build_network_telemetry(snapshot, None)),
         safe_to_auto_execute: false,
         side_effects_performed: false,
     };
@@ -302,6 +468,295 @@ pub fn write_telemetry_atomic(
     }
     fs::rename(&temporary, path)
         .map_err(|error| format!("rename {} to {}: {error}", temporary.display(), path.display()))
+}
+
+fn build_runtime_telemetry(snapshot: &Snapshot) -> RuntimeTelemetry {
+    let containers = snapshot
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == "container")
+        .map(|entity| ContainerTelemetry {
+            entity_id: entity.id.clone(),
+            name: entity
+                .attrs
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            image: entity
+                .attrs
+                .get("image")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            state: entity
+                .attrs
+                .get("state")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            status: entity
+                .attrs
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        })
+        .collect::<Vec<_>>();
+
+    let processes = snapshot
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == "process")
+        .map(|entity| ProcessTelemetry {
+            entity_id: entity.id.clone(),
+            name: entity
+                .attrs
+                .get("name")
+                .or_else(|| entity.attrs.get("image_name"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            instance_count: entity
+                .attrs
+                .get("instance_count")
+                .and_then(as_u64),
+            cpu_percent_total: entity
+                .attrs
+                .get("cpu_pct_total")
+                .or_else(|| entity.attrs.get("cpu_percent_total"))
+                .and_then(Value::as_f64),
+            memory_used_kb_total: entity
+                .attrs
+                .get("mem_used_kb_total")
+                .or_else(|| entity.attrs.get("memory_used_kb_total"))
+                .and_then(as_u64),
+        })
+        .collect::<Vec<_>>();
+
+    let services = snapshot
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == "service")
+        .map(|entity| {
+            let checks = entity
+                .attrs
+                .get("checks_result")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|check| ServiceCheckTelemetry {
+                            kind: check
+                                .get("kind")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            outcome: check
+                                .get("outcome")
+                                .or_else(|| check.get("status"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            detail: check
+                                .get("detail")
+                                .or_else(|| check.get("message"))
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            ServiceTelemetry {
+                entity_id: entity.id.clone(),
+                name: entity
+                    .attrs
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                runtime: entity
+                    .attrs
+                    .get("runtime")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                desired_state: entity
+                    .attrs
+                    .get("desired_state")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                observed_state: entity
+                    .attrs
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                bound: entity
+                    .attrs
+                    .get("binding")
+                    .and_then(|value| value.get("bound"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                checks,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let host_system = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.id == snapshot.meta.host_id)
+        .and_then(|entity| entity.attrs.get("system"));
+
+    RuntimeTelemetry {
+        container_runtime_available: host_system
+            .and_then(|system| system.get("container_runtime_available"))
+            .and_then(Value::as_bool),
+        container_count: host_system
+            .and_then(|system| system.get("container_count"))
+            .and_then(as_u64)
+            .or_else(|| (!containers.is_empty()).then_some(containers.len() as u64)),
+        containers,
+        processes,
+        services,
+    }
+}
+
+fn build_network_telemetry(
+    snapshot: &Snapshot,
+    control_plane_url: Option<&str>,
+) -> NetworkTelemetry {
+    let host_system = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.id == snapshot.meta.host_id)
+        .and_then(|entity| entity.attrs.get("system"));
+
+    let interfaces = host_system
+        .and_then(|system| system.get("interfaces"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(NetworkInterfaceTelemetry {
+                        name: item.get("name").and_then(Value::as_str)?.to_string(),
+                        up: item.get("up").and_then(Value::as_bool),
+                        addresses: item
+                            .get("addresses")
+                            .and_then(Value::as_array)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(ToString::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        rx_bytes: item.get("rx_bytes").and_then(as_u64),
+                        tx_bytes: item.get("tx_bytes").and_then(as_u64),
+                        rx_errors: item.get("rx_errors").and_then(as_u64),
+                        tx_errors: item.get("tx_errors").and_then(as_u64),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let probes = snapshot
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == "connection")
+        .filter_map(|entity| {
+            Some(NetworkProbeTelemetry {
+                target: entity
+                    .attrs
+                    .get("to")
+                    .or_else(|| entity.attrs.get("target"))
+                    .and_then(Value::as_str)?
+                    .to_string(),
+                reachable: entity
+                    .attrs
+                    .get("available")
+                    .or_else(|| entity.attrs.get("reachable"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                loss_percent: entity
+                    .attrs
+                    .get("loss_pct")
+                    .or_else(|| entity.attrs.get("loss_percent"))
+                    .and_then(Value::as_f64)
+                    .or_else(|| entity.attrs.get("loss_pct").and_then(as_u64).map(|v| v as f64)),
+                rtt_min_ms: entity
+                    .attrs
+                    .get("rtt_min_ms")
+                    .and_then(Value::as_f64),
+                rtt_avg_ms: entity
+                    .attrs
+                    .get("rtt_avg_ms")
+                    .and_then(Value::as_f64),
+                rtt_max_ms: entity
+                    .attrs
+                    .get("rtt_max_ms")
+                    .and_then(Value::as_f64),
+            })
+        })
+        .collect();
+
+    let mut network = NetworkTelemetry {
+        interfaces,
+        control_plane: None,
+        probes,
+    };
+    if let Some(url) = control_plane_url {
+        network.control_plane = Some(probe_control_plane(url));
+    }
+    network
+}
+
+fn probe_control_plane(url: &str) -> ControlPlaneTelemetry {
+    let target = match reqwest::Url::parse(url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("").to_string();
+            let port = parsed
+                .port_or_known_default()
+                .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+            format!("{host}:{port}")
+        }
+        Err(error) => {
+            return ControlPlaneTelemetry {
+                target: url.to_string(),
+                reachable: false,
+                rtt_ms: None,
+                error: Some(format!("invalid control-plane URL: {error}")),
+            };
+        }
+    };
+
+    let (host, port) = target.rsplit_once(':').unwrap_or((&target, 80));
+    let port = port.parse::<u16>().unwrap_or(80);
+    let started = Instant::now();
+    let result = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|addresses| {
+            addresses
+                .filter_map(|address| TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2)).ok())
+                .next()
+        });
+
+    match result {
+        Some(_) => ControlPlaneTelemetry {
+            target,
+            reachable: true,
+            rtt_ms: Some(started.elapsed().as_secs_f64() * 1000.0),
+            error: None,
+        },
+        None => ControlPlaneTelemetry {
+            target,
+            reachable: false,
+            rtt_ms: None,
+            error: Some("TCP control-plane connection failed".to_string()),
+        },
+    }
 }
 
 fn as_u64(value: &Value) -> Option<u64> {

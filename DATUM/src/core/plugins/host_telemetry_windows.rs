@@ -37,6 +37,19 @@ $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1;
 $perf = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'";
 $disks = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, Size, FreeSpace);
 $swap = @(Get-CimInstance Win32_PageFileUsage);
+$interfaces = @(Get-NetAdapter | ForEach-Object {
+  $adapter = $_;
+  $stats = Get-NetAdapterStatistics -Name $adapter.Name -ErrorAction SilentlyContinue;
+  [pscustomobject]@{
+    name = $adapter.Name
+    up = ($adapter.Status -eq "Up")
+    addresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress)
+    rx_bytes = if ($stats) { [UInt64]$stats.ReceivedBytes } else { $null }
+    tx_bytes = if ($stats) { [UInt64]$stats.SentBytes } else { $null }
+    rx_errors = if ($stats) { [UInt64]$stats.InReceivedErrors } else { $null }
+    tx_errors = if ($stats) { [UInt64]$stats.OutErrors } else { $null }
+  }
+});
 
 $mem_total_bytes = [UInt64]$cs.TotalPhysicalMemory;
 $mem_available_bytes = [UInt64]($os.FreePhysicalMemory * 1KB);
@@ -70,6 +83,7 @@ $filesystems = @($disks | ForEach-Object {
   swap_total_bytes = $swap_total_bytes
   swap_used_bytes = $swap_used_bytes
   process_count = @(Get-Process).Count
+  interfaces = $interfaces
   filesystems = $filesystems
 } | ConvertTo-Json -Compress
 "#;
