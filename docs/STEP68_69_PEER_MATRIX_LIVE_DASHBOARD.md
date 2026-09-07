@@ -119,3 +119,50 @@ jq '{
 ```
 
 O dashboard pode ser aberto no navegador em `http://192.168.10.101:8080/dashboard/live?project=monitor-f49c8`.
+
+
+## Etapas 70 + 71 — visão topológica observada
+
+As etapas 70 e 71 acrescentam uma visão gráfica da topologia observada, mantendo a distinção entre configuração, evidência e estado de freshness.
+
+### Etapa 70 — contrato de visão topológica
+
+O endpoint dedicado é:
+
+```text
+GET /api/v1/graph-overview?project=<project-id>
+X-Datum-Project: <project-id>
+```
+
+O contrato `datum_observed_topology_graph` contém:
+
+- `nodes`: nós esperados, estado observado, freshness, idade, sequência e quantidade de serviços desejados;
+- `edges`: arestas de conectividade medidas pelos SmartSentinels;
+- `edge_status`: `up`, `stale`, `degraded`, `down` ou `unknown`;
+- `summary`: contagem de nós e classificação das arestas;
+- revisão do D-Graph e `path_status`.
+
+A classificação de arestas é:
+
+| Estado | Semântica |
+|---|---|
+| `up` | peer alcançável com telemetria fresh |
+| `stale` | peer alcançável, mas evidência antiga |
+| `down` | peer não alcançável com telemetria fresh |
+| `degraded` | peer não alcançável e evidência antiga |
+| `unknown` | evidência insuficiente ou inválida |
+
+### Etapa 71 — visualização gráfica
+
+O dashboard `/dashboard/live` agora exibe:
+
+- grafo SVG sem dependências externas;
+- nós coloridos pelo estado observado;
+- arestas direcionadas coloridas pelo `edge_status`;
+- RTT exibido na aresta quando disponível;
+- legenda semântica;
+- resumo de nós e arestas;
+- tabela detalhada de conectividade;
+- atualização automática a cada dois segundos.
+
+O grafo é somente leitura. As etapas não fazem deploy, failover, alteração de rota, reconciliação ou execução de ações. Todas as respostas preservam `side_effects_performed=false`.
