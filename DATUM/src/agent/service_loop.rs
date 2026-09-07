@@ -183,12 +183,12 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
             .http_url_override
             .clone()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| bail!("SmartSentinel HTTP publishing requires a non-empty URL"))?;
+            .ok_or_else(|| anyhow::anyhow!("SmartSentinel HTTP publishing requires a non-empty URL"))?;
         let project_id = options
             .http_project_id_override
             .clone()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| bail!("SmartSentinel HTTP publishing requires a non-empty project id"))?;
+            .ok_or_else(|| anyhow::anyhow!("SmartSentinel HTTP publishing requires a non-empty project id"))?;
         Some(HttpJsonOutput::new(
             url,
             project_id,
