@@ -179,5 +179,8 @@ fn main() -> Result<()> {
         hostname_override: args.hostname,
         stop_file: args.stop_file,
         max_cycles: args.max_cycles,
+        http_url_override: None,
+        http_project_id_override: None,
+        http_timeout_s_override: None,
     })
 }
