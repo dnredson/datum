@@ -87,6 +87,7 @@ impl Plugin for HostTelemetryLinuxPlugin {
             "swap_total_bytes": swap_total_kb.saturating_mul(1024),
             "swap_used_bytes": swap_used_kb.saturating_mul(1024),
             "process_count": process_count,
+            "interfaces": network_interfaces(),
             "disk_root_total_gb": (disk_total_kb as f64 / (1024.0*1024.0)).round(),
             "disk_root_used_gb": (disk_used_kb as f64 / (1024.0*1024.0)).round(),
             "disk_root_free_gb": (disk_free_kb as f64 / (1024.0*1024.0)).round(),
@@ -106,6 +107,85 @@ impl Plugin for HostTelemetryLinuxPlugin {
 
         Ok(())
     }
+}
+
+fn network_interfaces() -> Vec<JsonValue> {
+    let counters = fs::read_to_string("/proc/net/dev")
+        .ok()
+        .map(|raw| {
+            raw.lines()
+                .filter_map(|line| {
+                    let (name, values) = line.split_once(':')?;
+                    let values = values.split_whitespace().collect::<Vec<_>>();
+                    if values.len() < 11 {
+                        return None;
+                    }
+                    Some((
+                        name.trim().to_string(),
+                        (
+                            values[0].parse::<u64>().ok(),
+                            values[8].parse::<u64>().ok(),
+                            values[2].parse::<u64>().ok(),
+                            values[10].parse::<u64>().ok(),
+                        ),
+                    ))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    fs::read_dir("/sys/class/net")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let up = fs::read_to_string(entry.path().join("operstate"))
+                .ok()
+                .map(|state| state.trim().eq_ignore_ascii_case("up"));
+            let addresses = interface_addresses(&name);
+            let (rx_bytes, tx_bytes, rx_errors, tx_errors) =
+                counters.get(&name).copied().unwrap_or((None, None, None, None));
+            Some(json!({
+                "name": name,
+                "up": up,
+                "addresses": addresses,
+                "rx_bytes": rx_bytes,
+                "tx_bytes": tx_bytes,
+                "rx_errors": rx_errors,
+                "tx_errors": tx_errors,
+            }))
+        })
+        .collect()
+}
+
+fn interface_addresses(name: &str) -> Vec<String> {
+    let output = match Command::new("ip")
+        .args(["-j", "address", "show", "dev", name])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let value: JsonValue = match serde_json::from_slice(&output.stdout) {
+        Ok(value) => value,
+        _ => return Vec::new(),
+    };
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|interface| {
+            interface
+                .get("addr_info")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|address| address.get("local").and_then(JsonValue::as_str))
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn parse_os_release(s: &str) -> (String, String) {
