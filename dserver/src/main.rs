@@ -24,7 +24,7 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
-use api::live_dashboard::{get_live_dashboard_html, get_live_dashboard_state};
+use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
     post_deployment_attempt_retry, post_deployment_attempt_transition,
@@ -192,7 +192,7 @@ async fn main() {
         .route("/graphiql", get(graphiql))
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
-        .route("/api/v1/dashboard/live", get(get_live_dashboard_state))
+        .route("/api/v1/dashboard/live", get(get_live_dashboard_state))\n        .route("/api/v1/graph-overview", get(get_graph_overview))
         .route("/dashboard/live", get(get_live_dashboard_html))
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))
@@ -397,8 +397,7 @@ async fn main() {
             "/api/v1/nodes/:node_id/local-mapping-preflight/latest",
             get(get_latest_local_mapping_preflight_report),
         )
-        .route(
-            "/api/v1/nodes/:node_id/dgraph-snapshot",
+        .route(            "/api/v1/nodes/:node_id/dgraph-snapshot",
             post(post_local_dgraph_snapshot),
         )
         .route(
