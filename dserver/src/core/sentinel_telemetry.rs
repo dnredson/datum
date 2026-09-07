@@ -330,10 +330,10 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn payload(sequence: u64) -> Value {
+    fn payload(project: &str, sequence: u64) -> Value {
         json!({
             "schema_version": "0.1.0",
-            "project_id": "project-a",
+            "project_id": project,
             "node_id": "fog-01",
             "sentinel_instance_id": "fog-01-sentinel",
             "sequence": sequence,
@@ -350,7 +350,7 @@ mod tests {
     fn accepts_first_observation_and_bounds_history() {
         let now = Utc.with_ymd_and_hms(2026, 9, 7, 20, 0, 1).unwrap();
         let (view, disposition, count) =
-            ingest_telemetry("project-a", "fog-01", payload(1), now).unwrap();
+            ingest_telemetry("project-first", "fog-01", payload("project-first", 1), now).unwrap();
         assert_eq!(view.node_id, "fog-01");
         assert_eq!(disposition, TelemetryIngestDisposition::Inserted);
         assert_eq!(count, 1);
@@ -359,15 +359,15 @@ mod tests {
     #[test]
     fn rejects_identity_mismatch() {
         let now = Utc.with_ymd_and_hms(2026, 9, 7, 20, 0, 1).unwrap();
-        let error = ingest_telemetry("project-a", "cloud-01", payload(1), now).unwrap_err();
+        let error = ingest_telemetry("project-identity", "cloud-01", payload("project-identity", 1), now).unwrap_err();
         assert!(error.contains("does not match"));
     }
 
     #[test]
     fn rejects_non_monotonic_sequence_for_same_instance() {
         let now = Utc.with_ymd_and_hms(2026, 9, 7, 20, 0, 1).unwrap();
-        ingest_telemetry("project-a", "fog-01", payload(100), now).unwrap();
-        let error = ingest_telemetry("project-a", "fog-01", payload(99), now).unwrap_err();
+        ingest_telemetry("project-sequence", "fog-01", payload("project-sequence", 100), now).unwrap();
+        let error = ingest_telemetry("project-sequence", "fog-01", payload("project-sequence", 99), now).unwrap_err();
         assert!(error.contains("sequence must increase"));
     }
 }
