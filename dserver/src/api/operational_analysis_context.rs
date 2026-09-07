@@ -15,6 +15,7 @@ use crate::{
     },
     core::{
         active_ai_context::build_active_ai_context,
+        ai_gnn_data_contract::build_ai_gnn_data_contract,
         operational_analysis_context::{
             build_active_analysis_context, build_passive_analysis_context,
             OperationalAnalysisContext, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
@@ -136,11 +137,20 @@ pub async fn acquire_active_analysis_context(
                     .map_err(|error| internal_error(error.to_string()))?,
             ))
         }
-        None | Some("analysis") | Some("ai") => {
+        None | Some("analysis") | Some("ai") | Some("gnn") => {
             let ai_format = matches!(query.format.as_deref(), Some("ai"));
+            let gnn_format = matches!(query.format.as_deref(), Some("gnn"));
             let (graph, context) =
                 acquire_active_analysis_context_for_project(&state, &project_id).await?;
-            if ai_format {
+            if gnn_format {
+                let ai_context = build_active_ai_context(graph, context).map_err(internal_error)?;
+                let package =
+                    build_ai_gnn_data_contract(ai_context).map_err(internal_error)?;
+                Ok(Json(
+                    serde_json::to_value(package)
+                        .map_err(|error| internal_error(error.to_string()))?,
+                ))
+            } else if ai_format {
                 let package = build_active_ai_context(graph, context).map_err(internal_error)?;
                 Ok(Json(
                     serde_json::to_value(package)
@@ -154,7 +164,7 @@ pub async fn acquire_active_analysis_context(
             }
         }
         Some(_) => Err(bad_request(
-            "format must be 'analysis', 'ai', or 'dgraph'".to_string(),
+            "format must be 'analysis', 'ai', 'gnn', or 'dgraph'".to_string(),
         )),
     }
 }
