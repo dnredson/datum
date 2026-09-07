@@ -40,3 +40,4 @@ pub mod sentinel_registration;
 pub mod topology;
 pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;
+pub mod sentinel_telemetry;
