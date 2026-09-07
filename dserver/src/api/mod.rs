@@ -31,6 +31,7 @@ pub mod middleware;
 pub mod nodes;
 pub mod operational_analysis_context;
 pub mod operational_dgraph;
+pub mod operational_dgraph_acquisition;
 pub mod operational_evidence;
 pub mod passive_observation_trigger;
 pub mod planner;
