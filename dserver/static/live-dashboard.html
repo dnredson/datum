@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DATUM live observability</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #172033; }
+    header { padding: 20px 28px; background: #15233b; color: white; }
+    h1 { margin: 0 0 6px; font-size: 22px; }
+    #meta { opacity: .8; font-size: 13px; }
+    main { max-width: 1180px; margin: 24px auto; padding: 0 18px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 18px; }
+    input, button { border: 1px solid #c9d3e2; border-radius: 6px; padding: 9px 11px; font: inherit; }
+    button { background: #2457a6; color: white; cursor: pointer; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .card { background: white; border: 1px solid #dce4ef; border-radius: 10px; padding: 16px; box-shadow: 0 2px 7px #1b35530d; }
+    .node { border-left: 6px solid #8b98a8; }
+    .node.fresh { border-left-color: #1d9a62; }
+    .node.stale { border-left-color: #d08a16; }
+    .node.missing { border-left-color: #8793a3; }
+    .node.invalid { border-left-color: #c53b3b; }
+    .status { font-weight: 700; }
+    .fresh .status { color: #187a4e; }
+    .stale .status { color: #a7650e; }
+    .missing .status { color: #697789; }
+    .invalid .status { color: #ad2c2c; }
+    dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 14px 0 0; font-size: 13px; }
+    dt { color: #68758a; } dd { margin: 0; text-align: right; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 6px; border-bottom: 1px solid #e5eaf2; text-align: left; }
+    .ok { color: #187a4e; } .warn { color: #a7650e; }
+    .error { color: #ad2c2c; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DATUM — live observability</h1>
+    <div id="meta">loading...</div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <input id="project" placeholder="project id" value="monitor-f49c8">
+      <button id="refresh">Refresh</button>
+    </div>
+    <section id="nodes" class="grid"></section>
+    <section class="card" style="margin-top:14px">
+      <h2>Measured peer connectivity</h2>
+      <table>
+        <thead><tr><th>From</th><th>To</th><th>Reachable</th><th>RTT</th><th>Freshness</th></tr></thead>
+        <tbody id="peers"></tbody>
+      </table>
+    </section>
+    <p id="error" class="error"></p>
+  </main>
+  <script>
+    const projectInput = document.getElementById("project");
+    const nodes = document.getElementById("nodes");
+    const peers = document.getElementById("peers");
+    const meta = document.getElementById("meta");
+    const error = document.getElementById("error");
+
+    const value = (v, suffix = "") => v === null || v === undefined ? "—" : String(v) + suffix;
+    const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, c => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+    }[c]));
+
+    async function refresh() {
+      error.textContent = "";
+      const project = projectInput.value.trim();
+      if (!project) { error.textContent = "Project id is required."; return; }
+      try {
+        const response = await fetch("/api/v1/dashboard/live?project=" + encodeURIComponent(project), {
+          headers: {"X-Datum-Project": project}
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "dashboard request failed");
+        const graph = body.observed_dgraph;
+        meta.textContent = "project=" + graph.project_id
+          + " · graph=" + graph.dgraph_id
+          + " · revision=" + graph.revision
+          + " · path=" + graph.path_status
+          + " · generated=" + body.generated_at_utc;
+        nodes.innerHTML = graph.nodes.map(node => {
+          const observed = node.observed || {};
+          const status = observed.status || "missing";
+          const telemetry = observed.telemetry || {};
+          const host = telemetry.host || {};
+          const cpu = host.cpu || {};
+          const memory = host.memory || {};
+          return '<article class="card node ' + esc(status) + '">'
+            + '<h2>' + esc(node.node_id) + '</h2>'
+            + '<div class="status">' + esc(status) + ' · ' + esc(observed.telemetry_freshness || "missing") + '</div>'
+            + '<dl><dt>age</dt><dd>' + value(observed.telemetry_age_seconds, "s") + '</dd>'
+            + '<dt>sequence</dt><dd>' + value(observed.sequence) + '</dd>'
+            + '<dt>CPU</dt><dd>' + value(cpu.usage_percent, "%") + '</dd>'
+            + '<dt>memory available</dt><dd>' + value(memory.available_bytes) + '</dd>'
+            + '<dt>services desired</dt><dd>' + value((node.desired_services || []).length) + '</dd></dl>'
+            + '</article>';
+        }).join("");
+        const edgeRows = (graph.measured_peer_edges || []).map(edge =>
+          '<tr><td>' + esc(edge.from) + '</td><td>' + esc(edge.to) + '</td>'
+          + '<td class="' + (edge.reachable ? "ok" : "warn") + '">' + value(edge.reachable) + '</td>'
+          + '<td>' + value(edge.rtt_ms, " ms") + '</td><td>' + esc(edge.telemetry_freshness) + '</td></tr>'
+        );
+        peers.innerHTML = edgeRows.length ? edgeRows.join("") :
+          '<tr><td colspan="5">No configured peer probes in the latest telemetry.</td></tr>';
+      } catch (e) {
+        error.textContent = e.message;
+      }
+    }
+    document.getElementById("refresh").addEventListener("click", refresh);
+    setInterval(refresh, 2000);
+    refresh();
+  </script>
+</body>
+</html>

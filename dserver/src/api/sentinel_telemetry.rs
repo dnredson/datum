@@ -124,7 +124,7 @@ pub async fn get_observed_dgraph(
     Ok(JsonResponse(build_observed_dgraph(&graph, telemetry)))
 }
 
-fn build_observed_dgraph(
+pub(crate) fn build_observed_dgraph(
     graph: &OperationalDGraph,
     telemetry: Vec<TelemetryObservationView>,
 ) -> Value {
@@ -224,6 +224,35 @@ fn build_observed_dgraph(
         })
         .collect::<Vec<_>>();
 
+    let measured_peer_edges = telemetry_by_node
+        .values()
+        .flat_map(|observation| {
+            observation
+                .payload
+                .get("network")
+                .and_then(|network| network.get("peers"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(move |peer| {
+                    let peer_node_id = peer.get("node_id").and_then(Value::as_str)?;
+                    Some(json!({
+                        "from": observation.node_id,
+                        "to": peer_node_id,
+                        "relation": "peer_connectivity",
+                        "reachable": peer.get("reachable").cloned().unwrap_or(Value::Null),
+                        "rtt_ms": peer.get("rtt_ms").cloned().unwrap_or(Value::Null),
+                        "consecutive_failures": peer.get("consecutive_failures").cloned().unwrap_or(Value::Null),
+                        "last_success_at_utc": peer.get("last_success_at_utc").cloned().unwrap_or(Value::Null),
+                        "error": peer.get("error").cloned().unwrap_or(Value::Null),
+                        "telemetry_freshness": observation.telemetry_freshness,
+                        "observed_at_utc": observation.observed_at_utc
+                    }))
+                })
+        })
+        .collect::<Vec<_>>();
+
     let all_nodes_fresh = graph.nodes.iter().all(|node| {
         telemetry_by_node
             .get(&node.node_id)
@@ -242,6 +271,7 @@ fn build_observed_dgraph(
         "configured_relations": configured_relations,
         "observed_relations": observed_relations,
         "measured_connectivity_edges": measured_connectivity_edges,
+        "measured_peer_edges": measured_peer_edges,
         "path_status": if all_nodes_fresh { "all_expected_nodes_fresh" } else { "degraded_or_missing_telemetry" },
         "side_effects_performed": false
     })
@@ -290,8 +320,6 @@ fn internal_error(message: String) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
     fn observed_graph_marks_missing_nodes_without_fabricating_telemetry() {
         let graph = OperationalDGraph {

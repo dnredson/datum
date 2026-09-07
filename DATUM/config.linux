@@ -41,6 +41,21 @@ targets = ["1.1.1.1", "8.8.8.8"]
 count = 4
 timeout_s = 1
 
+# Optional TCP peer probes. Each node skips its own identity.
+# The laboratory uses SSH port 22 as a lightweight reachability target;
+# replace it with an agent-owned probe port when that listener is deployed.
+[[collectors.connection_ping.peer_targets]]
+node_id = "fog-01"
+target = "192.168.10.103"
+port = 22
+timeout_s = 2
+
+[[collectors.connection_ping.peer_targets]]
+node_id = "cloud-01"
+target = "192.168.10.108"
+port = 22
+timeout_s = 2
+
 [collectors.docker]
 enabled = true
 mode = "allowlist"

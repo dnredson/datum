@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::core::model::Snapshot;
+use crate::{config::PeerTargetConfig, core::model::Snapshot};
 
 pub const SMARTSENTINEL_TELEMETRY_SCHEMA_VERSION: &str = "0.1.0";
 
@@ -165,6 +165,8 @@ pub struct NetworkTelemetry {
     pub control_plane: Option<ControlPlaneTelemetry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub probes: Vec<NetworkProbeTelemetry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerTelemetry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -206,6 +208,20 @@ pub struct NetworkProbeTelemetry {
     pub rtt_avg_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_max_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PeerTelemetry {
+    pub node_id: String,
+    pub target: String,
+    pub reachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<f64>,
+    pub consecutive_failures: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at_utc: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl SmartSentinelTelemetryEnvelope {
@@ -275,6 +291,18 @@ impl SmartSentinelTelemetryEnvelope {
                     }
                 }
             }
+            for peer in &network.peers {
+                required("network.peer.node_id", &peer.node_id)?;
+                required("network.peer.target", &peer.target)?;
+                if let Some(rtt) = peer.rtt_ms {
+                    if !rtt.is_finite() || rtt < 0.0 {
+                        return Err(format!(
+                            "network peer RTT must be finite and non-negative for '{}'",
+                            peer.node_id
+                        ));
+                    }
+                }
+            }
         }
         for filesystem in &self.host.filesystems {
             required("filesystem.mount", &filesystem.mount)?;
@@ -309,9 +337,20 @@ pub fn attach_host_telemetry_with_control_plane(
     sequence: u64,
     control_plane_url: Option<&str>,
 ) -> Result<SmartSentinelTelemetryEnvelope, String> {
+    attach_host_telemetry_with_peers(snapshot, project_id, sequence, control_plane_url, &[])
+}
+
+pub fn attach_host_telemetry_with_peers(
+    snapshot: &mut Snapshot,
+    project_id: Option<&str>,
+    sequence: u64,
+    control_plane_url: Option<&str>,
+    peer_targets: &[PeerTargetConfig],
+) -> Result<SmartSentinelTelemetryEnvelope, String> {
     let mut telemetry = build_host_telemetry(snapshot, project_id, sequence)?;
     if let Some(network) = telemetry.network.as_mut() {
         network.control_plane = control_plane_url.map(probe_control_plane);
+        network.peers = probe_peer_targets(&snapshot.meta.node_id, peer_targets);
     }
     telemetry.validate()?;
     let value = serde_json::to_value(&telemetry)
@@ -719,6 +758,7 @@ fn build_network_telemetry(
         interfaces,
         control_plane: None,
         probes,
+        peers: Vec::new(),
     };
     if let Some(url) = control_plane_url {
         network.control_plane = Some(probe_control_plane(url));
@@ -773,6 +813,57 @@ fn probe_control_plane(url: &str) -> ControlPlaneTelemetry {
             error: Some("TCP control-plane connection failed".to_string()),
         },
     }
+}
+
+fn probe_peer_targets(current_node_id: &str, targets: &[PeerTargetConfig]) -> Vec<PeerTelemetry> {
+    targets
+        .iter()
+        .filter_map(|peer| {
+            let node_id = peer.node_id.trim();
+            let configured_target = peer.target.trim();
+            if node_id.is_empty() || configured_target.is_empty() || node_id == current_node_id {
+                return None;
+            }
+
+            let (host, port) = split_probe_target(configured_target, peer.port.unwrap_or(80));
+            let started = Instant::now();
+            let result = (host.as_str(), port)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|addresses| {
+                    addresses
+                        .filter_map(|address| {
+                            TcpStream::connect_timeout(
+                                &address,
+                                std::time::Duration::from_secs(
+                                    u64::from(peer.timeout_s.unwrap_or(2)),
+                                ),
+                            )
+                            .ok()
+                        })
+                        .next()
+                });
+            let reachable = result.is_some();
+            Some(PeerTelemetry {
+                node_id: node_id.to_string(),
+                target: configured_target.to_string(),
+                reachable,
+                rtt_ms: reachable.then(|| started.elapsed().as_secs_f64() * 1000.0),
+                consecutive_failures: if reachable { 0 } else { 1 },
+                last_success_at_utc: reachable.then_some(Utc::now()),
+                error: (!reachable).then(|| "TCP peer probe failed".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn split_probe_target(target: &str, default_port: u16) -> (String, u16) {
+    if let Some((host, port)) = target.rsplit_once(':') {
+        if let Ok(port) = port.parse::<u16>() {
+            return (host.to_string(), port);
+        }
+    }
+    (target.to_string(), default_port)
 }
 
 fn as_u64(value: &Value) -> Option<u64> {
@@ -894,5 +985,34 @@ mod tests {
     #[test]
     fn zero_sequence_is_rejected() {
         assert!(build_host_telemetry(&snapshot(), Some("project-a"), 0).is_err());
+    }
+
+    #[test]
+    fn peer_target_parser_accepts_inline_port_and_default_port() {
+        assert_eq!(split_probe_target("192.168.10.108:22", 80), ("192.168.10.108".to_string(), 22));
+        assert_eq!(split_probe_target("cloud-01", 22), ("cloud-01".to_string(), 22));
+    }
+
+    #[test]
+    fn peer_probe_skips_the_current_node() {
+        let targets = vec![
+            PeerTargetConfig {
+                node_id: "fog-01".to_string(),
+                target: "127.0.0.1".to_string(),
+                port: Some(1),
+                timeout_s: Some(1),
+            },
+            PeerTargetConfig {
+                node_id: "cloud-01".to_string(),
+                target: "127.0.0.1".to_string(),
+                port: Some(1),
+                timeout_s: Some(1),
+            },
+        ];
+        let peers = probe_peer_targets("fog-01", &targets);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "cloud-01");
+        assert!(!peers[0].reachable);
+        assert_eq!(peers[0].consecutive_failures, 1);
     }
 }
