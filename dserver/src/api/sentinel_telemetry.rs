@@ -320,8 +320,6 @@ fn internal_error(message: String) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
     fn observed_graph_marks_missing_nodes_without_fabricating_telemetry() {
         let graph = OperationalDGraph {
