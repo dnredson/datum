@@ -276,6 +276,10 @@ async fn main() {
         .route("/api/v1/dmap", get(get_dmap))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
+            "/api/v1/action-plan/materialized",
+            get(get_materialized_action_plan),
+        )
+        .route(
             "/api/v1/deployment-planning/latest",
             get(get_latest_deployment_planning),
         )
@@ -285,7 +289,7 @@ async fn main() {
         )
         .route(
             "/api/v1/installation-plan/latest",
-            get(get_installation_plan_for_node),
+            get(get_latest_installation_plan),
         )
         .route(
             "/api/v1/installation-plan/for-node/:node_id",
