@@ -204,6 +204,20 @@ pub struct ConnectionPingConfig {
     pub targets: Option<Vec<String>>,
     pub count: Option<u32>,
     pub timeout_s: Option<u32>,
+    /// Optional node-to-node TCP probes. The target may include a port;
+    /// otherwise port defaults to 80.
+    #[serde(default)]
+    pub peer_targets: Vec<PeerTargetConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PeerTargetConfig {
+    pub node_id: String,
+    pub target: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub timeout_s: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
