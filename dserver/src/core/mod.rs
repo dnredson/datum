@@ -59,3 +59,4 @@ pub mod wasm_runtime_reports;
 mod controlled_dgraph_deployment_tests;
 #[cfg(test)]
 mod resource_registry_regression_tests;
+pub mod sentinel_telemetry;

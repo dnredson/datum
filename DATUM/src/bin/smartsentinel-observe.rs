@@ -6,6 +6,7 @@ use datum::config::load_config;
 use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
 use datum::core::cycle::run_cycle_for_node_identity;
 use datum::outputs::http_json::HttpJsonOutput;
+use datum::outputs::telemetry_http::TelemetryHttpOutput;
 use datum::telemetry::{attach_host_telemetry_with_control_plane, write_telemetry_atomic};
 
 #[derive(Parser, Debug)]
@@ -137,15 +138,23 @@ fn main() -> Result<()> {
     )
     .with_context(|| format!("write observation snapshot {}", args.out))?;
 
-    let url = format!(
-        "{}/api/v1/snapshots",
-        args.dserver_url.trim().trim_end_matches('/')
-    );
-    let output = HttpJsonOutput::new(url, project_id, args.timeout_s)?;
+    let base_url = args.dserver_url.trim().trim_end_matches('/');
+    let output = HttpJsonOutput::new(
+        format!("{}/api/v1/snapshots", base_url),
+        project_id.clone(),
+        args.timeout_s,
+    )?;
     output.emit(&snapshot)?;
 
+    let telemetry_output = TelemetryHttpOutput::new(
+        format!("{}/api/v1/sentinels/{}/telemetry", base_url, snapshot.meta.node_id),
+        project_id,
+        args.timeout_s,
+    )?;
+    telemetry_output.emit(&telemetry)?;
+
     println!(
-        "mode=smartsentinel-observe status=ok node_id={} cycle_id={} entities={} edges={} events={} actions=0 side_effects_performed=false snapshot_published=true out={}",
+        "mode=smartsentinel-observe status=ok node_id={} cycle_id={} entities={} edges={} events={} actions=0 side_effects_performed=false snapshot_published=true telemetry_published=true out={}",
         snapshot.meta.node_id,
         snapshot.meta.cycle_id,
         snapshot.entities.len(),

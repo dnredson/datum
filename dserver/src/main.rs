@@ -84,6 +84,10 @@ use api::sentinel_registration::{
     get_sentinel_registration, list_sentinel_registrations, post_sentinel_heartbeat,
     put_sentinel_registration,
 };
+use api::sentinel_telemetry::{
+    get_observed_dgraph, get_sentinel_telemetry, get_sentinel_telemetry_history,
+    list_sentinel_telemetry, post_sentinel_telemetry,
+};
 use api::topology::{get_topology, set_topology};
 use api::wasm_module_registry::{
     get_wasm_module_descriptor, list_wasm_module_descriptors, post_wasm_module_descriptor,
@@ -218,6 +222,22 @@ async fn main() {
         .route(
             "/api/v1/analysis-context/active",
             post(acquire_active_analysis_context),
+        )
+        .route(
+            "/api/v1/observed-dgraph",
+            get(get_observed_dgraph),
+        )
+        .route(
+            "/api/v1/sentinels/telemetry",
+            get(list_sentinel_telemetry),
+        )
+        .route(
+            "/api/v1/sentinels/:node_id/telemetry",
+            post(post_sentinel_telemetry).get(get_sentinel_telemetry),
+        )
+        .route(
+            "/api/v1/sentinels/:node_id/telemetry/history",
+            get(get_sentinel_telemetry_history),
         )
         .route("/api/v1/sentinels", get(list_sentinel_registrations))
         .route(

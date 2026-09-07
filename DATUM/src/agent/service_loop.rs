@@ -18,6 +18,7 @@ use crate::telemetry::{attach_host_telemetry_with_control_plane, write_telemetry
 use crate::core::model::Snapshot;
 use crate::outputs::file_json::FileJsonOutput;
 use crate::outputs::http_json::HttpJsonOutput;
+use crate::outputs::telemetry_http::TelemetryHttpOutput;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const SHUTDOWN_NONE: u8 = 0;
@@ -179,7 +180,9 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         None
     };
 
-    let http_output = if options.http_url_override.is_some()
+    let (http_publish_url, http_project_id, http_timeout_s) = if options
+        .http_url_override
+        .is_some()
         || options.http_project_id_override.is_some()
     {
         let url = options
@@ -192,26 +195,39 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
             .clone()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("SmartSentinel HTTP publishing requires a non-empty project id"))?;
-        Some(HttpJsonOutput::new(
-            url,
-            project_id,
+        (
+            Some(url),
+            Some(project_id),
             options.http_timeout_s_override.unwrap_or(10),
-        )?)
+        )
     } else {
         match cfg.outputs.http.clone() {
-            Some(http_cfg) if http_cfg.enabled => {
-                let project_id = http_cfg
+            Some(http_cfg) if http_cfg.enabled => (
+                Some(http_cfg.url),
+                Some(http_cfg
                     .project_id
-                    .clone()
-                    .unwrap_or_else(|| "default-project".to_string());
-                Some(HttpJsonOutput::new(
-                    http_cfg.url,
-                    project_id,
-                    http_cfg.timeout_s.unwrap_or(10),
-                )?)
-            }
-            _ => None,
+                    .unwrap_or_else(|| "default-project".to_string())),
+                http_cfg.timeout_s.unwrap_or(10),
+            ),
+            _ => (None, None, 10),
         }
+    };
+
+    let http_output = match (http_publish_url.clone(), http_project_id.clone()) {
+        (Some(url), Some(project_id)) => Some(HttpJsonOutput::new(url, project_id, http_timeout_s)?),
+        _ => None,
+    };
+    let telemetry_http_output = match (
+        http_output.as_ref(),
+        http_publish_url.as_deref(),
+        http_project_id.as_deref(),
+    ) {
+        (Some(_), Some(snapshot_url), Some(project_id)) => Some(TelemetryHttpOutput::new(
+            telemetry_publish_url(snapshot_url, &node_id),
+            project_id.to_string(),
+            http_timeout_s,
+        )?),
+        _ => None,
     };
 
     let started_at_utc = Utc::now();
@@ -231,14 +247,15 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     );
 
     println!(
-        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} mutations=disabled",
+        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} telemetry_http_json={} mutations=disabled",
         node_id,
         cycle_s,
         options.heartbeat_s,
         options.stop_file.display(),
         instance_lock_path.display(),
         if file_output.is_some() { "enabled" } else { "disabled" },
-        if http_output.is_some() { "enabled" } else { "disabled" }
+        if http_output.is_some() { "enabled" } else { "disabled" },
+        if telemetry_http_output.is_some() { "enabled" } else { "disabled" }
     );
 
     let mut collection_sequence = 0u64;
@@ -315,6 +332,14 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                         Err(e) => out_status.push(format!("http_json=err({})", e)),
                     },
                     None => out_status.push("http_json=disabled".to_string()),
+                }
+
+                match &telemetry_http_output {
+                    Some(out) => match out.emit(&telemetry) {
+                        Ok(_) => out_status.push("telemetry_http=ok".to_string()),
+                        Err(e) => out_status.push(format!("telemetry_http=err({})", e)),
+                    },
+                    None => out_status.push("telemetry_http=disabled".to_string()),
                 }
 
                 if let Some(path) = &options.telemetry_out_override {
@@ -396,6 +421,15 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn telemetry_publish_url(snapshot_url: &str, node_id: &str) -> String {
+    let snapshot_url = snapshot_url.trim_end_matches('/');
+    let base = snapshot_url
+        .strip_suffix("/api/v1/snapshots")
+        .unwrap_or(snapshot_url)
+        .trim_end_matches('/');
+    format!("{}/api/v1/sentinels/{}/telemetry", base, node_id)
 }
 
 fn install_ctrlc_handler(shutdown_signal: Arc<AtomicU8>) -> Result<()> {
