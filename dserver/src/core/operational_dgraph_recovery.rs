@@ -166,6 +166,7 @@ fn sibling_backup_path(path: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use crate::core::operational_dgraph::{OperationalDGraph, OperationalNodeDesiredState, OPERATIONAL_DGRAPH_SCHEMA_VERSION};
+    use crate::core::operational_dgraph_persistence::OPERATIONAL_DGRAPH_PERSISTENCE_VERSION;
     use rusqlite::params;
     use uuid::Uuid;
 
