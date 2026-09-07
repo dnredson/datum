@@ -2,9 +2,11 @@
 
 ## Status
 
-Implemented on `agent/o2-explicit-multinode-dgraph` as a read-only extension of the existing active analysis endpoint.
+Implementation complete on `agent/o2-c68-finalization`; live laboratory validation remains the next gate.
 
-This step does not alter the accepted live Operational D-Graph, does not publish a new revision, does not create reconciliation authorizations, does not execute local reconciliation, and does not invoke an external AI/GNN.
+This step is a read-only extension of the existing active analysis endpoint. It does not alter the accepted live Operational D-Graph, publish a new revision, create reconciliation authorizations, execute local reconciliation, or invoke an external AI/GNN.
+
+The finalization also hardens the control-plane boundary: persisted operational state is recovered read-only and fail-closed before the HTTP listener starts, and the complete acquisition uses one captured graph revision to materialize all compatible slices.
 
 ## Goal
 
@@ -53,6 +55,17 @@ The acquisition validates that every returned slice:
 6. preserves that node's `desired_services` exactly.
 
 The acquisition rejects duplicate/missing slices and explicit relations that reference unknown nodes.
+
+## Finalization hardening
+
+The final branch adds the following guarantees to the initial C68 implementation:
+
+- the accepted graph and its authorization view are captured under one control-state transaction;
+- all node slices are materialized from that captured graph, preventing a concurrent graph publication from mixing revisions;
+- configured SQLite state is read without database creation, migration, legacy fallback, or publication;
+- missing, corrupt, schema-incompatible, empty, or identity-incompatible persisted state fails closed unless an explicit unpinned empty bootstrap is configured;
+- the previously existing `action-plan/materialized` and `installation-plan/latest` API routes remain intact;
+- the C67 AI export compares RFC3339 values by instant and preserves equivalent representations such as `Z` and `+00:00`.
 
 ## Architecture boundary
 
