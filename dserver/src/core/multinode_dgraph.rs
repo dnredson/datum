@@ -49,23 +49,24 @@ pub fn validate_multinode_metadata(graph: &OperationalDGraph) -> Result<(), Stri
         ));
     }
 
-    let expected = graph.nodes.iter().map(|node| node.node_id.as_str()).collect::<HashSet<_>>();
+    let expected = graph.nodes.iter().map(|node| node.node_id.trim().to_string()).collect::<HashSet<_>>();
     let mut seen_nodes = HashSet::new();
     let mut seen_resources = HashSet::new();
     for descriptor in descriptors {
-        let node_id = descriptor.node_id.trim();
-        if node_id.is_empty() || !expected.contains(node_id) || !seen_nodes.insert(node_id) {
+        let node_id = descriptor.node_id.trim().to_string();
+        if node_id.is_empty() || !expected.contains(&node_id) || !seen_nodes.insert(node_id.clone()) {
             return Err(format!("invalid or duplicate multinode descriptor node_id '{}'", descriptor.node_id));
         }
         if descriptor.continuum_role.trim().is_empty() {
             return Err(format!("multinode descriptor '{}' has empty continuum_role", node_id));
         }
         for resource in descriptor.resources {
-            if resource.resource_id.trim().is_empty() || resource.resource_kind.trim().is_empty() {
+            let resource_id = resource.resource_id.trim().to_string();
+            if resource_id.is_empty() || resource.resource_kind.trim().is_empty() {
                 return Err(format!("multinode descriptor '{}' contains an incomplete resource", node_id));
             }
-            if !seen_resources.insert(resource.resource_id) {
-                return Err(format!("duplicate multinode resource '{}'", resource.resource_id));
+            if !seen_resources.insert(resource_id.clone()) {
+                return Err(format!("duplicate multinode resource '{}'", resource_id));
             }
         }
     }
