@@ -95,9 +95,13 @@ pub struct FilesystemTelemetry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RuntimeTelemetry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_runtime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime_available: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_runtime_error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub containers: Vec<ContainerTelemetry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -607,6 +611,10 @@ fn build_runtime_telemetry(snapshot: &Snapshot) -> RuntimeTelemetry {
         .and_then(|entity| entity.attrs.get("system"));
 
     RuntimeTelemetry {
+        container_runtime: host_system
+            .and_then(|system| system.get("container_runtime"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         container_runtime_available: host_system
             .and_then(|system| system.get("container_runtime_available"))
             .and_then(Value::as_bool),
@@ -614,6 +622,10 @@ fn build_runtime_telemetry(snapshot: &Snapshot) -> RuntimeTelemetry {
             .and_then(|system| system.get("container_count"))
             .and_then(as_u64)
             .or_else(|| (!containers.is_empty()).then_some(containers.len() as u64)),
+        container_runtime_error: host_system
+            .and_then(|system| system.get("container_runtime_error"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         containers,
         processes,
         services,
