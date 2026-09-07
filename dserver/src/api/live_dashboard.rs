@@ -98,13 +98,25 @@ fn build_graph_overview(observed_dgraph: &Value) -> Value {
             items
                 .iter()
                 .map(|node| {
-                    let observed = node.get("observed").unwrap_or(&Value::Null);
+                    let observed = node.get("observed");
                     json!({
                         "node_id": node.get("node_id").cloned().unwrap_or(Value::Null),
-                        "status": observed.get("status").and_then(Value::as_str).unwrap_or("missing"),
-                        "telemetry_freshness": observed.get("telemetry_freshness").and_then(Value::as_str).unwrap_or("missing"),
-                        "telemetry_age_seconds": observed.get("telemetry_age_seconds").cloned().unwrap_or(Value::Null),
-                        "sequence": observed.get("sequence").cloned().unwrap_or(Value::Null),
+                        "status": observed
+                            .and_then(|value| value.get("status"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("missing"),
+                        "telemetry_freshness": observed
+                            .and_then(|value| value.get("telemetry_freshness"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("missing"),
+                        "telemetry_age_seconds": observed
+                            .and_then(|value| value.get("telemetry_age_seconds"))
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        "sequence": observed
+                            .and_then(|value| value.get("sequence"))
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         "desired_service_count": node.get("desired_services").and_then(Value::as_array).map_or(0, Vec::len)
                     })
                 })
