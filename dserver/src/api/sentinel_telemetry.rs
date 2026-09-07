@@ -124,7 +124,7 @@ pub async fn get_observed_dgraph(
     Ok(JsonResponse(build_observed_dgraph(&graph, telemetry)))
 }
 
-fn build_observed_dgraph(
+pub(crate) fn build_observed_dgraph(
     graph: &OperationalDGraph,
     telemetry: Vec<TelemetryObservationView>,
 ) -> Value {
