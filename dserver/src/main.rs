@@ -24,6 +24,7 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
+use api::live_dashboard::{get_live_dashboard_html, get_live_dashboard_state};
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
     post_deployment_attempt_retry, post_deployment_attempt_transition,
@@ -191,6 +192,8 @@ async fn main() {
         .route("/graphiql", get(graphiql))
         .route("/health", get(health))
         .route("/api/v1/dashboard", get(get_dashboard))
+        .route("/api/v1/dashboard/live", get(get_live_dashboard_state))
+        .route("/dashboard/live", get(get_live_dashboard_html))
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))
         .route("/api/v1/resources/discovery", post(post_resource_discovery))
