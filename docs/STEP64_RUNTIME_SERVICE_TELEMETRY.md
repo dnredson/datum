@@ -10,7 +10,8 @@ O campo namespaced `attrs.telemetry.runtime` agrega somente entidades observadas
 - processos observados no host;
 - serviços configurados com estado observado;
 - estado de binding e checks quando disponíveis;
-- quantidade de containers somente quando há evidência suficiente.
+- quantidade de containers somente quando há evidência suficiente;
+- `cycle_id` do snapshot para correlação exata entre telemetria e evidência publicada.
 
 A ausência de um container ou processo não é convertida automaticamente em “parado”. Quando o runtime não fornece evidência, o campo permanece ausente ou o estado permanece `unknown`.
 

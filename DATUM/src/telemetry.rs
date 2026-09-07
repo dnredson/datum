@@ -19,6 +19,7 @@ pub struct SmartSentinelTelemetryEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     pub node_id: String,
+    pub cycle_id: String,
     pub sentinel_instance_id: String,
     pub sequence: u64,
     pub observed_at_utc: DateTime<Utc>,
@@ -361,6 +362,7 @@ pub fn build_host_telemetry(
             .filter(|value| !value.is_empty())
             .map(ToString::to_string),
         node_id: snapshot.meta.node_id.clone(),
+        cycle_id: snapshot.meta.cycle_id.clone(),
         sentinel_instance_id: format!("{}-sentinel", snapshot.meta.node_id),
         sequence,
         observed_at_utc: snapshot.meta.observed_at_utc,
