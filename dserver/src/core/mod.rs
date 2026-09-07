@@ -1,5 +1,6 @@
 pub mod action_feedback;
 pub mod action_results;
+pub mod active_ai_context;
 pub mod analyzer;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
