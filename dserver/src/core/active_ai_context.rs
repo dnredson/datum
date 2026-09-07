@@ -133,7 +133,13 @@ pub fn build_active_ai_context(
                     entry.observed_at_utc = Some(observed_at.clone());
                     entry.snapshot_envelope = Some(envelope);
                     // The assessment and exported payload must refer to the same instant.
-                    if node.telemetry_observed_at_utc.as_deref() != Some(observed_at.as_str()) {
+                    if !node
+                        .telemetry_observed_at_utc
+                        .as_deref()
+                        .is_some_and(|assessment_timestamp| {
+                            same_instant(assessment_timestamp, &observed_at)
+                        })
+                    {
                         entry.snapshot_status = "invalid".into();
                         entry.error = Some("assessment/payload observation timestamp mismatch".into());
                         entry.snapshot_envelope = None;
@@ -345,6 +351,22 @@ mod tests {
         assert_eq!(result.analysis_context.nodes[0].service_comparisons[0].comparison_status,"unknown");
         assert_eq!(result.analysis_context.nodes[0].service_comparisons[0].reason,"invalid_telemetry");
         assert_eq!(result.analysis_context.nodes[0].latest_telemetry.as_ref(),Some(&invalid));
+    }
+
+    #[test]
+    fn equivalent_rfc3339_timestamps_remain_valid() {
+        let mut docs = BTreeMap::new();
+        let mut equivalent = document("fog-01", "2026-09-07T11:59:30Z", true);
+        equivalent["fields"]["observed_at_utc"]["stringValue"] =
+            json!("2026-09-07T11:59:30+00:00");
+        docs.insert("fog-01".into(), Ok(equivalent));
+        docs.insert("cloud-01".into(), Err("missing".into()));
+
+        let result = build(docs);
+
+        assert_eq!(result.evidence_summary.invalid_snapshot_count, 0);
+        assert_eq!(result.node_snapshots[0].snapshot_status, "available");
+        assert!(result.node_snapshots[0].usable_for_inference);
     }
 
     #[test]
