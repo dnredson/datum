@@ -16,6 +16,7 @@ use crate::{
     core::{
         active_ai_context::build_active_ai_context,
         ai_gnn_data_contract::build_ai_gnn_data_contract,
+        gnn_dry_run::run_gnn_dry_run,
         operational_analysis_context::{
             build_active_analysis_context, build_passive_analysis_context,
             OperationalAnalysisContext, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
@@ -137,12 +138,18 @@ pub async fn acquire_active_analysis_context(
                     .map_err(|error| internal_error(error.to_string()))?,
             ))
         }
-        None | Some("analysis") | Some("ai") | Some("gnn") => {
+        None | Some("analysis") | Some("ai") | Some("gnn") | Some("gnn-dry-run") => {
             let ai_format = matches!(query.format.as_deref(), Some("ai"));
             let gnn_format = matches!(query.format.as_deref(), Some("gnn"));
+            let gnn_dry_run_format = matches!(query.format.as_deref(), Some("gnn-dry-run"));
             let (graph, context) =
                 acquire_active_analysis_context_for_project(&state, &project_id).await?;
-            if gnn_format {
+            if gnn_dry_run_format {
+                let ai_context = build_active_ai_context(graph, context).map_err(internal_error)?;
+                let contract = build_ai_gnn_data_contract(ai_context).map_err(internal_error)?;
+                let result = run_gnn_dry_run(&contract).map_err(internal_error)?;
+                Ok(Json(serde_json::to_value(result).map_err(|error| internal_error(error.to_string()))?))
+            } else if gnn_format {
                 let ai_context = build_active_ai_context(graph, context).map_err(internal_error)?;
                 let package =
                     build_ai_gnn_data_contract(ai_context).map_err(internal_error)?;
@@ -164,7 +171,7 @@ pub async fn acquire_active_analysis_context(
             }
         }
         Some(_) => Err(bad_request(
-            "format must be 'analysis', 'ai', 'gnn', or 'dgraph'".to_string(),
+            "format must be 'analysis', 'ai', 'gnn', 'gnn-dry-run', or 'dgraph'".to_string(),
         )),
     }
 }
