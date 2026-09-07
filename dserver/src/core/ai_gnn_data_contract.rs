@@ -388,7 +388,7 @@ fn build_node_features(
         .map(|name| (name.clone(), false))
         .collect::<BTreeMap<_, _>>();
 
-    set_numeric(&mut numeric, &mut numeric_mask, "desired_service_count", desired_services.len() as f64);
+    set_numeric(&mut numeric, &mut numeric_mask, "desired_service_count", Some(desired_services.len() as f64));
     set_numeric(
         &mut numeric,
         &mut numeric_mask,
