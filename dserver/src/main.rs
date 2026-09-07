@@ -3,7 +3,9 @@ mod config;
 mod core;
 mod storage;
 
-use std::sync::Arc;
+use std::{env, path::PathBuf, sync::Arc};
+
+use anyhow::Context;
 
 use axum::{
     routing::{get, patch, post, put},
@@ -108,6 +110,46 @@ pub struct AppState {
     pub graphql: DatumSchema,
 }
 
+const DSERVER_CONFIG_PATH_ENV: &str = "DATUM_DSERVER_CONFIG_PATH";
+
+fn load_server_config() -> anyhow::Result<AppConfig> {
+    if let Ok(configured_path) = env::var(DSERVER_CONFIG_PATH_ENV) {
+        let path = PathBuf::from(configured_path);
+        return AppConfig::from_file(&path)
+            .with_context(|| format!("load dserver config '{}'", path.display()));
+    }
+
+    let mut candidates = vec![
+        PathBuf::from("config.toml"),
+        PathBuf::from("dserver/config.toml"),
+    ];
+    if let Ok(executable) = env::current_exe() {
+        if let Some(crate_dir) = executable
+            .parent()
+            .and_then(|dir| dir.parent())
+            .and_then(|dir| dir.parent())
+        {
+            candidates.push(crate_dir.join("config.toml"));
+        }
+    }
+
+    for path in &candidates {
+        if path.is_file() {
+            return AppConfig::from_file(path)
+                .with_context(|| format!("load dserver config '{}'", path.display()));
+        }
+    }
+
+    let searched = candidates
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(anyhow::anyhow!(
+        "dserver config not found; searched: {searched}. Set {DSERVER_CONFIG_PATH_ENV} to an explicit config.toml path"
+    ))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
@@ -118,7 +160,7 @@ async fn main() {
     api::operational_dgraph::initialize_operational_dgraph_persistence_from_env()
         .expect("failed to recover operational D-Graph control-plane state");
 
-    let config = Arc::new(AppConfig::from_file("config.toml").expect("failed to load config"));
+    let config = Arc::new(load_server_config().expect("failed to load config"));
 
     let firebase = Arc::new(
         FirebaseClient::new(config.clone())
