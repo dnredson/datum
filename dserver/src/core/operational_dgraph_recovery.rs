@@ -34,31 +34,54 @@ impl OperationalDGraphRecoveryPolicy {
             Ok(value) => return Err(format!("{ALLOW_EMPTY_STATE_ENV} must be true or false, received '{value}'")),
         };
         let expected_revision = match optional_env(EXPECTED_REVISION_ENV)? {
-            Some(value) => {
-                let revision = value.parse::<u64>().map_err(|error| format!("invalid {EXPECTED_REVISION_ENV}: {error}"))?;
-                if revision == 0 { return Err(format!("{EXPECTED_REVISION_ENV} must be greater than zero")); }
-                Some(revision)
-            }
+            Some(value) => Some(value.parse::<u64>().map_err(|error| format!("invalid {EXPECTED_REVISION_ENV}: {error}"))?),
             None => None,
         };
-        Ok(Self {
+        let policy = Self {
             allow_empty,
             expected_project_id: optional_env(EXPECTED_PROJECT_ENV)?,
             expected_dgraph_id: optional_env(EXPECTED_ID_ENV)?,
             expected_revision,
-        })
+        };
+        policy.validate_configuration()?;
+        Ok(policy)
+    }
+
+    fn validate_configuration(&self) -> Result<(), String> {
+        if self.expected_revision == Some(0) {
+            return Err(format!("{EXPECTED_REVISION_ENV} must be greater than zero"));
+        }
+        if self.expected_project_id.is_none()
+            && (self.expected_dgraph_id.is_some() || self.expected_revision.is_some())
+        {
+            return Err(format!("{EXPECTED_PROJECT_ENV} is required when an expected D-Graph id or revision is configured"));
+        }
+        if self.allow_empty
+            && (self.expected_project_id.is_some() || self.expected_dgraph_id.is_some() || self.expected_revision.is_some())
+        {
+            return Err(format!("{ALLOW_EMPTY_STATE_ENV} cannot be combined with an expected graph identity"));
+        }
+        Ok(())
     }
 
     pub fn validate(&self, state: Option<&OperationalDGraphPersistedState>) -> Result<(), String> {
+        self.validate_configuration()?;
+        // Validate every persisted record before considering the empty-bootstrap
+        // exception. A corrupt state with no graphs must never become valid.
+        if let Some(state) = state {
+            validate_operational_dgraph_persisted_state(state)?;
+        }
         let empty = state.is_none_or(|state| state.graphs.is_empty());
         if empty {
-            if !self.allow_empty || self.expected_project_id.is_some() || self.expected_dgraph_id.is_some() || self.expected_revision.is_some() {
+            if !self.allow_empty {
                 return Err("operational D-Graph state is missing or empty; recovery refused. Check the configured SQLite/JSON path and restore the accepted state before startup. Empty bootstrap requires DATUM_ALLOW_EMPTY_OPERATIONAL_DGRAPH_STATE=true and no expected graph identity".to_string());
+            }
+            if state.is_some_and(|state| !state.authorizations.is_empty()) {
+                return Err("empty operational D-Graph bootstrap cannot contain authorizations".to_string());
             }
             return Ok(());
         }
         let state = state.expect("nonempty state checked above");
-        validate_operational_dgraph_persisted_state(state)?;
         if let Some(project_id) = &self.expected_project_id {
             let graph = state.graphs.get(project_id).ok_or_else(|| format!("expected operational D-Graph project '{project_id}' is absent"))?;
             if let Some(expected_id) = &self.expected_dgraph_id {
@@ -67,8 +90,6 @@ impl OperationalDGraphRecoveryPolicy {
             if let Some(expected_revision) = self.expected_revision {
                 if graph.revision != expected_revision { return Err(format!("expected D-Graph revision {expected_revision}, restored {}", graph.revision)); }
             }
-        } else if self.expected_dgraph_id.is_some() || self.expected_revision.is_some() {
-            return Err(format!("{EXPECTED_PROJECT_ENV} is required when an expected D-Graph id or revision is configured"));
         }
         Ok(())
     }
@@ -88,7 +109,8 @@ pub fn load_configured_operational_dgraph_state(path: &Path) -> Result<Option<Op
 
 /// No database creation, schema migration, legacy import, or state publication.
 /// A configured SQLite database is authoritative: a missing domain is not
-/// silently replaced with a different legacy JSON state.
+/// silently replaced with a different legacy JSON state. SQLite's normal
+/// read-only mode is used, not immutable mode, so committed WAL data is visible.
 pub fn read_only_operational_dgraph_state(
     json_path: &Path,
     db_path: Option<&Path>,
@@ -99,6 +121,11 @@ pub fn read_only_operational_dgraph_state(
             .map_err(|error| format!("open operational control-state SQLite '{}' read-only: {error}", db_path.display()))?;
         connection.pragma_update(None, "query_only", "ON")
             .map_err(|error| format!("configure read-only SQLite: {error}"))?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| format!("configure SQLite read timeout: {error}"))?;
+        // Pin the schema and payload reads to one SQLite snapshot.
+        connection.execute_batch("BEGIN DEFERRED TRANSACTION")
+            .map_err(|error| format!("begin read-only control-state snapshot: {error}"))?;
         let version: String = connection.query_row(
             "SELECT value FROM control_state_meta WHERE key = 'schema_version'", [], |row| row.get(0),
         ).map_err(|error| format!("read SQLite control-state schema version: {error}"))?;
@@ -173,6 +200,24 @@ mod tests {
         assert!(policy.validate(None).is_ok());
         assert!(policy.validate(Some(&OperationalDGraphPersistedState::empty())).is_ok());
         assert!(strict().validate(None).is_err());
+    }
+    #[test]
+    fn c68_recovery_rejects_invalid_empty_state_and_ambiguous_policy() {
+        let policy = OperationalDGraphRecoveryPolicy { allow_empty: true, ..Default::default() };
+        let mut invalid = OperationalDGraphPersistedState::empty();
+        invalid.persistence_version = "invalid".to_string();
+        assert!(policy.validate(Some(&invalid)).is_err());
+        invalid.persistence_version = OPERATIONAL_DGRAPH_PERSISTENCE_VERSION.to_string();
+        invalid.authorizations.clear();
+        assert!(policy.validate(Some(&invalid)).is_ok());
+        let mut ambiguous = strict();
+        ambiguous.allow_empty = true;
+        assert!(ambiguous.validate(None).is_err());
+        assert!(ambiguous.validate(Some(&state(4))).is_err());
+        let mut no_project = OperationalDGraphRecoveryPolicy { expected_revision: Some(4), ..Default::default() };
+        assert!(no_project.validate(None).is_err());
+        no_project.expected_revision = Some(0);
+        assert!(no_project.validate(Some(&state(4))).is_err());
     }
     #[test]
     fn c68_recovery_reads_sqlite_without_creating_or_migrating_state() {
