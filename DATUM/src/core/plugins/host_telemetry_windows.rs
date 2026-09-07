@@ -35,23 +35,42 @@ $os = Get-CimInstance Win32_OperatingSystem;
 $cs = Get-CimInstance Win32_ComputerSystem;
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1;
 $perf = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'";
-$disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, Size, FreeSpace;
+$disks = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, Size, FreeSpace);
+$swap = @(Get-CimInstance Win32_PageFileUsage);
 
-$mem_total_mb = [math]::Round($cs.TotalPhysicalMemory / 1MB);
-$mem_free_mb  = [math]::Round($os.FreePhysicalMemory / 1024);
-$mem_used_mb  = $mem_total_mb - $mem_free_mb;
+$mem_total_bytes = [UInt64]$cs.TotalPhysicalMemory;
+$mem_available_bytes = [UInt64]($os.FreePhysicalMemory * 1KB);
+$mem_used_bytes = $mem_total_bytes - $mem_available_bytes;
+$swap_total_bytes = [UInt64]((($swap | Measure-Object -Property AllocatedBaseSize -Sum).Sum) * 1MB);
+$swap_used_bytes = [UInt64]((($swap | Measure-Object -Property CurrentUsage -Sum).Sum) * 1MB);
+$filesystems = @($disks | ForEach-Object {
+  [pscustomobject]@{
+    mount = $_.DeviceID
+    total_bytes = [UInt64]$_.Size
+    used_bytes = [UInt64]($_.Size - $_.FreeSpace)
+    available_bytes = [UInt64]$_.FreeSpace
+  }
+});
 
 [pscustomobject]@{
   os_caption = $os.Caption
   os_version = $os.Version
   os_build   = $os.BuildNumber
+  kernel = $os.Version
   arch_bits  = $cpu.AddressWidth
   cpu_logical = $cpu.NumberOfLogicalProcessors
   cpu_usage_pct = $perf.PercentProcessorTime
-  mem_total_mb = $mem_total_mb
-  mem_available_mb  = $mem_free_mb
-  mem_used_mb  = $mem_used_mb
-  disks = $disks
+  uptime_seconds = [UInt64]((Get-Date) - $os.LastBootUpTime).TotalSeconds
+  mem_total_mb = [math]::Round($mem_total_bytes / 1MB)
+  mem_available_mb  = [math]::Round($mem_available_bytes / 1MB)
+  mem_used_mb  = [math]::Round($mem_used_bytes / 1MB)
+  mem_total_bytes = $mem_total_bytes
+  mem_available_bytes = $mem_available_bytes
+  mem_used_bytes = $mem_used_bytes
+  swap_total_bytes = $swap_total_bytes
+  swap_used_bytes = $swap_used_bytes
+  process_count = @(Get-Process).Count
+  filesystems = $filesystems
 } | ConvertTo-Json -Compress
 "#;
 

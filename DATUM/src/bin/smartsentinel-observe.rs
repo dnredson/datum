@@ -6,6 +6,7 @@ use datum::config::load_config;
 use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
 use datum::core::cycle::run_cycle_for_node_identity;
 use datum::outputs::http_json::HttpJsonOutput;
+use datum::telemetry::{attach_host_telemetry, write_telemetry_atomic};
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-observe")]
@@ -47,6 +48,9 @@ struct Args {
 
     #[arg(long)]
     max_cycles: Option<u64>,
+
+    #[arg(long)]
+    telemetry_out: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -83,6 +87,7 @@ fn main() -> Result<()> {
             http_url_override: Some(publish_url),
             http_project_id_override: Some(project_id),
             http_timeout_s_override: Some(args.timeout_s),
+            telemetry_out_override: args.telemetry_out,
         });
     }
 
@@ -107,12 +112,19 @@ fn main() -> Result<()> {
         .filter(|value| !value.is_empty())
         .context("SmartSentinel observation requires --project-id or outputs.http.project_id")?;
 
-    let snapshot = run_cycle_for_node_identity(
+    let mut snapshot = run_cycle_for_node_identity(
         &node_id,
         args.hostname.as_deref(),
         &cfg.agent.schema_version,
         &cfg,
     )?;
+
+    let telemetry = attach_host_telemetry(&mut snapshot, Some(&project_id), 1)
+        .map_err(|error| anyhow::anyhow!("build SmartSentinel telemetry: {error}"))?;
+    if let Some(path) = args.telemetry_out.as_deref() {
+        write_telemetry_atomic(path, &telemetry)
+            .map_err(|error| anyhow::anyhow!("write SmartSentinel telemetry: {error}"))?;
+    }
 
     fs::write(
         &args.out,
