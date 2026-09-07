@@ -1,18 +1,23 @@
 use std::{collections::BTreeMap, env, fmt};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
     api::operational_dgraph::operational_dgraph_snapshot,
-    core::operational_analysis_context::{
-        build_active_analysis_context, build_passive_analysis_context, OperationalAnalysisContext,
-        DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
+    core::{
+        active_ai_context::build_active_ai_context,
+        operational_analysis_context::{
+            build_active_analysis_context, build_passive_analysis_context,
+            OperationalAnalysisContext, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
+        },
+        operational_dgraph::OperationalDGraph,
     },
     AppState,
 };
@@ -21,6 +26,11 @@ type ApiError = (StatusCode, Json<Value>);
 
 const TELEMETRY_FRESHNESS_MAX_AGE_SECONDS_ENV: &str =
     "DATUM_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS";
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ActiveAnalysisQuery {
+    pub format: Option<String>,
+}
 
 #[derive(Debug)]
 pub enum PassiveAnalysisAcquireError {
@@ -98,12 +108,38 @@ pub async fn acquire_passive_analysis_context_for_node(
     .map_err(PassiveAnalysisAcquireError::NotFound)
 }
 
+/// Without a format, retain the existing 0.2.0 analysis response. With
+/// format=ai, export the same acquisition together with the complete accepted
+/// Operational D-Graph and decoded snapshot envelopes. No inference is run.
 pub async fn acquire_active_analysis_context(
     State(state): State<AppState>,
+    Query(query): Query<ActiveAnalysisQuery>,
     headers: HeaderMap,
-) -> Result<Json<OperationalAnalysisContext>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let project_id = extract_project_id(&headers)?;
-    let graph = operational_dgraph_snapshot(&project_id)
+    let ai_format = match query.format.as_deref() {
+        None | Some("analysis") => false,
+        Some("ai") => true,
+        Some(_) => return Err(bad_request("format must be 'analysis' or 'ai'".to_string())),
+    };
+    let (graph, context) = acquire_active_analysis_context_for_project(&state, &project_id).await?;
+    if ai_format {
+        let package = build_active_ai_context(graph, context).map_err(internal_error)?;
+        Ok(Json(serde_json::to_value(package).map_err(|error| internal_error(error.to_string()))?))
+    } else {
+        Ok(Json(serde_json::to_value(context).map_err(|error| internal_error(error.to_string()))?))
+    }
+}
+
+/// Read one accepted revision and acquire every desired node concurrently.
+/// The resulting assessment is derived from that same revision, not a second
+/// graph read. Individual Firebase failures remain visible, rather than
+/// aborting the entire active scan.
+async fn acquire_active_analysis_context_for_project(
+    state: &AppState,
+    project_id: &str,
+) -> Result<(OperationalDGraph, OperationalAnalysisContext), ApiError> {
+    let graph = operational_dgraph_snapshot(project_id)
         .map_err(internal_error)?
         .ok_or_else(|| {
             not_found(format!(
@@ -112,12 +148,10 @@ pub async fn acquire_active_analysis_context(
             ))
         })?;
 
-    // Spawn all Firebase reads before awaiting any of them so active graph scans
-    // do not accumulate one network round-trip per node serially.
     let mut handles = Vec::with_capacity(graph.nodes.len());
     for node in &graph.nodes {
         let firebase = state.firebase.clone();
-        let project_id = project_id.clone();
+        let project_id = project_id.to_string();
         let node_id = node.node_id.clone();
         let handle = tokio::spawn(async move {
             firebase
@@ -148,7 +182,7 @@ pub async fn acquire_active_analysis_context(
         freshness_max_age_seconds,
     )
     .map_err(internal_error)?;
-    Ok(Json(context))
+    Ok((graph, context))
 }
 
 fn telemetry_freshness_max_age_seconds_string() -> Result<u64, String> {
