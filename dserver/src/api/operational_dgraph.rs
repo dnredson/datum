@@ -137,6 +137,7 @@ pub async fn put_operational_dgraph(
     ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
     let project_id = extract_project_id(&headers)?;
     validate_operational_dgraph(&graph).map_err(bad_request)?;
+    crate::core::multinode_dgraph::validate_multinode_metadata(&graph).map_err(bad_request)?;
     if graph.project_id.trim() != project_id {
         return Err(bad_request(format!("operational D-Graph project_id '{}' does not match X-Datum-Project '{}'", graph.project_id, project_id)));
     }
