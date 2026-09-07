@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub const SENTINEL_TELEMETRY_SCHEMA_VERSION: &str = "0.1.0";
 pub const DEFAULT_TELEMETRY_HISTORY_CAPACITY: usize = 256;
@@ -312,6 +312,15 @@ fn path_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(value, |current, key| current.get(*key))
 }
 
+fn required_text(label: &str, value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(format!("SmartSentinel telemetry {label} must not be empty"))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 fn required_field(payload: &Value, field: &str) -> Result<String, String> {
     optional_field(payload, field)
         .ok_or_else(|| format!("SmartSentinel telemetry field '{}' must not be empty", field))
@@ -343,6 +352,7 @@ fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, String> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use serde_json::json;
 
     fn payload(project: &str, sequence: u64) -> Value {
         json!({
