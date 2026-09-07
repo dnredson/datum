@@ -1,6 +1,7 @@
 pub mod action_feedback;
 pub mod action_results;
 pub mod active_ai_context;
+pub mod ai_gnn_data_contract;
 pub mod analyzer;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
@@ -40,6 +41,7 @@ pub mod operational_analysis_context;
 pub mod operational_dgraph;
 pub mod operational_dgraph_acquisition;
 pub mod operational_dgraph_persistence;
+pub mod operational_dgraph_recovery;
 pub mod operational_evidence;
 pub mod planner;
 pub mod resource_binding;

@@ -10,9 +10,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    api::operational_dgraph::{operational_dgraph_slice_snapshot, operational_dgraph_snapshot},
+    api::operational_dgraph::{
+        operational_dgraph_acquisition_snapshot, operational_dgraph_snapshot,
+    },
     core::{
         active_ai_context::build_active_ai_context,
+        ai_gnn_data_contract::build_ai_gnn_data_contract,
         operational_analysis_context::{
             build_active_analysis_context, build_passive_analysis_context,
             OperationalAnalysisContext, DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS,
@@ -109,11 +112,8 @@ pub async fn acquire_passive_analysis_context_for_node(
     .map_err(PassiveAnalysisAcquireError::NotFound)
 }
 
-/// Without a format, retain the existing 0.2.0 analysis response. With
-/// format=ai, export the same acquisition together with the complete accepted
-/// Operational D-Graph and decoded snapshot envelopes. With format=dgraph,
-/// return the accepted complete D-Graph, an explicit multi-node topology and
-/// one compatible node slice per node. No inference or reconciliation is run.
+/// Preserve the existing analysis and AI contracts. The complete D-Graph
+/// format uses one captured accepted revision and never performs reconciliation.
 pub async fn acquire_active_analysis_context(
     State(state): State<AppState>,
     Query(query): Query<ActiveAnalysisQuery>,
@@ -122,7 +122,7 @@ pub async fn acquire_active_analysis_context(
     let project_id = extract_project_id(&headers)?;
     match query.format.as_deref() {
         Some("dgraph") => {
-            let graph = operational_dgraph_snapshot(&project_id)
+            let (graph, slices) = operational_dgraph_acquisition_snapshot(&project_id)
                 .map_err(internal_error)?
                 .ok_or_else(|| {
                     not_found(format!(
@@ -130,18 +130,6 @@ pub async fn acquire_active_analysis_context(
                         project_id
                     ))
                 })?;
-            let mut slices = Vec::with_capacity(graph.nodes.len());
-            for node in &graph.nodes {
-                let slice = operational_dgraph_slice_snapshot(&project_id, &node.node_id)
-                    .map_err(internal_error)?
-                    .ok_or_else(|| {
-                        internal_error(format!(
-                            "failed to materialize compatible operational D-Graph slice for node '{}'",
-                            node.node_id
-                        ))
-                    })?;
-                slices.push(slice);
-            }
             let package = build_active_operational_dgraph_acquisition(graph, slices, Utc::now())
                 .map_err(internal_error)?;
             Ok(Json(
@@ -149,11 +137,20 @@ pub async fn acquire_active_analysis_context(
                     .map_err(|error| internal_error(error.to_string()))?,
             ))
         }
-        None | Some("analysis") | Some("ai") => {
+        None | Some("analysis") | Some("ai") | Some("gnn") => {
             let ai_format = matches!(query.format.as_deref(), Some("ai"));
+            let gnn_format = matches!(query.format.as_deref(), Some("gnn"));
             let (graph, context) =
                 acquire_active_analysis_context_for_project(&state, &project_id).await?;
-            if ai_format {
+            if gnn_format {
+                let ai_context = build_active_ai_context(graph, context).map_err(internal_error)?;
+                let package =
+                    build_ai_gnn_data_contract(ai_context).map_err(internal_error)?;
+                Ok(Json(
+                    serde_json::to_value(package)
+                        .map_err(|error| internal_error(error.to_string()))?,
+                ))
+            } else if ai_format {
                 let package = build_active_ai_context(graph, context).map_err(internal_error)?;
                 Ok(Json(
                     serde_json::to_value(package)
@@ -167,15 +164,14 @@ pub async fn acquire_active_analysis_context(
             }
         }
         Some(_) => Err(bad_request(
-            "format must be 'analysis', 'ai', or 'dgraph'".to_string(),
+            "format must be 'analysis', 'ai', 'gnn', or 'dgraph'".to_string(),
         )),
     }
 }
 
 /// Read one accepted revision and acquire every desired node concurrently.
-/// The resulting assessment is derived from that same revision, not a second
-/// graph read. Individual Firebase failures remain visible, rather than
-/// aborting the entire active scan.
+/// The assessment is derived from that same revision. Individual Firebase
+/// failures remain visible rather than aborting the entire active scan.
 async fn acquire_active_analysis_context_for_project(
     state: &AppState,
     project_id: &str,

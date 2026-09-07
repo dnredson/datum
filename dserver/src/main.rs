@@ -87,7 +87,8 @@ use api::wasm_module_registry::{
     get_wasm_module_descriptor, list_wasm_module_descriptors, post_wasm_module_descriptor,
 };
 use api::wasm_runtime_reports::{
-    get_latest_wasm_runtime_report, list_latest_wasm_runtime_reports, post_wasm_runtime_report,
+    get_latest_wasm_runtime_report, list_latest_wasm_runtime_reports,
+    post_wasm_runtime_report,
 };
 use api::{
     analysis::{analyze_latest_graph, get_materialized_analysis},
@@ -110,6 +111,12 @@ pub struct AppState {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
+
+    // Restore the accepted control-plane state before opening any listener or
+    // initializing external clients. A failed recovery is a startup failure,
+    // never an invitation to publish a replacement graph.
+    api::operational_dgraph::initialize_operational_dgraph_persistence_from_env()
+        .expect("failed to recover operational D-Graph control-plane state");
 
     let config = Arc::new(AppConfig::from_file("config.toml").expect("failed to load config"));
 
