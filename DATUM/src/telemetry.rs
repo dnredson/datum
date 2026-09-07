@@ -844,7 +844,7 @@ fn probe_peer_targets(current_node_id: &str, targets: &[PeerTargetConfig]) -> Ve
                         .next()
                 });
             let reachable = result.is_some();
-            PeerTelemetry {
+            Some(PeerTelemetry {
                 node_id: node_id.to_string(),
                 target: configured_target.to_string(),
                 reachable,
@@ -852,7 +852,7 @@ fn probe_peer_targets(current_node_id: &str, targets: &[PeerTargetConfig]) -> Ve
                 consecutive_failures: if reachable { 0 } else { 1 },
                 last_success_at_utc: reachable.then_some(Utc::now()),
                 error: (!reachable).then(|| "TCP peer probe failed".to_string()),
-            }
+            })
         })
         .collect()
 }
