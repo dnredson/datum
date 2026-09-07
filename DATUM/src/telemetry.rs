@@ -849,7 +849,7 @@ fn probe_peer_targets(current_node_id: &str, targets: &[PeerTargetConfig]) -> Ve
                 target: configured_target.to_string(),
                 reachable,
                 rtt_ms: reachable.then(|| started.elapsed().as_secs_f64() * 1000.0),
-                consecutive_failures: u64::from(!reachable),
+                consecutive_failures: if reachable { 0 } else { 1 },
                 last_success_at_utc: reachable.then_some(Utc::now()),
                 error: (!reachable).then(|| "TCP peer probe failed".to_string()),
             }
