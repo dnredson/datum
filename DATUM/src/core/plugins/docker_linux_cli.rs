@@ -129,6 +129,7 @@ impl Plugin for DockerLinuxCliPlugin {
         let stdout = match docker_ps_json_lines() {
             Ok(s) => s,
             Err(e) => {
+                set_runtime_observation(snapshot, false, None, Some(e.to_string()));
                 eprintln!("plugin={} status=skipped err={}", self.name(), e);
                 return Ok(());
             }
@@ -193,6 +194,43 @@ impl Plugin for DockerLinuxCliPlugin {
             emitted += 1;
         }
 
+        set_runtime_observation(snapshot, true, Some(emitted as u64), None);
         Ok(())
+    }
+}
+
+fn set_runtime_observation(
+    snapshot: &mut Snapshot,
+    available: bool,
+    container_count: Option<u64>,
+    error: Option<String>,
+) {
+    let Some(host) = snapshot
+        .entities
+        .iter_mut()
+        .find(|entity| entity.id == snapshot.meta.host_id)
+    else {
+        return;
+    };
+    if !host.attrs.is_object() {
+        host.attrs = json!({});
+    }
+    let attrs = host.attrs.as_object_mut().expect("host attrs is an object");
+    let system = attrs.entry("system").or_insert_with(|| json!({}));
+    if !system.is_object() {
+        *system = json!({});
+    }
+    let system = system.as_object_mut().expect("system attrs is an object");
+    system.insert("container_runtime".to_string(), json!("docker"));
+    system.insert("container_runtime_available".to_string(), json!(available));
+    if let Some(count) = container_count {
+        system.insert("container_count".to_string(), json!(count));
+    } else {
+        system.remove("container_count");
+    }
+    if let Some(error) = error {
+        system.insert("container_runtime_error".to_string(), json!(error));
+    } else {
+        system.remove("container_runtime_error");
     }
 }
