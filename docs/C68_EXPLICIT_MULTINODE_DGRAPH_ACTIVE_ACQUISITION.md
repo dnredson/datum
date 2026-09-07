@@ -161,7 +161,7 @@ The compatibility checks also passed:
 Build validation completed successfully:
 
 ```text
-Finished \`dev\` profile
+Finished dev profile
 DServer warnings: 14
 control-state-inspect warnings: 8
 errors: 0
