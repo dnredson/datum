@@ -108,13 +108,26 @@ $filesystems = @($disks | ForEach-Object {
             }
         };
 
-        let system_json: JsonValue = match serde_json::from_str(&stdout) {
+        let mut system_json: JsonValue = match serde_json::from_str(&stdout) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("plugin={} status=warn err=parse_json {}", self.name(), e);
                 return Ok(());
             }
         };
+
+        if let Some(previous_system) = host_ent.attrs.get("system").and_then(JsonValue::as_object) {
+            for key in [
+                "container_runtime",
+                "container_runtime_available",
+                "container_count",
+                "container_runtime_error",
+            ] {
+                if let Some(value) = previous_system.get(key) {
+                    system_json[key] = value.clone();
+                }
+            }
+        }
 
         if !host_ent.attrs.is_object() {
             host_ent.attrs = json!({});
