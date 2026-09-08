@@ -12,6 +12,7 @@ use axum::{
     Router,
 };
 
+use api::alternative_paths::get_alternative_paths;
 use api::action_results::{
     get_latest_action_execution_report, list_latest_action_execution_reports,
     post_action_execution_report,
@@ -194,6 +195,7 @@ async fn main() {
         .route("/api/v1/dashboard", get(get_dashboard))
         .route("/api/v1/dashboard/live", get(get_live_dashboard_state))
         .route("/api/v1/graph-overview", get(get_graph_overview))
+        .route("/api/v1/alternative-paths", get(get_alternative_paths))
         .route("/dashboard/live", get(get_live_dashboard_html))
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))

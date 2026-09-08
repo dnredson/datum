@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -252,7 +252,7 @@ fn decode_snapshot_document(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
     use serde_json::json;
     use crate::core::operational_analysis_context::build_active_analysis_context;
     use crate::core::operational_dgraph::{OperationalDesiredService, OperationalNodeDesiredState};
