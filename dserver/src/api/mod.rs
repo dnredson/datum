@@ -41,6 +41,7 @@ pub mod planner;
 pub mod resource_registry;
 pub mod sentinel_registration;
 pub mod sentinel_telemetry;
+pub mod service_artifacts;
 pub mod topology;
 pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;

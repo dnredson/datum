@@ -8,7 +8,7 @@ use std::{env, path::PathBuf, sync::Arc};
 use anyhow::Context;
 
 use axum::{
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -29,6 +29,10 @@ use api::controlled_wasm_deployment::{
 };
 use api::dashboard::get_dashboard;
 use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
+use api::service_artifacts::{
+    delete_service_artifact, get_service_artifact, list_service_artifacts,
+    post_service_artifact, put_service_artifact,
+};
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
     post_deployment_attempt_retry, post_deployment_attempt_transition,
@@ -110,6 +114,7 @@ use api::{
     nodes::{get_latest, list_nodes},
 };
 use config::AppConfig;
+use core::service_artifact_registry::ServiceArtifactRegistry;
 use storage::firebase::FirebaseClient;
 
 #[derive(Clone)]
@@ -117,6 +122,7 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     pub firebase: Arc<FirebaseClient>,
     pub graphql: DatumSchema,
+    pub service_artifacts: Arc<ServiceArtifactRegistry>,
 }
 
 const DSERVER_CONFIG_PATH_ENV: &str = "DATUM_DSERVER_CONFIG_PATH";
@@ -177,11 +183,15 @@ async fn main() {
             .expect("failed to initialize firebase"),
     );
     let graphql = build_schema(firebase.clone());
+    let service_artifacts = Arc::new(
+        ServiceArtifactRegistry::load().expect("failed to load service artifact registry"),
+    );
 
     let state = AppState {
         config: config.clone(),
         firebase,
         graphql,
+        service_artifacts,
     };
 
     let bind_addr = state
@@ -208,6 +218,16 @@ async fn main() {
             post(post_external_ai_inference_response),
         )
         .route("/dashboard/live", get(get_live_dashboard_html))
+        .route(
+            "/api/v1/service-artifacts",
+            post(post_service_artifact).get(list_service_artifacts),
+        )
+        .route(
+            "/api/v1/service-artifacts/:artifact_id",
+            get(get_service_artifact)
+                .put(put_service_artifact)
+                .delete(delete_service_artifact),
+        )
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))
         .route("/api/v1/resources/discovery", post(post_resource_discovery))
