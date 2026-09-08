@@ -525,7 +525,12 @@ fn run_operational_reconciliation_from_bootstrap(
             )
         } else {
             match mapping {
-                Some(mapping) => match execute_trusted_container_intent(\n                                mapping,\n                                observed_before,\n                                assignment.map(|artifact| &artifact.bindings),\n                                &secret_environment,\n                            ) {
+                Some(mapping) => match execute_trusted_container_intent(
+                    mapping,
+                    observed_before,
+                    assignment.map(|artifact| &artifact.bindings),
+                    &secret_environment,
+                ) {
                     Ok(result) => result,
                     Err(error) => (
                         "failed".to_string(),
