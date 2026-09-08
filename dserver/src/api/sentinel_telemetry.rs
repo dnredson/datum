@@ -12,8 +12,9 @@ use crate::{
         operational_dgraph::OperationalDGraph,
         sentinel_telemetry::{
             ingest_telemetry, latest_telemetry, latest_telemetry_by_project,
-            telemetry_history, telemetry_history_count, TelemetryIngestDisposition,
-            TelemetryObservationView, DEFAULT_TELEMETRY_HISTORY_CAPACITY,
+            telemetry_history, telemetry_history_count, update_failure_state,
+            TelemetryIngestDisposition, TelemetryObservationView,
+            DEFAULT_TELEMETRY_HISTORY_CAPACITY,
         },
     },
     api::operational_dgraph::operational_dgraph_snapshot,
@@ -159,11 +160,34 @@ pub(crate) fn build_observed_dgraph(
                         "telemetry": Value::Null
                     })
                 });
+            let failure_state = update_failure_state(
+                &graph.project_id,
+                &node.node_id,
+                observed
+                    .get("telemetry_freshness")
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing"),
+                observed.get("sequence").and_then(Value::as_u64),
+                observed.get("last_seen_utc").and_then(Value::as_str),
+                Utc::now(),
+            )
+            .map(|state| serde_json::to_value(state).unwrap_or_else(|_| json!({
+                "state": "unknown",
+                "reason": "failure_state_serialization_error"
+            })))
+            .unwrap_or_else(|error| json!({
+                "state": "unknown",
+                "reason": error,
+                "consecutive_failures": 0,
+                "consecutive_successes": 0,
+                "transitions": []
+            }));
 
             json!({
                 "node_id": node.node_id,
                 "desired_services": node.desired_services,
-                "observed": observed
+                "observed": observed,
+                "failure_state": failure_state
             })
         })
         .collect::<Vec<_>>();
@@ -267,6 +291,12 @@ pub(crate) fn build_observed_dgraph(
         "revision": graph.revision,
         "generated_at_utc": Utc::now(),
         "consistency_model": "single_operational_dgraph_revision_joined_with_latest_node_telemetry",
+        "failure_state_machine": {
+            "suspect_after_consecutive_failures": 1,
+            "unavailable_after_consecutive_failures": 3,
+            "recovering_after_first_fresh_observation": 1,
+            "healthy_after_consecutive_successes": 3
+        },
         "nodes": nodes,
         "configured_relations": configured_relations,
         "observed_relations": observed_relations,
