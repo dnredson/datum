@@ -416,7 +416,7 @@ fn normalize_artifact(
     mut artifact: ServiceArtifact,
 ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
     if project_id.trim().is_empty() {
-        return invalid("project_id must not be empty");
+        return Err(ServiceArtifactRegistryError::Invalid(\n            "project_id must not be empty".to_string(),\n        ));
     }
     artifact.control_plane.project_id = project_id.trim().to_string();
     if artifact.control_plane.name.trim().is_empty() {
