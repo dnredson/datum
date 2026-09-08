@@ -15,6 +15,7 @@ use crate::{
         alternative_path_planner::build_alternative_path_what_if_context,
         external_ai_inference::{
             build_external_ai_inference_request,
+            build_external_ai_inference_request_with_id,
             validate_external_ai_inference_response,
         },
         sentinel_telemetry::{
@@ -46,7 +47,11 @@ pub async fn post_external_ai_inference_response(
     Json(response): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let context = load_context(&headers, &query).map_err(|error| error)?;
-    let request = build_external_ai_inference_request(&context).map_err(bad_request)?;
+    let request_id = response
+        .get("request_id")
+        .and_then(Value::as_str);
+    let request = build_external_ai_inference_request_with_id(&context, request_id)
+        .map_err(bad_request)?;
     let validated = validate_external_ai_inference_response(&request, &response)
         .map_err(bad_request)?;
     Ok(Json(validated))
