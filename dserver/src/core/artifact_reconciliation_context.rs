@@ -228,7 +228,7 @@ mod tests {
     use crate::core::operational_dgraph::OperationalDGraphSlice;
     use crate::core::service_artifact_registry::{
         ContainerDeploymentSpec, ServiceArtifactAcquisition, ServiceArtifactControlPlane,
-        ServiceArtifactLifecycle, ServiceProbeSet, ServiceProbeSpec, ServiceRuntimeSpec,
+        ServiceArtifactLifecycle, ServiceArtifactWasmDecision, ServiceProbeSet, ServiceProbeSpec, ServiceRuntimeSpec,
     };
 
     fn artifact(node_id: &str) -> ServiceArtifact {
@@ -263,6 +263,11 @@ mod tests {
                         program: "start_container".to_string(),
                         ..Default::default()
                     }],
+                    ..Default::default()
+                },
+                wasm_decision: ServiceArtifactWasmDecision {
+                    module_id: "reconcile_service".to_string(),
+                    function_name: "decide".to_string(),
                     ..Default::default()
                 },
                 ..Default::default()
