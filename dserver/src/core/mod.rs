@@ -4,6 +4,7 @@ pub mod active_ai_context;
 pub mod gnn_dry_run;
 pub mod ai_gnn_data_contract;
 pub mod alternative_path_planner;
+pub mod external_ai_inference;
 pub mod analyzer;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
