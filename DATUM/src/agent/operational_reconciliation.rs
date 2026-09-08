@@ -18,6 +18,12 @@ use crate::outputs::http_json::HttpJsonOutput;
 
 pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1";
 pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
+const AUTHORIZATION_OPERATION_RECONCILE: &str = "reconcile";
+const AUTHORIZATION_OPERATION_ROLLBACK: &str = "rollback";
+
+fn default_authorization_operation() -> String {
+    AUTHORIZATION_OPERATION_RECONCILE.to_string()
+}
 const RECONCILER_WAT: &str = r#"
 (module
   (func (export "reconcile_service") (param i32 i32) (result i32)
@@ -45,6 +51,8 @@ pub struct OperationalReconciliationAuthorization {
     pub authorized_by: String,
     pub authorized_at_utc: String,
     pub allow_host_mutation: bool,
+    #[serde(default = "default_authorization_operation")]
+    pub operation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +197,7 @@ pub fn run_operational_reconciliation(
     project_id: &str,
     timeout_s: u64,
     execute_requested: bool,
+    rollback_requested: bool,
 ) -> Result<OperationalReconciliationReport> {
     let bootstrap = run_bootstrap(
         cfg,
@@ -206,6 +215,7 @@ pub fn run_operational_reconciliation(
         project_id,
         timeout_s,
         execute_requested,
+        rollback_requested,
         true,
     )
 }
@@ -219,6 +229,7 @@ pub fn run_operational_reconciliation_with_resource_discovery(
     project_id: &str,
     timeout_s: u64,
     execute_requested: bool,
+    rollback_requested: bool,
     publish_snapshot: bool,
 ) -> Result<OperationalReconciliationReport> {
     let bootstrap = run_bootstrap_with_resource_discovery(
@@ -236,6 +247,7 @@ pub fn run_operational_reconciliation_with_resource_discovery(
         project_id,
         timeout_s,
         execute_requested,
+        rollback_requested,
         publish_snapshot,
     )
 }
@@ -248,6 +260,7 @@ fn run_operational_reconciliation_from_bootstrap(
     project_id: &str,
     timeout_s: u64,
     execute_requested: bool,
+    rollback_requested: bool,
     publish_snapshot: bool,
 ) -> Result<OperationalReconciliationReport> {
     if bootstrap.bootstrap_state != BootstrapState::KnownBoundNode {
@@ -283,8 +296,14 @@ fn run_operational_reconciliation_from_bootstrap(
         .context("decode artifact reconciliation context")?;
     validate_context(&context, project_id, &node_id)?;
 
+    let expected_authorization_operation = if rollback_requested {
+        AUTHORIZATION_OPERATION_ROLLBACK
+    } else {
+        AUTHORIZATION_OPERATION_RECONCILE
+    };
     let control_plane_authorized = context.authorization.as_ref().is_some_and(|authorization| {
         authorization.allow_host_mutation
+            && authorization.operation == expected_authorization_operation
             && authorization.project_id == context.project_id
             && authorization.dgraph_id == context.dgraph_id
             && authorization.dgraph_revision == Some(context.dgraph_revision)
@@ -317,6 +336,82 @@ fn run_operational_reconciliation_from_bootstrap(
         };
         let observed_before_running = observed_before == ContainerState::Running;
         let wasm = run_embedded_reconciler(true, observed_before_running)?;
+
+        if rollback_requested {
+            let (execution_status, message, host_mutation_performed) =
+                if !execute_requested {
+                    (
+                        "rollback_requires_execute".to_string(),
+                        "rollback was requested but --execute was not provided".to_string(),
+                        false,
+                    )
+                } else if !control_plane_authorized {
+                    (
+                        "blocked_control_plane".to_string(),
+                        "rollback requires a separately scoped active D-Graph authorization with operation='rollback'".to_string(),
+                        false,
+                    )
+                } else if mapping.is_none() {
+                    (
+                        "blocked_local_mapping".to_string(),
+                        format!(
+                            "service '{}' has an artifact assignment but no matching trusted local container mapping",
+                            service.service_id
+                        ),
+                        false,
+                    )
+                } else if !local_container_execution_allowed {
+                    (
+                        "blocked_local_policy".to_string(),
+                        "rollback is blocked because local dispatch is disabled or allow_container_execution is not true".to_string(),
+                        false,
+                    )
+                } else if let Some(error) = observation_error.as_deref() {
+                    (
+                        "docker_unavailable".to_string(),
+                        format!("rollback could not verify the trusted container: {error}"),
+                        false,
+                    )
+                } else {
+                    match mapping {
+                        Some(mapping) => match rollback_trusted_container_intent(mapping, observed_before) {
+                            Ok(result) => result,
+                            Err(error) => (
+                                "failed".to_string(),
+                                format!("governed trusted container rollback failed: {error}"),
+                                false,
+                            ),
+                        },
+                        None => (
+                            "blocked_local_mapping".to_string(),
+                            "artifact assignment has no matching local mapping".to_string(),
+                            false,
+                        ),
+                    }
+                };
+
+            side_effects_performed |= host_mutation_performed;
+            let observed_after_running = mapping
+                .and_then(|mapping| inspect_container(&mapping.container_name).ok())
+                .is_some_and(|state| state == ContainerState::Running);
+
+            services.push(OperationalServiceReconciliationReport {
+                service_id: service.service_id.clone(),
+                artifact_id: assignment.map(|artifact| artifact.artifact_id.clone()),
+                artifact_version: assignment.map(|artifact| artifact.version.clone()),
+                desired_state: service.desired_state.clone(),
+                trusted_container_name: mapping.map(|mapping| mapping.container_name.clone()),
+                trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
+                observed_before_running,
+                observation_error,
+                wasm,
+                execution_status,
+                message,
+                observed_after_running,
+                host_mutation_performed,
+            });
+            continue;
+        }
 
         let (execution_status, message, host_mutation_performed) = if wasm.action_code == 0 {
             (
@@ -698,7 +793,39 @@ fn execute_trusted_container_intent(
     }
 }
 
-pub fn publish_operational_role_snapshot(
+pub fn rollback_trusted_container_intent(
+    mapping: &DispatchContainerMapping,
+    observed_before: ContainerState,
+) -> Result<(String, String, bool)> {
+    let container_name = mapping.container_name.trim();
+    match observed_before {
+        ContainerState::Missing => Ok((
+            "rollback_already_absent".to_string(),
+            format!("trusted container '{}' is already absent; no rollback mutation was needed", container_name),
+            false,
+        )),
+        ContainerState::Running | ContainerState::Stopped => {
+            let output = Command::new("docker")
+                .args(["rm", "-f", container_name])
+                .output()
+                .with_context(|| format!("execute docker rm -f for '{container_name}'"))?;
+            if !output.status.success() {
+                bail!(
+                    "docker rm -f failed for '{}': {}",
+                    container_name,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok((
+                "rolled_back".to_string(),
+                format!("removed trusted container '{}' after explicit rollback authorization", container_name),
+                true,
+            ))
+        }
+    }
+}
+
+fn publish_operational_role_snapshot(
     cfg: &Config,
     node_id: &str,
     hostname_override: Option<&str>,
