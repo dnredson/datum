@@ -3,6 +3,7 @@ pub mod artifact_reconciliation;
 pub mod analysis;
 pub mod alternative_paths;
 pub mod external_ai_inference;
+pub mod governed_deployment_preflight;
 pub mod capabilities;
 pub mod controlled_wasm_deployment;
 pub mod dashboard;
