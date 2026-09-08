@@ -324,6 +324,15 @@ fn run_operational_reconciliation_from_bootstrap(
                 "desired service is already running; WASM requested no host action".to_string(),
                 false,
             )
+        } else if mapping.is_none() {
+            (
+                "blocked_local_mapping".to_string(),
+                format!(
+                    "service '{}' has an artifact assignment but no matching trusted local container mapping",
+                    service.service_id
+                ),
+                false,
+            )
         } else if !execute_requested {
             (
                 "suggested".to_string(),
@@ -340,15 +349,6 @@ fn run_operational_reconciliation_from_bootstrap(
             (
                 "blocked_local_policy".to_string(),
                 "WASM requested ensure_service_running, but local dispatch is disabled or allow_container_execution is not true".to_string(),
-                false,
-            )
-        } else if mapping.is_none() {
-            (
-                "blocked_local_mapping".to_string(),
-                format!(
-                    "service '{}' has an artifact assignment but no matching trusted local container mapping",
-                    service.service_id
-                ),
                 false,
             )
         } else if let Some(error) = observation_error.as_deref() {

@@ -18,7 +18,7 @@ allow_container_execution = true
 
 [[dispatch.container_mappings]]
 service_name = "mqtt"
-container_name = "datum-mqtt"
+container_name = "datum-fog-mosquitto"
 artifact = "eclipse-mosquitto:2"
 
 #[collectors.process_windows]
@@ -59,7 +59,7 @@ timeout_s = 2
 [collectors.docker]
 enabled = true
 mode = "allowlist"
-names = ["datum-mqtt"]
+names = ["datum-fog-mosquitto"]
 max_entries = 20
 
 [services]
@@ -71,7 +71,7 @@ implemented_by = [{ container_name = "mosquitto" }]
 
 [[services.items]]
 name = "mqtt"
-implemented_by = [{ container_name = "datum-mqtt" }]
+implemented_by = [{ container_name = "datum-fog-mosquitto" }]
 
 [[services.items]]
 name = "datum-agent"
