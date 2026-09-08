@@ -10,7 +10,9 @@ use crate::{
             build_artifact_reconciliation_context, validate_artifact_reconciliation_context,
         },
         governed_deployment_preflight::build_governed_deployment_preflight,
-        operational_dgraph::operational_dgraph_slice_snapshot,
+    },
+    api::operational_dgraph::operational_dgraph_slice_snapshot,
+    core::governed_deployment_preflight::build_governed_deployment_preflight,
     },
     AppState,
 };
@@ -32,7 +34,7 @@ pub async fn get_governed_deployment_preflight(
 ) -> Result<Json<crate::core::governed_deployment_preflight::GovernedDeploymentPreflight>, (StatusCode, String)> {
     let project_id = extract_project_id(&headers)?;
     let slice = operational_dgraph_slice_snapshot(&project_id, &node_id)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .map_err(|error: String| (StatusCode::INTERNAL_SERVER_ERROR, error))?
         .ok_or((StatusCode::NOT_FOUND, format!("operational D-Graph node slice not found for project '{project_id}' and node '{node_id}'")))?;
     let artifacts = state.service_artifacts.list(&project_id).map_err(|error| {
         (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
