@@ -13,6 +13,9 @@ use axum::{
 };
 
 use api::alternative_paths::get_alternative_paths;
+use api::external_ai_inference::{
+    get_external_ai_inference_request, post_external_ai_inference_response,
+};
 use api::action_results::{
     get_latest_action_execution_report, list_latest_action_execution_reports,
     post_action_execution_report,
@@ -196,6 +199,14 @@ async fn main() {
         .route("/api/v1/dashboard/live", get(get_live_dashboard_state))
         .route("/api/v1/graph-overview", get(get_graph_overview))
         .route("/api/v1/alternative-paths", get(get_alternative_paths))
+        .route(
+            "/api/v1/alternative-paths/inference-request",
+            get(get_external_ai_inference_request),
+        )
+        .route(
+            "/api/v1/alternative-paths/inference-response",
+            post(post_external_ai_inference_response),
+        )
         .route("/dashboard/live", get(get_live_dashboard_html))
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))
