@@ -18,25 +18,31 @@ logs, and Docker command arguments.
 
 ## Validation sequence
 
+The current cloud graph contains six Magistrala services with unresolved
+secret references. Because reconciliation fails closed for the whole batch,
+the canary must be tested in an isolated temporary graph.
+
 1. Import the canary artifact into the project registry.
-2. Add `stage88-secret-canary` to the cloud desired services and advance the
-   operational D-Graph revision.
-3. Authorize cloud reconciliation for that revision.
-4. Export a disposable value only in the cloud SmartSentinel process
+2. Save the current revision-6 graph locally.
+3. Temporarily replace the graph with revision 7 containing the existing fog
+   service and only `stage88-secret-canary` on `cloud-01`.
+4. Authorize cloud reconciliation for revision 7.
+5. Export a disposable value only in the cloud SmartSentinel process
    environment:
 
    `export STAGE88_CANARY_SECRET=stage88-local-only-value`
 
-5. Run reconciliation with `--execute`.
-6. Confirm the canary is running and that port `18088` is reachable.
-7. Confirm the report says `resolved_locally`, `deployed`, and
+6. Run reconciliation with `--execute`.
+7. Confirm the report says `secret_resolution_status=resolved_locally`,
+   `execution_status=deployed`, and
    `side_effects_performed=true`, without printing the value.
 8. Check only the presence of the environment variable inside the container,
-   never its value.
-9. Revoke the authorization and perform the explicit rollback; confirm the
-   container and port are gone.
-10. Unset the environment variable.
+   never its value, and verify port `18088`.
+9. Create a revision-7 rollback authorization and run explicit rollback.
+10. Confirm the canary container and port are gone.
+11. Restore the original graph as revision 8, without the canary, and unset the
+    environment variable.
 
 The positive test is intentionally separate from the six Magistrala services.
-It proves local secret injection and rollback before any real credentials or
-multi-service deployment are attempted.
+It proves local secret injection and governed rollback before any real
+credentials or multi-service deployment are attempted.
