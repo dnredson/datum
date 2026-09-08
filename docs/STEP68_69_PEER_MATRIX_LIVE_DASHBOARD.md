@@ -166,3 +166,16 @@ O dashboard `/dashboard/live` agora exibe:
 - atualização automática a cada dois segundos.
 
 O grafo é somente leitura. As etapas não fazem deploy, failover, alteração de rota, reconciliação ou execução de ações. Todas as respostas preservam `side_effects_performed=false`.
+
+
+## Interação e organização por estágio
+
+A visualização das etapas 70/71 é interativa:
+
+- clicar em um nó no SVG seleciona apenas aquele nó;
+- os detalhes aparecem no painel `Selected node`;
+- a lista inferior mantém todos os nós disponíveis para seleção;
+- a lista pode ser filtrada por estágio e ordenada por estágio, status ou identificador;
+- os estágios atuais são `device`, `edge`, `fog`, `cloud`, `farm` e `unclassified`.
+
+Quando o D-Graph ainda não fornece um estágio explícito, o agrupamento usa o prefixo do `node_id` como classificação de apresentação. Isso não altera o estado operacional nem cria medições; nós sem prefixo conhecido permanecem em `unclassified`.
