@@ -632,8 +632,14 @@ fn validate_probe(
             probe.kind.as_str(),
             "docker_container_running" | "process_running" | "systemd_active"
         ),
-        "health" | "availability" => {
-            matches!(probe.kind.as_str(), "docker_health" | "tcp_connect" | "http" | "mqtt_connect")
+        "health" => {
+            matches!(
+                probe.kind.as_str(),
+                "docker_health" | "tcp_connect" | "http" | "mqtt_connect"
+            )
+        }
+        "availability" => {
+            matches!(probe.kind.as_str(), "tcp_connect" | "http" | "mqtt_connect")
         }
         _ => false,
     };
