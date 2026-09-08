@@ -13,6 +13,7 @@ use axum::{
 };
 
 use api::alternative_paths::get_alternative_paths;
+use api::artifact_reconciliation::get_operational_reconciliation_context;
 use api::external_ai_inference::{
     get_external_ai_inference_request, post_external_ai_inference_response,
 };
@@ -218,6 +219,10 @@ async fn main() {
             post(post_external_ai_inference_response),
         )
         .route("/dashboard/live", get(get_live_dashboard_html))
+        .route(
+            "/api/v1/nodes/:node_id/operational-reconciliation-context",
+            get(get_operational_reconciliation_context),
+        )
         .route(
             "/api/v1/service-artifacts",
             post(post_service_artifact).get(list_service_artifacts),
