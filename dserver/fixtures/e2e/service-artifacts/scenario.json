@@ -1,0 +1,92 @@
+{
+  "schema_version": "0.1.0",
+  "scenario_id": "e2e-magistrala-chirpstack-sma-lora",
+  "stage": 78,
+  "purpose": "declarative_service_artifact_catalog_for_distributed_iot_e2e",
+  "deployment_mode": "artifacts_only_pending_governed_execution",
+  "project_id": "monitor-f49c8",
+  "nodes": [
+    {
+      "node_id": "mist-01",
+      "stage": "mist",
+      "address": "192.168.10.109",
+      "artifacts": [
+        "lora-packet-forwarder",
+        "lora-device-simulator"
+      ]
+    },
+    {
+      "node_id": "fog-01",
+      "stage": "fog",
+      "address": "192.168.10.103",
+      "artifacts": [
+        "fog-mosquitto",
+        "chirpstack-postgres",
+        "chirpstack-redis",
+        "chirpstack",
+        "chirpstack-gateway-bridge",
+        "chirpstack-rest-api"
+      ]
+    },
+    {
+      "node_id": "cloud-01",
+      "stage": "cloud",
+      "address": "192.168.10.108",
+      "artifacts": [
+        "magistrala-atom-db",
+        "magistrala-atom",
+        "magistrala-bootstrap-db",
+        "magistrala-bootstrap",
+        "magistrala-fluxmq-auth",
+        "magistrala-fluxmq-node1",
+        "sma"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "mist-01",
+      "to": "fog-01",
+      "relation": "semtech_udp_gateway_uplink",
+      "transport": "udp",
+      "port": 1700
+    },
+    {
+      "from": "fog-01",
+      "to": "cloud-01",
+      "relation": "mqtt_adapter_uplink",
+      "transport": "mqtt",
+      "port": 1883
+    },
+    {
+      "from": "sma",
+      "to": "magistrala-atom",
+      "relation": "magistrala_api_publish",
+      "transport": "http",
+      "port": 8080
+    }
+  ],
+  "expected_flow": [
+    "lora-device-simulator",
+    "lora-packet-forwarder",
+    "chirpstack-gateway-bridge",
+    "chirpstack",
+    "fog-mosquitto",
+    "sma",
+    "magistrala-atom"
+  ],
+  "secret_refs": [
+    "lorawan_device_eui",
+    "lorawan_app_eui",
+    "lorawan_app_key",
+    "fog_mqtt_password",
+    "magistrala_api_token"
+  ],
+  "wasm_policy": {
+    "explicit_invocation_required": true,
+    "host_imports_allowed": false,
+    "side_effects_allowed": false,
+    "safe_to_auto_execute": false
+  },
+  "side_effects_performed": false
+}
