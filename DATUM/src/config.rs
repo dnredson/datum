@@ -150,6 +150,14 @@ pub struct DispatchConfig {
     pub allow_container_execution: Option<bool>,
     #[serde(default)]
     pub container_mappings: Vec<DispatchContainerMapping>,
+    #[serde(default)]
+    pub secret_bindings: Vec<DispatchSecretBinding>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DispatchSecretBinding {
+    pub secret_ref: String,
+    pub environment_variable: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
