@@ -20,7 +20,8 @@ use crate::{
             authorization_is_valid_for_context, build_operational_slice,
             build_reconciliation_authorization, validate_operational_dgraph, OperationalDGraph,
             OperationalDGraphSlice, OperationalReconciliationAuthorization,
-            OperationalReconciliationAuthorizationRequest, AUTHORIZATION_SCOPE_DURABLE,
+            OperationalReconciliationAuthorizationRequest, AUTHORIZATION_OPERATION_RECONCILE,
+            AUTHORIZATION_OPERATION_ROLLBACK, AUTHORIZATION_SCOPE_DURABLE,
         },
         operational_dgraph_persistence::{
             authorization_key, persist_operational_dgraph_state, OperationalDGraphPersistedState,
@@ -250,6 +251,34 @@ pub fn operational_dgraph_slice_snapshot(
 }
 
 pub async fn post_operational_reconciliation_authorization(
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<OperationalReconciliationAuthorizationRequest>,
+) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
+    if request.operation.trim() != AUTHORIZATION_OPERATION_RECONCILE {
+        return Err(bad_request(format!(
+            "reconciliation authorization operation must be '{}'",
+            AUTHORIZATION_OPERATION_RECONCILE
+        )));
+    }
+    authorize_operational_reconciliation(node_id, headers, request).await
+}
+
+pub async fn post_operational_reconciliation_rollback_authorization(
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<OperationalReconciliationAuthorizationRequest>,
+) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
+    if request.operation.trim() != AUTHORIZATION_OPERATION_ROLLBACK {
+        return Err(bad_request(format!(
+            "rollback authorization operation must be '{}'",
+            AUTHORIZATION_OPERATION_ROLLBACK
+        )));
+    }
+    authorize_operational_reconciliation(node_id, headers, request).await
+}
+
+async fn authorize_operational_reconciliation(
     Path(node_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<OperationalReconciliationAuthorizationRequest>,
