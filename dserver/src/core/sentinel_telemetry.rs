@@ -77,10 +77,14 @@ pub fn update_failure_state(
     let is_fresh = telemetry_freshness == "fresh";
     let evidence_key = if is_fresh {
         if let Some(sequence) = sequence {
-            // Sequence identifies a fresh observation. Timestamp formatting can
-            // legitimately vary between equivalent RFC3339 forms such as Z and
-            // +00:00, and must not create a second recovery event.
-            format!("fresh:sequence:{sequence}")
+            // Normalize the timestamp so equivalent RFC3339 forms such as Z and
+            // +00:00 identify the same observation, while a new process epoch
+            // reusing a sequence remains distinguishable.
+            let timestamp_key = observed_at_utc
+                .and_then(|value| parse_timestamp(value).ok())
+                .map(|value| value.timestamp_micros().to_string())
+                .unwrap_or_else(|| observed_at_utc.unwrap_or("missing").to_string());
+            format!("fresh:sequence:{sequence}:timestamp:{timestamp_key}")
         } else if let Some(observed_at_utc) = observed_at_utc {
             format!("fresh:timestamp:{observed_at_utc}")
         } else {
