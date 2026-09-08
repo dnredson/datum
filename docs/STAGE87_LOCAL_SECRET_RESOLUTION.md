@@ -21,6 +21,6 @@ cannot change their environment without recreation. No secret is resolved
 during dry-run/preflight, and missing local material remains fail-closed.
 
 The next validation should run without setting the eight cloud secret
-variables and confirm `execution_status=blocked_missing_secret),
+variables and confirm `execution_status=blocked_missing_secret`,
 `host_mutation_performed=false`, and
 `side_effects_performed=false`.
