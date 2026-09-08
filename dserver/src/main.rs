@@ -32,6 +32,7 @@ use api::controlled_wasm_deployment::{
 use api::dashboard::get_dashboard;
 use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::secret_preflight::get_secret_preflight;
+use api::secret_resolver_contract::get_secret_resolver_contract;
 use api::service_artifacts::{
     delete_service_artifact, get_service_artifact, list_service_artifacts,
     post_service_artifact, put_service_artifact,
@@ -233,6 +234,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/deployment-secrets-preflight",
             get(get_secret_preflight),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/deployment-secrets-contract",
+            get(get_secret_resolver_contract),
         )
         .route(
             "/api/v1/service-artifacts",
