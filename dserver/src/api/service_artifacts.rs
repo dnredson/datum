@@ -30,7 +30,7 @@ fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
 }
 
 fn map_registry_error(error: ServiceArtifactRegistryError) -> ApiError {
-    let status = match error {
+    let status = match &error {
         ServiceArtifactRegistryError::Invalid(_) => StatusCode::BAD_REQUEST,
         ServiceArtifactRegistryError::Conflict(_) => StatusCode::CONFLICT,
         ServiceArtifactRegistryError::NotFound(_) => StatusCode::NOT_FOUND,
