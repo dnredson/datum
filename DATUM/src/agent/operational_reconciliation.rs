@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{collections::{BTreeMap, HashSet}, env};
 use std::process::Command;
 use std::time::Duration;
 
@@ -157,6 +157,7 @@ pub struct OperationalServiceReconciliationReport {
     pub observed_before_running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation_error: Option<String>,
+    pub secret_resolution_status: String,
     pub wasm: WasmReconciliationDecision,
     pub execution_status: String,
     pub message: String,
@@ -314,6 +315,19 @@ fn run_operational_reconciliation_from_bootstrap(
     });
 
     let mut side_effects_performed = false;
+    let batch_secret_resolution_error = if execute_requested && control_plane_authorized {
+        context.artifacts.iter().find_map(|artifact| {
+            if artifact.secret_refs.is_empty() {
+                None
+            } else {
+                resolve_secret_bindings(cfg, &artifact.secret_refs)
+                    .err()
+                    .map(|error| (artifact.service_id.clone(), error))
+            }
+        })
+    } else {
+        None
+    };
     let mut services = Vec::with_capacity(context.desired_services.len());
     for service in &context.desired_services {
         let assignment = context.artifacts.iter().find(|artifact| {
@@ -335,6 +349,32 @@ fn run_operational_reconciliation_from_bootstrap(
             None => (ContainerState::Missing, None),
         };
         let observed_before_running = observed_before == ContainerState::Running;
+        let (secret_environment, secret_resolution_error, secret_resolution_status) =
+            if assignment.is_none()
+                || assignment.is_some_and(|artifact| artifact.secret_refs.is_empty())
+            {
+                (Vec::new(), None, "not_required".to_string())
+            } else if !execute_requested || !control_plane_authorized {
+                (Vec::new(), None, "not_checked".to_string())
+            } else if batch_secret_resolution_error.is_some() {
+                (
+                    Vec::new(),
+                    Some("one or more batch secret references could not be resolved locally".to_string()),
+                    "blocked_missing_secret".to_string(),
+                )
+            } else {
+                match assignment {
+                    Some(artifact) => match resolve_secret_bindings(cfg, &artifact.secret_refs) {
+                        Ok(environment) => (environment, None, "resolved_locally".to_string()),
+                        Err(error) => (
+                            Vec::new(),
+                            Some(error),
+                            "blocked_missing_secret".to_string(),
+                        ),
+                    },
+                    None => (Vec::new(), None, "not_required".to_string()),
+                }
+            };
         let wasm = run_embedded_reconciler(true, observed_before_running)?;
 
         if rollback_requested {
@@ -358,6 +398,18 @@ fn run_operational_reconciliation_from_bootstrap(
                             "service '{}' has an artifact assignment but no matching trusted local container mapping",
                             service.service_id
                         ),
+                        false,
+                    )
+                } else if batch_secret_resolution_error.is_some() {
+                    (
+                        "blocked_missing_secret".to_string(),
+                        "rollback is blocked because one or more batch secret references could not be resolved locally".to_string(),
+                        false,
+                    )
+                } else if secret_resolution_error.is_some() {
+                    (
+                        "blocked_missing_secret".to_string(),
+                        "rollback requires all secret references to resolve locally before container lifecycle changes".to_string(),
                         false,
                     )
                 } else if !local_container_execution_allowed {
@@ -404,6 +456,7 @@ fn run_operational_reconciliation_from_bootstrap(
                 trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
                 observed_before_running,
                 observation_error,
+                secret_resolution_status,
                 wasm,
                 execution_status,
                 message,
@@ -446,6 +499,18 @@ fn run_operational_reconciliation_from_bootstrap(
                 "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization for this revision".to_string(),
                 false,
             )
+        } else if batch_secret_resolution_error.is_some() {
+            (
+                "blocked_missing_secret".to_string(),
+                "WASM requested ensure_service_running, but one or more batch secret references could not be resolved from the local allowlist".to_string(),
+                false,
+            )
+        } else if secret_resolution_error.is_some() {
+            (
+                "blocked_missing_secret".to_string(),
+                "WASM requested ensure_service_running, but one or more secret references could not be resolved from the local allowlist".to_string(),
+                false,
+            )
         } else if !local_container_execution_allowed {
             (
                 "blocked_local_policy".to_string(),
@@ -460,7 +525,7 @@ fn run_operational_reconciliation_from_bootstrap(
             )
         } else {
             match mapping {
-                Some(mapping) => match execute_trusted_container_intent(mapping, observed_before) {
+                Some(mapping) => match execute_trusted_container_intent(mapping, observed_before, &secret_environment) {
                     Ok(result) => result,
                     Err(error) => (
                         "failed".to_string(),
@@ -490,6 +555,7 @@ fn run_operational_reconciliation_from_bootstrap(
             trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
             observed_before_running,
             observation_error,
+            secret_resolution_status,
             wasm,
             execution_status,
             message,
@@ -709,9 +775,46 @@ fn inspect_container(container_name: &str) -> Result<ContainerState> {
     }
 }
 
+fn resolve_secret_bindings(
+    cfg: &Config,
+    secret_refs: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    if secret_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dispatch = cfg
+        .dispatch
+        .as_ref()
+        .ok_or_else(|| "local secret resolution requires a dispatch configuration".to_string())?;
+
+    let mut resolved = Vec::with_capacity(secret_refs.len());
+    for secret_ref in secret_refs {
+        let secret_ref = secret_ref.trim();
+        let binding = dispatch
+            .secret_bindings
+            .iter()
+            .find(|binding| binding.secret_ref.trim() == secret_ref)
+            .ok_or_else(|| format!("secret reference '{}' has no local environment binding", secret_ref))?;
+        let variable = binding.environment_variable.trim();
+        if variable.is_empty() {
+            return Err(format!("secret reference '{}' has an empty local environment binding", secret_ref));
+        }
+        let value = env::var(variable).map_err(|_| format!(
+            "local environment variable for secret reference '{}' is not available",
+            secret_ref
+        ))?;
+        if value.is_empty() {
+            return Err(format!("local environment variable for secret reference '{}' is empty", secret_ref));
+        }
+        resolved.push((variable.to_string(), value));
+    }
+    Ok(resolved)
+}
+
 fn execute_trusted_container_intent(
     mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
+    secret_environment: &[(String, String)],
 ) -> Result<(String, String, bool)> {
     let container_name = mapping.container_name.trim();
     let image = mapping
@@ -728,6 +831,9 @@ fn execute_trusted_container_intent(
             false,
         )),
         ContainerState::Stopped => {
+            if !secret_environment.is_empty() {
+                bail!("stopped trusted container cannot receive newly resolved secrets without recreation");
+            }
             let output = Command::new("docker")
                 .args(["start", container_name])
                 .output()
@@ -768,10 +874,17 @@ fn execute_trusted_container_intent(
                     }
                 ));
             }
+            for (environment_variable, _) in secret_environment {
+                args.push("--env".to_string());
+                args.push(environment_variable.clone());
+            }
             args.push(image.to_string());
-            let output = Command::new("docker")
-                .args(&args)
-                .output()
+            let mut command = Command::new("docker");
+            command.args(&args);
+            for (environment_variable, value) in secret_environment {
+                command.env(environment_variable, value);
+            }
+            let output = command.output()
                 .with_context(|| format!("execute governed docker run for '{container_name}'"))?;
             if !output.status.success() {
                 bail!(

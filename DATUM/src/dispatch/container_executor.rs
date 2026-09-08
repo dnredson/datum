@@ -355,6 +355,7 @@ mod tests {
                 execute: None,
                 publish_results: None,
                 allow_container_execution: Some(true),
+                secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
             }),
             assisted_execution: None,
@@ -434,6 +435,7 @@ mod tests {
             service_name: None,
             container_name: "chirpstack".to_string(),
             artifact: Some("chirpstack/chirpstack:latest".to_string()),
+            ports: Vec::new(),
         }];
         let runtime = FakeRuntime::new(Ok(ContainerPresence::Running), Ok(()));
 
@@ -468,6 +470,7 @@ mod tests {
             service_name: Some("chirpstack".to_string()),
             container_name: "chirpstack".to_string(),
             artifact: Some("chirpstack/chirpstack:latest".to_string()),
+            ports: Vec::new(),
         };
 
         assert!(mapping_matches(
@@ -492,6 +495,7 @@ mod tests {
             service_name: None,
             container_name: "chirpstack-dispatch".to_string(),
             artifact: Some("chirpstack/chirpstack:latest".to_string()),
+            ports: Vec::new(),
         }];
 
         let matches = find_trusted_container_mapping_matches(

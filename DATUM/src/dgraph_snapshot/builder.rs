@@ -541,6 +541,7 @@ mod tests {
                 service_name: None,
                 container_name: "test-http".to_string(),
                 artifact: Some("nginx:stable".to_string()),
+                ports: Vec::new(),
             }],
             ..DispatchConfig::default()
         });
@@ -580,6 +581,7 @@ mod tests {
                 service_name: None,
                 container_name: "test-http".to_string(),
                 artifact: Some("nginx:stable".to_string()),
+                ports: Vec::new(),
             }],
             ..DispatchConfig::default()
         });
@@ -599,6 +601,7 @@ mod tests {
                 service_name: None,
                 container_name: "test-http".to_string(),
                 artifact: None,
+                ports: Vec::new(),
             }],
             ..DispatchConfig::default()
         });

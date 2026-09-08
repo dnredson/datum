@@ -17,6 +17,38 @@ timeout_s = 5
 enabled = true
 allow_container_execution = true
 
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_jwt_secret"
+environment_variable = "MAGISTRALA_ATOM_JWT_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_admin_secret"
+environment_variable = "MAGISTRALA_ATOM_ADMIN_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_service_secret"
+environment_variable = "MAGISTRALA_ATOM_SERVICE_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_bootstrap_db_password"
+environment_variable = "MAGISTRALA_BOOTSTRAP_DB_PASSWORD"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_bootstrap_token"
+environment_variable = "MAGISTRALA_ATOM_BOOTSTRAP_TOKEN"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_bootstrap_db_encryption_key"
+environment_variable = "MAGISTRALA_BOOTSTRAP_DB_ENCRYPTION_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_secret"
+environment_variable = "MAGISTRALA_FLUXMQ_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_credentials"
+environment_variable = "MAGISTRALA_FLUXMQ_CREDENTIALS"
+
 [[dispatch.container_mappings]]
 service_name = "magistrala-atom-db"
 container_name = "datum-magistrala-atom-db"

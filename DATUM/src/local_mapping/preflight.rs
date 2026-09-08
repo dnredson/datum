@@ -434,6 +434,7 @@ mod tests {
                 execute: None,
                 publish_results: None,
                 allow_container_execution: Some(false),
+                secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
             }),
             assisted_execution: None,
@@ -509,6 +510,7 @@ mod tests {
                 service_name: None,
                 container_name: "chirpstack".to_string(),
                 artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                ports: Vec::new(),
             }];
 
         let report = run_local_mapping_preflight(&cfg, "fog-01", &[mapping_task()]);
@@ -587,6 +589,7 @@ mod tests {
                 service_name: None,
                 container_name: "chirpstack-b".to_string(),
                 artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                ports: Vec::new(),
             }];
 
         let report = run_local_mapping_preflight(&cfg, "fog-01", &[mapping_task()]);
@@ -608,6 +611,7 @@ mod tests {
                 service_name: None,
                 container_name: "chirpstack".to_string(),
                 artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                ports: Vec::new(),
             }];
 
         let report = run_local_mapping_preflight(

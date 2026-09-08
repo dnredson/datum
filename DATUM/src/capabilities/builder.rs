@@ -212,6 +212,7 @@ mod tests {
                     service_name: None,
                     container_name: "chirpstack".to_string(),
                     artifact: Some("chirpstack/chirpstack:latest".to_string()),
+                    ports: Vec::new(),
                 }],
                 ..DispatchConfig::default()
             }),

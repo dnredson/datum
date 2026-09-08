@@ -288,6 +288,7 @@ mod tests {
                 execute: Some(false),
                 publish_results: Some(false),
                 allow_container_execution: Some(false),
+                secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
             }),
             assisted_execution: None,
@@ -375,6 +376,7 @@ mod tests {
             service_name: None,
             container_name: "local-chirpstack".to_string(),
             artifact: None,
+            ports: Vec::new(),
         }];
 
         let report = revalidate(
@@ -399,6 +401,7 @@ mod tests {
             service_name: None,
             container_name: "existing-container".to_string(),
             artifact: None,
+            ports: Vec::new(),
         }];
 
         let report = revalidate(
