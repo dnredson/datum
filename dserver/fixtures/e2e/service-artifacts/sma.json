@@ -1,0 +1,143 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "sma",
+  "service_id": "sma",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-sma",
+      "image": "datum/sma:dev",
+      "ports": [
+        {
+          "container_port": 8080,
+          "host_port": 18080,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-sma"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "http",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080,
+        "path": "/health",
+        "expected_status": 200
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "protocol_adapter",
+    "source_repository": "https://github.com/dnredson/SMA",
+    "configuration": {
+      "template": "sma/config.toml",
+      "input_protocol": "mqtt",
+      "output_protocol": "magistrala",
+      "credential_refs": [
+        "magistrala_api_token",
+        "sma_mqtt_password"
+      ]
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-edge-integration"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Smart Adapter",
+    "version": "main",
+    "artifact_kind": "git",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [
+      "magistrala-atom",
+      "fog-mosquitto"
+    ],
+    "acquisition": {
+      "kind": "git",
+      "source": "https://github.com/dnredson/SMA",
+      "revision": "main",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [
+        {
+          "program": "clone_git",
+          "args": [
+            "SMA"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "sma/config.toml"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-sma"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "SMA_MQTT_URL": "mqtt://192.168.10.103:1883",
+      "SMA_MAGISTRALA_URL": "http://192.168.10.108:8080",
+      "SMA_LISTEN_ADDR": "0.0.0.0:8080"
+    },
+    "secret_refs": [
+      "magistrala_api_token",
+      "sma_mqtt_password"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
