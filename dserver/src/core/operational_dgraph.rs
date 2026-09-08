@@ -11,6 +11,8 @@ pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
 pub const AUTHORIZATION_SCOPE_PROCESS: &str = "process";
 pub const AUTHORIZATION_SCOPE_DURABLE: &str = "durable";
 pub const MAX_DURABLE_AUTHORIZATION_SECONDS: u64 = 86_400;
+pub const AUTHORIZATION_OPERATION_RECONCILE: &str = "reconcile";
+pub const AUTHORIZATION_OPERATION_ROLLBACK: &str = "rollback";
 
 fn default_dgraph_revision() -> u64 {
     1
@@ -18,6 +20,10 @@ fn default_dgraph_revision() -> u64 {
 
 fn default_authorization_scope() -> String {
     AUTHORIZATION_SCOPE_PROCESS.to_string()
+}
+
+fn default_authorization_operation() -> String {
+    AUTHORIZATION_OPERATION_RECONCILE.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +59,8 @@ pub struct OperationalReconciliationAuthorizationRequest {
     pub dgraph_revision: Option<u64>,
     pub authorized_by: String,
     pub allow_host_mutation: bool,
+    #[serde(default = "default_authorization_operation")]
+    pub operation: String,
     #[serde(default)]
     pub persistence_scope: Option<String>,
     #[serde(default)]
@@ -71,6 +79,8 @@ pub struct OperationalReconciliationAuthorization {
     pub authorized_by: String,
     pub authorized_at_utc: String,
     pub allow_host_mutation: bool,
+    #[serde(default = "default_authorization_operation")]
+    pub operation: String,
     #[serde(default = "default_authorization_scope")]
     pub persistence_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,6 +220,14 @@ pub fn build_reconciliation_authorization(
         );
     }
 
+    let operation = request.operation.trim();
+    if !matches!(operation, AUTHORIZATION_OPERATION_RECONCILE | AUTHORIZATION_OPERATION_ROLLBACK) {
+        return Err(format!(
+            "unsupported operational authorization operation '{}'; expected '{}' or '{}'",
+            operation, AUTHORIZATION_OPERATION_RECONCILE, AUTHORIZATION_OPERATION_ROLLBACK
+        ));
+    }
+
     let persistence_scope = request
         .persistence_scope
         .as_deref()
@@ -259,6 +277,7 @@ pub fn build_reconciliation_authorization(
         authorized_by: request.authorized_by.trim().to_string(),
         authorized_at_utc: now.to_rfc3339(),
         allow_host_mutation: true,
+        operation: operation.to_string(),
         persistence_scope: persistence_scope.to_string(),
         expires_at_utc,
     })
