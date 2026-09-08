@@ -76,8 +76,13 @@ pub fn update_failure_state(
 
     let is_fresh = telemetry_freshness == "fresh";
     let evidence_key = if is_fresh {
-        if let (Some(sequence), Some(observed_at_utc)) = (sequence, observed_at_utc) {
-            format!("fresh:{sequence}:{observed_at_utc}")
+        if let Some(sequence) = sequence {
+            // Sequence identifies a fresh observation. Timestamp formatting can
+            // legitimately vary between equivalent RFC3339 forms such as Z and
+            // +00:00, and must not create a second recovery event.
+            format!("fresh:sequence:{sequence}")
+        } else if let Some(observed_at_utc) = observed_at_utc {
+            format!("fresh:timestamp:{observed_at_utc}")
         } else {
             format!("fresh:missing:{}", now.timestamp())
         }
@@ -392,6 +397,33 @@ pub fn latest_telemetry_by_project(
                 .values()
                 .filter_map(VecDeque::back)
                 .map(|observation| observation.view(now))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub fn telemetry_history_by_project(
+    project_id: &str,
+    limit: usize,
+    now: DateTime<Utc>,
+) -> Result<BTreeMap<String, Vec<TelemetryObservationView>>, String> {
+    let guard = store()
+        .read()
+        .map_err(|error| format!("SmartSentinel telemetry store lock poisoned: {error}"))?;
+    Ok(guard
+        .get(project_id.trim())
+        .map(|project| {
+            project
+                .iter()
+                .map(|(node_id, history)| {
+                    let observations = history
+                        .iter()
+                        .rev()
+                        .take(limit)
+                        .map(|observation| observation.view(now))
+                        .collect::<Vec<_>>();
+                    (node_id.clone(), observations)
+                })
                 .collect()
         })
         .unwrap_or_default())
