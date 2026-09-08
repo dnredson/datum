@@ -82,7 +82,8 @@ use api::operational_analysis_context::{
 };
 use api::operational_dgraph::{
     get_operational_dgraph, get_operational_dgraph_slice,
-    post_operational_reconciliation_authorization, put_operational_dgraph,
+    post_operational_reconciliation_authorization,
+    post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
@@ -252,6 +253,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/operational-reconciliation/authorize",
             post(post_operational_reconciliation_authorization),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/operational-reconciliation/rollback-authorize",
+            post(post_operational_reconciliation_rollback_authorization),
         )
         .route(
             "/api/v1/operational-evidence",
