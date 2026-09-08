@@ -12,7 +12,12 @@ use crate::{
         operational_dgraph::operational_dgraph_snapshot,
         sentinel_telemetry::build_observed_dgraph,
     },
-    core::alternative_path_planner::plan_alternative_paths,
+    core::{
+        alternative_path_planner::build_alternative_path_what_if_context,
+        sentinel_telemetry::{
+            telemetry_history_by_project, DEFAULT_TELEMETRY_HISTORY_CAPACITY,
+        },
+    },
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -71,9 +76,16 @@ pub async fn get_alternative_paths(
     )
     .map_err(internal_error)?;
     let observed_dgraph = build_observed_dgraph(&graph, telemetry);
+    let history = telemetry_history_by_project(
+        &project_id,
+        DEFAULT_TELEMETRY_HISTORY_CAPACITY,
+        Utc::now(),
+    )
+    .map_err(internal_error)?;
 
-    let response = plan_alternative_paths(
+    let response = build_alternative_path_what_if_context(
         &observed_dgraph,
+        history,
         query.from.as_deref(),
         query.to.as_deref(),
         query.max_hops,
