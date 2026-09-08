@@ -1,11 +1,11 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "fog-mosquitto",
-  "service_id": "mosquitto",
+  "artifact_id": "mosquitto",
+  "service_id": "mqtt",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-fog-mosquitto",
+      "container_name": "datum-mosquitto",
       "image": "eclipse-mosquitto:2",
       "ports": [
         {
@@ -20,7 +20,7 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-fog-mosquitto"
+        "container_name": "datum-mosquitto"
       },
       "vantage_point": "local_host"
     },
@@ -53,7 +53,7 @@
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "fog-foundation"
+      "phase": "continuum-agnostic"
     },
     "service_aliases": [
       "mqtt"
@@ -61,14 +61,16 @@
   },
   "control_plane": {
     "project_id": "",
-    "name": "Fog MQTT broker",
+    "name": "MQTT broker",
     "version": "2",
     "artifact_kind": "container",
     "target_nodes": [
-      "fog-01"
+      "fog-01",
+      "cloud-01"
     ],
     "target_stages": [
-      "fog"
+      "fog",
+      "cloud"
     ],
     "dependencies": [],
     "acquisition": {
@@ -94,7 +96,7 @@
         {
           "program": "start_container",
           "args": [
-            "datum-fog-mosquitto"
+            "datum-mosquitto"
           ],
           "working_dir": null,
           "environment": {}
@@ -104,7 +106,16 @@
       "post_install": [],
       "rollback": []
     },
-    "health_checks": [],
+    "health_checks": [
+      {
+        "kind": "tcp",
+        "target": "127.0.0.1",
+        "port": 1883,
+        "path": null,
+        "expected_status": null,
+        "timeout_ms": 3000
+      }
+    ],
     "wasm_decision": {
       "explicit_invocation_required": true,
       "module_id": "reconcile_service",
