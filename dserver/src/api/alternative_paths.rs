@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::Query,
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -13,7 +13,6 @@ use crate::{
         sentinel_telemetry::build_observed_dgraph,
     },
     core::alternative_path_planner::plan_alternative_paths,
-    AppState,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -50,7 +49,6 @@ fn extract_project_id(
 }
 
 pub async fn get_alternative_paths(
-    State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<AlternativePathQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
