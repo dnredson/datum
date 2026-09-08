@@ -30,6 +30,9 @@ struct Args {
     #[arg(long, default_value_t = false)]
     execute: bool,
 
+    #[arg(long, default_value_t = false)]
+    rollback: bool,
+
     #[arg(long, default_value = "smartsentinel-operational-reconcile.json")]
     out: String,
 }
@@ -69,6 +72,7 @@ fn main() -> Result<()> {
         &project_id,
         args.timeout_s,
         args.execute,
+        args.rollback,
     )?;
 
     let json = serde_json::to_string_pretty(&report)
@@ -88,7 +92,7 @@ fn main() -> Result<()> {
         .count();
 
     println!(
-        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} snapshot_published={} out={}",
+        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} rollback_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} snapshot_published={} out={}",
         report.bootstrap_state,
         report.resource_id,
         report.node_id,
@@ -96,6 +100,7 @@ fn main() -> Result<()> {
         report.services.len(),
         wasm_executed,
         report.execute_requested,
+        args.rollback,
         report.control_plane_authorized,
         report.local_container_execution_allowed,
         converged_after,
