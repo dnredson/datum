@@ -36,3 +36,80 @@ The intended next stages are:
 
 Always expect `safe_to_auto_execute=false` and `side_effects_performed=false`
 from the catalog and registry responses.
+
+
+## Desktop validation
+
+From the repository checkout on the desktop, set the dserver URL and project scope. The following
+PowerShell list follows the dependency order and imports all 15 artifacts into the registry:
+
+```powershell
+$PROJECT_ID = "monitor-f49c8"
+$DSERVER_URL = "http://192.168.10.101:8080"
+$ARTIFACT_DIR = Join-Path (Get-Location) "dserver/fixtures/e2e/service-artifacts"
+
+$IMPORT_ORDER = @(
+  "magistrala-atom-db.json",
+  "magistrala-bootstrap-db.json",
+  "magistrala-atom.json",
+  "magistrala-bootstrap.json",
+  "magistrala-fluxmq-auth.json",
+  "magistrala-fluxmq-node1.json",
+  "fog-mosquitto.json",
+  "chirpstack-postgres.json",
+  "chirpstack-redis.json",
+  "chirpstack.json",
+  "chirpstack-gateway-bridge.json",
+  "chirpstack-rest-api.json",
+  "lora-packet-forwarder.json",
+  "lora-device-simulator.json",
+  "sma.json"
+)
+
+foreach ($name in $IMPORT_ORDER) {
+  $path = Join-Path $ARTIFACT_DIR $name
+  curl.exe -fsS `
+    -X POST `
+    "$DSERVER_URL/api/v1/service-artifacts" `
+    -H "Content-Type: application/json" `
+    -H "X-Datum-Project: $PROJECT_ID" `
+    --data-binary "@$path" |
+  jq '{artifact_id, service_id, project_id: .control_plane.project_id, target_nodes: .control_plane.target_nodes}'
+}
+```
+
+Expected: 15 successful JSON responses, all with `project_id = monitor-f49c8`,
+`side_effects_performed` absent or false, and no deployment output. If an artifact was
+already imported, HTTP 409 is expected; use PUT only when intentionally replacing that
+artifact.
+
+Confirm the registry and scenario coverage:
+
+```powershell
+curl.exe -fsS `
+  -X GET `
+  "$DSERVER_URL/api/v1/service-artifacts" `
+  -H "X-Datum-Project: $PROJECT_ID" |
+jq '{
+  project_id,
+  count,
+  artifact_ids: [.artifacts[].artifact_id]
+}'
+
+Get-Content -Raw (Join-Path $ARTIFACT_DIR "scenario.json") |
+jq '{
+  scenario_id,
+  stage,
+  node_count: (.nodes | length),
+  artifact_ref_count: ([.nodes[].artifacts[]] | length),
+  relation_count: (.relations | length),
+  expected_flow,
+  side_effects_performed
+}'
+```
+
+Expected registry `count = 15), scenario `node_count = 3`,
+`artifact_ref_count = 15), `relation_count = 3), and
+`side_effects_performed = false`. The next stage will consume this catalog to materialize
+the static operational D-Graph; SmartSentinel execution is intentionally not part of this
+validation.
