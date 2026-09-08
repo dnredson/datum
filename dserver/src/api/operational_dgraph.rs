@@ -261,7 +261,7 @@ pub async fn post_operational_reconciliation_authorization(
             AUTHORIZATION_OPERATION_RECONCILE
         )));
     }
-    authorize_operational_reconciliation(Path(node_id), headers, request).await
+    authorize_operational_reconciliation(node_id, headers, request).await
 }
 
 pub async fn post_operational_reconciliation_rollback_authorization(
@@ -279,9 +279,9 @@ pub async fn post_operational_reconciliation_rollback_authorization(
 }
 
 async fn authorize_operational_reconciliation(
-    Path(node_id): Path<String>,
+    node_id: String,
     headers: HeaderMap,
-    Json(request): Json<OperationalReconciliationAuthorizationRequest>,
+    request: OperationalReconciliationAuthorizationRequest,
 ) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
     ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
     let project_id = extract_project_id(&headers)?;
