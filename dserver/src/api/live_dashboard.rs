@@ -99,6 +99,7 @@ fn build_graph_overview(observed_dgraph: &Value) -> Value {
                 .iter()
                 .map(|node| {
                     let observed = node.get("observed");
+                    let failure_state = node.get("failure_state");
                     json!({
                         "node_id": node.get("node_id").cloned().unwrap_or(Value::Null),
                         "stage": node
@@ -106,6 +107,11 @@ fn build_graph_overview(observed_dgraph: &Value) -> Value {
                             .and_then(Value::as_str)
                             .map(node_stage)
                             .unwrap_or("unclassified"),
+                        "health_state": failure_state
+                            .and_then(|value| value.get("state"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown"),
+                        "failure_state": failure_state.cloned().unwrap_or(Value::Null),
                         "status": observed
                             .and_then(|value| value.get("status"))
                             .and_then(Value::as_str)
