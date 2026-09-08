@@ -484,7 +484,10 @@ fn validate_context(
     project_id: &str,
     node_id: &str,
 ) -> Result<()> {
-    if context.project_id.trim() != project_id.trim() {
+    if context.schema_version != "0.1.0" {
+        bail!("unsupported artifact reconciliation context schema_version");
+    }
+    if anchor
         bail!(
             "artifact reconciliation context project '{}' does not match requested project '{}'",
             context.project_id,
