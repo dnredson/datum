@@ -68,8 +68,15 @@ pub fn build_artifact_reconciliation_context(
 
     for service in &slice.desired_services {
         let matches = artifacts.iter().filter(|artifact| {
-            (artifact.artifact_id == service.service_id
-                || artifact.service_id == service.service_id)
+            let direct_match = artifact.artifact_id == service.service_id
+                || artifact.service_id == service.service_id;
+            let alias_match = artifact.metadata.as_ref()
+                .and_then(|metadata| metadata.get("service_aliases"))
+                .and_then(|aliases| aliases.as_array())
+                .is_some_and(|aliases| aliases.iter().any(|alias| {
+                    alias.as_str() == Some(service.service_id.as_str())
+                }));
+            (direct_match || alias_match)
                 && artifact.control_plane.target_nodes.iter()
                     .any(|node| node == &slice.node_id)
         }).collect::<Vec<_>>();
