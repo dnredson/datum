@@ -611,7 +611,7 @@ mod failure_state_tests {
             "stale",
             Some(1),
             Some("2026-09-08T00:00:00Z"),
-            base + Duration::seconds(30),
+            base + Duration::seconds(1),
         )
         .unwrap();
         assert_eq!(repeated.state, "suspect");
