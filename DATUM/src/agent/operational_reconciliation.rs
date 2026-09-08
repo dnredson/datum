@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::process::Command;
 use std::time::Duration;
 
@@ -70,6 +70,61 @@ pub struct OperationalDGraphSlice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactWasmDecisionPolicy {
+    pub explicit_invocation_required: bool,
+    pub module_id: String,
+    pub function_name: String,
+    pub host_imports_allowed: bool,
+    pub side_effects_allowed: bool,
+    pub safe_to_auto_execute: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalArtifactAssignment {
+    pub artifact_id: String,
+    pub service_id: String,
+    pub version: String,
+    pub artifact_kind: String,
+    pub runtime_kind: String,
+    pub container_name: String,
+    pub image: String,
+    pub target_node: String,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub wasm_decision: ArtifactWasmDecisionPolicy,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperationalReconciliationContext {
+    pub schema_version: String,
+    pub contract_kind: String,
+    pub project_id: String,
+    pub dgraph_id: String,
+    pub dgraph_revision: u64,
+    pub node_id: String,
+    pub desired_services: Vec<OperationalDesiredService>,
+    pub artifacts: Vec<OperationalArtifactAssignment>,
+    #[serde(default)]
+    pub authorization: Option<OperationalReconciliationAuthorization>,
+    pub reconciler: OperationalReconcilerDescriptor,
+    pub execution_policy: ArtifactExecutionPolicy,
+    pub side_effects_performed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactExecutionPolicy {
+    pub mode: String,
+    pub explicit_invocation_required: bool,
+    pub host_imports_allowed: bool,
+    pub side_effects_allowed: bool,
+    pub safe_to_auto_execute: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WasmReconciliationDecision {
     pub module_id: String,
     pub function_name: String,
@@ -84,6 +139,10 @@ pub struct WasmReconciliationDecision {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperationalServiceReconciliationReport {
     pub service_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_version: Option<String>,
     pub desired_state: String,
     pub trusted_container_name: Option<String>,
     pub trusted_image: Option<String>,
@@ -208,7 +267,7 @@ fn run_operational_reconciliation_from_bootstrap(
         .build()
         .context("build operational reconciliation HTTP client")?;
     let base = dserver_url.trim().trim_end_matches('/');
-    let slice_url = format!("{base}/api/v1/nodes/{node_id}/operational-dgraph-slice");
+    let slice_url = format!("{base}/api/v1/nodes/{node_id}/operational-reconciliation-context");
     let response = client
         .get(&slice_url)
         .header("X-Datum-Project", project_id.trim())
@@ -219,26 +278,36 @@ fn run_operational_reconciliation_from_bootstrap(
         let body = response.text().unwrap_or_default();
         bail!("operational D-Graph slice query failed with status {status}: {body}");
     }
-    let slice: OperationalDGraphSlice = response
+    let context: OperationalReconciliationContext = response
         .json()
-        .context("decode operational D-Graph node slice")?;
-    validate_slice(&slice, project_id, &node_id)?;
+        .context("decode artifact reconciliation context")?;
+    validate_context(&context, project_id, &node_id)?;
 
-    let control_plane_authorized = slice.authorization.as_ref().is_some_and(|authorization| {
+    let control_plane_authorized = context.authorization.as_ref().is_some_and(|authorization| {
         authorization.allow_host_mutation
-            && authorization.project_id == slice.project_id
-            && authorization.dgraph_id == slice.dgraph_id
-            && authorization.dgraph_revision == slice.dgraph_revision
-            && authorization.node_id == slice.node_id
+            && authorization.project_id == context.project_id
+            && authorization.dgraph_id == context.dgraph_id
+            && authorization.dgraph_revision == Some(context.dgraph_revision)
+            && authorization.node_id == context.node_id
     });
     let local_container_execution_allowed = cfg.dispatch.as_ref().is_some_and(|dispatch| {
         dispatch.enabled && dispatch.allow_container_execution.unwrap_or(false)
     });
 
     let mut side_effects_performed = false;
-    let mut services = Vec::with_capacity(slice.desired_services.len());
-    for service in &slice.desired_services {
-        let mapping = trusted_container_mapping(cfg, &service.service_id);
+    let mut services = Vec::with_capacity(context.desired_services.len());
+    for service in &context.desired_services {
+        let assignment = context.artifacts.iter().find(|artifact| {
+            artifact.service_id.eq_ignore_ascii_case(&service.service_id)
+        });
+        let mapping = assignment.and_then(|artifact| {
+            trusted_container_mapping_for_artifact(
+                cfg,
+                &artifact.service_id,
+                &artifact.container_name,
+                &artifact.image,
+            )
+        });
         let (observed_before, observation_error) = match mapping {
             Some(mapping) => match inspect_container(&mapping.container_name) {
                 Ok(state) => (state, None),
@@ -277,7 +346,7 @@ fn run_operational_reconciliation_from_bootstrap(
             (
                 "blocked_local_mapping".to_string(),
                 format!(
-                    "service '{}' is inside the authorized D-Graph slice, but no trusted local container mapping with image exists",
+                    "service '{}' has an artifact assignment but no matching trusted local container mapping",
                     service.service_id
                 ),
                 false,
@@ -289,11 +358,18 @@ fn run_operational_reconciliation_from_bootstrap(
                 false,
             )
         } else {
-            match execute_trusted_container_intent(cfg, &service.service_id, observed_before) {
-                Ok(result) => result,
-                Err(error) => (
-                    "failed".to_string(),
-                    format!("governed trusted container execution failed: {error}"),
+            match mapping {
+                Some(mapping) => match execute_trusted_container_intent(mapping, observed_before) {
+                    Ok(result) => result,
+                    Err(error) => (
+                        "failed".to_string(),
+                        format!("governed trusted container execution failed: {error}"),
+                        false,
+                    ),
+                },
+                None => (
+                    "blocked_local_mapping".to_string(),
+                    "artifact assignment has no matching local mapping".to_string(),
                     false,
                 ),
             }
@@ -306,6 +382,8 @@ fn run_operational_reconciliation_from_bootstrap(
 
         services.push(OperationalServiceReconciliationReport {
             service_id: service.service_id.clone(),
+            artifact_id: assignment.map(|artifact| artifact.artifact_id.clone()),
+            artifact_version: assignment.map(|artifact| artifact.version.clone()),
             desired_state: service.desired_state.clone(),
             trusted_container_name: mapping.map(|mapping| mapping.container_name.clone()),
             trusted_image: mapping.and_then(|mapping| mapping.artifact.clone()),
@@ -339,8 +417,8 @@ fn run_operational_reconciliation_from_bootstrap(
         bootstrap_state: bootstrap.bootstrap_state,
         resource_id: bootstrap.control_plane.resource_id,
         node_id,
-        dgraph_id: slice.dgraph_id,
-        dgraph_revision: slice.dgraph_revision,
+        dgraph_id: context.dgraph_id,
+        dgraph_revision: Some(context.dgraph_revision),
         execute_requested,
         control_plane_authorized,
         local_container_execution_allowed,
@@ -401,71 +479,103 @@ pub fn run_embedded_reconciler(
     })
 }
 
-fn validate_slice(slice: &OperationalDGraphSlice, project_id: &str, node_id: &str) -> Result<()> {
-    if slice.project_id.trim() != project_id.trim() {
+fn validate_context(
+    context: &OperationalReconciliationContext,
+    project_id: &str,
+    node_id: &str,
+) -> Result<()> {
+    if context.schema_version != "0.1.0" {
+        bail!("unsupported artifact reconciliation context schema_version");
+    }
+    if context.project_id.trim() != project_id.trim() {
         bail!(
-            "operational D-Graph slice project '{}' does not match requested project '{}'",
-            slice.project_id,
+            "artifact reconciliation context project '{}' does not match requested project '{}'",
+            context.project_id,
             project_id
         );
     }
-    if slice.node_id.trim() != node_id.trim() {
+    if context.node_id.trim() != node_id.trim() {
         bail!(
-            "operational D-Graph slice node '{}' does not match resolved node '{}'",
-            slice.node_id,
+            "artifact reconciliation context node '{}' does not match resolved node '{}'",
+            context.node_id,
             node_id
         );
     }
-    match slice.dgraph_revision {
-        Some(revision) if revision > 0 => {}
-        Some(_) => bail!("operational D-Graph slice revision must be greater than zero"),
-        None => bail!("operational D-Graph slice omitted dgraph_revision"),
+    if context.dgraph_revision == 0 {
+        bail!("artifact reconciliation context revision must be greater than zero");
     }
-    if slice.reconciler.module_id != OPERATIONAL_RECONCILER_MODULE_ID
-        || slice.reconciler.function_name != OPERATIONAL_RECONCILER_FUNCTION
-        || slice.reconciler.host_imports_allowed
+    if context.contract_kind != "datum_artifact_reconciliation_context"
+        || context.execution_policy.mode != "proposal_only"
+        || !context.execution_policy.explicit_invocation_required
+        || context.execution_policy.host_imports_allowed
+        || context.execution_policy.side_effects_allowed
+        || context.execution_policy.safe_to_auto_execute
+        || context.side_effects_performed
     {
-        bail!("operational D-Graph slice requests an unsupported reconciler contract");
+        bail!("artifact reconciliation context execution policy is unsafe");
+    }
+    if context.reconciler.module_id != OPERATIONAL_RECONCILER_MODULE_ID
+        || context.reconciler.function_name != OPERATIONAL_RECONCILER_FUNCTION
+        || context.reconciler.host_imports_allowed
+    {
+        bail!("artifact reconciliation context requests an unsupported reconciler contract");
+    }
+    if context.artifacts.len() != context.desired_services.len() {
+        bail!("artifact reconciliation context service/artifact counts differ");
     }
 
     let mut seen_services = HashSet::new();
-    for service in &slice.desired_services {
+    for service in &context.desired_services {
         if service.service_id.trim().is_empty() {
-            bail!("operational D-Graph desired service_id must not be empty");
+            bail!("operational desired service_id must not be empty");
         }
         if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
-            bail!(
-                "operational D-Graph slice contains duplicate desired service '{}'",
-                service.service_id
-            );
+            bail!("operational context contains duplicate desired service '{}'", service.service_id);
         }
         if !service.runtime.eq_ignore_ascii_case("container") {
             bail!("unsupported operational runtime '{}': expected container", service.runtime);
         }
         if !service.desired_state.eq_ignore_ascii_case("running") {
-            bail!(
-                "unsupported operational desired_state '{}': expected running",
-                service.desired_state
-            );
+            bail!("unsupported operational desired_state '{}': expected running", service.desired_state);
         }
     }
+
+    for artifact in &context.artifacts {
+        let policy = &artifact.wasm_decision;
+        if artifact.service_id.trim().is_empty()
+            || artifact.artifact_id.trim().is_empty()
+            || artifact.version.trim().is_empty()
+            || artifact.container_name.trim().is_empty()
+            || artifact.image.trim().is_empty()
+            || artifact.target_node != context.node_id
+            || artifact.runtime_kind != "container"
+            || !policy.explicit_invocation_required
+            || policy.host_imports_allowed
+            || policy.side_effects_allowed
+            || policy.safe_to_auto_execute
+            || policy.module_id.trim().is_empty()
+            || policy.function_name.trim().is_empty()
+        {
+            bail!("artifact reconciliation context contains an unsafe or incomplete assignment");
+        }
+    }
+
     Ok(())
 }
 
-fn trusted_container_mapping<'a>(
+fn trusted_container_mapping_for_artifact<'a>(
     cfg: &'a Config,
     service_id: &str,
+    container_name: &str,
+    image: &str,
 ) -> Option<&'a DispatchContainerMapping> {
     cfg.dispatch.as_ref()?.container_mappings.iter().find(|mapping| {
-        mapping
-            .service_name
-            .as_deref()
-            .is_some_and(|name| name.eq_ignore_ascii_case(service_id))
-            && !mapping.container_name.trim().is_empty()
-            && mapping
-                .artifact
-                .as_deref()
-                .is_some_and(|artifact| !artifact.trim().is_empty())
+        mapping.service_name.as_deref().is_some_and(|name| {
+            name.eq_ignore_ascii_case(service_id)
+        }) && mapping.container_name.trim() == container_name.trim()
+            && mapping.artifact.as_deref().is_some_and(|artifact| {
+                artifact.trim() == image.trim()
+            })
     })
 }
 
@@ -499,16 +609,9 @@ fn inspect_container(container_name: &str) -> Result<ContainerState> {
 }
 
 fn execute_trusted_container_intent(
-    cfg: &Config,
-    service_id: &str,
+    mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
 ) -> Result<(String, String, bool)> {
-    let mapping = trusted_container_mapping(cfg, service_id).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no trusted local container mapping with image exists for service '{}'",
-            service_id
-        )
-    })?;
     let container_name = mapping.container_name.trim();
     let image = mapping
         .artifact

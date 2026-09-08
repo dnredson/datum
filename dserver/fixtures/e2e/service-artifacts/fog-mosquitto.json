@@ -54,7 +54,10 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "fog-foundation"
-    }
+    },
+    "service_aliases": [
+      "mqtt"
+    ]
   },
   "control_plane": {
     "project_id": "",
