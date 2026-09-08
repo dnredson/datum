@@ -6,13 +6,11 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    core::{
-        artifact_reconciliation_context::{
-            build_artifact_reconciliation_context,
-            validate_artifact_reconciliation_context,
-            ArtifactReconciliationContext,
-        },
-        operational_dgraph::operational_dgraph_slice_snapshot,
+    api::operational_dgraph::operational_dgraph_slice_snapshot,
+    core::artifact_reconciliation_context::{
+        build_artifact_reconciliation_context,
+        validate_artifact_reconciliation_context,
+        ArtifactReconciliationContext,
     },
     AppState,
 };
