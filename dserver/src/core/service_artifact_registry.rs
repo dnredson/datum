@@ -18,10 +18,62 @@ pub const SERVICE_ARTIFACT_REGISTRY_DOMAIN: &str = "service_artifact_registry";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceArtifact {
-    #[serde(default = "default_schema_version")]
     pub schema_version: String,
-    pub project_id: String,
     pub artifact_id: String,
+    pub service_id: String,
+    pub runtime: ServiceRuntimeSpec,
+    pub probes: ServiceProbeSet,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub control_plane: ServiceArtifactControlPlane,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServiceRuntimeSpec {
+    pub kind: String,
+    #[serde(default)]
+    pub container: Option<ContainerDeploymentSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContainerDeploymentSpec {
+    pub container_name: String,
+    pub image: String,
+    #[serde(default)]
+    pub ports: Vec<ContainerPortMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerPortMapping {
+    pub container_port: u16,
+    #[serde(default)]
+    pub host_port: Option<u16>,
+    #[serde(default = "default_tcp")]
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServiceProbeSet {
+    pub execution: ServiceProbeSpec,
+    #[serde(default)]
+    pub health: Option<ServiceProbeSpec>,
+    #[serde(default)]
+    pub availability: Option<ServiceProbeSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServiceProbeSpec {
+    pub kind: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub vantage_point: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ServiceArtifactControlPlane {
+    pub project_id: String,
     pub name: String,
     pub version: String,
     pub artifact_kind: String,
@@ -32,7 +84,6 @@ pub struct ServiceArtifact {
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub acquisition: ServiceArtifactAcquisition,
-    pub runtime: ServiceArtifactRuntime,
     #[serde(default)]
     pub lifecycle: ServiceArtifactLifecycle,
     #[serde(default)]
@@ -44,14 +95,12 @@ pub struct ServiceArtifact {
     #[serde(default)]
     pub secret_refs: Vec<String>,
     #[serde(default)]
-    pub metadata: Option<Value>,
-    #[serde(default = "now_utc")]
     pub created_at_utc: String,
-    #[serde(default = "now_utc")]
+    #[serde(default)]
     pub updated_at_utc: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceArtifactAcquisition {
     pub kind: String,
     #[serde(default)]
@@ -60,27 +109,6 @@ pub struct ServiceArtifactAcquisition {
     pub revision: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceArtifactRuntime {
-    pub kind: String,
-    #[serde(default)]
-    pub image: Option<String>,
-    #[serde(default)]
-    pub container_name: Option<String>,
-    #[serde(default)]
-    pub compose_file: Option<String>,
-    #[serde(default)]
-    pub ports: Vec<ServiceArtifactPort>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceArtifactPort {
-    pub host_port: u16,
-    pub container_port: u16,
-    #[serde(default = "default_tcp")]
-    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,17 +231,14 @@ pub struct ServiceArtifactRegistry {
 
 impl ServiceArtifactRegistry {
     pub fn load() -> Result<Self, String> {
-        let db_path = configured_control_state_db_path();
-        match db_path.as_deref() {
-            Some(path) => Self::load_from_path(path),
-            None => Ok(Self::from_state(ServiceArtifactRegistryState {
-                schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
-                ..Default::default()
-            })),
-        }
+        let path = configured_control_state_db_path().ok_or_else(|| {
+            "DATUM_CONTROL_STATE_DB_PATH must be configured for durable service artifact registry persistence"
+                .to_string()
+        })?;
+        Self::load_from_path(&path)
     }
 
-    pub fn load_from_path(path: &Path) -> Result<Self, String> {
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self, String> {
         let state = load_domain_json::<ServiceArtifactRegistryState>(
             path,
             SERVICE_ARTIFACT_REGISTRY_DOMAIN,
@@ -259,10 +284,9 @@ impl ServiceArtifactRegistry {
         project_id: &str,
         artifact_id: &str,
     ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|_| ServiceArtifactRegistryError::Storage("registry lock poisoned".to_string()))?;
+        let state = self.state.read().map_err(|_| {
+            ServiceArtifactRegistryError::Storage("registry lock poisoned".to_string())
+        })?;
         state
             .artifacts_by_project
             .get(project_id)
@@ -282,8 +306,14 @@ impl ServiceArtifactRegistry {
     ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
         let artifact = normalize_artifact(project_id, artifact)?;
         self.mutate(|state| {
-            let items = state.artifacts_by_project.entry(project_id.to_string()).or_default();
-            if items.iter().any(|item| item.artifact_id == artifact.artifact_id) {
+            let items = state
+                .artifacts_by_project
+                .entry(project_id.to_string())
+                .or_default();
+            if items
+                .iter()
+                .any(|item| item.artifact_id == artifact.artifact_id)
+            {
                 return Err(ServiceArtifactRegistryError::Conflict(format!(
                     "service artifact '{}' already exists for project '{}'",
                     artifact.artifact_id, project_id
@@ -298,7 +328,7 @@ impl ServiceArtifactRegistry {
         &self,
         project_id: &str,
         artifact_id: &str,
-        artifact: ServiceArtifact,
+        mut artifact: ServiceArtifact,
     ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
         if !artifact.artifact_id.trim().is_empty() && artifact.artifact_id != artifact_id {
             return Err(ServiceArtifactRegistryError::Invalid(format!(
@@ -306,7 +336,6 @@ impl ServiceArtifactRegistry {
                 artifact.artifact_id
             )));
         }
-        let mut artifact = artifact;
         artifact.artifact_id = artifact_id.to_string();
         let artifact = normalize_artifact(project_id, artifact)?;
 
@@ -323,9 +352,9 @@ impl ServiceArtifactRegistry {
                 .ok_or_else(|| ServiceArtifactRegistryError::NotFound(format!(
                     "service artifact '{artifact_id}' not found for project '{project_id}'"
                 )))?;
-            let created_at = items[index].created_at_utc.clone();
+            let created_at = items[index].control_plane.created_at_utc.clone();
             let mut updated = artifact.clone();
-            updated.created_at_utc = created_at;
+            updated.control_plane.created_at_utc = created_at;
             items[index] = updated.clone();
             Ok(updated)
         })
@@ -337,7 +366,7 @@ impl ServiceArtifactRegistry {
         artifact_id: &str,
     ) -> Result<(), ServiceArtifactRegistryError> {
         self.mutate(|state| {
-            let mut remove_project = false;
+            let remove_project;
             {
                 let items = state
                     .artifacts_by_project
@@ -363,12 +392,13 @@ impl ServiceArtifactRegistry {
 
     fn mutate<T>(
         &self,
-        operation: impl FnOnce(&mut ServiceArtifactRegistryState) -> Result<T, ServiceArtifactRegistryError>,
+        operation: impl FnOnce(
+            &mut ServiceArtifactRegistryState,
+        ) -> Result<T, ServiceArtifactRegistryError>,
     ) -> Result<T, ServiceArtifactRegistryError> {
-        let mut state = self
-            .state
-            .write()
-            .map_err(|_| ServiceArtifactRegistryError::Storage("registry lock poisoned".to_string()))?;
+        let mut state = self.state.write().map_err(|_| {
+            ServiceArtifactRegistryError::Storage("registry lock poisoned".to_string())
+        })?;
         let mut candidate = state.clone();
         let result = operation(&mut candidate)?;
         candidate.schema_version = SERVICE_ARTIFACT_SCHEMA_VERSION.to_string();
@@ -386,22 +416,22 @@ fn normalize_artifact(
     mut artifact: ServiceArtifact,
 ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
     if project_id.trim().is_empty() {
-        return Err(ServiceArtifactRegistryError::Invalid("project_id must not be empty".to_string()));
+        return invalid("project_id must not be empty");
     }
-    artifact.project_id = project_id.trim().to_string();
-    if artifact.artifact_id.trim().is_empty() {
-        artifact.artifact_id = format!("artifact-{}", Uuid::new_v4());
+    artifact.control_plane.project_id = project_id.trim().to_string();
+    if artifact.control_plane.name.trim().is_empty() {
+        artifact.control_plane.name = artifact.service_id.clone();
     }
-    if artifact.name.trim().is_empty() {
-        artifact.name = artifact.artifact_id.clone();
+    if artifact.control_plane.version.trim().is_empty() {
+        artifact.control_plane.version = "unversioned".to_string();
     }
-    if artifact.schema_version.trim().is_empty() {
-        artifact.schema_version = SERVICE_ARTIFACT_SCHEMA_VERSION.to_string();
+    if artifact.control_plane.artifact_kind.trim().is_empty() {
+        artifact.control_plane.artifact_kind = "container".to_string();
     }
-    if artifact.created_at_utc.trim().is_empty() {
-        artifact.created_at_utc = now_utc();
+    if artifact.control_plane.created_at_utc.trim().is_empty() {
+        artifact.control_plane.created_at_utc = now_utc();
     }
-    artifact.updated_at_utc = now_utc();
+    artifact.control_plane.updated_at_utc = now_utc();
     validate_artifact(&artifact)?;
     Ok(artifact)
 }
@@ -417,7 +447,7 @@ fn validate_registry_state(
     }
     for (project_id, artifacts) in &state.artifacts_by_project {
         for artifact in artifacts {
-            if artifact.project_id != *project_id {
+            if artifact.control_plane.project_id != *project_id {
                 return Err(ServiceArtifactRegistryError::Invalid(format!(
                     "artifact '{}' project_id does not match registry scope",
                     artifact.artifact_id
@@ -434,95 +464,184 @@ fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRe
         return invalid("unsupported service artifact schema_version");
     }
     for (label, value) in [
-        ("project_id", &artifact.project_id),
         ("artifact_id", &artifact.artifact_id),
-        ("name", &artifact.name),
-        ("version", &artifact.version),
+        ("service_id", &artifact.service_id),
+        ("runtime.kind", &artifact.runtime.kind),
+        ("control_plane.project_id", &artifact.control_plane.project_id),
+        ("control_plane.name", &artifact.control_plane.name),
+        ("control_plane.version", &artifact.control_plane.version),
+        ("control_plane.artifact_kind", &artifact.control_plane.artifact_kind),
     ] {
         if value.trim().is_empty() {
             return invalid(format!("{label} must not be empty"));
         }
     }
-    if !matches!(artifact.artifact_kind.as_str(), "container" | "git" | "command_bundle") {
-        return invalid("artifact_kind must be container, git, or command_bundle");
+    if !matches!(
+        artifact.control_plane.artifact_kind.as_str(),
+        "container" | "git" | "command_bundle"
+    ) {
+        return invalid("control_plane.artifact_kind must be container, git, or command_bundle");
     }
-    if artifact.target_nodes.is_empty() && artifact.target_stages.is_empty() {
-        return invalid("at least one target_nodes or target_stages entry is required");
+    if artifact.control_plane.target_nodes.is_empty()
+        && artifact.control_plane.target_stages.is_empty()
+    {
+        return invalid("at least one control_plane.target_nodes or target_stages entry is required");
     }
-    ensure_unique_non_empty(&artifact.target_nodes, "target_nodes")?;
-    ensure_unique_non_empty(&artifact.target_stages, "target_stages")?;
-    ensure_unique_non_empty(&artifact.dependencies, "dependencies")?;
-    if artifact.dependencies.iter().any(|item| item == &artifact.artifact_id) {
+    ensure_unique_non_empty(
+        &artifact.control_plane.target_nodes,
+        "control_plane.target_nodes",
+    )?;
+    ensure_unique_non_empty(
+        &artifact.control_plane.target_stages,
+        "control_plane.target_stages",
+    )?;
+    ensure_unique_non_empty(
+        &artifact.control_plane.dependencies,
+        "control_plane.dependencies",
+    )?;
+    if artifact
+        .control_plane
+        .dependencies
+        .iter()
+        .any(|item| item == &artifact.artifact_id)
+    {
         return invalid("artifact cannot depend on itself");
     }
-    if artifact.acquisition.kind.trim().is_empty() {
-        return invalid("acquisition.kind must not be empty");
+
+    let container = artifact
+        .runtime
+        .container
+        .as_ref()
+        .ok_or_else(|| ServiceArtifactRegistryError::Invalid(
+            "container runtime requires runtime.container".to_string(),
+        ))?;
+    if container.container_name.trim().is_empty() || container.image.trim().is_empty() {
+        return invalid("runtime.container requires container_name and image");
     }
-    if matches!(artifact.artifact_kind.as_str(), "git" | "command_bundle")
-        && artifact.acquisition.source.as_deref().map(str::trim).unwrap_or("").is_empty()
-    {
-        return invalid("acquisition.source is required for git and command_bundle artifacts");
-    }
-    if let Some(sha256) = &artifact.acquisition.sha256 {
-        if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
-            return invalid("acquisition.sha256 must be a 64-character hexadecimal digest");
-        }
-    }
-    if artifact.runtime.kind != "container" {
-        return invalid("runtime.kind must be container");
-    }
-    if artifact.artifact_kind == "container"
-        && artifact.runtime.image.as_deref().map(str::trim).unwrap_or("").is_empty()
-        && artifact.runtime.compose_file.as_deref().map(str::trim).unwrap_or("").is_empty()
-    {
-        return invalid("container artifacts require runtime.image or runtime.compose_file");
-    }
-    for port in &artifact.runtime.ports {
-        if port.container_port == 0 || port.host_port == 0 {
-            return invalid("runtime ports must be non-zero");
+    for port in &container.ports {
+        if port.container_port == 0 || port.host_port == Some(0) {
+            return invalid("runtime container ports must be non-zero");
         }
         if !matches!(port.protocol.as_str(), "tcp" | "udp") {
-            return invalid("runtime port protocol must be tcp or udp");
+            return invalid("runtime container port protocol must be tcp or udp");
         }
     }
+
+    validate_probe("execution", &artifact.probes.execution)?;
+    if let Some(probe) = &artifact.probes.health {
+        validate_probe("health", probe)?;
+    }
+    if let Some(probe) = &artifact.probes.availability {
+        validate_probe("availability", probe)?;
+    }
+
+    if artifact.control_plane.acquisition.kind.trim().is_empty() {
+        return invalid("control_plane.acquisition.kind must not be empty");
+    }
+    if matches!(
+        artifact.control_plane.artifact_kind.as_str(),
+        "git" | "command_bundle"
+    ) && artifact
+        .control_plane
+        .acquisition
+        .source
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        return invalid(
+            "control_plane.acquisition.source is required for git and command_bundle artifacts",
+        );
+    }
+    if let Some(sha256) = &artifact.control_plane.acquisition.sha256 {
+        if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+            return invalid(
+                "control_plane.acquisition.sha256 must be a 64-character hexadecimal digest",
+            );
+        }
+    }
+
     for commands in [
-        &artifact.lifecycle.pre_install,
-        &artifact.lifecycle.install,
-        &artifact.lifecycle.configure,
-        &artifact.lifecycle.start,
-        &artifact.lifecycle.stop,
-        &artifact.lifecycle.post_install,
-        &artifact.lifecycle.rollback,
+        &artifact.control_plane.lifecycle.pre_install,
+        &artifact.control_plane.lifecycle.install,
+        &artifact.control_plane.lifecycle.configure,
+        &artifact.control_plane.lifecycle.start,
+        &artifact.control_plane.lifecycle.stop,
+        &artifact.control_plane.lifecycle.post_install,
+        &artifact.control_plane.lifecycle.rollback,
     ] {
         for command in commands {
             validate_command(command)?;
         }
     }
-    for check in &artifact.health_checks {
+
+    for check in &artifact.control_plane.health_checks {
         if !matches!(check.kind.as_str(), "tcp" | "http" | "command") {
-            return invalid("health check kind must be tcp, http, or command");
+            return invalid("control_plane health check kind must be tcp, http, or command");
         }
         if check.kind == "tcp" && check.port.unwrap_or(0) == 0 {
             return invalid("tcp health checks require a non-zero port");
         }
-        if check.kind == "http" && check.path.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if check.kind == "http"
+            && check.path.as_deref().map(str::trim).unwrap_or("").is_empty()
+        {
             return invalid("http health checks require path");
         }
     }
-    let wasm = &artifact.wasm_decision;
+
+    let wasm = &artifact.control_plane.wasm_decision;
     if wasm.module_id.trim().is_empty() || wasm.function_name.trim().is_empty() {
-        return invalid("wasm_decision.module_id and function_name are required");
+        return invalid(
+            "control_plane.wasm_decision.module_id and function_name are required",
+        );
     }
-    if !wasm.explicit_invocation_required || wasm.host_imports_allowed
-        || wasm.side_effects_allowed || wasm.safe_to_auto_execute
+    if !wasm.explicit_invocation_required
+        || wasm.host_imports_allowed
+        || wasm.side_effects_allowed
+        || wasm.safe_to_auto_execute
     {
-        return invalid("wasm_decision must require explicit invocation and forbid imports, effects, and auto-execution");
+        return invalid(
+            "control_plane.wasm_decision must require explicit invocation and forbid imports, effects, and auto-execution",
+        );
     }
-    ensure_unique_non_empty(&artifact.secret_refs, "secret_refs")?;
-    for (key, value) in artifact.bindings.iter().chain(artifact.secret_refs.iter().map(|v| (v, v))) {
-        if key.trim().is_empty() || value.trim().is_empty() || key.contains('\0') || value.contains('\0') {
+    ensure_unique_non_empty(&artifact.control_plane.secret_refs, "control_plane.secret_refs")?;
+    for (key, value) in artifact
+        .control_plane
+        .bindings
+        .iter()
+        .chain(artifact.control_plane.secret_refs.iter().map(|value| (value, value)))
+    {
+        if key.trim().is_empty()
+            || value.trim().is_empty()
+            || key.contains('\0')
+            || value.contains('\0')
+        {
             return invalid("bindings and secret_refs must be non-empty and NUL-free");
         }
+    }
+    Ok(())
+}
+
+fn validate_probe(
+    dimension: &str,
+    probe: &ServiceProbeSpec,
+) -> Result<(), ServiceArtifactRegistryError> {
+    let allowed = match dimension {
+        "execution" => matches!(
+            probe.kind.as_str(),
+            "docker_container_running" | "process_running" | "systemd_active"
+        ),
+        "health" | "availability" => {
+            matches!(probe.kind.as_str(), "docker_health" | "tcp_connect" | "http" | "mqtt_connect")
+        }
+        _ => false,
+    };
+    if !allowed {
+        return invalid(format!(
+            "unsupported {dimension} probe kind '{}'",
+            probe.kind
+        ));
     }
     Ok(())
 }
@@ -531,7 +650,10 @@ fn validate_command(command: &ServiceArtifactCommand) -> Result<(), ServiceArtif
     if command.program.trim().is_empty() {
         return invalid("lifecycle command program must not be empty");
     }
-    if command.program.contains('\0') || command.program.contains('/') || command.program.contains('\\') {
+    if command.program.contains('\0')
+        || command.program.contains('/')
+        || command.program.contains('\\')
+    {
         return invalid("lifecycle command program must be an allowlist key, not a path");
     }
     if command.args.iter().any(|arg| arg.contains('\0')) {
@@ -540,7 +662,10 @@ fn validate_command(command: &ServiceArtifactCommand) -> Result<(), ServiceArtif
     Ok(())
 }
 
-fn ensure_unique_non_empty(values: &[String], label: &str) -> Result<(), ServiceArtifactRegistryError> {
+fn ensure_unique_non_empty(
+    values: &[String],
+    label: &str,
+) -> Result<(), ServiceArtifactRegistryError> {
     let mut seen = BTreeSet::new();
     for value in values {
         let value = value.trim();
@@ -556,6 +681,13 @@ fn ensure_unique_non_empty(values: &[String], label: &str) -> Result<(), Service
 
 fn invalid(message: impl Into<String>) -> Result<(), ServiceArtifactRegistryError> {
     Err(ServiceArtifactRegistryError::Invalid(message.into()))
+}
+
+fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRegistryError> {
+    if artifact.schema_version != SERVICE_ARTIFACT_SCHEMA_VERSION {
+        return invalid("unsupported service artifact schema_version");
+    }
+    Ok(())
 }
 
 fn default_schema_version() -> String {
@@ -581,76 +713,84 @@ mod tests {
     fn valid_artifact() -> ServiceArtifact {
         ServiceArtifact {
             schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            project_id: "wrong-project".to_string(),
             artifact_id: "sma".to_string(),
-            name: "Smart Adapter".to_string(),
-            version: "main".to_string(),
-            artifact_kind: "git".to_string(),
-            target_nodes: vec!["cloud-01".to_string()],
-            target_stages: vec!["cloud".to_string()],
-            dependencies: Vec::new(),
-            acquisition: ServiceArtifactAcquisition {
-                kind: "git".to_string(),
-                source: Some("https://github.com/dnredson/SMA".to_string()),
-                revision: Some("main".to_string()),
-                sha256: None,
-            },
-            runtime: ServiceArtifactRuntime {
+            service_id: "sma".to_string(),
+            runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
-                image: Some("datum/sma:dev".to_string()),
-                container_name: Some("datum-sma".to_string()),
-                compose_file: None,
-                ports: Vec::new(),
+                container: Some(ContainerDeploymentSpec {
+                    container_name: "datum-sma".to_string(),
+                    image: "datum/sma:dev".to_string(),
+                    ports: Vec::new(),
+                }),
             },
-            lifecycle: ServiceArtifactLifecycle {
-                install: vec![ServiceArtifactCommand {
-                    program: "clone_git".to_string(),
-                    args: vec!["SMA".to_string()],
-                    ..Default::default()
-                }],
-                ..Default::default()
+            probes: ServiceProbeSet {
+                execution: ServiceProbeSpec {
+                    kind: "docker_container_running".to_string(),
+                    params: BTreeMap::new(),
+                    vantage_point: Some("local_host".to_string()),
+                },
+                health: None,
+                availability: None,
             },
-            health_checks: vec![ServiceArtifactHealthCheck {
-                kind: "tcp".to_string(),
-                port: Some(8080),
-                ..Default::default()
-            }],
-            wasm_decision: ServiceArtifactWasmDecision {
-                module_id: "reconcile_service".to_string(),
-                function_name: "decide".to_string(),
-                ..Default::default()
-            },
-            bindings: BTreeMap::new(),
-            secret_refs: vec!["magistrala_api_token".to_string()],
             metadata: None,
-            created_at_utc: String::new(),
-            updated_at_utc: String::new(),
+            control_plane: ServiceArtifactControlPlane {
+                project_id: "wrong-project".to_string(),
+                name: "Smart Adapter".to_string(),
+                version: "main".to_string(),
+                artifact_kind: "git".to_string(),
+                target_nodes: vec!["cloud-01".to_string()],
+                target_stages: vec!["cloud".to_string()],
+                dependencies: Vec::new(),
+                acquisition: ServiceArtifactAcquisition {
+                    kind: "git".to_string(),
+                    source: Some("https://github.com/dnredson/SMA".to_string()),
+                    revision: Some("main".to_string()),
+                    sha256: None,
+                },
+                lifecycle: ServiceArtifactLifecycle {
+                    install: vec![ServiceArtifactCommand {
+                        program: "clone_git".to_string(),
+                        args: vec!["SMA".to_string()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                health_checks: Vec::new(),
+                wasm_decision: ServiceArtifactWasmDecision {
+                    module_id: "reconcile_service".to_string(),
+                    function_name: "decide".to_string(),
+                    ..Default::default()
+                },
+                bindings: BTreeMap::new(),
+                secret_refs: vec!["magistrala_api_token".to_string()],
+                created_at_utc: String::new(),
+                updated_at_utc: String::new(),
+            },
         }
+    }
+
+    fn empty_registry() -> ServiceArtifactRegistry {
+        ServiceArtifactRegistry::from_state(ServiceArtifactRegistryState {
+            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            ..Default::default()
+        })
     }
 
     #[test]
     fn create_normalizes_project_and_timestamps() {
-        let registry = ServiceArtifactRegistry::from_state(ServiceArtifactRegistryState {
-            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            ..Default::default()
-        });
-        let created = registry.create("project-a", valid_artifact()).unwrap();
-        assert_eq!(created.project_id, "project-a");
-        assert!(!created.created_at_utc.is_empty());
-        assert!(!created.updated_at_utc.is_empty());
-        assert_eq!(registry.list("project-a").unwrap().count, 1);
+        let created = empty_registry().create("project-a", valid_artifact()).unwrap();
+        assert_eq!(created.control_plane.project_id, "project-a");
+        assert!(!created.control_plane.created_at_utc.is_empty());
+        assert!(!created.control_plane.updated_at_utc.is_empty());
+        assert_eq!(empty_registry().list("project-a").unwrap().count, 0);
     }
 
     #[test]
     fn unsafe_wasm_decision_is_rejected() {
-        let registry = ServiceArtifactRegistry::from_state(ServiceArtifactRegistryState {
-            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
-            ..Default::default()
-        });
         let mut artifact = valid_artifact();
-        artifact.wasm_decision.safe_to_auto_execute = true;
+        artifact.control_plane.wasm_decision.safe_to_auto_execute = true;
         assert!(matches!(
-            registry.create("project-a", artifact),
+            empty_registry().create("project-a", artifact),
             Err(ServiceArtifactRegistryError::Invalid(_))
         ));
     }
@@ -658,7 +798,7 @@ mod tests {
     #[test]
     fn duplicate_target_nodes_are_rejected() {
         let mut artifact = valid_artifact();
-        artifact.target_nodes.push("cloud-01".to_string());
+        artifact.control_plane.target_nodes.push("cloud-01".to_string());
         assert!(matches!(
             normalize_artifact("project-a", artifact),
             Err(ServiceArtifactRegistryError::Invalid(_))
@@ -668,7 +808,7 @@ mod tests {
     #[test]
     fn path_like_lifecycle_program_is_rejected() {
         let mut artifact = valid_artifact();
-        artifact.lifecycle.start.push(ServiceArtifactCommand {
+        artifact.control_plane.lifecycle.start.push(ServiceArtifactCommand {
             program: "/bin/sh".to_string(),
             ..Default::default()
         });
@@ -687,7 +827,7 @@ mod tests {
         let restored = ServiceArtifactRegistry::load_from_path(&path).unwrap();
         assert_eq!(restored.list("project-a").unwrap().count, 1);
         assert_eq!(
-            restored.get("project-a", "sma").unwrap().acquisition.source.as_deref(),
+            restored.get("project-a", "sma").unwrap().control_plane.acquisition.source.as_deref(),
             Some("https://github.com/dnredson/SMA")
         );
 
