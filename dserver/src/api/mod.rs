@@ -1,4 +1,5 @@
 pub mod action_results;
+pub mod artifact_reconciliation;
 pub mod analysis;
 pub mod alternative_paths;
 pub mod external_ai_inference;
