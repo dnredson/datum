@@ -286,11 +286,12 @@ fn enumerate_simple_paths(
     adjacency: &BTreeMap<String, Vec<ObservedEdge>>,
     max_hops: usize,
 ) -> Vec<EnumeratedPath> {
-    let mut queue = VecDeque::from([(source.to_string(), Vec::new(), {
-        let mut visited = HashSet::new();
-        visited.insert(source.to_string());
-        visited
-    })]);
+    let mut queue: VecDeque<(String, Vec<ObservedEdge>, HashSet<String>)> =
+        VecDeque::from([(source.to_string(), Vec::new(), {
+            let mut visited = HashSet::new();
+            visited.insert(source.to_string());
+            visited
+        })]);
     let mut paths = Vec::new();
 
     while let Some((current, path_edges, visited)) = queue.pop_front() {
