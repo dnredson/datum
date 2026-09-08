@@ -336,20 +336,26 @@ fn run_operational_reconciliation_from_bootstrap(
             None => (ContainerState::Missing, None),
         };
         let observed_before_running = observed_before == ContainerState::Running;
-        let (secret_environment, secret_resolution_error) = match assignment {
-            Some(artifact) => match resolve_secret_bindings(cfg, &artifact.secret_refs) {
-                Ok(environment) => (environment, None),
-                Err(error) => (Vec::new(), Some(error)),
-            },
-            None => (Vec::new(), None),
-        };
-        let secret_resolution_status = if secret_resolution_error.is_some() {
-            "blocked_missing_secret".to_string()
-        } else if secret_environment.is_empty() {
-            "not_required".to_string()
-        } else {
-            "resolved_locally".to_string()
-        };
+        let (secret_environment, secret_resolution_error, secret_resolution_status) =
+            if assignment.is_none()
+                || assignment.is_some_and(|artifact| artifact.secret_refs.is_empty())
+            {
+                (Vec::new(), None, "not_required".to_string())
+            } else if !execute_requested || !control_plane_authorized {
+                (Vec::new(), None, "not_checked".to_string())
+            } else {
+                match assignment {
+                    Some(artifact) => match resolve_secret_bindings(cfg, &artifact.secret_refs) {
+                        Ok(environment) => (environment, None, "resolved_locally".to_string()),
+                        Err(error) => (
+                            Vec::new(),
+                            Some(error),
+                            "blocked_missing_secret".to_string(),
+                        ),
+                    },
+                    None => (Vec::new(), None, "not_required".to_string()),
+                }
+            };
         let wasm = run_embedded_reconciler(true, observed_before_running)?;
 
         if rollback_requested {
