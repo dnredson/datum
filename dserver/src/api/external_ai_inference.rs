@@ -15,7 +15,8 @@ use crate::{
         alternative_path_planner::build_alternative_path_what_if_context,
         external_ai_inference::{
             build_external_ai_inference_request,
-            build_external_ai_inference_request_with_id,
+            get_issued_external_ai_inference_request,
+            register_external_ai_inference_request,
             validate_external_ai_inference_response,
         },
         sentinel_telemetry::{
@@ -38,6 +39,7 @@ pub async fn get_external_ai_inference_request(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let context = load_context(&headers, &query).map_err(|error| error)?;
     let request = build_external_ai_inference_request(&context).map_err(bad_request)?;
+    register_external_ai_inference_request(&request).map_err(internal_error)?;
     Ok(Json(request))
 }
 
@@ -46,12 +48,26 @@ pub async fn post_external_ai_inference_response(
     Query(query): Query<ExternalAiInferenceQuery>,
     Json(response): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let context = load_context(&headers, &query).map_err(|error| error)?;
+    let project_id = extract_project_id(&headers, &query)?;
     let request_id = response
         .get("request_id")
-        .and_then(Value::as_str);
-    let request = build_external_ai_inference_request_with_id(&context, request_id)
-        .map_err(bad_request)?;
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| bad_request("response request_id must be a non-empty string".to_string()))?;
+    let request = get_issued_external_ai_inference_request(request_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            bad_request(format!(
+                "external AI request '{}' was not issued by this dserver process",
+                request_id
+            ))
+        })?;
+    if request.get("project_id").and_then(Value::as_str) != Some(project_id.as_str()) {
+        return Err(bad_request(
+            "response project_id does not match the issued request project".to_string(),
+        ));
+    }
     let validated = validate_external_ai_inference_response(&request, &response)
         .map_err(bad_request)?;
     Ok(Json(validated))
