@@ -49,6 +49,11 @@ environment_variable = "MAGISTRALA_FLUXMQ_SECRET"
 secret_ref = "magistrala_fluxmq_credentials"
 environment_variable = "MAGISTRALA_FLUXMQ_CREDENTIALS"
 
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_db_password"
+environment_variable = "MAGISTRALA_ATOM_DB_PASSWORD"
+
 [[dispatch.secret_bindings]]
 secret_ref = "stage88_canary_secret"
 environment_variable = "STAGE88_CANARY_SECRET"
