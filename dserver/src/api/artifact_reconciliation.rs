@@ -12,7 +12,6 @@ use crate::{
             ArtifactReconciliationContext,
         },
         operational_dgraph::operational_dgraph_slice_snapshot,
-        service_artifact_registry::ServiceArtifactRegistryError,
     },
     AppState,
 };
@@ -60,5 +59,3 @@ fn internal_error(message: String) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error":message})))
 }
 
-#[allow(dead_code)]
-fn _keep_registry_error_in_scope(_: ServiceArtifactRegistryError) {}
