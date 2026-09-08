@@ -19,7 +19,7 @@ Transições:
 
 ## Evidência distinta
 
-O estado avança somente quando chega uma nova sequência/observação. Para ausência de telemetria, a avaliação é limitada a um intervalo de cinco segundos. Consultas repetidas ao dashboard não contam como novas falhas.
+O estado avança somente quando chega uma nova observação fresh ou quando uma evidência não-fresh (`stale` ou `missing`) entra em um novo intervalo de avaliação de cinco segundos. Consultas repetidas ao dashboard dentro do mesmo intervalo não contam como novas falhas.
 
 Cada nó expõe:
 
