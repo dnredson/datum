@@ -288,6 +288,7 @@ mod tests {
                 execute: Some(false),
                 publish_results: Some(false),
                 allow_container_execution: Some(false),
+                secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
             }),
             assisted_execution: None,
