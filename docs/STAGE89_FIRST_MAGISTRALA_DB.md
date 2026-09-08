@@ -70,7 +70,7 @@ jq '{
 
 ## Caso negativo: segredo ausente
 
-No cloud, garanta que `MAGISTRALA_ATOM_DB_PASSWORD` não exista e execute o
+No cloud, garanta que `POSTGRES_PASSWORD` não exista e execute o
 reconciliador com autorização válida. O resultado esperado é:
 
 - `secret_resolution_status=blocked_missing_secret`;
@@ -84,7 +84,7 @@ reconciliador com autorização válida. O resultado esperado é:
 No cloud, defina uma senha descartável apenas no ambiente do processo:
 
 ```bash
-export MAGISTRALA_ATOM_DB_PASSWORD='valor-descartavel-do-teste'
+export POSTGRES_PASSWORD='valor-descartavel-do-teste'
 ```
 
 Não inclua esse valor em arquivos, commits ou comandos enviados ao dserver.
