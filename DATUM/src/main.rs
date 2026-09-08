@@ -15,6 +15,7 @@ mod installation_plan;
 mod installation_tasks;
 mod local_mapping;
 mod outputs;
+mod telemetry;
 mod wasm_runtime;
 
 use cli::capabilities::run_capabilities_command;
