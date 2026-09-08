@@ -793,7 +793,7 @@ fn execute_trusted_container_intent(
     }
 }
 
-pub fn rollback_trusted_container_intent(
+fn rollback_trusted_container_intent(
     mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
 ) -> Result<(String, String, bool)> {
