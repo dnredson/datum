@@ -9,6 +9,7 @@ use crate::{
     core::{
         artifact_reconciliation_context::{
             build_artifact_reconciliation_context,
+            validate_artifact_reconciliation_context,
             ArtifactReconciliationContext,
         },
         operational_dgraph::operational_dgraph_slice_snapshot,
@@ -46,6 +47,7 @@ pub async fn get_operational_reconciliation_context(
         .map_err(|error| internal_error(error.to_string()))?;
     let context = build_artifact_reconciliation_context(&slice, &artifacts.artifacts)
         .map_err(bad_request)?;
+    validate_artifact_reconciliation_context(&context).map_err(bad_request)?;
     Ok(JsonResponse(context))
 }
 
