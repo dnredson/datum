@@ -479,54 +479,21 @@ fn validate_context(
 ) -> Result<()> {
     if context.project_id.trim() != project_id.trim() {
         bail!(
-            "operational D-Graph slice project '{}' does not match requested project '{}'",
+            "artifact reconciliation context project '{}' does not match requested project '{}'",
             context.project_id,
             project_id
         );
     }
     if context.node_id.trim() != node_id.trim() {
         bail!(
-            "operational D-Graph slice node '{}' does not match resolved node '{}'",
+            "artifact reconciliation context node '{}' does not match resolved node '{}'",
             context.node_id,
             node_id
         );
     }
-    match context.dgraph_revision {
-        Some(revision) if revision > 0 => {}
-        Some(_) => bail!("operational D-Graph slice revision must be greater than zero"),
-        None => bail!("operational D-Graph slice omitted dgraph_revision"),
+    if context.dgraph_revision == 0 {
+        bail!("artifact reconciliation context revision must be greater than zero");
     }
-    if context.reconciler.module_id != OPERATIONAL_RECONCILER_MODULE_ID
-        || context.reconciler.function_name != OPERATIONAL_RECONCILER_FUNCTION
-        || context.reconciler.host_imports_allowed
-    {
-        bail!("operational D-Graph slice requests an unsupported reconciler contract");
-    }
-
-    let mut seen_services = HashSet::new();
-    for service in &context.desired_services {
-        if service.service_id.trim().is_empty() {
-            bail!("operational D-Graph desired service_id must not be empty");
-        }
-        if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
-            bail!(
-                "operational D-Graph slice contains duplicate desired service '{}'",
-                service.service_id
-            );
-        }
-        if !service.runtime.eq_ignore_ascii_case("container") {
-            bail!("unsupported operational runtime '{}': expected container", service.runtime);
-        }
-        if !service.desired_state.eq_ignore_ascii_case("running") {
-            bail!(
-                "unsupported operational desired_state '{}': expected running",
-                service.desired_state
-            );
-        }
-    }
-    Ok(())
-}
-
     if context.contract_kind != "datum_artifact_reconciliation_context"
         || context.execution_policy.mode != "proposal_only"
         || !context.execution_policy.explicit_invocation_required
@@ -537,9 +504,32 @@ fn validate_context(
     {
         bail!("artifact reconciliation context execution policy is unsafe");
     }
+    if context.reconciler.module_id != OPERATIONAL_RECONCILER_MODULE_ID
+        || context.reconciler.function_name != OPERATIONAL_RECONCILER_FUNCTION
+        || context.reconciler.host_imports_allowed
+    {
+        bail!("artifact reconciliation context requests an unsupported reconciler contract");
+    }
     if context.artifacts.len() != context.desired_services.len() {
         bail!("artifact reconciliation context service/artifact counts differ");
     }
+
+    let mut seen_services = HashSet::new();
+    for service in &context.desired_services {
+        if service.service_id.trim().is_empty() {
+            bail!("operational desired service_id must not be empty");
+        }
+        if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
+            bail!("operational context contains duplicate desired service '{}'", service.service_id);
+        }
+        if !service.runtime.eq_ignore_ascii_case("container") {
+            bail!("unsupported operational runtime '{}': expected container", service.runtime);
+        }
+        if !service.desired_state.eq_ignore_ascii_case("running") {
+            bail!("unsupported operational desired_state '{}': expected running", service.desired_state);
+        }
+    }
+
     for artifact in &context.artifacts {
         let policy = &artifact.wasm_decision;
         if artifact.service_id.trim().is_empty()
@@ -559,6 +549,9 @@ fn validate_context(
             bail!("artifact reconciliation context contains an unsafe or incomplete assignment");
         }
     }
+
+    Ok(())
+}
 
 fn trusted_container_mapping_for_artifact<'a>(
     cfg: &'a Config,
