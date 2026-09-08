@@ -1,0 +1,122 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "lora-device-simulator",
+  "service_id": "lora-device-simulator",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-lora-device-simulator",
+      "image": "local/datum-lora-device-simulator:stage78",
+      "ports": []
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-lora-device-simulator"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": null,
+    "availability": null
+  },
+  "metadata": {
+    "role": "simulated_lora_device",
+    "source_repository": "https://github.com/dnredson/datum",
+    "source_path": "examples/lora-device-simulator",
+    "image_policy": "build_before_deploy",
+    "configuration": {
+      "template": "mist/device-simulator.env",
+      "payload_format": "LoRaWAN/PHYPayload",
+      "interval_seconds": 10
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "mist-device"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Simulated LoRa device",
+    "version": "stage78",
+    "artifact_kind": "command_bundle",
+    "target_nodes": [
+      "mist-01"
+    ],
+    "target_stages": [
+      "mist"
+    ],
+    "dependencies": [
+      "lora-packet-forwarder"
+    ],
+    "acquisition": {
+      "kind": "repository",
+      "source": "https://github.com/dnredson/datum",
+      "revision": "main",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [
+        {
+          "program": "clone_git",
+          "args": [
+            "datum"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "mist/device-simulator.env"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-lora-device-simulator"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "DEVICE_EUI": "ref:secret/device_eui",
+      "APP_EUI": "ref:secret/app_eui",
+      "APP_KEY": "ref:secret/app_key",
+      "FORWARDER_TARGET_HOST": "127.0.0.1",
+      "FORWARDER_TARGET_PORT": "1700",
+      "TX_INTERVAL_SECONDS": "10"
+    },
+    "secret_refs": [
+      "lorawan_device_eui",
+      "lorawan_app_eui",
+      "lorawan_app_key"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
