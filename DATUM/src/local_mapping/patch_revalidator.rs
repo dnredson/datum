@@ -375,6 +375,7 @@ mod tests {
             service_name: None,
             container_name: "local-chirpstack".to_string(),
             artifact: None,
+            ports: Vec::new(),
         }];
 
         let report = revalidate(
@@ -399,6 +400,7 @@ mod tests {
             service_name: None,
             container_name: "existing-container".to_string(),
             artifact: None,
+            ports: Vec::new(),
         }];
 
         let report = revalidate(
