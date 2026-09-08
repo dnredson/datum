@@ -101,6 +101,11 @@ fn build_graph_overview(observed_dgraph: &Value) -> Value {
                     let observed = node.get("observed");
                     json!({
                         "node_id": node.get("node_id").cloned().unwrap_or(Value::Null),
+                        "stage": node
+                            .get("node_id")
+                            .and_then(Value::as_str)
+                            .map(node_stage)
+                            .unwrap_or("unclassified"),
                         "status": observed
                             .and_then(|value| value.get("status"))
                             .and_then(Value::as_str)
@@ -191,6 +196,23 @@ fn build_graph_overview(observed_dgraph: &Value) -> Value {
     })
 }
 
+fn node_stage(node_id: &str) -> &'static str {
+    let normalized = node_id.trim().to_ascii_lowercase();
+    if normalized.starts_with("device-") || normalized.starts_with("sensor-") {
+        "device"
+    } else if normalized.starts_with("edge-") {
+        "edge"
+    } else if normalized.starts_with("fog-") {
+        "fog"
+    } else if normalized.starts_with("cloud-") {
+        "cloud"
+    } else if normalized.starts_with("farm-") {
+        "farm"
+    } else {
+        "unclassified"
+    }
+}
+
 fn peer_edge_status(reachable: Option<bool>, freshness: &str) -> &'static str {
     match (reachable, freshness) {
         (Some(true), "fresh") => "up",
@@ -258,6 +280,7 @@ mod tests {
         assert_eq!(overview["summary"]["edge_count"], 1);
         assert_eq!(overview["summary"]["up_edge_count"], 1);
         assert_eq!(overview["nodes"][0]["desired_service_count"], 1);
+        assert_eq!(overview["nodes"][0]["stage"], "fog");
         assert_eq!(overview["edges"][0]["edge_status"], "up");
         assert_eq!(overview["edges"][0]["from"], "fog-01");
         assert_eq!(overview["edges"][0]["to"], "cloud-01");
