@@ -715,3 +715,89 @@ mod failure_state_tests {
         assert_eq!(healthy.transitions.last().unwrap().to, "healthy");
     }
 }
+
+
+#[cfg(test)]
+mod ingest_state_tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn payload(project: &str, sequence: u64, cycle_id: &str, observed_at_utc: &str) -> Value {
+        serde_json::json!({
+            "schema_version": "0.1.0",
+            "project_id": project,
+            "node_id": "fog-01",
+            "sentinel_instance_id": "fog-01-sentinel",
+            "sequence": sequence,
+            "cycle_id": cycle_id,
+            "observed_at_utc": observed_at_utc,
+            "host": {
+                "cpu": {
+                    "usage_percent": 10.0
+                }
+            },
+            "safe_to_auto_execute": false,
+            "side_effects_performed": false
+        })
+    }
+
+    #[test]
+    fn ingest_advances_fresh_recovery_without_dashboard_reads() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 2, 0, 0).unwrap();
+        let project = "failure-state-ingest-recovery-test";
+
+        for (sequence, now) in [
+            (1, base),
+            (2, base + Duration::seconds(5)),
+            (3, base + Duration::seconds(10)),
+        ] {
+            update_failure_state(
+                project,
+                "fog-01",
+                "stale",
+                Some(sequence),
+                Some("2026-09-08T02:00:00Z"),
+                now,
+            )
+            .unwrap();
+        }
+
+        let unavailable = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            None,
+            None,
+            base + Duration::seconds(15),
+        )
+        .unwrap();
+        assert_eq!(unavailable.state, "unavailable");
+
+        for (sequence, cycle_id, observed_at_utc, now) in [
+            (1, "cycle-1", "2026-09-08T02:00:20Z", base + Duration::seconds(20)),
+            (2, "cycle-2", "2026-09-08T02:00:25Z", base + Duration::seconds(25)),
+            (3, "cycle-3", "2026-09-08T02:00:30Z", base + Duration::seconds(30)),
+        ] {
+            ingest_telemetry(
+                project,
+                "fog-01",
+                payload(project, sequence, cycle_id, observed_at_utc),
+                now,
+            )
+            .unwrap();
+        }
+
+        let state = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(3),
+            Some("2026-09-08T02:00:30Z"),
+            base + Duration::seconds(30),
+        )
+        .unwrap();
+        assert_eq!(state.state, "healthy");
+        assert_eq!(state.consecutive_successes, 3);
+    }
+}
