@@ -10,6 +10,13 @@ pub const VALIDATED_AI_PROJECTION_KIND: &str = "datum_validated_ai_what_if_proje
 /// Wraps the historical what-if context in the provider-neutral request contract
 /// consumed by an external AI/GNN system. The dserver does not call a provider.
 pub fn build_external_ai_inference_request(context: &Value) -> Result<Value, String> {
+    build_external_ai_inference_request_with_id(context, None)
+}
+
+pub fn build_external_ai_inference_request_with_id(
+    context: &Value,
+    requested_request_id: Option<&str>,
+) -> Result<Value, String> {
     let project_id = required_text(context, "project_id")?;
     let dgraph_id = required_text(context, "dgraph_id")?;
     let dgraph_revision = required_u64(context, "dgraph_revision")?;
@@ -22,7 +29,11 @@ pub fn build_external_ai_inference_request(context: &Value) -> Result<Value, Str
         ));
     }
 
-    let request_id = format!("what-if-{}", uuid::Uuid::new_v4());
+    let request_id = requested_request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("what-if-{}", uuid::Uuid::new_v4()));
     Ok(json!({
         "schema_version": EXTERNAL_AI_INFERENCE_REQUEST_SCHEMA_VERSION,
         "contract_kind": EXTERNAL_AI_INFERENCE_REQUEST_KIND,
