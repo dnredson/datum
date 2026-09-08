@@ -261,7 +261,7 @@ pub async fn post_operational_reconciliation_authorization(
             AUTHORIZATION_OPERATION_RECONCILE
         )));
     }
-    authorize_operational_reconciliation(node_id, headers, request).await
+    authorize_operational_reconciliation(Path(node_id), headers, request).await
 }
 
 pub async fn post_operational_reconciliation_rollback_authorization(
