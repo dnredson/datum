@@ -525,7 +525,12 @@ fn run_operational_reconciliation_from_bootstrap(
             )
         } else {
             match mapping {
-                Some(mapping) => match execute_trusted_container_intent(mapping, observed_before, &secret_environment) {
+                Some(mapping) => match execute_trusted_container_intent(
+                    mapping,
+                    observed_before,
+                    assignment.map(|artifact| &artifact.bindings),
+                    &secret_environment,
+                ) {
                     Ok(result) => result,
                     Err(error) => (
                         "failed".to_string(),
@@ -814,6 +819,7 @@ fn resolve_secret_bindings(
 fn execute_trusted_container_intent(
     mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
+    bindings: Option<&BTreeMap<String, String>>,
     secret_environment: &[(String, String)],
 ) -> Result<(String, String, bool)> {
     let container_name = mapping.container_name.trim();
@@ -874,6 +880,12 @@ fn execute_trusted_container_intent(
                     }
                 ));
             }
+            if let Some(bindings) = bindings {
+                for (environment_variable, _) in bindings {
+                    args.push("--env".to_string());
+                    args.push(environment_variable.clone());
+                }
+            }
             for (environment_variable, _) in secret_environment {
                 args.push("--env".to_string());
                 args.push(environment_variable.clone());
@@ -881,6 +893,11 @@ fn execute_trusted_container_intent(
             args.push(image.to_string());
             let mut command = Command::new("docker");
             command.args(&args);
+            if let Some(bindings) = bindings {
+                for (environment_variable, value) in bindings {
+                    command.env(environment_variable, value);
+                }
+            }
             for (environment_variable, value) in secret_environment {
                 command.env(environment_variable, value);
             }
