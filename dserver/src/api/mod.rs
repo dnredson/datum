@@ -1,5 +1,6 @@
 pub mod action_results;
 pub mod analysis;
+pub mod alternative_paths;
 pub mod capabilities;
 pub mod controlled_wasm_deployment;
 pub mod dashboard;
@@ -38,7 +39,7 @@ pub mod passive_observation_trigger;
 pub mod planner;
 pub mod resource_registry;
 pub mod sentinel_registration;
+pub mod sentinel_telemetry;
 pub mod topology;
 pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;
-pub mod sentinel_telemetry;
