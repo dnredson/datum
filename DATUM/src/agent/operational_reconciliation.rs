@@ -287,7 +287,7 @@ fn run_operational_reconciliation_from_bootstrap(
         authorization.allow_host_mutation
             && authorization.project_id == context.project_id
             && authorization.dgraph_id == context.dgraph_id
-            && authorization.dgraph_revision == context.dgraph_revision
+            && authorization.dgraph_revision == Some(context.dgraph_revision)
             && authorization.node_id == context.node_id
     });
     let local_container_execution_allowed = cfg.dispatch.as_ref().is_some_and(|dispatch| {
@@ -418,7 +418,7 @@ fn run_operational_reconciliation_from_bootstrap(
         resource_id: bootstrap.control_plane.resource_id,
         node_id,
         dgraph_id: context.dgraph_id,
-        dgraph_revision: context.dgraph_revision,
+        dgraph_revision: Some(context.dgraph_revision),
         execute_requested,
         control_plane_authorized,
         local_container_execution_allowed,
