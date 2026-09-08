@@ -341,10 +341,25 @@ pub fn ingest_telemetry(
         .back()
         .ok_or_else(|| "telemetry history unexpectedly empty after insert".to_string())?
         .view(received_at_utc);
+    let history_count = history.len();
+    drop(guard);
+
+    // Fresh evidence advances recovery at ingest time. This prevents a
+    // consumer that polls only after several cycles from losing the
+    // intermediate observations needed for hysteresis.
+    let _ = update_failure_state(
+        &latest.project_id,
+        &latest.node_id,
+        &latest.telemetry_freshness,
+        Some(latest.sequence),
+        Some(&latest.observed_at_utc),
+        received_at_utc,
+    );
+
     Ok((
         latest,
         TelemetryIngestDisposition::Inserted,
-        history.len(),
+        history_count,
     ))
 }
 
