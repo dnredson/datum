@@ -1,0 +1,124 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "fog-mosquitto",
+  "service_id": "mosquitto",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-fog-mosquitto",
+      "image": "eclipse-mosquitto:2",
+      "ports": [
+        {
+          "container_port": 1883,
+          "host_port": 1883,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-fog-mosquitto"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 1883
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 1883
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "mqtt_broker",
+    "official_compose_service": "mosquitto",
+    "configuration": {
+      "template": "chirpstack/mosquitto.conf",
+      "topics": [
+        "eu868/gateway/+/event/+",
+        "application/+/device/+/event/+"
+      ]
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "fog-foundation"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Fog MQTT broker",
+    "version": "2",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "fog-01"
+    ],
+    "target_stages": [
+      "fog"
+    ],
+    "dependencies": [],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "2",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "chirpstack/mosquitto.conf"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-fog-mosquitto"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MQTT_LISTEN_ADDR": "0.0.0.0:1883"
+    },
+    "secret_refs": [
+      "fog_mqtt_password"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

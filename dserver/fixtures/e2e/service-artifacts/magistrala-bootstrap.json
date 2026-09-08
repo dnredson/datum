@@ -1,0 +1,138 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-bootstrap",
+  "service_id": "magistrala-bootstrap",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-bootstrap",
+      "image": "ghcr.io/absmach/magistrala/bootstrap:v1.0.0",
+      "ports": [
+        {
+          "container_port": 8200,
+          "host_port": 8200,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-bootstrap"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "http",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8200,
+        "path": "/health",
+        "expected_status": 200
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8200
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "cloud_bootstrap",
+    "official_compose_service": "bootstrap",
+    "configuration": {
+      "template": "magistrala/bootstrap.env",
+      "environment_refs": [
+        "MG_BOOTSTRAP_DB_USER",
+        "MG_BOOTSTRAP_DB_PASS",
+        "MG_BOOTSTRAP_DB_NAME",
+        "MG_ATOM_TOKEN_BOOTSTRAP",
+        "MG_BOOTSTRAP_DB_ENCRYPTION_KEY"
+      ],
+      "persistent_volume": null
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-core"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Magistrala Bootstrap service",
+    "version": "v1.0.0",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [
+      "magistrala-bootstrap-db",
+      "magistrala-atom"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "v1.0.0",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "magistrala/bootstrap.env"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-bootstrap"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MG_BOOTSTRAP_DB_HOST": "magistrala-bootstrap-db",
+      "ATOM_URL": "http://magistrala-atom:8080",
+      "MG_BOOTSTRAP_HTTP_HOST": "0.0.0.0",
+      "MG_BOOTSTRAP_HTTP_PORT": "8200"
+    },
+    "secret_refs": [
+      "magistrala_bootstrap_db_password",
+      "magistrala_atom_bootstrap_token",
+      "magistrala_bootstrap_db_encryption_key"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

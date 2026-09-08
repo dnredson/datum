@@ -1,0 +1,143 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-atom",
+  "service_id": "magistrala-atom",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-atom",
+      "image": "ghcr.io/absmach/atom:latest",
+      "ports": [
+        {
+          "container_port": 8080,
+          "host_port": 8080,
+          "protocol": "tcp"
+        },
+        {
+          "container_port": 8081,
+          "host_port": null,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-atom"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "http",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080,
+        "path": "/health",
+        "expected_status": 200
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "cloud_platform_api",
+    "official_compose_service": "atom",
+    "configuration": {
+      "template": "magistrala/atom.env",
+      "environment_refs": [
+        "ATOM_DB_USER",
+        "ATOM_DB_PASSWORD",
+        "ATOM_DB_NAME",
+        "ATOM_JWT_SECRET",
+        "ATOM_ADMIN_SECRET",
+        "ATOM_SERVICE_SECRET"
+      ],
+      "persistent_volume": null
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-core"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Magistrala Atom identity and API",
+    "version": "latest",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [
+      "magistrala-atom-db"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "latest",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "magistrala/atom.env"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-atom"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "DATABASE_HOST": "magistrala-atom-db",
+      "ATOM_PUBLIC_BASE_URL": "http://192.168.10.108:8080",
+      "LISTEN_ADDR": "0.0.0.0:8080",
+      "GRPC_ADDR": "0.0.0.0:8081"
+    },
+    "secret_refs": [
+      "magistrala_atom_jwt_secret",
+      "magistrala_atom_admin_secret",
+      "magistrala_atom_service_secret"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

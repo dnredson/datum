@@ -1,0 +1,126 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "chirpstack-gateway-bridge",
+  "service_id": "chirpstack-gateway-bridge",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-chirpstack-gateway-bridge",
+      "image": "chirpstack/chirpstack-gateway-bridge:4",
+      "ports": [
+        {
+          "container_port": 1700,
+          "host_port": 1700,
+          "protocol": "udp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-chirpstack-gateway-bridge"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 1700
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 1700
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "lorawan_gateway_bridge",
+    "official_compose_service": "chirpstack-gateway-bridge",
+    "configuration": {
+      "template": "chirpstack/gateway-bridge.toml",
+      "event_topic_template": "eu868/gateway/{{gateway_id}}/event/{{event_type}}",
+      "command_topic_template": "eu868/gateway/{{gateway_id}}/command/#"
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "fog-lorawan"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "ChirpStack Gateway Bridge",
+    "version": "4",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "fog-01"
+    ],
+    "target_stages": [
+      "fog"
+    ],
+    "dependencies": [
+      "fog-mosquitto"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "4",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "chirpstack/gateway-bridge.toml"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-chirpstack-gateway-bridge"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MQTT_BROKER_HOST": "fog-mosquitto",
+      "UDP_LISTEN_ADDR": "0.0.0.0:1700",
+      "REGION": "EU868"
+    },
+    "secret_refs": [
+      "fog_mqtt_password"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

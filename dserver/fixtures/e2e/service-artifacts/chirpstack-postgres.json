@@ -1,0 +1,99 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "chirpstack-postgres",
+  "service_id": "chirpstack-postgres",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-chirpstack-postgres",
+      "image": "postgres:14-alpine",
+      "ports": []
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-chirpstack-postgres"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 5432
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": null
+  },
+  "metadata": {
+    "role": "chirpstack_database",
+    "official_compose_service": "postgres",
+    "configuration": {
+      "environment_refs": [
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB"
+      ],
+      "persistent_volume": "chirpstack-postgresqldata"
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "fog-foundation"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "ChirpStack PostgreSQL",
+    "version": "14-alpine",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "fog-01"
+    ],
+    "target_stages": [
+      "fog"
+    ],
+    "dependencies": [],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "14-alpine",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-chirpstack-postgres"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {},
+    "secret_refs": [],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

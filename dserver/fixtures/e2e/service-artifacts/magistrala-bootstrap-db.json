@@ -1,0 +1,99 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-bootstrap-db",
+  "service_id": "magistrala-bootstrap-db",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-bootstrap-db",
+      "image": "postgres:16.2-alpine",
+      "ports": []
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-bootstrap-db"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 5432
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": null
+  },
+  "metadata": {
+    "role": "bootstrap_database",
+    "official_compose_service": "bootstrap-db",
+    "configuration": {
+      "environment_refs": [
+        "MG_BOOTSTRAP_DB_USER",
+        "MG_BOOTSTRAP_DB_PASS",
+        "MG_BOOTSTRAP_DB_NAME"
+      ],
+      "persistent_volume": "magistrala-bootstrap-db-volume"
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-foundation"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "Magistrala Bootstrap PostgreSQL",
+    "version": "16.2-alpine",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "16.2-alpine",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-bootstrap-db"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {},
+    "secret_refs": [],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
