@@ -1,0 +1,112 @@
+[agent]
+node_id = "cloud-01"
+cycle_s = 5
+schema_version = "0.0.1"
+
+[outputs.file_json]
+enabled = true
+path = "snapshot.json"
+
+[outputs.http]
+enabled = false
+url = "http://192.168.10.101:8080/api/v1/snapshots"
+project_id = "monitor-f49c8"
+timeout_s = 5
+
+[dispatch]
+enabled = true
+allow_container_execution = true
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-atom-db"
+container_name = "datum-magistrala-atom-db"
+artifact = "postgres:16-alpine"
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-bootstrap-db"
+container_name = "datum-magistrala-bootstrap-db"
+artifact = "postgres:16.2-alpine"
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-atom"
+container_name = "datum-magistrala-atom"
+artifact = "ghcr.io/absmach/atom:latest"
+ports = [{ host_port = 8080, container_port = 8080, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-bootstrap"
+container_name = "datum-magistrala-bootstrap"
+artifact = "ghcr.io/absmach/magistrala/bootstrap:v1.0.0"
+ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-fluxmq-auth"
+container_name = "datum-magistrala-fluxmq-auth"
+artifact = "ghcr.io/absmach/magistrala/fluxmq:v1.0.0"
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-fluxmq-node1"
+container_name = "datum-magistrala-fluxmq-node1"
+artifact = "ghcr.io/absmach/fluxmq:latest"
+ports = [
+  { host_port = 1883, container_port = 1883, protocol = "tcp" },
+  { host_port = 8883, container_port = 8883, protocol = "tcp" }
+]
+
+[collectors.process_linux]
+enabled = true
+mode = "allowlist"
+names = ["sshd", "datum"]
+max_entries = 50
+
+[collectors.connection_ping]
+enabled = true
+targets = ["1.1.1.1", "8.8.8.8"]
+count = 4
+timeout_s = 1
+
+[[collectors.connection_ping.peer_targets]]
+node_id = "fog-01"
+target = "192.168.10.103"
+port = 22
+timeout_s = 2
+
+[collectors.docker]
+enabled = true
+mode = "allowlist"
+names = [
+  "datum-magistrala-atom-db",
+  "datum-magistrala-bootstrap-db",
+  "datum-magistrala-atom",
+  "datum-magistrala-bootstrap",
+  "datum-magistrala-fluxmq-auth",
+  "datum-magistrala-fluxmq-node1"
+]
+max_entries = 50
+
+[services]
+enabled = true
+
+[[services.items]]
+name = "magistrala-atom-db"
+implemented_by = [{ container_name = "datum-magistrala-atom-db" }]
+
+[[services.items]]
+name = "magistrala-bootstrap-db"
+implemented_by = [{ container_name = "datum-magistrala-bootstrap-db" }]
+
+[[services.items]]
+name = "magistrala-atom"
+implemented_by = [{ container_name = "datum-magistrala-atom" }]
+
+[[services.items]]
+name = "magistrala-bootstrap"
+implemented_by = [{ container_name = "datum-magistrala-bootstrap" }]
+
+[[services.items]]
+name = "magistrala-fluxmq-auth"
+implemented_by = [{ container_name = "datum-magistrala-fluxmq-auth" }]
+
+[[services.items]]
+name = "magistrala-fluxmq-node1"
+implemented_by = [{ container_name = "datum-magistrala-fluxmq-node1" }]
