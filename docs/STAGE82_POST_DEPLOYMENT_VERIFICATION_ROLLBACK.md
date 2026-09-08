@@ -18,11 +18,42 @@ The SmartSentinel reconciliation report must preserve the deployment identity: a
 
 The post-deployment snapshot must not claim success when the container is stopped or the MQTT port is unreachable.
 
+The SmartSentinel report also exposes observed_before_running, observed_after_running,
+execution_status, host_mutation_performed, and side_effects_performed. A successful
+deployment is therefore distinguishable from a read-only suggestion, a control-plane block,
+a local mapping block, and a failed Docker operation.
+
 ## Rollback policy
 
 A failed health check produces evidence for rollback but does not remove the container. A rollback request must be separately authorized for the same project, node, D-Graph identity, revision, and active Resource Registry binding. The rollback operation must be explicit, bounded, auditable, and report host_mutation_performed accurately.
 
-Until the rollback endpoint and lifecycle command are implemented, rollback is manual and operator-controlled. No automatic docker rm, image replacement, or topology change is permitted.
+The rollback authorization endpoint is:
+
+    POST /api/v1/nodes/:node_id/operational-reconciliation/rollback-authorize
+
+Its JSON request is bound to the active project, D-Graph id/revision, node, and Resource
+Registry binding. It must include operation: "rollback" and allow_host_mutation: true.
+persistence_scope: "process" is the short-lived default; durable authorization additionally
+requires valid_for_seconds.
+
+After that authorization, rollback remains an explicit local command:
+
+    cargo run --quiet --locked \\
+      --manifest-path DATUM/Cargo.toml \\
+      --bin smartsentinel-operational-reconcile \\
+      -- \\
+      --config DATUM/config.linux \\
+      --dserver-url "$DSERVER_URL" \\
+      --project-id "$PROJECT_ID" \\
+      --node-id fog-01 \\
+      --execute \\
+      --rollback \\
+      --out /tmp/c82-fog-01-rollback.json
+
+The command removes only the trusted mapped container, reports rolled_back, and publishes
+a post-rollback snapshot. Missing authorization, stale revision, wrong operation, absent
+binding, missing local mapping, or disabled local policy fail closed. No automatic
+rollback, image replacement, or topology change is permitted.
 
 ## Acceptance criteria
 
