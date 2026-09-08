@@ -1,6 +1,7 @@
 pub mod action_results;
 pub mod analysis;
 pub mod alternative_paths;
+pub mod external_ai_inference;
 pub mod capabilities;
 pub mod controlled_wasm_deployment;
 pub mod dashboard;
