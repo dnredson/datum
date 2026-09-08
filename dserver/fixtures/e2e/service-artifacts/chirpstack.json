@@ -1,0 +1,132 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "chirpstack",
+  "service_id": "chirpstack",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-chirpstack",
+      "image": "chirpstack/chirpstack:4",
+      "ports": [
+        {
+          "container_port": 8080,
+          "host_port": 8080,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-chirpstack"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "http",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080,
+        "path": "/api/health",
+        "expected_status": 200
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8080
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "lorawan_network_server",
+    "official_compose_service": "chirpstack",
+    "configuration": {
+      "template": "chirpstack/chirpstack.toml",
+      "region": "EU868",
+      "mqtt_topic_namespace": "eu868"
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "fog-lorawan"
+    }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "ChirpStack network server",
+    "version": "4",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "fog-01"
+    ],
+    "target_stages": [
+      "fog"
+    ],
+    "dependencies": [
+      "fog-mosquitto",
+      "chirpstack-postgres",
+      "chirpstack-redis"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "4",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [
+        {
+          "program": "render_template",
+          "args": [
+            "chirpstack/chirpstack.toml"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-chirpstack"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MQTT_BROKER_HOST": "fog-mosquitto",
+      "REDIS_HOST": "chirpstack-redis",
+      "POSTGRESQL_HOST": "chirpstack-postgres",
+      "CHIRPSTACK_LISTEN_ADDR": "0.0.0.0:8080"
+    },
+    "secret_refs": [
+      "chirpstack_postgres_password",
+      "fog_mqtt_password"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
