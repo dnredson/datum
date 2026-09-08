@@ -683,13 +683,6 @@ fn invalid(message: impl Into<String>) -> Result<(), ServiceArtifactRegistryErro
     Err(ServiceArtifactRegistryError::Invalid(message.into()))
 }
 
-fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRegistryError> {
-    if artifact.schema_version != SERVICE_ARTIFACT_SCHEMA_VERSION {
-        return invalid("unsupported service artifact schema_version");
-    }
-    Ok(())
-}
-
 fn default_schema_version() -> String {
     SERVICE_ARTIFACT_SCHEMA_VERSION.to_string()
 }
