@@ -12,6 +12,186 @@ pub const DEFAULT_TELEMETRY_HISTORY_CAPACITY: usize = 256;
 pub const DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS: i64 = 15;
 pub const DEFAULT_TELEMETRY_FUTURE_SKEW_SECONDS: i64 = 60;
 pub const MAX_TELEMETRY_PAYLOAD_BYTES: usize = 256 * 1024;
+pub const FAILURE_SUSPECT_AFTER_CONSECUTIVE_FAILURES: u32 = 1;
+pub const FAILURE_UNAVAILABLE_AFTER_CONSECUTIVE_FAILURES: u32 = 3;
+pub const FAILURE_RECOVERY_AFTER_CONSECUTIVE_SUCCESSES: u32 = 3;
+pub const FAILURE_MISSING_EVALUATION_INTERVAL_SECONDS: i64 = 5;
+pub const FAILURE_TRANSITION_HISTORY_CAPACITY: usize = 32;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FailureStateTransitionView {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+    pub evaluated_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FailureStateView {
+    pub state: String,
+    pub reason: String,
+    pub consecutive_failures: u32,
+    pub consecutive_successes: u32,
+    pub state_changed_at_utc: String,
+    pub last_evaluated_at_utc: String,
+    pub transitions: Vec<FailureStateTransitionView>,
+}
+
+#[derive(Debug, Clone)]
+struct FailureStateRecord {
+    state: String,
+    reason: String,
+    consecutive_failures: u32,
+    consecutive_successes: u32,
+    state_changed_at_utc: DateTime<Utc>,
+    last_evaluated_at_utc: DateTime<Utc>,
+    last_evidence_key: Option<String>,
+    transitions: VecDeque<FailureStateTransitionView>,
+}
+
+type FailureStateStore = BTreeMap<(String, String), FailureStateRecord>;
+
+static FAILURE_STATE_STORE: OnceLock<RwLock<FailureStateStore>> = OnceLock::new();
+
+fn failure_state_store() -> &'static RwLock<FailureStateStore> {
+    FAILURE_STATE_STORE.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Advances the node state only when a new observation or a new missing-evidence
+/// evaluation interval is seen. Repeated dashboard reads cannot manufacture
+/// additional failures or recoveries.
+pub fn update_failure_state(
+    project_id: &str,
+    node_id: &str,
+    telemetry_freshness: &str,
+    sequence: Option<u64>,
+    observed_at_utc: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<FailureStateView, String> {
+    let project_id = project_id.trim();
+    let node_id = node_id.trim();
+    if project_id.is_empty() || node_id.is_empty() {
+        return Err("failure state requires non-empty project_id and node_id".to_string());
+    }
+
+    let is_fresh = telemetry_freshness == "fresh";
+    let evidence_key = if let (Some(sequence), Some(observed_at_utc)) = (sequence, observed_at_utc) {
+        format!("{telemetry_freshness}:{sequence}:{observed_at_utc}")
+    } else {
+        let interval = now.timestamp() / FAILURE_MISSING_EVALUATION_INTERVAL_SECONDS;
+        format!("{telemetry_freshness}:missing:{interval}")
+    };
+
+    let mut guard = failure_state_store()
+        .write()
+        .map_err(|error| format!("failure state store lock poisoned: {error}"))?;
+    let record = guard
+        .entry((project_id.to_string(), node_id.to_string()))
+        .or_insert_with(|| FailureStateRecord {
+            state: "healthy".to_string(),
+            reason: "initial_state".to_string(),
+            consecutive_failures: 0,
+            consecutive_successes: 0,
+            state_changed_at_utc: now,
+            last_evaluated_at_utc: now,
+            last_evidence_key: None,
+            transitions: VecDeque::new(),
+        });
+
+    if record.last_evidence_key.as_deref() == Some(evidence_key.as_str()) {
+        return Ok(failure_state_view(record));
+    }
+
+    record.last_evidence_key = Some(evidence_key);
+    record.last_evaluated_at_utc = now;
+
+    let previous_state = record.state.clone();
+    if is_fresh {
+        record.consecutive_failures = 0;
+        record.consecutive_successes = record.consecutive_successes.saturating_add(1);
+
+        match record.state.as_str() {
+            "suspect" => {
+                transition_failure_state(record, "healthy", "fresh_telemetry", now);
+            }
+            "unavailable" => {
+                transition_failure_state(record, "recovering", "first_fresh_observation", now);
+            }
+            "recovering"
+                if record.consecutive_successes >= FAILURE_RECOVERY_AFTER_CONSECUTIVE_SUCCESSES =>
+            {
+                transition_failure_state(record, "healthy", "recovery_stabilized", now);
+            }
+            _ => {}
+        }
+    } else {
+        record.consecutive_successes = 0;
+        record.consecutive_failures = record.consecutive_failures.saturating_add(1);
+
+        match record.state.as_str() {
+            "healthy" if record.consecutive_failures >= FAILURE_SUSPECT_AFTER_CONSECUTIVE_FAILURES => {
+                transition_failure_state(record, "suspect", "stale_or_missing_telemetry", now);
+            }
+            "suspect"
+                if record.consecutive_failures >= FAILURE_UNAVAILABLE_AFTER_CONSECUTIVE_FAILURES =>
+            {
+                transition_failure_state(record, "unavailable", "consecutive_telemetry_failures", now);
+            }
+            "recovering" => {
+                transition_failure_state(record, "unavailable", "recovery_lost", now);
+            }
+            _ => {}
+        }
+    }
+
+    if previous_state == record.state {
+        record.reason = if is_fresh {
+            "fresh_telemetry".to_string()
+        } else {
+            "stale_or_missing_telemetry".to_string()
+        };
+    }
+
+    Ok(failure_state_view(record))
+}
+
+fn transition_failure_state(
+    record: &mut FailureStateRecord,
+    to: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) {
+    if record.state == to {
+        return;
+    }
+
+    let transition = FailureStateTransitionView {
+        from: record.state.clone(),
+        to: to.to_string(),
+        reason: reason.to_string(),
+        evaluated_at_utc: now.to_rfc3339(),
+    };
+    record.transitions.push_back(transition);
+    while record.transitions.len() > FAILURE_TRANSITION_HISTORY_CAPACITY {
+        record.transitions.pop_front();
+    }
+    record.state = to.to_string();
+    record.reason = reason.to_string();
+    record.state_changed_at_utc = now;
+}
+
+fn failure_state_view(record: &FailureStateRecord) -> FailureStateView {
+    FailureStateView {
+        state: record.state.clone(),
+        reason: record.reason.clone(),
+        consecutive_failures: record.consecutive_failures,
+        consecutive_successes: record.consecutive_successes,
+        state_changed_at_utc: record.state_changed_at_utc.to_rfc3339(),
+        last_evaluated_at_utc: record.last_evaluated_at_utc.to_rfc3339(),
+        transitions: record.transitions.iter().cloned().collect(),
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TelemetryObservationView {
