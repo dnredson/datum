@@ -12,6 +12,192 @@ pub const DEFAULT_TELEMETRY_HISTORY_CAPACITY: usize = 256;
 pub const DEFAULT_TELEMETRY_FRESHNESS_MAX_AGE_SECONDS: i64 = 15;
 pub const DEFAULT_TELEMETRY_FUTURE_SKEW_SECONDS: i64 = 60;
 pub const MAX_TELEMETRY_PAYLOAD_BYTES: usize = 256 * 1024;
+pub const FAILURE_SUSPECT_AFTER_CONSECUTIVE_FAILURES: u32 = 1;
+pub const FAILURE_UNAVAILABLE_AFTER_CONSECUTIVE_FAILURES: u32 = 3;
+pub const FAILURE_RECOVERY_AFTER_CONSECUTIVE_SUCCESSES: u32 = 3;
+pub const FAILURE_MISSING_EVALUATION_INTERVAL_SECONDS: i64 = 5;
+pub const FAILURE_TRANSITION_HISTORY_CAPACITY: usize = 32;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FailureStateTransitionView {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+    pub evaluated_at_utc: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FailureStateView {
+    pub state: String,
+    pub reason: String,
+    pub consecutive_failures: u32,
+    pub consecutive_successes: u32,
+    pub state_changed_at_utc: String,
+    pub last_evaluated_at_utc: String,
+    pub transitions: Vec<FailureStateTransitionView>,
+}
+
+#[derive(Debug, Clone)]
+struct FailureStateRecord {
+    state: String,
+    reason: String,
+    consecutive_failures: u32,
+    consecutive_successes: u32,
+    state_changed_at_utc: DateTime<Utc>,
+    last_evaluated_at_utc: DateTime<Utc>,
+    last_evidence_key: Option<String>,
+    transitions: VecDeque<FailureStateTransitionView>,
+}
+
+type FailureStateStore = BTreeMap<(String, String), FailureStateRecord>;
+
+static FAILURE_STATE_STORE: OnceLock<RwLock<FailureStateStore>> = OnceLock::new();
+
+fn failure_state_store() -> &'static RwLock<FailureStateStore> {
+    FAILURE_STATE_STORE.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Advances the node state only when a new fresh observation or a new
+/// non-fresh evaluation interval is seen. Repeated dashboard reads within one
+/// interval cannot manufacture additional failures or recoveries.
+pub fn update_failure_state(
+    project_id: &str,
+    node_id: &str,
+    telemetry_freshness: &str,
+    sequence: Option<u64>,
+    observed_at_utc: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<FailureStateView, String> {
+    let project_id = project_id.trim();
+    let node_id = node_id.trim();
+    if project_id.is_empty() || node_id.is_empty() {
+        return Err("failure state requires non-empty project_id and node_id".to_string());
+    }
+
+    let is_fresh = telemetry_freshness == "fresh";
+    let evidence_key = if is_fresh {
+        if let (Some(sequence), Some(observed_at_utc)) = (sequence, observed_at_utc) {
+            format!("fresh:{sequence}:{observed_at_utc}")
+        } else {
+            format!("fresh:missing:{}", now.timestamp())
+        }
+    } else {
+        let interval = now.timestamp() / FAILURE_MISSING_EVALUATION_INTERVAL_SECONDS;
+        format!("failure:{telemetry_freshness}:{interval}")
+    };
+
+    let mut guard = failure_state_store()
+        .write()
+        .map_err(|error| format!("failure state store lock poisoned: {error}"))?;
+    let record = guard
+        .entry((project_id.to_string(), node_id.to_string()))
+        .or_insert_with(|| FailureStateRecord {
+            state: "healthy".to_string(),
+            reason: "initial_state".to_string(),
+            consecutive_failures: 0,
+            consecutive_successes: 0,
+            state_changed_at_utc: now,
+            last_evaluated_at_utc: now,
+            last_evidence_key: None,
+            transitions: VecDeque::new(),
+        });
+
+    if record.last_evidence_key.as_deref() == Some(evidence_key.as_str()) {
+        return Ok(failure_state_view(record));
+    }
+
+    record.last_evidence_key = Some(evidence_key);
+    record.last_evaluated_at_utc = now;
+
+    let previous_state = record.state.clone();
+    if is_fresh {
+        record.consecutive_failures = 0;
+        record.consecutive_successes = record.consecutive_successes.saturating_add(1);
+
+        let current_state = record.state.clone();
+        match current_state.as_str() {
+            "suspect" => {
+                transition_failure_state(record, "healthy", "fresh_telemetry", now);
+            }
+            "unavailable" => {
+                transition_failure_state(record, "recovering", "first_fresh_observation", now);
+            }
+            "recovering"
+                if record.consecutive_successes >= FAILURE_RECOVERY_AFTER_CONSECUTIVE_SUCCESSES =>
+            {
+                transition_failure_state(record, "healthy", "recovery_stabilized", now);
+            }
+            _ => {}
+        }
+    } else {
+        record.consecutive_successes = 0;
+        record.consecutive_failures = record.consecutive_failures.saturating_add(1);
+
+        let current_state = record.state.clone();
+        match current_state.as_str() {
+            "healthy" if record.consecutive_failures >= FAILURE_SUSPECT_AFTER_CONSECUTIVE_FAILURES => {
+                transition_failure_state(record, "suspect", "stale_or_missing_telemetry", now);
+            }
+            "suspect"
+                if record.consecutive_failures >= FAILURE_UNAVAILABLE_AFTER_CONSECUTIVE_FAILURES =>
+            {
+                transition_failure_state(record, "unavailable", "consecutive_telemetry_failures", now);
+            }
+            "recovering" => {
+                transition_failure_state(record, "unavailable", "recovery_lost", now);
+            }
+            _ => {}
+        }
+    }
+
+    if previous_state == record.state {
+        record.reason = if is_fresh {
+            "fresh_telemetry".to_string()
+        } else {
+            "stale_or_missing_telemetry".to_string()
+        };
+    }
+
+    Ok(failure_state_view(record))
+}
+
+fn transition_failure_state(
+    record: &mut FailureStateRecord,
+    to: &str,
+    reason: &str,
+    now: DateTime<Utc>,
+) {
+    if record.state == to {
+        return;
+    }
+
+    let transition = FailureStateTransitionView {
+        from: record.state.clone(),
+        to: to.to_string(),
+        reason: reason.to_string(),
+        evaluated_at_utc: now.to_rfc3339(),
+    };
+    record.transitions.push_back(transition);
+    while record.transitions.len() > FAILURE_TRANSITION_HISTORY_CAPACITY {
+        record.transitions.pop_front();
+    }
+    record.state = to.to_string();
+    record.reason = reason.to_string();
+    record.state_changed_at_utc = now;
+}
+
+fn failure_state_view(record: &FailureStateRecord) -> FailureStateView {
+    FailureStateView {
+        state: record.state.clone(),
+        reason: record.reason.clone(),
+        consecutive_failures: record.consecutive_failures,
+        consecutive_successes: record.consecutive_successes,
+        state_changed_at_utc: record.state_changed_at_utc.to_rfc3339(),
+        last_evaluated_at_utc: record.last_evaluated_at_utc.to_rfc3339(),
+        transitions: record.transitions.iter().cloned().collect(),
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TelemetryObservationView {
@@ -155,10 +341,25 @@ pub fn ingest_telemetry(
         .back()
         .ok_or_else(|| "telemetry history unexpectedly empty after insert".to_string())?
         .view(received_at_utc);
+    let history_count = history.len();
+    drop(guard);
+
+    // Fresh evidence advances recovery at ingest time. This prevents a
+    // consumer that polls only after several cycles from losing the
+    // intermediate observations needed for hysteresis.
+    let _ = update_failure_state(
+        &latest.project_id,
+        &latest.node_id,
+        &latest.telemetry_freshness,
+        Some(latest.sequence),
+        Some(&latest.observed_at_utc),
+        received_at_utc,
+    );
+
     Ok((
         latest,
         TelemetryIngestDisposition::Inserted,
-        history.len(),
+        history_count,
     ))
 }
 
@@ -393,5 +594,210 @@ mod tests {
         ingest_telemetry("project-sequence", "fog-01", payload("project-sequence", 100), now).unwrap();
         let error = ingest_telemetry("project-sequence", "fog-01", payload("project-sequence", 99), now).unwrap_err();
         assert!(error.contains("sequence must increase"));
+    }
+}
+
+
+#[cfg(test)]
+mod failure_state_tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    #[test]
+    fn failure_state_requires_three_distinct_failures_before_unavailable() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 0, 0, 0).unwrap();
+        let project = "failure-state-transition-test";
+        let first = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(1),
+            Some("2026-09-08T00:00:00Z"),
+            base,
+        )
+        .unwrap();
+        assert_eq!(first.state, "suspect");
+        assert_eq!(first.consecutive_failures, 1);
+
+        let repeated = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(1),
+            Some("2026-09-08T00:00:00Z"),
+            base + Duration::seconds(1),
+        )
+        .unwrap();
+        assert_eq!(repeated.state, "suspect");
+        assert_eq!(repeated.consecutive_failures, 1);
+
+        let second = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(2),
+            Some("2026-09-08T00:00:05Z"),
+            base + Duration::seconds(5),
+        )
+        .unwrap();
+        assert_eq!(second.state, "suspect");
+
+        let third = update_failure_state(
+            project,
+            "fog-01",
+            "missing",
+            None,
+            None,
+            base + Duration::seconds(10),
+        )
+        .unwrap();
+        assert_eq!(third.state, "unavailable");
+        assert_eq!(third.consecutive_failures, 3);
+        assert_eq!(third.transitions.len(), 2);
+        assert_eq!(third.transitions[0].to, "suspect");
+        assert_eq!(third.transitions[1].to, "unavailable");
+    }
+
+    #[test]
+    fn recovery_requires_first_observation_then_three_successes() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 1, 0, 0).unwrap();
+        let project = "failure-state-recovery-test";
+        for (sequence, timestamp, now) in [
+            (1, "2026-09-08T01:00:00Z", base),
+            (2, "2026-09-08T01:00:05Z", base + Duration::seconds(5)),
+            (3, "2026-09-08T01:00:10Z", base + Duration::seconds(10)),
+        ] {
+            update_failure_state(
+                project,
+                "fog-01",
+                "stale",
+                Some(sequence),
+                Some(timestamp),
+                now,
+            )
+            .unwrap();
+        }
+
+        let recovering = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(4),
+            Some("2026-09-08T01:00:15Z"),
+            base + Duration::seconds(15),
+        )
+        .unwrap();
+        assert_eq!(recovering.state, "recovering");
+
+        let still_recovering = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(5),
+            Some("2026-09-08T01:00:20Z"),
+            base + Duration::seconds(20),
+        )
+        .unwrap();
+        assert_eq!(still_recovering.state, "recovering");
+
+        let healthy = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(6),
+            Some("2026-09-08T01:00:25Z"),
+            base + Duration::seconds(25),
+        )
+        .unwrap();
+        assert_eq!(healthy.state, "healthy");
+        assert_eq!(healthy.consecutive_successes, 3);
+        assert_eq!(healthy.transitions.last().unwrap().to, "healthy");
+    }
+}
+
+
+#[cfg(test)]
+mod ingest_state_tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    fn payload(project: &str, sequence: u64, cycle_id: &str, observed_at_utc: &str) -> Value {
+        serde_json::json!({
+            "schema_version": "0.1.0",
+            "project_id": project,
+            "node_id": "fog-01",
+            "sentinel_instance_id": "fog-01-sentinel",
+            "sequence": sequence,
+            "cycle_id": cycle_id,
+            "observed_at_utc": observed_at_utc,
+            "host": {
+                "cpu": {
+                    "usage_percent": 10.0
+                }
+            },
+            "safe_to_auto_execute": false,
+            "side_effects_performed": false
+        })
+    }
+
+    #[test]
+    fn ingest_advances_fresh_recovery_without_dashboard_reads() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 2, 0, 0).unwrap();
+        let project = "failure-state-ingest-recovery-test";
+
+        for (sequence, now) in [
+            (1, base),
+            (2, base + Duration::seconds(5)),
+            (3, base + Duration::seconds(10)),
+        ] {
+            update_failure_state(
+                project,
+                "fog-01",
+                "stale",
+                Some(sequence),
+                Some("2026-09-08T02:00:00Z"),
+                now,
+            )
+            .unwrap();
+        }
+
+        let unavailable = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            None,
+            None,
+            base + Duration::seconds(15),
+        )
+        .unwrap();
+        assert_eq!(unavailable.state, "unavailable");
+
+        for (sequence, cycle_id, observed_at_utc, now) in [
+            (1, "cycle-1", "2026-09-08T02:00:20Z", base + Duration::seconds(20)),
+            (2, "cycle-2", "2026-09-08T02:00:25Z", base + Duration::seconds(25)),
+            (3, "cycle-3", "2026-09-08T02:00:30Z", base + Duration::seconds(30)),
+        ] {
+            ingest_telemetry(
+                project,
+                "fog-01",
+                payload(project, sequence, cycle_id, observed_at_utc),
+                now,
+            )
+            .unwrap();
+        }
+
+        let state = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(3),
+            Some("2026-09-08T02:00:30Z"),
+            base + Duration::seconds(30),
+        )
+        .unwrap();
+        assert_eq!(state.state, "healthy");
+        assert_eq!(state.consecutive_successes, 3);
     }
 }
