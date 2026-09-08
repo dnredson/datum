@@ -49,6 +49,10 @@ environment_variable = "MAGISTRALA_FLUXMQ_SECRET"
 secret_ref = "magistrala_fluxmq_credentials"
 environment_variable = "MAGISTRALA_FLUXMQ_CREDENTIALS"
 
+[[dispatch.secret_bindings]]
+secret_ref = "stage88_canary_secret"
+environment_variable = "STAGE88_CANARY_SECRET"
+
 [[dispatch.container_mappings]]
 service_name = "magistrala-atom-db"
 container_name = "datum-magistrala-atom-db"
@@ -84,6 +88,12 @@ ports = [
   { host_port = 1883, container_port = 1883, protocol = "tcp" },
   { host_port = 8883, container_port = 8883, protocol = "tcp" }
 ]
+
+[[dispatch.container_mappings]]
+service_name = "stage88-secret-canary"
+container_name = "datum-stage88-secret-canary"
+artifact = "nginx:alpine"
+ports = [{ host_port = 18088, container_port = 80, protocol = "tcp" }]
 
 [collectors.process_linux]
 enabled = true
