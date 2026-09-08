@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{OnceLock, RwLock};
 
 use serde_json::{json, Value};
 
@@ -6,6 +7,45 @@ pub const EXTERNAL_AI_INFERENCE_REQUEST_SCHEMA_VERSION: &str = "0.1.0";
 pub const EXTERNAL_AI_INFERENCE_REQUEST_KIND: &str = "datum_ai_what_if_inference_request";
 pub const EXTERNAL_AI_INFERENCE_RESPONSE_KIND: &str = "datum_ai_what_if_inference_response";
 pub const VALIDATED_AI_PROJECTION_KIND: &str = "datum_validated_ai_what_if_projection";
+
+const EXTERNAL_AI_REQUEST_CAPACITY: usize = 256;
+type IssuedRequestStore = BTreeMap<String, Value>;
+
+static ISSUED_REQUESTS: OnceLock<RwLock<IssuedRequestStore>> = OnceLock::new();
+
+fn issued_requests() -> &'static RwLock<IssuedRequestStore> {
+    ISSUED_REQUESTS.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Records the exact request envelope emitted to an external consumer.
+pub fn register_external_ai_inference_request(request: &Value) -> Result<(), String> {
+    let request_id = required_text(request, "request_id")?;
+    let mut guard = issued_requests()
+        .write()
+        .map_err(|error| format!("external AI request store lock poisoned: {error}"))?;
+
+    if guard.len() >= EXTERNAL_AI_REQUEST_CAPACITY && !guard.contains_key(&request_id) {
+        if let Some(oldest) = guard.keys().next().cloned() {
+            guard.remove(&oldest);
+        }
+    }
+    guard.insert(request_id, request.clone());
+    Ok(())
+}
+
+/// Retrieves an exact request previously emitted by this dserver process.
+pub fn get_issued_external_ai_inference_request(
+    request_id: &str,
+) -> Result<Option<Value>, String> {
+    let request_id = request_id.trim();
+    if request_id.is_empty() {
+        return Ok(None);
+    }
+    let guard = issued_requests()
+        .read()
+        .map_err(|error| format!("external AI request store lock poisoned: {error}"))?;
+    Ok(guard.get(request_id).cloned())
+}
 
 /// Wraps the historical what-if context in the provider-neutral request contract
 /// consumed by an external AI/GNN system. The dserver does not call a provider.
@@ -128,6 +168,14 @@ pub fn validate_external_ai_inference_response(
         errors.push("response dgraph_revision does not match request".to_string());
     }
 
+    if response
+        .get("side_effects_performed")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        errors.push("response.side_effects_performed must be false".to_string());
+    }
+
     let node_ids = request_node_ids(request);
     if node_ids.is_empty() {
         errors.push("request input_context must contain at least one observed node".to_string());
@@ -188,12 +236,14 @@ pub fn validate_external_ai_inference_response(
         .and_then(|value| value.get("to"))
         .and_then(Value::as_str);
 
+    let allowed_edges = request_observed_edges(request);
     let mut path_ids = BTreeSet::new();
     for (index, projection) in projections.iter().enumerate() {
         validate_projection(
             projection,
             index,
             &node_ids,
+            &allowed_edges,
             max_hops,
             requested_from,
             requested_to,
@@ -234,6 +284,7 @@ fn validate_projection(
     projection: &Value,
     index: usize,
     node_ids: &BTreeSet<String>,
+    allowed_edges: &BTreeSet<(String, String)>,
     max_hops: usize,
     requested_from: Option<&str>,
     requested_to: Option<&str>,
@@ -316,6 +367,19 @@ fn validate_projection(
         }
     }
 
+    for pair in nodes.windows(2) {
+        let from_node = pair.first().and_then(Value::as_str);
+        let to_node = pair.get(1).and_then(Value::as_str);
+        if let (Some(from_node), Some(to_node)) = (from_node, to_node) {
+            if !allowed_edges.contains(&(from_node.to_string(), to_node.to_string())) {
+                errors.push(format!(
+                    "{} contains hop '{} -> {}' absent from observed topology",
+                    label, from_node, to_node
+                ));
+            }
+        }
+    }
+
     let hop_count = nodes.len().saturating_sub(1);
     if hop_count > max_hops {
         errors.push(format!(
@@ -346,6 +410,34 @@ fn validate_projection(
     {
         errors.push(format!("{}.reason must be a non-empty string", label));
     }
+}
+
+fn request_observed_edges(request: &Value) -> BTreeSet<(String, String)> {
+    let graph = request
+        .get("input_context")
+        .and_then(|context| context.get("observed_dgraph"));
+
+    let mut edges = BTreeSet::new();
+    for field in [
+        "configured_relations",
+        "observed_relations",
+        "measured_peer_edges",
+        "measured_connectivity_edges",
+    ] {
+        if let Some(values) = graph
+            .and_then(|graph| graph.get(field))
+            .and_then(Value::as_array)
+        {
+            for edge in values {
+                let from = edge.get("from").and_then(Value::as_str);
+                let to = edge.get("to").and_then(Value::as_str);
+                if let (Some(from), Some(to)) = (from, to) {
+                    edges.insert((from.to_string(), to.to_string()));
+                }
+            }
+        }
+    }
+    edges
 }
 
 fn request_node_ids(request: &Value) -> BTreeSet<String> {
@@ -404,6 +496,9 @@ mod tests {
                 "nodes": [
                     {"node_id": "fog-01"},
                     {"node_id": "cloud-01"}
+                ],
+                "measured_peer_edges": [
+                    {"from": "fog-01", "to": "cloud-01"}
                 ]
             }
         })
@@ -436,7 +531,8 @@ mod tests {
                 "changes_applied": false,
                 "execution_allowed": false,
                 "side_effects_performed": false
-            }
+            },
+            "side_effects_performed": false
         })
     }
 
@@ -476,5 +572,38 @@ mod tests {
         assert!(validate_external_ai_inference_response(&request, &invalid)
             .unwrap_err()
             .contains("execution.execution_allowed must be false"));
+    }
+
+    #[test]
+    fn response_with_top_level_side_effects_is_rejected() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        let mut invalid = response(&request);
+        invalid["side_effects_performed"] = json!(true);
+        assert!(validate_external_ai_inference_response(&request, &invalid)
+            .unwrap_err()
+            .contains("response.side_effects_performed must be false"));
+    }
+
+    #[test]
+    fn response_with_hop_absent_from_observed_topology_is_rejected() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        let mut invalid = response(&request);
+        invalid["projections"][0]["nodes"] = json!(["fog-01", "fog-01", "cloud-01"]);
+        invalid["projections"][0]["hop_count"] = json!(2);
+        assert!(validate_external_ai_inference_response(&request, &invalid)
+            .unwrap_err()
+            .contains("absent from observed topology"));
+    }
+
+    #[test]
+    fn issued_request_can_be_retrieved_by_exact_request_id() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        register_external_ai_inference_request(&request).unwrap();
+        let retrieved = get_issued_external_ai_inference_request(
+            request["request_id"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(retrieved, request);
     }
 }
