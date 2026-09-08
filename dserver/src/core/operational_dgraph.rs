@@ -391,6 +391,7 @@ mod tests {
             dgraph_revision: Some(graph.revision),
             authorized_by: "operator:test".to_string(),
             allow_host_mutation: true,
+            operation: "reconcile".to_string(),
             persistence_scope: None,
             valid_for_seconds: None,
         };
@@ -428,6 +429,7 @@ mod tests {
             dgraph_revision: Some(graph.revision),
             authorized_by: "operator:test".to_string(),
             allow_host_mutation: true,
+            operation: "reconcile".to_string(),
             persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
             valid_for_seconds: Some(60),
         };
