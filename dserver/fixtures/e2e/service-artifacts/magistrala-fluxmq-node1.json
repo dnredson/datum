@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-fluxmq-node1",
-      "image": "ghcr.io/absmach/fluxmq:latest",
+      "image": "ghcr.io/absmach/fluxmq:v0.51.0",
       "ports": [
         {
           "container_port": 1883,
@@ -57,12 +57,18 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-messaging"
+    },
+    "compatibility": {
+      "sma_adapter_contract": "legacy_magistrala_clients_domains_channels",
+      "magistrala_release": "v0.51.0",
+      "atom_release": "v0.50.0",
+      "fluxmq_release": "v0.51.0"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Magistrala FluxMQ broker",
-    "version": "latest",
+    "version": "v0.51.0",
     "artifact_kind": "container",
     "target_nodes": [
       "cloud-01"
@@ -76,7 +82,7 @@
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "latest",
+      "revision": "v0.51.0",
       "sha256": null
     },
     "lifecycle": {
