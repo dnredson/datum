@@ -110,7 +110,8 @@ pub fn update_failure_state(
         record.consecutive_failures = 0;
         record.consecutive_successes = record.consecutive_successes.saturating_add(1);
 
-        match record.state.as_str() {
+        let current_state = record.state.clone();
+        match current_state.as_str() {
             "suspect" => {
                 transition_failure_state(record, "healthy", "fresh_telemetry", now);
             }
@@ -128,7 +129,8 @@ pub fn update_failure_state(
         record.consecutive_successes = 0;
         record.consecutive_failures = record.consecutive_failures.saturating_add(1);
 
-        match record.state.as_str() {
+        let current_state = record.state.clone();
+        match current_state.as_str() {
             "healthy" if record.consecutive_failures >= FAILURE_SUSPECT_AFTER_CONSECUTIVE_FAILURES => {
                 transition_failure_state(record, "suspect", "stale_or_missing_telemetry", now);
             }
