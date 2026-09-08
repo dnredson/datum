@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
 
-use datum::telemetry::SmartSentinelTelemetryEnvelope;
+use crate::telemetry::SmartSentinelTelemetryEnvelope;
 
 pub struct TelemetryHttpOutput {
     client: Client,
