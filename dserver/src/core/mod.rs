@@ -34,6 +34,7 @@ pub mod dgraph_rollback_audit;
 pub mod dispatch_policy;
 pub mod events;
 pub mod graph_builder;
+pub mod governed_deployment_preflight;
 pub mod installation_plan;
 pub mod installation_tasks;
 pub mod local_dgraph_snapshot;
