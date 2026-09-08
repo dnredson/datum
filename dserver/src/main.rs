@@ -14,6 +14,7 @@ use axum::{
 
 use api::alternative_paths::get_alternative_paths;
 use api::artifact_reconciliation::get_operational_reconciliation_context;
+use api::governed_deployment_preflight::get_governed_deployment_preflight;
 use api::external_ai_inference::{
     get_external_ai_inference_request, post_external_ai_inference_response,
 };
@@ -223,6 +224,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/operational-reconciliation-context",
             get(get_operational_reconciliation_context),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/governed-deployment-preflight",
+            get(get_governed_deployment_preflight),
         )
         .route(
             "/api/v1/service-artifacts",
