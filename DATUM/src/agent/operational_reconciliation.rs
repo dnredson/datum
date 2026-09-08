@@ -825,7 +825,7 @@ fn rollback_trusted_container_intent(
     }
 }
 
-fn publish_operational_role_snapshot(
+pub fn publish_operational_role_snapshot(
     cfg: &Config,
     node_id: &str,
     hostname_override: Option<&str>,
