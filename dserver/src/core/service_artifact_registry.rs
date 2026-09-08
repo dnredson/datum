@@ -331,10 +331,7 @@ impl ServiceArtifactRegistry {
         mut artifact: ServiceArtifact,
     ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
         if !artifact.artifact_id.trim().is_empty() && artifact.artifact_id != artifact_id {
-            return Err(ServiceArtifactRegistryError::Invalid(format!(
-                "path artifact_id '{artifact_id}' does not match body artifact_id '{}'",
-                artifact.artifact_id
-            )));
+            return Err(ServiceArtifactRegistryError::Invalid("project_id must not be empty".to_string()));
         }
         artifact.artifact_id = artifact_id.to_string();
         let artifact = normalize_artifact(project_id, artifact)?;
