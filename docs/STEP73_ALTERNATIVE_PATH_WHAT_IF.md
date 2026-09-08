@@ -1,9 +1,8 @@
-# Etapa 73 — planejador de caminhos alternativos em modo what-if
+# Etapa 73 — contexto histórico para what-if de IA
 
-A etapa 73 acrescenta um planejador determinístico que enumera caminhos simples
-limitados no D-Graph observado. O resultado é uma proposta para consumidores
-operacionais e de IA; ele não aplica reroteamento, deploy, reconciliação ou
-qualquer outra mutação.
+A etapa 73 prepara o contexto temporal para que um componente externo de IA
+projete caminhos alternativos. O dserver não executa a inferência, não treina
+um modelo e não aplica reroteamento.
 
 ## Endpoint
 
@@ -13,44 +12,54 @@ O escopo pode ser reduzido a um par:
 
 `GET /api/v1/alternative-paths?project=<project_id>&from=fog-01&to=cloud-01`
 
-Também é possível limitar o número de saltos com `max_hops`. O valor padrão é
-4 e o limite máximo é 8.
+Também é possível informar `max_hops`, que representa uma restrição para a
+projeção futura. O valor padrão é 4 e o limite máximo é 8.
 
-## Critérios
+## Papel do dserver
 
-O planejador consome:
+O endpoint combina:
 
-- os nós do D-Graph observado;
-- as arestas de conectividade entre pares medidas pelo SmartSentinel;
-- a frescura da evidência de cada nó e aresta;
-- o estado estabilizado de falha/recuperação da etapa 72.
+- o D-Graph observado atual;
+- as séries históricas mantidas pelo SmartSentinel/dserver;
+- timestamps, ciclos, sequências e frescura de cada observação;
+- features numéricas extraídas da telemetria tipada;
+- métricas de conectividade entre pares.
 
-Um caminho é `eligible=true` somente quando todos os nós estão `healthy`,
-com telemetria fresh, e todas as arestas estão `up`. Caminhos stale,
-degradados, desconhecidos ou indisponíveis podem aparecer como hipóteses, mas
-são explicitamente inelegíveis.
+A série bruta permanece no campo `history.node_series[].observations[].payload`.
+O campo `feature_series` oferece uma representação tabular reproduzível para
+um encoder ou modelo externo.
+
+## Papel da IA externa
+
+A resposta declara explicitamente:
+
+- `prediction_performed=false`;
+- `training_performed=false`;
+- `projection_available=false`;
+- `projections=[]`;
+- `inference.mode=external_ai_pending`.
+
+Assim, a etapa prepara dados para uma IA/GNN externa sem fabricar uma previsão
+determinística baseada apenas no snapshot corrente.
 
 ## Contrato
 
-O contrato `datum_alternative_path_what_if` publica:
+O contrato `datum_alternative_path_what_if_context` publica:
 
-- `candidates`: caminhos encontrados, com nós, arestas, saltos, status e razão;
-- `rejected_pairs`: pares sem caminho observado dentro do limite;
-- `summary`: contagens de pares, candidatos e elegibilidade;
-- `what_if`: confirma que nenhuma alteração foi aplicada;
-- `side_effects_performed=false`.
-
-O planejador é bounded e determinístico: no máximo oito saltos e três caminhos
-por par, ordenados por elegibilidade, estado e comprimento.
+- `observed_dgraph`: estado atual completo;
+- `history`: série por nó, limitada à capacidade configurada;
+- `feature_schema` e `feature_series`: dados prontos para consumo temporal;
+- `requested_scope`: origem, destino e limite de saltos solicitados;
+- `baseline`: contagens do grafo observado;
+- `inference`: estado da preparação da inferência;
+- `what_if`: confirma que nenhuma alteração foi aplicada.
 
 ## Segurança
-
-A etapa permanece somente observacional:
 
 ```json
 {
   "what_if": {
-    "mode": "proposal_only",
+    "mode": "historical_projection_input",
     "changes_applied": false,
     "execution_allowed": false,
     "side_effects_performed": false
