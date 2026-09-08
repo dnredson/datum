@@ -57,9 +57,9 @@ fn failure_state_store() -> &'static RwLock<FailureStateStore> {
     FAILURE_STATE_STORE.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
-/// Advances the node state only when a new observation or a new missing-evidence
-/// evaluation interval is seen. Repeated dashboard reads cannot manufacture
-/// additional failures or recoveries.
+/// Advances the node state only when a new fresh observation or a new
+/// non-fresh evaluation interval is seen. Repeated dashboard reads within one
+/// interval cannot manufacture additional failures or recoveries.
 pub fn update_failure_state(
     project_id: &str,
     node_id: &str,
@@ -75,11 +75,15 @@ pub fn update_failure_state(
     }
 
     let is_fresh = telemetry_freshness == "fresh";
-    let evidence_key = if let (Some(sequence), Some(observed_at_utc)) = (sequence, observed_at_utc) {
-        format!("{telemetry_freshness}:{sequence}:{observed_at_utc}")
+    let evidence_key = if is_fresh {
+        if let (Some(sequence), Some(observed_at_utc)) = (sequence, observed_at_utc) {
+            format!("fresh:{sequence}:{observed_at_utc}")
+        } else {
+            format!("fresh:missing:{}", now.timestamp())
+        }
     } else {
         let interval = now.timestamp() / FAILURE_MISSING_EVALUATION_INTERVAL_SECONDS;
-        format!("{telemetry_freshness}:missing:{interval}")
+        format!("failure:{telemetry_freshness}:{interval}")
     };
 
     let mut guard = failure_state_store()
