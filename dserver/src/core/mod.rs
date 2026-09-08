@@ -57,6 +57,7 @@ pub mod resource_registry_persistence;
 pub mod sentinel_registration;
 pub mod sentinel_telemetry;
 pub mod service_artifact_registry;
+pub mod secret_preflight;
 pub mod topology;
 pub mod wasm_module_registry;
 pub mod wasm_runtime_reports;
