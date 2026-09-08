@@ -18,19 +18,19 @@ allow_container_execution = true
 
 [[dispatch.container_mappings]]
 service_name = "mqtt"
-container_name = "datum-fog-mosquitto"
+container_name = "datum-mosquitto"
 artifact = "eclipse-mosquitto:2"
+ports = [{ host_port = 1883, container_port = 1883, protocol = "tcp" }]
 
 #[collectors.process_windows]
 #enabled = true
-#mode = "group_by_name"                                                   # novo (default recomendado)
+#mode = "group_by_name"
 #names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
 #max_entries = 50
-#include_pids = false                                                     # opcional
+#include_pids = false
 
 [collectors.process_linux]
 enabled = true
-#mode = "all"
 mode = "allowlist"
 names = ["sshd", "datum"]
 max_entries = 50
@@ -41,9 +41,7 @@ targets = ["1.1.1.1", "8.8.8.8"]
 count = 4
 timeout_s = 1
 
-# Optional TCP peer probes. Each node skips its own identity.
-# The laboratory uses SSH port 22 as a lightweight reachability target;
-# replace it with an agent-owned probe port when that listener is deployed.
+# Optional TCP peer probes.
 [[collectors.connection_ping.peer_targets]]
 node_id = "fog-01"
 target = "192.168.10.103"
@@ -59,19 +57,15 @@ timeout_s = 2
 [collectors.docker]
 enabled = true
 mode = "allowlist"
-names = ["datum-fog-mosquitto"]
+names = ["datum-mosquitto"]
 max_entries = 20
 
 [services]
 enabled = true
 
 [[services.items]]
-name = "mosquitto"
-implemented_by = [{ container_name = "mosquitto" }]
-
-[[services.items]]
 name = "mqtt"
-implemented_by = [{ container_name = "datum-fog-mosquitto" }]
+implemented_by = [{ container_name = "datum-mosquitto" }]
 
 [[services.items]]
 name = "datum-agent"

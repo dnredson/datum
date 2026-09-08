@@ -158,6 +158,20 @@ pub struct DispatchContainerMapping {
     pub service_name: Option<String>,
     pub container_name: String,
     pub artifact: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<DispatchContainerPortMapping>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DispatchContainerPortMapping {
+    pub host_port: u16,
+    pub container_port: u16,
+    #[serde(default = "default_tcp_protocol")]
+    pub protocol: String,
+}
+
+fn default_tcp_protocol() -> String {
+    "tcp".to_string()
 }
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct CollectorsConfig {

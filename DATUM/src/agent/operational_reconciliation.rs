@@ -324,6 +324,12 @@ fn run_operational_reconciliation_from_bootstrap(
                 "desired service is already running; WASM requested no host action".to_string(),
                 false,
             )
+        } else if execute_requested && !control_plane_authorized {
+            (
+                "blocked_control_plane".to_string(),
+                "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization for this revision".to_string(),
+                false,
+            )
         } else if mapping.is_none() {
             (
                 "blocked_local_mapping".to_string(),
@@ -648,8 +654,28 @@ fn execute_trusted_container_intent(
             ))
         }
         ContainerState::Missing => {
+            let mut args = vec![
+                "run".to_string(),
+                "-d".to_string(),
+                "--name".to_string(),
+                container_name.to_string(),
+            ];
+            for port in &mapping.ports {
+                args.push("-p".to_string());
+                args.push(format!(
+                    "{}:{}{}",
+                    port.host_port,
+                    port.container_port,
+                    if port.protocol.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("/{}", port.protocol.trim())
+                    }
+                ));
+            }
+            args.push(image.to_string());
             let output = Command::new("docker")
-                .args(["run", "-d", "--name", container_name, image])
+                .args(&args)
                 .output()
                 .with_context(|| format!("execute governed docker run for '{container_name}'"))?;
             if !output.status.success() {
