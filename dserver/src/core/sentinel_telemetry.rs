@@ -575,3 +575,122 @@ mod tests {
         assert!(error.contains("sequence must increase"));
     }
 }
+
+
+#[cfg(test)]
+mod failure_state_tests {
+    use chrono::TimeZone;
+
+    use super::*;
+
+    #[test]
+    fn failure_state_requires_three_distinct_failures_before_unavailable() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 0, 0, 0).unwrap();
+        let project = "failure-state-transition-test";
+        let first = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(1),
+            Some("2026-09-08T00:00:00Z"),
+            base,
+        )
+        .unwrap();
+        assert_eq!(first.state, "suspect");
+        assert_eq!(first.consecutive_failures, 1);
+
+        let repeated = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(1),
+            Some("2026-09-08T00:00:00Z"),
+            base + Duration::seconds(30),
+        )
+        .unwrap();
+        assert_eq!(repeated.state, "suspect");
+        assert_eq!(repeated.consecutive_failures, 1);
+
+        let second = update_failure_state(
+            project,
+            "fog-01",
+            "stale",
+            Some(2),
+            Some("2026-09-08T00:00:05Z"),
+            base + Duration::seconds(5),
+        )
+        .unwrap();
+        assert_eq!(second.state, "suspect");
+
+        let third = update_failure_state(
+            project,
+            "fog-01",
+            "missing",
+            None,
+            None,
+            base + Duration::seconds(10),
+        )
+        .unwrap();
+        assert_eq!(third.state, "unavailable");
+        assert_eq!(third.consecutive_failures, 3);
+        assert_eq!(third.transitions.len(), 2);
+        assert_eq!(third.transitions[0].to, "suspect");
+        assert_eq!(third.transitions[1].to, "unavailable");
+    }
+
+    #[test]
+    fn recovery_requires_first_observation_then_three_successes() {
+        let base = Utc.with_ymd_and_hms(2026, 9, 8, 1, 0, 0).unwrap();
+        let project = "failure-state-recovery-test";
+        for (sequence, timestamp, now) in [
+            (1, "2026-09-08T01:00:00Z", base),
+            (2, "2026-09-08T01:00:05Z", base + Duration::seconds(5)),
+            (3, "2026-09-08T01:00:10Z", base + Duration::seconds(10)),
+        ] {
+            update_failure_state(
+                project,
+                "fog-01",
+                "stale",
+                Some(sequence),
+                Some(timestamp),
+                now,
+            )
+            .unwrap();
+        }
+
+        let recovering = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(4),
+            Some("2026-09-08T01:00:15Z"),
+            base + Duration::seconds(15),
+        )
+        .unwrap();
+        assert_eq!(recovering.state, "recovering");
+
+        let still_recovering = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(5),
+            Some("2026-09-08T01:00:20Z"),
+            base + Duration::seconds(20),
+        )
+        .unwrap();
+        assert_eq!(still_recovering.state, "recovering");
+
+        let healthy = update_failure_state(
+            project,
+            "fog-01",
+            "fresh",
+            Some(6),
+            Some("2026-09-08T01:00:25Z"),
+            base + Duration::seconds(25),
+        )
+        .unwrap();
+        assert_eq!(healthy.state, "healthy");
+        assert_eq!(healthy.consecutive_successes, 3);
+        assert_eq!(healthy.transitions.last().unwrap().to, "healthy");
+    }
+}
