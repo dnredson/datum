@@ -358,11 +358,18 @@ fn run_operational_reconciliation_from_bootstrap(
                 false,
             )
         } else {
-            match execute_trusted_container_intent(cfg, &service.service_id, observed_before) {
-                Ok(result) => result,
-                Err(error) => (
-                    "failed".to_string(),
-                    format!("governed trusted container execution failed: {error}"),
+            match mapping {
+                Some(mapping) => match execute_trusted_container_intent(mapping, observed_before) {
+                    Ok(result) => result,
+                    Err(error) => (
+                        "failed".to_string(),
+                        format!("governed trusted container execution failed: {error}"),
+                        false,
+                    ),
+                },
+                None => (
+                    "blocked_local_mapping".to_string(),
+                    "artifact assignment has no matching local mapping".to_string(),
                     false,
                 ),
             }
@@ -599,16 +606,9 @@ fn inspect_container(container_name: &str) -> Result<ContainerState> {
 }
 
 fn execute_trusted_container_intent(
-    cfg: &Config,
-    service_id: &str,
+    mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
 ) -> Result<(String, String, bool)> {
-    let mapping = trusted_container_mapping(cfg, service_id).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no trusted local container mapping with image exists for service '{}'",
-            service_id
-        )
-    })?;
     let container_name = mapping.container_name.trim();
     let image = mapping
         .artifact
