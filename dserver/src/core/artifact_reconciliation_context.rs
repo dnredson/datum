@@ -227,9 +227,8 @@ mod tests {
     use super::*;
     use crate::core::operational_dgraph::OperationalDGraphSlice;
     use crate::core::service_artifact_registry::{
-        ContainerDeploymentSpec, ServiceArtifactAcquisition, ServiceArtifactCommand,
-        ServiceArtifactControlPlane, ServiceArtifactLifecycle, ServiceArtifactProbeSet,
-        ServiceArtifactRuntimeSpec,
+        ContainerDeploymentSpec, ServiceArtifactAcquisition, ServiceArtifactControlPlane,
+        ServiceArtifactLifecycle, ServiceProbeSet, ServiceProbeSpec, ServiceRuntimeSpec,
     };
 
     fn artifact(node_id: &str) -> ServiceArtifact {
@@ -237,7 +236,7 @@ mod tests {
             schema_version: "0.1.0".to_string(),
             artifact_id: "mqtt".to_string(),
             service_id: "mqtt".to_string(),
-            runtime: ServiceArtifactRuntimeSpec {
+            runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
                 container: Some(ContainerDeploymentSpec {
                     container_name: "datum-mqtt".to_string(),
@@ -245,7 +244,7 @@ mod tests {
                     ports: Vec::new(),
                 }),
             },
-            probes: ServiceArtifactProbeSet::default(),
+            probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
             metadata: None,
             control_plane: ServiceArtifactControlPlane {
                 project_id: "project:test".to_string(),
@@ -260,7 +259,7 @@ mod tests {
                     ..Default::default()
                 },
                 lifecycle: ServiceArtifactLifecycle {
-                    install: vec![ServiceArtifactCommand {
+                    install: vec![crate::core::service_artifact_registry::ServiceArtifactCommand {
                         program: "start_container".to_string(),
                         ..Default::default()
                     }],
