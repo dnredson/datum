@@ -315,6 +315,19 @@ fn run_operational_reconciliation_from_bootstrap(
     });
 
     let mut side_effects_performed = false;
+    let batch_secret_resolution_error = if execute_requested && control_plane_authorized {
+        context.artifacts.iter().find_map(|artifact| {
+            if artifact.secret_refs.is_empty() {
+                None
+            } else {
+                resolve_secret_bindings(cfg, &artifact.secret_refs)
+                    .err()
+                    .map(|error| (artifact.service_id.clone(), error))
+            }
+        })
+    } else {
+        None
+    };
     let mut services = Vec::with_capacity(context.desired_services.len());
     for service in &context.desired_services {
         let assignment = context.artifacts.iter().find(|artifact| {
@@ -343,6 +356,12 @@ fn run_operational_reconciliation_from_bootstrap(
                 (Vec::new(), None, "not_required".to_string())
             } else if !execute_requested || !control_plane_authorized {
                 (Vec::new(), None, "not_checked".to_string())
+            } else if batch_secret_resolution_error.is_some() {
+                (
+                    Vec::new(),
+                    Some("one or more batch secret references could not be resolved locally".to_string()),
+                    "blocked_missing_secret".to_string(),
+                )
             } else {
                 match assignment {
                     Some(artifact) => match resolve_secret_bindings(cfg, &artifact.secret_refs) {
@@ -379,6 +398,12 @@ fn run_operational_reconciliation_from_bootstrap(
                             "service '{}' has an artifact assignment but no matching trusted local container mapping",
                             service.service_id
                         ),
+                        false,
+                    )
+                } else if batch_secret_resolution_error.is_some() {
+                    (
+                        "blocked_missing_secret".to_string(),
+                        "rollback is blocked because one or more batch secret references could not be resolved locally".to_string(),
                         false,
                     )
                 } else if secret_resolution_error.is_some() {
@@ -472,6 +497,12 @@ fn run_operational_reconciliation_from_bootstrap(
             (
                 "blocked_control_plane".to_string(),
                 "WASM requested ensure_service_running, but the active D-Graph slice has no matching host-mutation authorization for this revision".to_string(),
+                false,
+            )
+        } else if batch_secret_resolution_error.is_some() {
+            (
+                "blocked_missing_secret".to_string(),
+                "WASM requested ensure_service_running, but one or more batch secret references could not be resolved from the local allowlist".to_string(),
                 false,
             )
         } else if secret_resolution_error.is_some() {
