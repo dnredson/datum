@@ -573,4 +573,37 @@ mod tests {
             .unwrap_err()
             .contains("execution.execution_allowed must be false"));
     }
+
+    #[test]
+    fn response_with_top_level_side_effects_is_rejected() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        let mut invalid = response(&request);
+        invalid["side_effects_performed"] = json!(true);
+        assert!(validate_external_ai_inference_response(&request, &invalid)
+            .unwrap_err()
+            .contains("response.side_effects_performed must be false"));
+    }
+
+    #[test]
+    fn response_with_hop_absent_from_observed_topology_is_rejected() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        let mut invalid = response(&request);
+        invalid["projections"][0]["nodes"] = json!(["fog-01", "fog-01", "cloud-01"]);
+        invalid["projections"][0]["hop_count"] = json!(2);
+        assert!(validate_external_ai_inference_response(&request, &invalid)
+            .unwrap_err()
+            .contains("absent from observed topology"));
+    }
+
+    #[test]
+    fn issued_request_can_be_retrieved_by_exact_request_id() {
+        let request = build_external_ai_inference_request(&context()).unwrap();
+        register_external_ai_inference_request(&request).unwrap();
+        let retrieved = get_issued_external_ai_inference_request(
+            request["request_id"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(retrieved, request);
+    }
 }
