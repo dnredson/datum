@@ -25,10 +25,11 @@
     header { padding: 20px 28px; background: var(--navy); color: white; }
     h1 { margin: 0 0 6px; font-size: 22px; }
     h2 { margin: 0 0 12px; font-size: 17px; }
+    h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
     #meta { opacity: .82; font-size: 13px; overflow-wrap: anywhere; }
     main { max-width: 1280px; margin: 24px auto; padding: 0 18px; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
-    input, button {
+    input, select, button {
       border: 1px solid #c9d3e2;
       border-radius: 6px;
       padding: 9px 11px;
@@ -60,12 +61,14 @@
     .graph-edge.down { stroke: var(--red); color: var(--red); }
     .graph-edge.unknown { stroke: var(--gray); color: var(--gray); stroke-dasharray: 3 5; }
     .graph-edge-label { font-size: 12px; fill: var(--ink); text-anchor: middle; }
+    .graph-node { cursor: pointer; }
     .graph-node circle { stroke-width: 4; fill: white; }
     .graph-node.fresh circle { stroke: var(--green); }
     .graph-node.stale circle { stroke: var(--amber); }
     .graph-node.missing circle { stroke: var(--gray); }
     .graph-node.invalid circle { stroke: var(--red); }
-    .graph-node text { text-anchor: middle; fill: var(--ink); }
+    .graph-node.selected circle { stroke-width: 8; }
+    .graph-node text { text-anchor: middle; fill: var(--ink); pointer-events: none; }
     .graph-node .node-label { font-size: 14px; font-weight: 700; }
     .graph-node .node-status { font-size: 11px; fill: var(--muted); }
     .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 12px; }
@@ -75,20 +78,34 @@
     .swatch.stale { background: var(--amber); border-top: 3px dashed var(--amber); height: 0; }
     .swatch.degraded { background: var(--orange); border-top: 3px dotted var(--orange); height: 0; }
     .swatch.down { background: var(--red); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-    .node { border-left: 6px solid var(--gray); }
-    .node.fresh { border-left-color: var(--green); }
-    .node.stale { border-left-color: var(--amber); }
-    .node.missing { border-left-color: var(--gray); }
-    .node.invalid { border-left-color: var(--red); }
-    .status { font-weight: 700; }
-    .fresh .status { color: #187a4e; }
-    .stale .status { color: #a7650e; }
-    .missing .status { color: #697789; }
-    .invalid .status { color: #ad2c2c; }
-    dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 14px 0 0; font-size: 13px; }
-    dt { color: var(--muted); }
-    dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+    .selection-card { margin-bottom: 14px; min-height: 110px; }
+    .selection-empty { color: var(--muted); }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .detail-item { padding: 10px; border: 1px solid #e5eaf2; border-radius: 7px; }
+    .detail-item small { display: block; color: var(--muted); margin-bottom: 3px; }
+    .detail-item strong { overflow-wrap: anywhere; }
+    .service-list { margin: 12px 0 0; padding-left: 20px; font-size: 13px; }
+    .node-list-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .stage-group { margin-bottom: 14px; }
+    .node-list { display: grid; gap: 6px; }
+    .node-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      background: #fbfcfe;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+    .node-row:hover, .node-row.selected { border-color: #2457a6; background: #eef4ff; }
+    .node-row-main { display: flex; align-items: center; gap: 9px; }
+    .node-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); }
+    .node-dot.fresh { background: var(--green); }
+    .node-dot.stale { background: var(--amber); }
+    .node-dot.invalid { background: var(--red); }
+    .node-row-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 9px 6px; border-bottom: 1px solid #e5eaf2; text-align: left; }
     .ok { color: #187a4e; }
@@ -119,9 +136,25 @@
       </div>
     </section>
 
-    <section id="nodes" class="grid"></section>
+    <section class="card selection-card">
+      <h2>Selected node</h2>
+      <div id="node-details" class="selection-empty">Click a node in the graph or list to inspect it.</div>
+    </section>
 
-    <section class="card" style="margin-top:14px">
+    <section class="card" style="margin-bottom:14px">
+      <h2>Nodes by IoTinuum stage</h2>
+      <div class="node-list-toolbar">
+        <select id="stage-filter" aria-label="Filter by IoTinuum stage"></select>
+        <select id="node-order" aria-label="Order nodes">
+          <option value="stage">Order by stage</option>
+          <option value="status">Order by status</option>
+          <option value="node_id">Order by node id</option>
+        </select>
+      </div>
+      <div id="node-list"></div>
+    </section>
+
+    <section class="card">
       <h2>Measured peer connectivity</h2>
       <table>
         <thead>
@@ -135,23 +168,29 @@
 
   <script>
     const projectInput = document.getElementById("project");
-    const nodes = document.getElementById("nodes");
     const peers = document.getElementById("peers");
     const topology = document.getElementById("topology");
     const topologySummary = document.getElementById("topology-summary");
+    const nodeDetails = document.getElementById("node-details");
+    const nodeList = document.getElementById("node-list");
+    const stageFilter = document.getElementById("stage-filter");
+    const nodeOrder = document.getElementById("node-order");
     const meta = document.getElementById("meta");
     const error = document.getElementById("error");
+
+    let currentNodes = [];
+    let selectedNodeId = null;
+    let stageFilterValue = "";
+
+    const stageOrder = ["device", "edge", "fog", "cloud", "farm", "unclassified"];
+    const statusOrder = ["invalid", "missing", "stale", "fresh"];
 
     const value = (v, suffix = "") =>
       v === null || v === undefined ? "—" : String(v) + suffix;
 
-    const edgeColor = {
-      up: "#1d9a62",
-      stale: "#d08a16",
-      degraded: "#d4661f",
-      down: "#c53b3b",
-      unknown: "#8793a3"
-    };
+    const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, c => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+    }[c]));
 
     function svgElement(name, attributes = {}) {
       const element = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -159,6 +198,28 @@
         element.setAttribute(key, val);
       }
       return element;
+    }
+
+    function stageRank(stage) {
+      const rank = stageOrder.indexOf(stage);
+      return rank < 0 ? stageOrder.length : rank;
+    }
+
+    function statusRank(status) {
+      const rank = statusOrder.indexOf(status);
+      return rank < 0 ? statusOrder.length : rank;
+    }
+
+    function selectNode(nodeId) {
+      selectedNodeId = nodeId;
+      const node = currentNodes.find(candidate => candidate.node_id === nodeId);
+      renderNodeDetails(node);
+      document.querySelectorAll(".node-row").forEach(row => {
+        row.classList.toggle("selected", row.dataset.nodeId === nodeId);
+      });
+      document.querySelectorAll(".graph-node").forEach(group => {
+        group.classList.toggle("selected", group.dataset.nodeId === nodeId);
+      });
     }
 
     function renderTopology(graph) {
@@ -190,7 +251,7 @@
         const column = index % columns;
         const row = Math.floor(index / columns);
         positions.set(node.node_id, {
-          x: 130 + column * ((width - 260) / Math.max(1, columns - 1)),
+          x: columns === 1 ? width / 2 : 130 + column * ((width - 260) / (columns - 1)),
           y: 88 + row * 155
         });
       });
@@ -227,6 +288,7 @@
         const status = node.status || "missing";
         const group = svgElement("g", {
           class: "graph-node " + status,
+          "data-node-id": node.node_id,
           transform: "translate(" + position.x + " " + position.y + ")"
         });
         group.appendChild(svgElement("circle", { r: "38" }));
@@ -236,8 +298,10 @@
         group.appendChild(label);
 
         const nodeStatus = svgElement("text", { y: "16", class: "node-status" });
-        nodeStatus.textContent = status + " · " + (node.telemetry_freshness || "missing");
+        nodeStatus.textContent = (node.stage || "unclassified") + " · " + status;
         group.appendChild(nodeStatus);
+
+        group.addEventListener("click", () => selectNode(node.node_id));
         topology.appendChild(group);
       });
 
@@ -252,36 +316,108 @@
         + " · path=" + value(graph.path_status);
     }
 
-    function renderNodeCards(graph) {
-      nodes.innerHTML = (graph.nodes || []).map(node => {
-        const observed = node.observed || {};
-        const status = observed.status || "missing";
-        const telemetry = observed.telemetry || {};
-        const host = telemetry.host || {};
-        const cpu = host.cpu || {};
-        const memory = host.memory || {};
-        return '<article class="card node ' + status + '">'
-          + '<h2>' + node.node_id + '</h2>'
-          + '<div class="status">' + status + ' · ' + (observed.telemetry_freshness || "missing") + '</div>'
-          + '<dl><dt>age</dt><dd>' + value(observed.telemetry_age_seconds, "s") + '</dd>'
-          + '<dt>sequence</dt><dd>' + value(observed.sequence) + '</dd>'
-          + '<dt>CPU</dt><dd>' + value(cpu.usage_percent, "%") + '</dd>'
-          + '<dt>memory available</dt><dd>' + value(memory.available_bytes) + '</dd>'
-          + '<dt>services desired</dt><dd>' + value((node.desired_services || []).length) + '</dd></dl>'
-          + '</article>';
-      }).join("");
+    function renderNodeDetails(node) {
+      if (!node) {
+        nodeDetails.className = "selection-empty";
+        nodeDetails.textContent = "Click a node in the graph or list to inspect it.";
+        return;
+      }
+
+      nodeDetails.className = "";
+      const observed = node.observed || {};
+      const telemetry = observed.telemetry || {};
+      const host = telemetry.host || {};
+      const cpu = host.cpu || {};
+      const memory = host.memory || {};
+      const desiredServices = node.desired_services || [];
+
+      nodeDetails.innerHTML =
+        '<div class="detail-grid">'
+        + '<div class="detail-item"><small>Node</small><strong>' + esc(node.node_id) + '</strong></div>'
+        + '<div class="detail-item"><small>IoTinuum stage</small><strong>' + esc(node.stage) + '</strong></div>'
+        + '<div class="detail-item"><small>Status</small><strong>' + esc(observed.status || "missing") + '</strong></div>'
+        + '<div class="detail-item"><small>Freshness</small><strong>' + esc(observed.telemetry_freshness || "missing") + '</strong></div>'
+        + '<div class="detail-item"><small>Age</small><strong>' + esc(value(observed.telemetry_age_seconds, "s")) + '</strong></div>'
+        + '<div class="detail-item"><small>Sequence</small><strong>' + esc(value(observed.sequence)) + '</strong></div>'
+        + '<div class="detail-item"><small>CPU</small><strong>' + esc(value(cpu.usage_percent, "%")) + '</strong></div>'
+        + '<div class="detail-item"><small>Memory available</small><strong>' + esc(value(memory.available_bytes)) + '</strong></div>'
+        + '</div>'
+        + '<ul class="service-list"><strong>Desired services:</strong>'
+        + (desiredServices.length
+          ? desiredServices.map(service => '<li>' + esc(service.service_id) + ' · ' + esc(service.desired_state) + '</li>').join("")
+          : '<li>none</li>')
+        + '</ul>';
     }
 
-    function renderPeerTable(graph) {
+    function renderNodeList(graph, overview) {
+      const overviewById = new Map((overview.nodes || []).map(node => [node.node_id, node]));
+      currentNodes = (graph.nodes || []).map(node => ({
+        ...node,
+        stage: overviewById.get(node.node_id)?.stage || "unclassified"
+      }));
+
+      const stages = [...new Set(currentNodes.map(node => node.stage))].sort((a, b) =>
+        stageRank(a) - stageRank(b) || a.localeCompare(b)
+      );
+      const previous = stageFilter.value;
+      stageFilter.innerHTML = '<option value="">All stages</option>'
+        + stages.map(stage => '<option value="' + esc(stage) + '">' + esc(stage) + '</option>').join("");
+      stageFilter.value = stages.includes(previous) ? previous : stageFilterValue;
+      if (!stages.includes(stageFilter.value)) stageFilter.value = "";
+      stageFilterValue = stageFilter.value;
+
+      const visible = currentNodes
+        .filter(node => !stageFilterValue || node.stage === stageFilterValue)
+        .sort((a, b) => {
+          if (nodeOrder.value === "status") {
+            return statusRank(a.observed?.status || "missing") - statusRank(b.observed?.status || "missing")
+              || a.node_id.localeCompare(b.node_id);
+          }
+          if (nodeOrder.value === "node_id") return a.node_id.localeCompare(b.node_id);
+          return stageRank(a.stage) - stageRank(b.stage)
+            || a.stage.localeCompare(b.stage)
+            || a.node_id.localeCompare(b.node_id);
+        });
+
+      const groups = new Map();
+      visible.forEach(node => {
+        if (!groups.has(node.stage)) groups.set(node.stage, []);
+        groups.get(node.stage).push(node);
+      });
+
+      nodeList.innerHTML = [...groups.entries()].map(([stage, items]) =>
+        '<div class="stage-group"><h3>' + esc(stage) + '</h3><div class="node-list">'
+        + items.map(node => {
+          const observed = node.observed || {};
+          const status = observed.status || "missing";
+          return '<button class="node-row' + (node.node_id === selectedNodeId ? ' selected' : '') + '" data-node-id="' + esc(node.node_id) + '">'
+            + '<span class="node-row-main"><i class="node-dot ' + esc(status) + '"></i><strong>' + esc(node.node_id) + '</strong></span>'
+            + '<span class="node-row-meta">' + esc(status) + ' · age ' + esc(value(observed.telemetry_age_seconds, "s")) + '</span>'
+            + '</button>';
+        }).join("")
+        + '</div></div>'
+      ).join("") || '<div class="selection-empty">No nodes match this stage.</div>';
+
+      nodeList.querySelectorAll(".node-row").forEach(row => {
+        row.addEventListener("click", () => selectNode(row.dataset.nodeId));
+      });
+
+      if (selectedNodeId) {
+        selectNode(selectedNodeId);
+      }
+    }
+
+    function renderPeerTable(graph, overview) {
+      const edgeStatus = new Map((overview.edges || []).map(edge =>
+        [edge.from + "->" + edge.to, edge.edge_status || "unknown"]
+      ));
       const edgeRows = (graph.measured_peer_edges || []).map(edge => {
-        const status = (graph.graph_overview_edges || []).find(candidate =>
-          candidate.from === edge.from && candidate.to === edge.to
-        )?.edge_status || "unknown";
-        return '<tr><td>' + edge.from + '</td><td>' + edge.to + '</td>'
-          + '<td class="' + (status === "up" ? "ok" : "warn") + '">' + status + '</td>'
-          + '<td>' + value(edge.reachable) + '</td>'
-          + '<td>' + value(edge.rtt_ms, " ms") + '</td>'
-          + '<td>' + value(edge.telemetry_freshness) + '</td></tr>';
+        const status = edgeStatus.get(edge.from + "->" + edge.to) || "unknown";
+        return '<tr><td>' + esc(edge.from) + '</td><td>' + esc(edge.to) + '</td>'
+          + '<td class="' + (status === "up" ? "ok" : "warn") + '">' + esc(status) + '</td>'
+          + '<td>' + esc(value(edge.reachable)) + '</td>'
+          + '<td>' + esc(value(edge.rtt_ms, " ms")) + '</td>'
+          + '<td>' + esc(value(edge.telemetry_freshness)) + '</td></tr>';
       });
       peers.innerHTML = edgeRows.length ? edgeRows.join("") :
         '<tr><td colspan="6">No configured peer probes in the latest telemetry.</td></tr>';
@@ -318,16 +454,25 @@
           + " · generated=" + body.generated_at_utc;
 
         renderTopology(overview);
-        renderNodeCards(graph);
-        renderPeerTable({
-          measured_peer_edges: graph.measured_peer_edges || [],
-          graph_overview_edges: overview.edges || []
-        });
+        renderNodeList(graph, overview);
+        renderNodeDetails(currentNodes.find(node => node.node_id === selectedNodeId));
+        renderPeerTable(graph, overview);
       } catch (e) {
         error.textContent = e.message;
       }
     }
 
+    stageFilter.addEventListener("change", () => {
+      stageFilterValue = stageFilter.value;
+      const graph = { nodes: currentNodes };
+      const overview = { nodes: currentNodes };
+      renderNodeList(graph, overview);
+    });
+    nodeOrder.addEventListener("change", () => {
+      const graph = { nodes: currentNodes };
+      const overview = { nodes: currentNodes };
+      renderNodeList(graph, overview);
+    });
     document.getElementById("refresh").addEventListener("click", refresh);
     setInterval(refresh, 2000);
     refresh();
