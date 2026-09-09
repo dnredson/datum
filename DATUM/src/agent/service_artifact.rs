@@ -306,7 +306,7 @@ fn is_safe_configuration_source(value: &str) -> bool {
         && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn is_safe_docker_name(value: &str) {
+fn is_safe_docker_name(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty()
         && value.len() <= 128
