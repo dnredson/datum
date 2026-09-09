@@ -88,6 +88,35 @@ pub struct ArtifactWasmDecisionPolicy {
     pub safe_to_auto_execute: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct OperationalLifecycleCommand {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct OperationalLifecycle {
+    #[serde(default)]
+    pub pre_install: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub install: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub configure: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub start: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub stop: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub post_install: Vec<OperationalLifecycleCommand>,
+    #[serde(default)]
+    pub rollback: Vec<OperationalLifecycleCommand>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperationalArtifactAssignment {
     pub artifact_id: String,
@@ -98,6 +127,8 @@ pub struct OperationalArtifactAssignment {
     pub container_name: String,
     pub image: String,
     pub target_node: String,
+    #[serde(default)]
+    pub lifecycle: OperationalLifecycle,
     #[serde(default)]
     pub network: Option<String>,
     #[serde(default)]
@@ -663,6 +694,9 @@ fn run_operational_reconciliation_from_bootstrap(
                         .map(|artifact| artifact.configuration_mounts.as_slice())
                         .unwrap_or(&[]),
                     configuration_root(cfg),
+                    assignment
+                        .map(|artifact| &artifact.lifecycle)
+                        .unwrap_or(&OperationalLifecycle::default()),
                     assignment.map(|artifact| &artifact.bindings),
                     &secret_environment,
                 ) {
@@ -1126,6 +1160,90 @@ fn resolve_secret_bindings(
     Ok(resolved)
 }
 
+fn execute_lifecycle_phase(
+    phase: &str,
+    commands: &[OperationalLifecycleCommand],
+    container_name: &str,
+    image: &str,
+    configuration_mounts: &[OperationalConfigurationMount],
+    configuration_root: Option<&Path>,
+) -> Result<()> {
+    for command in commands {
+        match command.program.trim() {
+            "verify_docker" => {
+                let output = Command::new("docker")
+                    .args(["version", "--format", "{{.Server.Version}}"])
+                    .output()
+                    .context("verify Docker for governed lifecycle")?;
+                if !output.status.success() {
+                    bail!(
+                        "governed lifecycle phase '{}' could not verify Docker: {}",
+                        phase,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+            }
+            "pull_image" => {
+                let inspected = Command::new("docker")
+                    .args(["image", "inspect", image])
+                    .output()
+                    .context("inspect governed lifecycle image")?;
+                if !inspected.status.success() {
+                    let pulled = Command::new("docker")
+                        .args(["pull", image])
+                        .output()
+                        .with_context(|| format!("pull governed image '{}'", image))?;
+                    if !pulled.status.success() {
+                        bail!(
+                            "governed lifecycle phase '{}' could not pull image '{}': {}",
+                            phase,
+                            image,
+                            String::from_utf8_lossy(&pulled.stderr).trim()
+                        );
+                    }
+                }
+            }
+            "verify_configuration_mounts" => {
+                let _ = resolve_configuration_mounts(configuration_mounts, configuration_root)?;
+            }
+            "start_container" => {}
+            "verify_container_running" => {
+                if inspect_container(container_name)? != ContainerState::Running {
+                    bail!(
+                        "governed lifecycle phase '{}' expected container '{}' to be running",
+                        phase,
+                        container_name
+                    );
+                }
+            }
+            "remove_container" => {
+                let output = Command::new("docker")
+                    .args(["rm", "-f", container_name])
+                    .output()
+                    .with_context(|| format!("remove governed container '{}'", container_name))?;
+                if !output.status.success() && !docker_inspect_reports_missing(
+                    &String::from_utf8_lossy(&output.stderr),
+                ) {
+                    bail!(
+                        "governed lifecycle phase '{}' could not remove '{}': {}",
+                        phase,
+                        container_name,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+            }
+            unsupported => {
+                bail!(
+                    "unsupported governed lifecycle command '{}' in phase '{}'",
+                    unsupported,
+                    phase
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn execute_trusted_container_intent(
     mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
@@ -1133,6 +1251,7 @@ fn execute_trusted_container_intent(
     volumes: &[OperationalVolumeMount],
     configuration_mounts: &[OperationalConfigurationMount],
     configuration_root: Option<&Path>,
+    lifecycle: &OperationalLifecycle,
     bindings: Option<&BTreeMap<String, String>>,
     secret_environment: &[(String, String)],
 ) -> Result<(String, String, bool)> {
@@ -1145,6 +1264,11 @@ fn execute_trusted_container_intent(
         .expect("trusted mapping requires non-empty artifact image");
     let resolved_configuration_mounts =
         resolve_configuration_mounts(configuration_mounts, configuration_root)?;
+
+    execute_lifecycle_phase("pre_install", &lifecycle.pre_install, container_name, image, configuration_mounts, configuration_root)?;
+    execute_lifecycle_phase("install", &lifecycle.install, container_name, image, configuration_mounts, configuration_root)?;
+    execute_lifecycle_phase("configure", &lifecycle.configure, container_name, image, configuration_mounts, configuration_root)?;
+    execute_lifecycle_phase("start", &lifecycle.start, container_name, image, configuration_mounts, configuration_root)?;
 
     let attachments_mismatch = match observed_before {
         ContainerState::Running | ContainerState::Stopped => {
@@ -1177,6 +1301,7 @@ fn execute_trusted_container_intent(
             volumes,
             configuration_mounts,
             configuration_root,
+            lifecycle,
             bindings,
             secret_environment,
         );
@@ -1201,17 +1326,21 @@ fn execute_trusted_container_intent(
             volumes,
             configuration_mounts,
             configuration_root,
+            lifecycle,
             bindings,
             secret_environment,
         );
     }
 
     match observed_before {
-        ContainerState::Running => Ok((
+        ContainerState::Running => {
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root)?;
+            Ok((
             "already_running".to_string(),
             format!("trusted container '{}' is already running", container_name),
             false,
-        )),
+            ))
+        }
         ContainerState::Stopped => {
             let output = Command::new("docker")
                 .args(["start", container_name])
@@ -1224,6 +1353,7 @@ fn execute_trusted_container_intent(
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root)?;
             Ok((
                 "started".to_string(),
                 format!(
@@ -1314,6 +1444,7 @@ fn execute_trusted_container_intent(
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root)?;
             Ok((
                 "deployed".to_string(),
                 format!(

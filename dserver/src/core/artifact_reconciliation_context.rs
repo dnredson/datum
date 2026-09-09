@@ -7,7 +7,7 @@ use crate::core::{
         OperationalReconciliationAuthorization, OperationalReconcilerDescriptor,
     },
     service_artifact_registry::{
-        ServiceArtifact, ServiceArtifactWasmDecision,
+        ServiceArtifact, ServiceArtifactLifecycle, ServiceArtifactWasmDecision,
     },
 };
 
@@ -31,6 +31,8 @@ pub struct ArtifactReconciliationAssignment {
     pub volumes: Vec<ArtifactVolumeMount>,
     #[serde(default)]
     pub configuration_mounts: Vec<ArtifactConfigurationMount>,
+    #[serde(default)]
+    pub lifecycle: ServiceArtifactLifecycle,
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ServiceArtifactWasmDecision,
@@ -154,6 +156,7 @@ pub fn build_artifact_reconciliation_context(
                     read_only: mount.read_only,
                 })
                 .collect(),
+            lifecycle: artifact.control_plane.lifecycle.clone(),
             dependencies: artifact.control_plane.dependencies.clone(),
             wasm_decision: artifact.control_plane.wasm_decision.clone(),
             bindings: artifact.control_plane.bindings.clone(),
