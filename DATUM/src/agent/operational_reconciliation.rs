@@ -1679,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn governed_configuration_sources_reject_traversal_and_absolute_paths {
+    fn governed_configuration_sources_reject_traversal_and_absolute_paths() {
         assert!(is_safe_configuration_source("magistrala/atom.yaml"));
         assert!(!is_safe_configuration_source("../secrets"));
         assert!(!is_safe_configuration_source("/etc/passwd"));
