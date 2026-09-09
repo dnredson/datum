@@ -43,11 +43,21 @@ pub struct ContainerDeploymentSpec {
     pub network: Option<String>,
     #[serde(default)]
     pub volumes: Vec<ContainerVolumeMount>,
+    #[serde(default)]
+    pub configuration_mounts: Vec<ContainerConfigurationMount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerVolumeMount {
     pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerConfigurationMount {
+    pub source: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
@@ -268,7 +278,34 @@ fn validate_container_attachments(container: &ContainerDeploymentSpec) -> Result
             bail!("runtime.container.volumes target must be an absolute path without whitespace or commas");
         }
     }
+    for mount in &container.configuration_mounts {
+        if !is_safe_configuration_source(&mount.source) {
+            bail!("runtime.container.configuration_mounts source must be a relative path without traversal");
+        }
+        if !mount.target.starts_with('/')
+            || mount.target.chars().any(char::is_whitespace)
+            || mount.target.contains(',')
+        {
+            bail!("runtime.container.configuration_mounts target must be an absolute path without whitespace or commas");
+        }
+        if !mount.read_only {
+            bail!("runtime.container.configuration_mounts must be read-only");
+        }
+    }
     Ok(())
+}
+
+fn is_safe_configuration_source(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('/')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '.')
+        })
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 fn is_safe_docker_name(value: &str) -> bool {
@@ -728,6 +765,7 @@ mod tests {
                     }],
                     network: None,
                     volumes: Vec::new(),
+                    configuration_mounts: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet {
