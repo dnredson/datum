@@ -36,9 +36,7 @@
     "health": {
       "kind": "http",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8080,
-        "path": "/health",
+        "url": "http://127.0.0.1:8080/health",
         "expected_status": 200
       },
       "vantage_point": "local_host"
@@ -46,7 +44,7 @@
     "availability": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
+        "host": "127.0.0.1",
         "port": 8080
       },
       "vantage_point": "local_host"
