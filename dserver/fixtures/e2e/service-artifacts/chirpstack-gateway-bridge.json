@@ -24,22 +24,8 @@
       },
       "vantage_point": "local_host"
     },
-    "health": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 1700
-      },
-      "vantage_point": "local_host"
-    },
-    "availability": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 1700
-      },
-      "vantage_point": "local_host"
-    }
+    "health": null,
+    "availability": null
   },
   "metadata": {
     "role": "lorawan_gateway_bridge",
@@ -51,7 +37,7 @@
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "fog-lorawan"
+      "phase": "mist-gateway"
     }
   },
   "control_plane": {
@@ -60,14 +46,12 @@
     "version": "4",
     "artifact_kind": "container",
     "target_nodes": [
-      "fog-01"
+      "mist-01"
     ],
     "target_stages": [
-      "fog"
+      "mist"
     ],
-    "dependencies": [
-      "fog-mosquitto"
-    ],
+    "dependencies": [],
     "acquisition": {
       "kind": "image",
       "source": null,
@@ -113,7 +97,7 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "MQTT_BROKER_HOST": "fog-mosquitto",
+      "MQTT_BROKER_HOST": "192.168.10.103",
       "UDP_LISTEN_ADDR": "0.0.0.0:1700",
       "REGION": "EU868"
     },

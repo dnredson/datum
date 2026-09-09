@@ -1,0 +1,140 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-nginx",
+  "service_id": "magistrala-nginx",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-nginx",
+      "image": "docker.io/nginx:1.31.3-alpine3.24",
+      "ports": [
+        {
+          "container_port": 80,
+          "host_port": 18080,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-nginx"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 18080
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 18080
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "api_and_message_ingress",
+    "official_compose_service": "nginx",
+    "configuration": {
+      "required_mounts": [
+        {
+          "source": "magistrala/nginx",
+          "target": "/etc/nginx",
+          "read_only": true
+        },
+        {
+          "source": "magistrala/ssl",
+          "target": "/etc/ssl",
+          "read_only": true
+        }
+      ],
+      "host_port_contract": "18080 is reserved for the governed SMA/HTTP ingress."
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-core"
+    },
+    "compatibility": {
+      "magistrala_release": "v1.0.0",
+      "atom_release": "v1.0.0",
+      "fluxmq_release": "v1.0.0"
+    }
+  },
+  "control_plane": {
+    "project_id": "monitor-f49c8",
+    "name": "Magistrala v1 nginx ingress",
+    "version": "v1.0.0",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [
+      "magistrala-fluxmq-node1",
+      "magistrala-fluxmq-node2",
+      "magistrala-fluxmq-node3"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "docker.io/nginx:1.31.3-alpine3.24",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-nginx"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MG_NGINX_HTTP_PORT": "80",
+      "MG_NGINX_MQTT_PORT": "1883",
+      "MG_NGINX_AMQP_PORT": "5682",
+      "MG_HTTP_ADAPTER_URL": "http://magistrala-nginx:80/http",
+      "ATOM_PUBLIC_URL": "http://magistrala-nginx:80"
+    },
+    "secret_refs": [
+      "magistrala_nginx_server_cert",
+      "magistrala_nginx_server_key",
+      "magistrala_nginx_ca_cert"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

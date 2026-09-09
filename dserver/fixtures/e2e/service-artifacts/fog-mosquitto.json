@@ -1,7 +1,7 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "mosquitto",
-  "service_id": "mqtt",
+  "artifact_id": "fog-mosquitto",
+  "service_id": "fog-mosquitto",
   "runtime": {
     "kind": "container",
     "container": {
@@ -65,12 +65,10 @@
     "version": "2",
     "artifact_kind": "container",
     "target_nodes": [
-      "fog-01",
-      "cloud-01"
+      "fog-01"
     ],
     "target_stages": [
-      "fog",
-      "cloud"
+      "fog"
     ],
     "dependencies": [],
     "acquisition": {

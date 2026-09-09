@@ -25,7 +25,7 @@
     "role": "simulated_lora_device",
     "source_repository": "https://github.com/dnredson/datum",
     "source_path": "examples/lora-device-simulator",
-    "image_policy": "build_before_deploy",
+    "image_policy": "preloaded_trusted_local_image",
     "configuration": {
       "template": "mist/device-simulator.env",
       "payload_format": "LoRaWAN/PHYPayload",
@@ -33,41 +33,32 @@
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "mist-device"
+      "phase": "desktop-traffic"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Simulated LoRa device",
     "version": "stage78",
-    "artifact_kind": "command_bundle",
+    "artifact_kind": "container",
     "target_nodes": [
-      "mist-01"
+      "local-01"
     ],
     "target_stages": [
-      "mist"
+      "desktop"
     ],
     "dependencies": [
       "lora-packet-forwarder"
     ],
     "acquisition": {
-      "kind": "repository",
-      "source": "https://github.com/dnredson/datum",
-      "revision": "main",
+      "kind": "image",
+      "source": null,
+      "revision": "stage78",
       "sha256": null
     },
     "lifecycle": {
       "pre_install": [],
-      "install": [
-        {
-          "program": "clone_git",
-          "args": [
-            "datum"
-          ],
-          "working_dir": null,
-          "environment": {}
-        }
-      ],
+      "install": [],
       "configure": [
         {
           "program": "render_template",

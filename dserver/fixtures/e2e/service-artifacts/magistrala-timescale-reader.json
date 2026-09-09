@@ -1,0 +1,131 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-timescale-reader",
+  "service_id": "magistrala-timescale-reader",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-timescale-reader",
+      "image": "ghcr.io/absmach/magistrala/timescale-reader:v1.0.0",
+      "ports": [
+        {
+          "container_port": 9011,
+          "host_port": 9011,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-timescale-reader"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 9011
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 9011
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "telemetry_query_api",
+    "official_compose_service": "timescale-reader",
+    "configuration": {
+      "required_mounts": [
+        {
+          "source": "magistrala/ssl/certs",
+          "target": "/etc/ssl/certs",
+          "read_only": true
+        }
+      ]
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-core"
+    },
+    "compatibility": {
+      "magistrala_release": "v1.0.0",
+      "atom_release": "v1.0.0",
+      "fluxmq_release": "v1.0.0"
+    }
+  },
+  "control_plane": {
+    "project_id": "monitor-f49c8",
+    "name": "Magistrala v1 Timescale reader",
+    "version": "v1.0.0",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [
+      "magistrala-timescale"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "ghcr.io/absmach/magistrala/timescale-reader:v1.0.0",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-timescale-reader"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "MG_TIMESCALE_READER_HTTP_HOST": "0.0.0.0",
+      "MG_TIMESCALE_READER_HTTP_PORT": "9011",
+      "MG_TIMESCALE_READER_URL": "http://magistrala-timescale-reader:9011"
+    },
+    "secret_refs": [
+      "magistrala_timescale_db_password",
+      "magistrala_timescale_reader_client_cert",
+      "magistrala_timescale_reader_client_key",
+      "magistrala_timescale_ca_cert"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
