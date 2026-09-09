@@ -13,7 +13,9 @@
           "host_port": 8200,
           "protocol": "tcp"
         }
-      ]
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
     }
   },
   "probes": {

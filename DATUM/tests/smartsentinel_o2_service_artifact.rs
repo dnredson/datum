@@ -45,6 +45,8 @@ fn unsupported_execution_probe_is_rejected() {
                     host_port: None,
                     protocol: "tcp".to_string(),
                 }],
+                network: None,
+                volumes: Vec::new(),
             }),
         },
         probes: ServiceProbeSet {

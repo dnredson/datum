@@ -39,6 +39,18 @@ pub struct ContainerDeploymentSpec {
     pub image: String,
     #[serde(default)]
     pub ports: Vec<ContainerPortMapping>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub volumes: Vec<ContainerVolumeMount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerVolumeMount {
+    pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,6 +164,7 @@ pub fn validate_service_artifact(artifact: &ServiceArtifact) -> Result<()> {
         }
     }
 
+    validate_container_attachments(container)?;
     validate_probe("execution", &artifact.probes.execution)?;
     if let Some(probe) = &artifact.probes.health {
         validate_probe("health", probe)?;
@@ -236,6 +249,36 @@ fn derive_operational_state(
             }
         }
     }
+}
+
+fn validate_container_attachments(container: &ContainerDeploymentSpec) -> Result<()> {
+    if let Some(network) = container.network.as_deref() {
+        if !is_safe_docker_name(network) {
+            bail!("runtime.container.network must be a non-empty Docker network name");
+        }
+    }
+    for volume in &container.volumes {
+        if !is_safe_docker_name(&volume.name) {
+            bail!("runtime.container.volumes name must be a non-empty Docker volume name");
+        }
+        if !volume.target.starts_with('/')
+            || volume.target.chars().any(char::is_whitespace)
+            || volume.target.contains(',')
+        {
+            bail!("runtime.container.volumes target must be an absolute path without whitespace or commas");
+        }
+    }
+    Ok(())
+}
+
+fn is_safe_docker_name(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-'))
+        && value.chars().next().is_some_and(|character| character.is_ascii_alphanumeric())
 }
 
 fn validate_probe(dimension: &str, probe: &ServiceProbeSpec) -> Result<()> {
@@ -683,6 +726,8 @@ mod tests {
                         host_port: Some(1883),
                         protocol: "tcp".to_string(),
                     }],
+                    network: None,
+                    volumes: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet {

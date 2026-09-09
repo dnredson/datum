@@ -18,7 +18,9 @@
           "host_port": null,
           "protocol": "tcp"
         }
-      ]
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
     }
   },
   "probes": {
@@ -54,11 +56,9 @@
     "configuration": {
       "template": "magistrala/atom.env",
       "environment_refs": [
-        "ATOM_DB_USER",
-        "ATOM_DB_PASSWORD",
-        "ATOM_DB_NAME",
-        "ATOM_JWT_SECRET",
-        "ATOM_ADMIN_SECRET",
+        "DATABASE_URL",
+        "ATOM_KEY_ENCRYPTION_KEY",
+        "ADMIN_SECRET",
         "ATOM_SERVICE_SECRET"
       ],
       "persistent_volume": null
@@ -133,13 +133,13 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "DATABASE_HOST": "magistrala-atom-db",
       "ATOM_PUBLIC_BASE_URL": "http://192.168.10.108:8080",
       "LISTEN_ADDR": "0.0.0.0:8080",
       "GRPC_ADDR": "0.0.0.0:8081"
     },
     "secret_refs": [
-      "magistrala_atom_jwt_secret",
+      "magistrala_atom_database_url",
+      "magistrala_atom_key_encryption_key",
       "magistrala_atom_admin_secret",
       "magistrala_atom_service_secret"
     ],

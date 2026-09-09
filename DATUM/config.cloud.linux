@@ -18,16 +18,20 @@ enabled = true
 allow_container_execution = true
 
 [[dispatch.secret_bindings]]
-secret_ref = "magistrala_atom_jwt_secret"
-environment_variable = "MAGISTRALA_ATOM_JWT_SECRET"
+secret_ref = "magistrala_atom_database_url"
+environment_variable = "DATABASE_URL"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_key_encryption_key"
+environment_variable = "ATOM_KEY_ENCRYPTION_KEY"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_admin_secret"
-environment_variable = "MAGISTRALA_ATOM_ADMIN_SECRET"
+environment_variable = "ADMIN_SECRET"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_service_secret"
-environment_variable = "MAGISTRALA_ATOM_SERVICE_SECRET"
+environment_variable = "ATOM_SERVICE_SECRET"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_bootstrap_db_password"
@@ -71,24 +75,24 @@ artifact = "postgres:16.2-alpine"
 [[dispatch.container_mappings]]
 service_name = "magistrala-atom"
 container_name = "datum-magistrala-atom"
-artifact = "ghcr.io/absmach/atom:latest"
+artifact = "ghcr.io/absmach/atom:v0.50.0"
 ports = [{ host_port = 8080, container_port = 8080, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-bootstrap"
 container_name = "datum-magistrala-bootstrap"
-artifact = "ghcr.io/absmach/magistrala/bootstrap:v1.0.0"
+artifact = "ghcr.io/absmach/magistrala/bootstrap:v0.51.0"
 ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-auth"
 container_name = "datum-magistrala-fluxmq-auth"
-artifact = "ghcr.io/absmach/magistrala/fluxmq:v1.0.0"
+artifact = "ghcr.io/absmach/magistrala/fluxmq:v0.51.0"
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-node1"
 container_name = "datum-magistrala-fluxmq-node1"
-artifact = "ghcr.io/absmach/fluxmq:latest"
+artifact = "ghcr.io/absmach/fluxmq:v0.51.0"
 ports = [
   { host_port = 1883, container_port = 1883, protocol = "tcp" },
   { host_port = 8883, container_port = 8883, protocol = "tcp" }
