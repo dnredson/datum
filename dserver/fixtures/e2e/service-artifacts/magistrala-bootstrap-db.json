@@ -29,7 +29,7 @@
     "health": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
+        "host": "127.0.0.1",
         "port": 5432
       },
       "vantage_point": "local_host"
