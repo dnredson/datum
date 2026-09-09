@@ -135,7 +135,8 @@
     "bindings": {
       "ATOM_PUBLIC_BASE_URL": "http://192.168.10.108:8080",
       "LISTEN_ADDR": "0.0.0.0:8080",
-      "GRPC_ADDR": "0.0.0.0:8081"
+      "GRPC_ADDR": "0.0.0.0:8081",
+    "ATOM_CERTS_ENABLED": "false"
     },
     "secret_refs": [
       "magistrala_atom_database_url",
