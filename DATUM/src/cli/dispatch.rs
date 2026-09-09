@@ -370,6 +370,7 @@ mod tests {
             execute: None,
             publish_results: None,
             allow_container_execution: None,
+            configuration_root: None,
             secret_bindings: Vec::new(),
             container_mappings: Vec::new(),
         };
@@ -394,6 +395,7 @@ mod tests {
             execute: Some(true),
             publish_results: Some(true),
             allow_container_execution: Some(true),
+            configuration_root: None,
             secret_bindings: Vec::new(),
             container_mappings: Vec::new(),
         });
