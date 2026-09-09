@@ -84,8 +84,8 @@
     "lora-device-simulator",
     "lora-packet-forwarder",
     "chirpstack-gateway-bridge",
-    "chirpstack",
     "fog-mosquitto",
+    "chirpstack",
     "sma",
     "magistrala-atom"
   ],
