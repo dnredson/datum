@@ -390,7 +390,21 @@ fn run_operational_reconciliation_from_bootstrap(
                     None => (Vec::new(), None, "not_required".to_string()),
                 }
             };
-        let wasm = run_embedded_reconciler(true, observed_before_running)?;
+        let attachment_mismatch = match (mapping, assignment, observed_before) {
+            (Some(mapping), Some(artifact), ContainerState::Running | ContainerState::Stopped) => {
+                !container_attachments_match(
+                    &mapping.container_name,
+                    artifact.network.as_deref(),
+                    &artifact.volumes,
+                )
+                .unwrap_or(false)
+            }
+            _ => false,
+        };
+        let wasm = run_embedded_reconciler(
+            true,
+            observed_before_running && !attachment_mismatch,
+        )?;
 
         if rollback_requested {
             let (execution_status, message, host_mutation_performed) =
