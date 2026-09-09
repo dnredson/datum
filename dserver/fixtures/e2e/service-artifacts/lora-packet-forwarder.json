@@ -24,69 +24,46 @@
       },
       "vantage_point": "local_host"
     },
-    "health": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 1700
-      },
-      "vantage_point": "local_host"
-    },
-    "availability": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 1700
-      },
-      "vantage_point": "local_host"
-    }
+    "health": null,
+    "availability": null
   },
   "metadata": {
     "role": "virtual_lora_gateway_packet_forwarder",
     "source_repository": "https://github.com/Lora-net/packet_forwarder",
-    "image_policy": "build_before_deploy",
+    "image_policy": "preloaded_trusted_local_image",
     "configuration": {
       "template": "mist/packet-forwarder.json",
       "transport": "semtech_udp",
-      "target": "192.168.10.103:1700"
+      "target": "192.168.10.109:1700"
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "mist-gateway"
+      "phase": "desktop-traffic"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Virtual LoRa packet forwarder",
     "version": "stage78",
-    "artifact_kind": "command_bundle",
+    "artifact_kind": "container",
     "target_nodes": [
-      "mist-01"
+      "local-01"
     ],
     "target_stages": [
-      "mist"
+      "desktop"
     ],
     "dependencies": [
       "chirpstack-gateway-bridge"
     ],
     "acquisition": {
-      "kind": "repository",
-      "source": "https://github.com/Lora-net/packet_forwarder",
-      "revision": "master",
+      "kind": "image",
+      "source": null,
+      "revision": "stage78",
       "sha256": null
     },
     "lifecycle": {
       "pre_install": [],
-      "install": [
-        {
-          "program": "clone_git",
-          "args": [
-            "packet_forwarder"
-          ],
-          "working_dir": null,
-          "environment": {}
-        }
-      ],
+      "install": [],
       "configure": [
         {
           "program": "render_template",
@@ -123,7 +100,7 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "FORWARDER_TARGET_HOST": "192.168.10.103",
+      "FORWARDER_TARGET_HOST": "192.168.10.109",
       "FORWARDER_TARGET_PORT": "1700",
       "GATEWAY_ID": "datum-gateway-01",
       "REGION": "EU868"
