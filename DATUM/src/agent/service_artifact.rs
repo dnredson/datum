@@ -56,6 +56,14 @@ pub struct ContainerVolumeMount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerConfigurationMount {
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerPortMapping {
     pub container_port: u16,
     #[serde(default)]
