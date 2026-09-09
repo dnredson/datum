@@ -47,6 +47,7 @@ fn unsupported_execution_probe_is_rejected() {
                 }],
                 network: None,
                 volumes: Vec::new(),
+            configuration_mounts: Vec::new(),
             }),
         },
         probes: ServiceProbeSet {
