@@ -118,7 +118,9 @@ validation.
 
 ## Stage 95 topology
 
-The desktop-local traffic generator and virtual packet forwarder send Semtech UDP to
-`mist-01:1700`. The Gateway Bridge publishes to the fog broker at
-`192.168.10.103:1883`; SMA on the cloud consumes that broker and publishes to Magistrala.
+The desktop-local traffic generator feeds the virtual packet forwarder, which sends
+Semtech UDP to `mist-01:1700`. The Gateway Bridge publishes to the fog broker at
+`192.168.10.103:1883`; Mosquitto feeds ChirpStack, while SMA on the cloud consumes
+the broker and publishes to Magistrala. Cross-node links are represented by scenario
+relations and network bindings; they are not local artifact dependencies.
 This catalog does not materialize or modify the D-Graph.
