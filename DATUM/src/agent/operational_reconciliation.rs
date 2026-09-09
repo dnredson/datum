@@ -1026,6 +1026,28 @@ fn execute_trusted_container_intent(
         );
     }
 
+    if observed_before == ContainerState::Stopped && !secret_environment.is_empty() {
+        let output = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output()
+            .with_context(|| format!("recreate stopped trusted container '{container_name}' for resolved secrets"))?;
+        if !output.status.success() {
+            bail!(
+                "docker rm -f failed while refreshing secrets for '{}': {}",
+                container_name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        return execute_trusted_container_intent(
+            mapping,
+            ContainerState::Missing,
+            network,
+            volumes,
+            bindings,
+            secret_environment,
+        );
+    }
+
     match observed_before {
         ContainerState::Running => Ok((
             "already_running".to_string(),
@@ -1033,9 +1055,6 @@ fn execute_trusted_container_intent(
             false,
         )),
         ContainerState::Stopped => {
-            if !secret_environment.is_empty() {
-                bail!("stopped trusted container cannot receive newly resolved secrets without recreation");
-            }
             let output = Command::new("docker")
                 .args(["start", container_name])
                 .output()
