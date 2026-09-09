@@ -1338,8 +1338,9 @@ fn is_safe_configuration_source(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 512
         && !value.starts_with('/')
-        && !value.contains('\\')
-        && !value.chars().any(|character| character.is_control() || character.is_whitespace())
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '.'))
         && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
