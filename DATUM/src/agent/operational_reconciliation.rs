@@ -1199,6 +1199,8 @@ fn execute_trusted_container_intent(
             ContainerState::Missing,
             network,
             volumes,
+            configuration_mounts,
+            configuration_root,
             bindings,
             secret_environment,
         );
@@ -1543,6 +1545,14 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn governed_configuration_sources_reject_traversal_and_absolute_paths() {
+        assert!(is_safe_configuration_source("magistrala/atom.yaml"));
+        assert!(!is_safe_configuration_source("../secrets"));
+        assert!(!is_safe_configuration_source("/etc/passwd"));
+        assert!(!is_safe_configuration_source("magistrala\\atom.yaml"));
+    }
+
     fn docker_missing_container_error_is_case_insensitive() {
         assert!(docker_inspect_reports_missing("Error: No such object: datum-mqtt"));
         assert!(docker_inspect_reports_missing("error: no such object: datum-mqtt"));
