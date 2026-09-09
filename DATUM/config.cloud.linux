@@ -176,7 +176,7 @@ ports = [{ host_port = 8080, container_port = 8080, protocol = "tcp" }]
 service_name = "magistrala-bootstrap"
 container_name = "datum-magistrala-bootstrap"
 artifact = "ghcr.io/absmach/magistrala/bootstrap:v1.0.0"
-ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
+ports = [{ host_port = 9010, container_port = 9013, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-auth"
