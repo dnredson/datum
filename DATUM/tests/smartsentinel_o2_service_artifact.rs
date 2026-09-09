@@ -95,11 +95,11 @@ fn magistrala_bootstrap_db_catalog_contract_is_valid() {
     );
     assert_eq!(
         document["control_plane"]["bindings"]["POSTGRES_USER"].as_str(),
-        Some("datum")
+        Some("magistrala")
     );
     assert_eq!(
         document["control_plane"]["secret_refs"][0].as_str(),
-        Some("magistrala_bootstrap_db_postgres_password")
+        Some("magistrala_bootstrap_db_password")
     );
 
     let artifact = load_service_artifact(&path)
@@ -110,67 +110,27 @@ fn magistrala_bootstrap_db_catalog_contract_is_valid() {
 
 
 #[test]
-fn magistrala_bootstrap_db_tcp_probe_uses_host_parameter() {
+fn magistrala_bootstrap_db_uses_container_health_contract() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../dserver/fixtures/e2e/service-artifacts/magistrala-bootstrap-db.json");
     let raw = std::fs::read_to_string(&path).expect("Bootstrap DB artifact should be readable");
     let document: serde_json::Value =
         serde_json::from_str(&raw).expect("Bootstrap DB artifact should be valid JSON");
 
+    assert!(document["probes"]["health"].is_null());
     assert_eq!(
-        document["probes"]["health"]["params"]["host"].as_str(),
-        Some("127.0.0.1")
+        document["metadata"]["configuration"]["health_contract"].as_str(),
+        Some("docker_exec_pg_isready")
     );
-    assert!(document["probes"]["health"]["params"]["target"].is_null());
 }
-
 #[test]
-fn magistrala_atom_bootstrap_job_catalog_contract_is_valid() {
+fn magistrala_atom_uses_mounted_bootstrap_configuration() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-atom-bootstrap.json");
-    let raw = std::fs::read_to_string(&path)
-        .expect("Atom bootstrap artifact should be readable");
-    let document: serde_json::Value =
-        serde_json::from_str(&raw).expect("Atom bootstrap artifact should be valid JSON");
-
-    assert_eq!(
-        document["artifact_id"].as_str(),
-        Some("magistrala-atom-bootstrap")
-    );
-    assert_eq!(
-        document["runtime"]["container"]["image"].as_str(),
-        Some("ghcr.io/absmach/magistrala/atom-bootstrap:v0.51.0")
-    );
-    assert_eq!(
-        document["runtime"]["container"]["network"].as_str(),
-        Some("datum-magistrala-net")
-    );
-    assert_eq!(
-        document["runtime"]["container"]["ports"]
-            .as_array()
-            .map(Vec::len),
-        Some(0)
-    );
-    assert_eq!(
-        document["control_plane"]["dependencies"][0].as_str(),
-        Some("magistrala-atom")
-    );
-    assert_eq!(
-        document["control_plane"]["secret_refs"][0].as_str(),
-        Some("magistrala_atom_bootstrap_admin_secret")
-    );
-    assert_eq!(
-        document["metadata"]["completion_mode"].as_str(),
-        Some("successful_exit")
-    );
-    assert_eq!(
-        document["control_plane"]["bindings"]["MG_ATOM_BOOTSTRAP_RETRY_INTERVAL"].as_str(),
-        Some("10s")
-    );
-
+        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-atom.json");
     let artifact = load_service_artifact(&path)
-        .expect("Atom bootstrap artifact should satisfy the SmartSentinel artifact schema");
-    validate_service_artifact(&artifact)
-        .expect("Atom bootstrap artifact should pass SmartSentinel validation");
+        .expect("Atom artifact should satisfy the SmartSentinel artifact schema");
+    let container = artifact.runtime.container.as_ref().expect("Atom should use a container runtime");
+    assert_eq!(container.configuration_mounts.len(), 1);
+    assert_eq!(container.configuration_mounts[0].source, "magistrala/atom-bootstrap.yaml");
+    assert_eq!(artifact.metadata.unwrap()["configuration"]["note"], "v1.0.0 loads action and policy bootstrap directly at Atom startup; no atom-bootstrap job container is used.");
 }
-
