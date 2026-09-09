@@ -1,0 +1,20 @@
+# Static laboratory configuration. Values are loaded from the generated node.env.
+[logging]
+level = "info"
+[postgresql]
+dsn = "postgres://chirpstack:$POSTGRES_PASSWORD@datum-chirpstack-postgres/chirpstack?sslmode=disable"
+[redis]
+servers = ["redis://datum-chirpstack-redis/"]
+[network]
+net_id = "000000"
+enabled_regions = ["eu868"]
+[api]
+bind = "0.0.0.0:8080"
+secret = "$CHIRPSTACK_API_SECRET"
+[monitoring]
+bind = "0.0.0.0:9100"
+[integration]
+enabled = ["mqtt"]
+[integration.mqtt]
+server = "tcp://192.168.10.103:1883/"
+json = true

@@ -1,0 +1,112 @@
+[agent]
+node_id = "fog-01"
+cycle_s = 5
+schema_version = "0.0.1"
+
+[outputs.file_json]
+enabled = true
+path = "snapshot.json"
+
+# futuro (stub)
+[outputs.http]
+enabled = false
+url = "http://localhost:8080/v1/snapshots"
+
+[dispatch]
+enabled = true
+allow_container_execution = true
+configuration_root = "/opt/datum/governed-config"
+
+[[dispatch.secret_bindings]]
+secret_ref = "chirpstack_postgres_password"
+environment_variable = "POSTGRES_PASSWORD"
+
+[[dispatch.secret_bindings]]
+secret_ref = "chirpstack_api_secret"
+environment_variable = "CHIRPSTACK_API_SECRET"
+
+
+[[dispatch.container_mappings]]
+service_name = "mqtt"
+container_name = "datum-mosquitto"
+artifact = "eclipse-mosquitto:2"
+ports = [{ host_port = 1883, container_port = 1883, protocol = "tcp" }]
+
+#[collectors.process_windows]
+#enabled = true
+#mode = "group_by_name"
+#names = ["docker desktop.exe", "dockerd.exe", "datum.exe", "chrome.exe"]
+#max_entries = 50
+#include_pids = false
+
+[collectors.process_linux]
+enabled = true
+mode = "allowlist"
+names = ["sshd", "datum"]
+max_entries = 50
+
+[collectors.connection_ping]
+enabled = true
+targets = ["1.1.1.1", "8.8.8.8"]
+count = 4
+timeout_s = 1
+
+# Optional TCP peer probes.
+[[collectors.connection_ping.peer_targets]]
+node_id = "fog-01"
+target = "192.168.10.103"
+port = 22
+timeout_s = 2
+
+[[collectors.connection_ping.peer_targets]]
+node_id = "cloud-01"
+target = "192.168.10.108"
+port = 22
+timeout_s = 2
+
+[collectors.docker]
+enabled = true
+mode = "allowlist"
+names = ["datum-mosquitto", "datum-chirpstack-postgres", "datum-chirpstack-redis", "datum-chirpstack"]
+max_entries = 20
+
+[services]
+enabled = true
+
+[[services.items]]
+name = "mqtt"
+implemented_by = [{ container_name = "datum-mosquitto" }]
+
+[[services.items]]
+name = "datum-agent"
+implemented_by = [{ process_name = "datum" }]
+
+[[dispatch.container_mappings]]
+service_name = "chirpstack-postgres"
+container_name = "datum-chirpstack-postgres"
+artifact = "postgres:14-alpine"
+ports = []
+
+[[dispatch.container_mappings]]
+service_name = "chirpstack-redis"
+container_name = "datum-chirpstack-redis"
+artifact = "redis:7-alpine"
+ports = []
+
+[[dispatch.container_mappings]]
+service_name = "chirpstack"
+container_name = "datum-chirpstack"
+artifact = "chirpstack/chirpstack:4"
+ports = [{ host_port = 18081, container_port = 8080, protocol = "tcp" }, { host_port = 19101, container_port = 9100, protocol = "tcp" }]
+
+[[services.items]]
+name = "chirpstack-postgres"
+implemented_by = [{ container_name = "datum-chirpstack-postgres" }]
+
+[[services.items]]
+name = "chirpstack-redis"
+implemented_by = [{ container_name = "datum-chirpstack-redis" }]
+
+[[services.items]]
+name = "chirpstack"
+implemented_by = [{ container_name = "datum-chirpstack" }]

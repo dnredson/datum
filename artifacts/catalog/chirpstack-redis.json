@@ -1,18 +1,25 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "chirpstack",
-  "service_id": "chirpstack",
+  "artifact_id": "chirpstack-redis",
+  "service_id": "chirpstack-redis",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-chirpstack",
-      "image": "chirpstack/chirpstack:4",
-      "ports": [
+      "container_name": "datum-chirpstack-redis",
+      "image": "redis:7-alpine",
+      "ports": [],
+      "network": "datum-fog-net",
+      "volumes": [
         {
-          "container_port": 8080,
-          "host_port": 8080,
-          "protocol": "tcp"
+          "name": "datum-chirpstack-redis-data",
+          "target": "/data",
+          "read_only": false
         }
+      ],
+      "command": [
+        "redis-server",
+        "--appendonly",
+        "yes"
       ]
     }
   },
@@ -20,46 +27,29 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-chirpstack"
+        "container_name": "datum-chirpstack-redis"
       },
       "vantage_point": "local_host"
     },
-    "health": {
-      "kind": "http",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 8080,
-        "path": "/api/health",
-        "expected_status": 200
-      },
-      "vantage_point": "local_host"
-    },
-    "availability": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 8080
-      },
-      "vantage_point": "local_host"
-    }
+    "health": null,
+    "availability": null
   },
   "metadata": {
-    "role": "lorawan_network_server",
-    "official_compose_service": "chirpstack",
+    "role": "chirpstack_cache",
+    "official_compose_service": "redis",
     "configuration": {
-      "template": "chirpstack/chirpstack.toml",
-      "region": "EU868",
-      "mqtt_topic_namespace": "eu868"
+      "persistent_volume": "chirpstack-redisdata",
+      "health_contract": "docker exec datum-chirpstack-redis redis-cli ping must return PONG"
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "fog-lorawan"
+      "phase": "fog-foundation"
     }
   },
   "control_plane": {
     "project_id": "",
-    "name": "ChirpStack network server",
-    "version": "4",
+    "name": "ChirpStack Redis",
+    "version": "7-alpine",
     "artifact_kind": "container",
     "target_nodes": [
       "fog-01"
@@ -67,15 +57,11 @@
     "target_stages": [
       "fog"
     ],
-    "dependencies": [
-      "fog-mosquitto",
-      "chirpstack-postgres",
-      "chirpstack-redis"
-    ],
+    "dependencies": [],
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "4",
+      "revision": "7-alpine",
       "sha256": null
     },
     "lifecycle": {
@@ -140,16 +126,8 @@
       "max_fuel": 1000000,
       "timeout_ms": 1000
     },
-    "bindings": {
-      "MQTT_BROKER_HOST": "fog-mosquitto",
-      "REDIS_HOST": "chirpstack-redis",
-      "POSTGRESQL_HOST": "chirpstack-postgres",
-      "CHIRPSTACK_LISTEN_ADDR": "0.0.0.0:8080"
-    },
-    "secret_refs": [
-      "chirpstack_postgres_password",
-      "fog_mqtt_password"
-    ],
+    "bindings": {},
+    "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""
   }

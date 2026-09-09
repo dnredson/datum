@@ -1,0 +1,9 @@
+[[regions]]
+id = "eu868"
+description = "EU868 laboratory"
+common_name = "EU868"
+[regions.gateway.backend]
+enabled = "mqtt"
+[regions.gateway.backend.mqtt]
+topic_prefix = "eu868"
+server = "tcp://192.168.10.103:1883/"

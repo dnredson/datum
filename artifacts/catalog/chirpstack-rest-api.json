@@ -1,18 +1,26 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "chirpstack-gateway-bridge",
-  "service_id": "chirpstack-gateway-bridge",
+  "artifact_id": "chirpstack-rest-api",
+  "service_id": "chirpstack-rest-api",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-chirpstack-gateway-bridge",
-      "image": "chirpstack/chirpstack-gateway-bridge:4",
+      "container_name": "datum-chirpstack-rest-api",
+      "image": "chirpstack/chirpstack-rest-api:4",
       "ports": [
         {
-          "container_port": 1700,
-          "host_port": 1700,
-          "protocol": "udp"
+          "container_port": 8090,
+          "host_port": 8090,
+          "protocol": "tcp"
         }
+      ],
+      "network": "datum-fog-net",
+      "command": [
+        "--server",
+        "datum-chirpstack:8080",
+        "--bind",
+        "0.0.0.0:8090",
+        "--insecure"
       ]
     }
   },
@@ -20,38 +28,60 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-chirpstack-gateway-bridge"
+        "container_name": "datum-chirpstack-rest-api"
       },
       "vantage_point": "local_host"
     },
-    "health": null,
-    "availability": null
+    "health": {
+      "kind": "http",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8090,
+        "path": "/api/health",
+        "expected_status": 200
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 8090
+      },
+      "vantage_point": "local_host"
+    }
   },
   "metadata": {
-    "role": "lorawan_gateway_bridge",
-    "official_compose_service": "chirpstack-gateway-bridge",
+    "role": "lorawan_control_api",
+    "official_compose_service": "chirpstack-rest-api",
     "configuration": {
-      "template": "chirpstack/gateway-bridge.toml",
-      "event_topic_template": "eu868/gateway/{{gateway_id}}/event/{{event_type}}",
-      "command_topic_template": "eu868/gateway/{{gateway_id}}/command/#"
+      "command": [
+        "--server",
+        "chirpstack:8080",
+        "--bind",
+        "0.0.0.0:8090",
+        "--insecure"
+      ]
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "mist-gateway"
+      "phase": "fog-lorawan"
     }
   },
   "control_plane": {
     "project_id": "",
-    "name": "ChirpStack Gateway Bridge",
+    "name": "ChirpStack REST API",
     "version": "4",
     "artifact_kind": "container",
     "target_nodes": [
-      "mist-01"
+      "fog-01"
     ],
     "target_stages": [
-      "mist"
+      "fog"
     ],
-    "dependencies": [],
+    "dependencies": [
+      "chirpstack"
+    ],
     "acquisition": {
       "kind": "image",
       "source": null,
@@ -120,14 +150,8 @@
       "max_fuel": 1000000,
       "timeout_ms": 1000
     },
-    "bindings": {
-      "MQTT_BROKER_HOST": "192.168.10.103",
-      "UDP_LISTEN_ADDR": "0.0.0.0:1700",
-      "REGION": "EU868"
-    },
-    "secret_refs": [
-      "fog_mqtt_password"
-    ],
+    "bindings": {},
+    "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""
   }

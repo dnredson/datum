@@ -270,6 +270,7 @@ pub fn build_docker_run_args(artifact: &ServiceArtifact) -> Result<Vec<String>> 
     }
 
     args.push(container.image.trim().to_string());
+    args.extend(container.command.iter().cloned());
     Ok(args)
 }
 
