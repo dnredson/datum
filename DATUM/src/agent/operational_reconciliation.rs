@@ -202,6 +202,20 @@ enum ContainerState {
     Missing,
 }
 
+fn is_completion_desired(desired_state: &str) -> bool {
+    desired_state.trim().eq_ignore_ascii_case("completed")
+}
+
+fn completed_container_converged(
+    desired_state: &str,
+    observed_before: ContainerState,
+    exit_code: Option<i64>,
+) -> bool {
+    is_completion_desired(desired_state)
+        && observed_before == ContainerState::Stopped
+        && exit_code == Some(0)
+}
+
 pub fn run_operational_reconciliation(
     cfg: &Config,
     requested_node_id: Option<&str>,
@@ -353,10 +367,7 @@ fn run_operational_reconciliation_from_bootstrap(
                 &artifact.image,
             )
         });
-        let dependency_blockers = assignment
-            .map(|artifact| dependency_blockers_for_assignment(artifact, &context, cfg))
-            .unwrap_or_default();
-        let (observed_before, observation_error) = match mapping {
+        let (observed_before, mut observation_error) = match mapping {
             Some(mapping) => match inspect_container(&mapping.container_name) {
                 Ok(state) => (state, None),
                 Err(error) => (ContainerState::Missing, Some(error.to_string())),
@@ -364,6 +375,40 @@ fn run_operational_reconciliation_from_bootstrap(
             None => (ContainerState::Missing, None),
         };
         let observed_before_running = observed_before == ContainerState::Running;
+        let completion_observation_requested =
+            is_completion_desired(&service.desired_state)
+                && observed_before == ContainerState::Stopped;
+        let completion_exit_code_result = if completion_observation_requested {
+            mapping
+                .map(|mapping| inspect_container_exit_code(&mapping.container_name))
+                .transpose()
+        } else {
+            Ok(None)
+        };
+        let completion_exit_code_error = completion_exit_code_result
+            .as_ref()
+            .err()
+            .map(ToString::to_string);
+        let completion_exit_code = completion_exit_code_result.ok().flatten();
+        if let Some(error) = completion_exit_code_error.as_deref() {
+            observation_error = Some(format!(
+                "could not verify one-shot completion for '{}': {}",
+                service.service_id, error
+            ));
+        }
+        let completion_succeeded = completed_container_converged(
+            &service.desired_state,
+            observed_before,
+            completion_exit_code,
+        );
+        let completion_failed = completion_exit_code.is_some_and(|code| code != 0);
+        let dependency_blockers = if completion_observation_requested {
+            Vec::new()
+        } else {
+            assignment
+                .map(|artifact| dependency_blockers_for_assignment(artifact, &context, cfg))
+                .unwrap_or_default()
+        };
         let (secret_environment, secret_resolution_error, secret_resolution_status) =
             if assignment.is_none()
                 || assignment.is_some_and(|artifact| artifact.secret_refs.is_empty())
@@ -403,7 +448,7 @@ fn run_operational_reconciliation_from_bootstrap(
         };
         let wasm = run_embedded_reconciler(
             true,
-            observed_before_running && !attachment_mismatch,
+            (observed_before_running || completion_succeeded) && !attachment_mismatch,
         )?;
 
         if rollback_requested {
@@ -505,10 +550,42 @@ fn run_operational_reconciliation_from_bootstrap(
                     ),
                     false,
                 )
+            } else if let Some(error) = completion_exit_code_error.as_deref() {
+                (
+                    "docker_unavailable".to_string(),
+                    format!(
+                        "one-shot completion could not be verified; no retry was attempted: {}",
+                        error
+                    ),
+                    false,
+                )
+            } else if is_completion_desired(&service.desired_state) && observed_before_running {
+                (
+                    "in_progress".to_string(),
+                    "desired one-shot service is still running; completion has not been verified".to_string(),
+                    false,
+                )
             } else if wasm.action_code == 0 {
+            if completion_succeeded {
+                (
+                    "converged".to_string(),
+                    "desired one-shot service completed successfully; WASM requested no host action".to_string(),
+                    false,
+                )
+            } else {
+                (
+                    "converged".to_string(),
+                    "desired service is already running; WASM requested no host action".to_string(),
+                    false,
+                )
+            }
+        } else if completion_failed {
             (
-                "converged".to_string(),
-                "desired service is already running; WASM requested no host action".to_string(),
+                "failed".to_string(),
+                format!(
+                    "desired one-shot service exited unsuccessfully with code {}",
+                    completion_exit_code.unwrap_or_default()
+                ),
                 false,
             )
         } else if execute_requested && !control_plane_authorized {
@@ -748,8 +825,14 @@ fn validate_context(
         if !service.runtime.eq_ignore_ascii_case("container") {
             bail!("unsupported operational runtime '{}': expected container", service.runtime);
         }
-        if !service.desired_state.eq_ignore_ascii_case("running") {
-            bail!("unsupported operational desired_state '{}': expected running", service.desired_state);
+        if !matches!(
+            service.desired_state.trim().to_ascii_lowercase().as_str(),
+            "running" | "completed"
+        ) {
+            bail!(
+                "unsupported operational desired_state '{}': expected running or completed",
+                service.desired_state
+            );
         }
     }
 
@@ -920,6 +1003,24 @@ fn docker_inspect_reports_missing(message: &str) -> bool {
     normalized.contains("no such object")
         || normalized.contains("no such container")
         || (normalized.contains("network") && normalized.contains("not found"))
+}
+
+fn inspect_container_exit_code(container_name: &str) -> Result<i64> {
+    let output = Command::new("docker")
+        .args(["inspect", "-f", "{{.State.ExitCode}}", container_name])
+        .output()
+        .with_context(|| format!("execute Docker exit-code inspection for '{container_name}'"))?;
+    if !output.status.success() {
+        bail!(
+            "Docker exit-code inspection failed for '{}': {}",
+            container_name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<i64>()
+        .with_context(|| format!("parse Docker exit code for '{container_name}'"))
 }
 
 fn inspect_container(container_name: &str) -> Result<ContainerState> {
@@ -1278,6 +1379,52 @@ mod tests {
     fn wasm_requests_no_action_when_service_is_already_running() {
         let result = run_embedded_reconciler(true, true).unwrap();
         assert_eq!(result.action_code, 0);
+    }
+
+    #[test]
+    fn completed_desired_state_is_detected_case_insensitively() {
+        assert!(is_completion_desired("completed"));
+        assert!(is_completion_desired(" COMPLETED "));
+        assert!(!is_completion_desired("running"));
+    }
+
+    #[test]
+    fn running_completed_job_is_not_converged() {
+        assert!(is_completion_desired("completed"));
+        assert!(!completed_container_converged(
+            "completed",
+            ContainerState::Running,
+            None
+        ));
+    }
+
+    #[test]
+    fn completed_job_converges_only_after_successful_exit() {
+        assert!(completed_container_converged(
+            "completed",
+            ContainerState::Stopped,
+            Some(0)
+        ));
+        assert!(completed_container_converged(
+            " COMPLETED ",
+            ContainerState::Stopped,
+            Some(0)
+        ));
+        assert!(!completed_container_converged(
+            "completed",
+            ContainerState::Stopped,
+            Some(1)
+        ));
+        assert!(!completed_container_converged(
+            "completed",
+            ContainerState::Running,
+            Some(0)
+        ));
+        assert!(!completed_container_converged(
+            "running",
+            ContainerState::Stopped,
+            Some(0)
+        ));
     }
 
     #[test]
