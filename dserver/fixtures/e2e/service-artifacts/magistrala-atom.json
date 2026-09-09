@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-atom",
-      "image": "ghcr.io/absmach/atom:latest",
+      "image": "ghcr.io/absmach/atom:v0.50.0",
       "ports": [
         {
           "container_port": 8080,
@@ -66,12 +66,18 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-core"
+    },
+    "compatibility": {
+      "sma_adapter_contract": "legacy_magistrala_clients_domains_channels",
+      "magistrala_release": "v0.51.0",
+      "atom_release": "v0.50.0",
+      "fluxmq_release": "v0.51.0"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Magistrala Atom identity and API",
-    "version": "latest",
+    "version": "v0.50.0",
     "artifact_kind": "container",
     "target_nodes": [
       "cloud-01"
@@ -85,7 +91,7 @@
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "latest",
+      "revision": "v0.50.0",
       "sha256": null
     },
     "lifecycle": {

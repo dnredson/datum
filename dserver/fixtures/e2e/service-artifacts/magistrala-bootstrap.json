@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-bootstrap",
-      "image": "ghcr.io/absmach/magistrala/bootstrap:v1.0.0",
+      "image": "ghcr.io/absmach/magistrala/bootstrap:v0.51.0",
       "ports": [
         {
           "container_port": 8200,
@@ -60,12 +60,18 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-core"
+    },
+    "compatibility": {
+      "sma_adapter_contract": "legacy_magistrala_clients_domains_channels",
+      "magistrala_release": "v0.51.0",
+      "atom_release": "v0.50.0",
+      "fluxmq_release": "v0.51.0"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Magistrala Bootstrap service",
-    "version": "v1.0.0",
+    "version": "v0.51.0",
     "artifact_kind": "container",
     "target_nodes": [
       "cloud-01"
@@ -80,7 +86,7 @@
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "v1.0.0",
+      "revision": "v0.51.0",
       "sha256": null
     },
     "lifecycle": {

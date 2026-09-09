@@ -58,12 +58,20 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-edge-integration"
+    },
+    "compatibility": {
+      "sma_adapter_contract": "legacy_magistrala_clients_domains_channels",
+      "magistrala_release": "v0.51.0",
+      "atom_release": "v0.50.0",
+      "fluxmq_release": "v0.51.0",
+      "sma_revision": "914e22fd0384c499b4e2147bca7c49aa55c13f04",
+      "source_revision": "914e22fd0384c499b4e2147bca7c49aa55c13f04"
     }
   },
   "control_plane": {
     "project_id": "",
     "name": "Smart Adapter",
-    "version": "main",
+    "version": "914e22fd0384c499b4e2147bca7c49aa55c13f04",
     "artifact_kind": "git",
     "target_nodes": [
       "cloud-01"
@@ -78,7 +86,7 @@
     "acquisition": {
       "kind": "git",
       "source": "https://github.com/dnredson/SMA",
-      "revision": "main",
+      "revision": "914e22fd0384c499b4e2147bca7c49aa55c13f04",
       "sha256": null
     },
     "lifecycle": {
