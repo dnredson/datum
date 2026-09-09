@@ -350,6 +350,7 @@ mod tests {
                         target: "/var/lib/mqtt".to_string(),
                         read_only: false,
                     }],
+                    configuration_mounts: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
