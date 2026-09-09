@@ -62,3 +62,47 @@ fn unsupported_execution_probe_is_rejected() {
     };
     assert!(validate_service_artifact(&artifact).is_err());
 }
+
+
+#[test]
+fn magistrala_bootstrap_db_catalog_contract_is_valid() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-bootstrap-db.json");
+    let raw = std::fs::read_to_string(&path).expect("Bootstrap DB artifact should be readable");
+    let document: serde_json::Value =
+        serde_json::from_str(&raw).expect("Bootstrap DB artifact should be valid JSON");
+
+    assert_eq!(
+        document["artifact_id"].as_str(),
+        Some("magistrala-bootstrap-db")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["image"].as_str(),
+        Some("postgres:16.2-alpine")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["network"].as_str(),
+        Some("datum-magistrala-net")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["volumes"][0]["name"].as_str(),
+        Some("datum-magistrala-bootstrap-db-volume")
+    );
+    assert_eq!(
+        document["control_plane"]["bindings"]["POSTGRES_DB"].as_str(),
+        Some("bootstrap")
+    );
+    assert_eq!(
+        document["control_plane"]["bindings"]["POSTGRES_USER"].as_str(),
+        Some("datum")
+    );
+    assert_eq!(
+        document["control_plane"]["secret_refs"][0].as_str(),
+        Some("magistrala_bootstrap_db_postgres_password")
+    );
+
+    let artifact = load_service_artifact(&path)
+        .expect("Bootstrap DB artifact should satisfy the SmartSentinel artifact schema");
+    validate_service_artifact(&artifact)
+        .expect("Bootstrap DB artifact should pass SmartSentinel validation");
+}
