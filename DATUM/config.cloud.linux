@@ -35,7 +35,11 @@ environment_variable = "ATOM_SERVICE_SECRET"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_bootstrap_db_password"
-environment_variable = "MAGISTRALA_BOOTSTRAP_DB_PASSWORD"
+environment_variable = "MG_BOOTSTRAP_DB_PASS"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_bootstrap_db_postgres_password"
+environment_variable = "POSTGRES_PASSWORD"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_bootstrap_token"
@@ -43,7 +47,7 @@ environment_variable = "MAGISTRALA_ATOM_BOOTSTRAP_TOKEN"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_bootstrap_db_encryption_key"
-environment_variable = "MAGISTRALA_BOOTSTRAP_DB_ENCRYPTION_KEY"
+environment_variable = "MG_BOOTSTRAP_ENCRYPT_KEY"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_fluxmq_secret"
