@@ -18,16 +18,20 @@ enabled = true
 allow_container_execution = true
 
 [[dispatch.secret_bindings]]
-secret_ref = "magistrala_atom_jwt_secret"
-environment_variable = "MAGISTRALA_ATOM_JWT_SECRET"
+secret_ref = "magistrala_atom_database_url"
+environment_variable = "DATABASE_URL"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_key_encryption_key"
+environment_variable = "ATOM_KEY_ENCRYPTION_KEY"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_admin_secret"
-environment_variable = "MAGISTRALA_ATOM_ADMIN_SECRET"
+environment_variable = "ADMIN_SECRET"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_service_secret"
-environment_variable = "MAGISTRALA_ATOM_SERVICE_SECRET"
+environment_variable = "ATOM_SERVICE_SECRET"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_bootstrap_db_password"
