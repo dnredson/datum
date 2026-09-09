@@ -98,6 +98,10 @@ pub struct OperationalArtifactAssignment {
     pub image: String,
     pub target_node: String,
     #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub volumes: Vec<OperationalVolumeMount>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ArtifactWasmDecisionPolicy,
     #[serde(default)]
@@ -121,6 +125,14 @@ pub struct OperationalReconciliationContext {
     pub reconciler: OperationalReconcilerDescriptor,
     pub execution_policy: ArtifactExecutionPolicy,
     pub side_effects_performed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalVolumeMount {
+    pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -341,6 +353,9 @@ fn run_operational_reconciliation_from_bootstrap(
                 &artifact.image,
             )
         });
+        let dependency_blockers = assignment
+            .map(|artifact| dependency_blockers_for_assignment(artifact, &context, cfg))
+            .unwrap_or_default();
         let (observed_before, observation_error) = match mapping {
             Some(mapping) => match inspect_container(&mapping.container_name) {
                 Ok(state) => (state, None),
@@ -466,7 +481,17 @@ fn run_operational_reconciliation_from_bootstrap(
             continue;
         }
 
-        let (execution_status, message, host_mutation_performed) = if wasm.action_code == 0 {
+        let (execution_status, message, host_mutation_performed) =
+            if !dependency_blockers.is_empty() {
+                (
+                    "blocked_dependency_unavailable".to_string(),
+                    format!(
+                        "WASM requested reconciliation, but dependencies are unavailable: {}",
+                        dependency_blockers.join("; ")
+                    ),
+                    false,
+                )
+            } else if wasm.action_code == 0 {
             (
                 "converged".to_string(),
                 "desired service is already running; WASM requested no host action".to_string(),
@@ -528,6 +553,8 @@ fn run_operational_reconciliation_from_bootstrap(
                 Some(mapping) => match execute_trusted_container_intent(
                     mapping,
                     observed_before,
+                    assignment.and_then(|artifact| artifact.network.as_deref()),
+                    assignment.map(|artifact| artifact.volumes.as_slice()).unwrap_or(&[]),
                     assignment.map(|artifact| &artifact.bindings),
                     &secret_environment,
                 ) {
@@ -721,6 +748,16 @@ fn validate_context(
             || artifact.image.trim().is_empty()
             || artifact.target_node != context.node_id
             || artifact.runtime_kind != "container"
+            || artifact
+                .network
+                .as_deref()
+                .is_some_and(|network| !is_safe_docker_name(network))
+            || artifact.volumes.iter().any(|volume| {
+                !is_safe_docker_name(&volume.name)
+                    || !volume.target.starts_with('/')
+                    || volume.target.chars().any(char::is_whitespace)
+                    || volume.target.contains(',')
+            })
             || !policy.explicit_invocation_required
             || policy.host_imports_allowed
             || policy.side_effects_allowed
@@ -751,9 +788,124 @@ fn trusted_container_mapping_for_artifact<'a>(
     })
 }
 
+fn dependency_blockers_for_assignment(
+    assignment: &OperationalArtifactAssignment,
+    context: &OperationalReconciliationContext,
+    cfg: &Config,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+
+    for dependency in &assignment.dependencies {
+        let dependency = dependency.trim();
+        let Some(dependency_assignment) = context.artifacts.iter().find(|candidate| {
+            candidate.artifact_id.eq_ignore_ascii_case(dependency)
+                || candidate.service_id.eq_ignore_ascii_case(dependency)
+        }) else {
+            blockers.push(format!("dependency '{}' has no artifact assignment", dependency));
+            continue;
+        };
+
+        let Some(mapping) = trusted_container_mapping_for_artifact(
+            cfg,
+            &dependency_assignment.service_id,
+            &dependency_assignment.container_name,
+            &dependency_assignment.image,
+        ) else {
+            blockers.push(format!(
+                "dependency '{}' has no matching trusted local container mapping",
+                dependency
+            ));
+            continue;
+        };
+
+        match inspect_container(&mapping.container_name) {
+            Ok(ContainerState::Running) => {}
+            Ok(ContainerState::Stopped) => blockers.push(format!(
+                "dependency '{}' container '{}' is stopped",
+                dependency, mapping.container_name
+            )),
+            Ok(ContainerState::Missing) => blockers.push(format!(
+                "dependency '{}' container '{}' is missing",
+                dependency, mapping.container_name
+            )),
+            Err(error) => blockers.push(format!(
+                "dependency '{}' could not be observed: {}",
+                dependency, error
+            )),
+        }
+    }
+
+    blockers
+}
+
+fn is_safe_docker_name(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-'))
+        && value.chars().next().is_some_and(|character| character.is_ascii_alphanumeric())
+}
+
+fn container_attachments_match(
+    container_name: &str,
+    network: Option<&str>,
+    volumes: &[OperationalVolumeMount],
+) -> Result<bool> {
+    if let Some(network) = network {
+        let output = Command::new("docker")
+            .args(["inspect", "-f", "{{json .NetworkSettings.Networks}}", container_name])
+            .output()
+            .with_context(|| format!("inspect Docker networks for '{container_name}'"))?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let networks: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .with_context(|| format!("decode Docker networks for '{container_name}'"))?;
+        if networks.get(network.trim()).is_none() {
+            return Ok(false);
+        }
+    }
+
+    if volumes.is_empty() {
+        return Ok(true);
+    }
+
+    let output = Command::new("docker")
+        .args(["inspect", "-f", "{{json .Mounts}}", container_name])
+        .output()
+        .with_context(|| format!("inspect Docker mounts for '{container_name}'"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let mounts: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decode Docker mounts for '{container_name}'"))?;
+    let Some(mounts) = mounts.as_array() else {
+        return Ok(false);
+    };
+
+    Ok(volumes.iter().all(|volume| {
+        mounts.iter().any(|mount| {
+            mount.get("Type").and_then(serde_json::Value::as_str) == Some("volume")
+                && mount.get("Name").and_then(serde_json::Value::as_str)
+                    == Some(volume.name.trim())
+                && mount.get("Destination").and_then(serde_json::Value::as_str)
+                    == Some(volume.target.trim())
+                && mount
+                    .get("RW")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                    == !volume.read_only
+        })
+    }))
+}
+
 fn docker_inspect_reports_missing(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
-    normalized.contains("no such object") || normalized.contains("no such container")
+    normalized.contains("no such object")
+        || normalized.contains("no such container")
+        || (normalized.contains("network") && normalized.contains("not found"))
 }
 
 fn inspect_container(container_name: &str) -> Result<ContainerState> {
@@ -819,6 +971,8 @@ fn resolve_secret_bindings(
 fn execute_trusted_container_intent(
     mapping: &DispatchContainerMapping,
     observed_before: ContainerState,
+    network: Option<&str>,
+    volumes: &[OperationalVolumeMount],
     bindings: Option<&BTreeMap<String, String>>,
     secret_environment: &[(String, String)],
 ) -> Result<(String, String, bool)> {
@@ -829,6 +983,34 @@ fn execute_trusted_container_intent(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .expect("trusted mapping requires non-empty artifact image");
+
+    let attachments_mismatch = match observed_before {
+        ContainerState::Running | ContainerState::Stopped => {
+            !container_attachments_match(container_name, network, volumes)?
+        }
+        ContainerState::Missing => false,
+    };
+    if attachments_mismatch {
+        let output = Command::new("docker")
+            .args(["rm", "-f", container_name])
+            .output()
+            .with_context(|| format!("recreate trusted container '{container_name}' for declared attachments"))?;
+        if !output.status.success() {
+            bail!(
+                "docker rm -f failed while reconciling attachments for '{}': {}",
+                container_name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        return execute_trusted_container_intent(
+            mapping,
+            ContainerState::Missing,
+            network,
+            volumes,
+            bindings,
+            secret_environment,
+        );
+    }
 
     match observed_before {
         ContainerState::Running => Ok((
@@ -867,6 +1049,29 @@ fn execute_trusted_container_intent(
                 "--name".to_string(),
                 container_name.to_string(),
             ];
+            if let Some(network) = network {
+                ensure_docker_network(network)?;
+                args.push("--network".to_string());
+                args.push(network.trim().to_string());
+                if let Some(service_name) = mapping
+                    .service_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| is_safe_docker_name(name))
+                {
+                    args.push("--network-alias".to_string());
+                    args.push(service_name.to_string());
+                }
+            }
+            for volume in volumes {
+                args.push("--mount".to_string());
+                args.push(format!(
+                    "type=volume,source={},target={}{}",
+                    volume.name.trim(),
+                    volume.target.trim(),
+                    if volume.read_only { ",readonly" } else { "" }
+                ));
+            }
             for port in &mapping.ports {
                 args.push("-p".to_string());
                 args.push(format!(
@@ -921,6 +1126,43 @@ fn execute_trusted_container_intent(
             ))
         }
     }
+}
+
+fn ensure_docker_network(network: &str) -> Result<()> {
+    let network = network.trim();
+    if !is_safe_docker_name(network) {
+        bail!("refusing unsafe Docker network name '{}'", network);
+    }
+
+    let inspected = Command::new("docker")
+        .args(["network", "inspect", network])
+        .output()
+        .with_context(|| format!("inspect Docker network '{network}'"))?;
+    if inspected.status.success() {
+        return Ok(());
+    }
+
+    let detail = format!(
+        "{} {}",
+        String::from_utf8_lossy(&inspected.stdout),
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    if !docker_inspect_reports_missing(&detail) {
+        bail!("Docker network inspection failed for '{}': {}", network, detail.trim());
+    }
+
+    let created = Command::new("docker")
+        .args(["network", "create", network])
+        .output()
+        .with_context(|| format!("create Docker network '{network}'"))?;
+    if !created.status.success() {
+        bail!(
+            "Docker network creation failed for '{}': {}",
+            network,
+            String::from_utf8_lossy(&created.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 fn rollback_trusted_container_intent(
@@ -1006,10 +1248,17 @@ mod tests {
     }
 
     #[test]
+    fn dependency_name_validation_rejects_option_like_values() {
+        assert!(!is_safe_docker_name("--network"));
+        assert!(is_safe_docker_name("datum-magistrala-net"));
+    }
+
+    #[test]
     fn docker_missing_container_error_is_case_insensitive() {
         assert!(docker_inspect_reports_missing("Error: No such object: datum-mqtt"));
         assert!(docker_inspect_reports_missing("error: no such object: datum-mqtt"));
         assert!(docker_inspect_reports_missing("Error response from daemon: No such container: datum-mqtt"));
+        assert!(docker_inspect_reports_missing("network datum-magistrala-net not found"));
         assert!(!docker_inspect_reports_missing("permission denied while trying to connect to the docker API"));
     }
 }

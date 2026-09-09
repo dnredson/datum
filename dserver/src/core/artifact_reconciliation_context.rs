@@ -26,12 +26,24 @@ pub struct ArtifactReconciliationAssignment {
     pub image: String,
     pub target_node: String,
     #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub volumes: Vec<ArtifactVolumeMount>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ServiceArtifactWasmDecision,
     #[serde(default)]
     pub bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub secret_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactVolumeMount {
+    pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +125,16 @@ pub fn build_artifact_reconciliation_context(
             container_name: container.container_name.clone(),
             image: container.image.clone(),
             target_node: slice.node_id.clone(),
+            network: container.network.clone(),
+            volumes: container
+                .volumes
+                .iter()
+                .map(|volume| ArtifactVolumeMount {
+                    name: volume.name.clone(),
+                    target: volume.target.clone(),
+                    read_only: volume.read_only,
+                })
+                .collect(),
             dependencies: artifact.control_plane.dependencies.clone(),
             wasm_decision: artifact.control_plane.wasm_decision.clone(),
             bindings: artifact.control_plane.bindings.clone(),
@@ -192,6 +214,16 @@ pub fn validate_artifact_reconciliation_context(
     Ok(())
 }
 
+fn is_safe_docker_name(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-'))
+        && value.chars().next().is_some_and(|character| character.is_ascii_alphanumeric())
+}
+
 fn validate_assignments(
     assignments: &[ArtifactReconciliationAssignment],
 ) -> Result<(), String> {
@@ -212,6 +244,27 @@ fn validate_assignments(
                 assignment.artifact_id, assignment.runtime_kind
             ));
         }
+        if let Some(network) = assignment.network.as_deref() {
+            if !is_safe_docker_name(network) {
+                return Err(format!(
+                    "artifact '{}' has an invalid Docker network name",
+                    assignment.artifact_id
+                ));
+            }
+        }
+        for volume in &assignment.volumes {
+            if !is_safe_docker_name(&volume.name)
+                || !volume.target.starts_with('/')
+                || volume.target.chars().any(char::is_whitespace)
+                || volume.target.contains(',')
+            {
+                return Err(format!(
+                    "artifact '{}' has an invalid Docker volume mount",
+                    assignment.artifact_id
+                ));
+            }
+        }
+
         let wasm = &assignment.wasm_decision;
         if !wasm.explicit_invocation_required
             || wasm.host_imports_allowed
@@ -249,6 +302,12 @@ mod tests {
                     container_name: "datum-mqtt".to_string(),
                     image: "eclipse-mosquitto:2".to_string(),
                     ports: Vec::new(),
+                    network: Some("datum-magistrala-net".to_string()),
+                    volumes: vec![crate::core::service_artifact_registry::ContainerVolumeMount {
+                        name: "datum-mqtt-volume".to_string(),
+                        target: "/var/lib/mqtt".to_string(),
+                        read_only: false,
+                    }],
                 }),
             },
             probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
@@ -310,6 +369,11 @@ mod tests {
             .expect("artifact context should build");
         assert_eq!(context.artifacts.len(), 1);
         assert_eq!(context.artifacts[0].image, "eclipse-mosquitto:2");
+        assert_eq!(
+            context.artifacts[0].network.as_deref(),
+            Some("datum-magistrala-net")
+        );
+        assert_eq!(context.artifacts[0].volumes[0].target, "/var/lib/mqtt");
         assert_eq!(context.execution_policy.mode, "proposal_only");
         validate_artifact_reconciliation_context(&context)
             .expect("built context should validate");

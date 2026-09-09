@@ -71,24 +71,24 @@ artifact = "postgres:16.2-alpine"
 [[dispatch.container_mappings]]
 service_name = "magistrala-atom"
 container_name = "datum-magistrala-atom"
-artifact = "ghcr.io/absmach/atom:latest"
+artifact = "ghcr.io/absmach/atom:v0.50.0"
 ports = [{ host_port = 8080, container_port = 8080, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-bootstrap"
 container_name = "datum-magistrala-bootstrap"
-artifact = "ghcr.io/absmach/magistrala/bootstrap:v1.0.0"
+artifact = "ghcr.io/absmach/magistrala/bootstrap:v0.51.0"
 ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-auth"
 container_name = "datum-magistrala-fluxmq-auth"
-artifact = "ghcr.io/absmach/magistrala/fluxmq:v1.0.0"
+artifact = "ghcr.io/absmach/magistrala/fluxmq:v0.51.0"
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-node1"
 container_name = "datum-magistrala-fluxmq-node1"
-artifact = "ghcr.io/absmach/fluxmq:latest"
+artifact = "ghcr.io/absmach/fluxmq:v0.51.0"
 ports = [
   { host_port = 1883, container_port = 1883, protocol = "tcp" },
   { host_port = 8883, container_port = 8883, protocol = "tcp" }

@@ -18,7 +18,9 @@
           "host_port": null,
           "protocol": "tcp"
         }
-      ]
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
     }
   },
   "probes": {

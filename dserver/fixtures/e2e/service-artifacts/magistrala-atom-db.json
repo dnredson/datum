@@ -7,7 +7,15 @@
     "container": {
       "container_name": "datum-magistrala-atom-db",
       "image": "postgres:16-alpine",
-      "ports": []
+      "ports": [],
+      "network": "datum-magistrala-net",
+      "volumes": [
+        {
+          "name": "datum-magistrala-atom-db-volume",
+          "target": "/var/lib/postgresql/data",
+          "read_only": false
+        }
+      ]
     }
   },
   "probes": {
@@ -37,7 +45,7 @@
         "ATOM_DB_PASSWORD",
         "ATOM_DB_NAME"
       ],
-      "persistent_volume": "magistrala-atom-db-volume"
+      "persistent_volume": "datum-magistrala-atom-db-volume"
     },
     "deployment": {
       "mode": "governed_declarative",

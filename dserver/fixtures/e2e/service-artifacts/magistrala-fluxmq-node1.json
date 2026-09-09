@@ -18,7 +18,9 @@
           "host_port": 8883,
           "protocol": "tcp"
         }
-      ]
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": []
     }
   },
   "probes": {
