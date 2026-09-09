@@ -1,10 +1,11 @@
-# Stage 78 — E2E service-artifact catalog
+# Stage 95 — Distributed E2E service-artifact catalog
 
 This directory defines the declarative service artifacts for the planned distributed IoT
-proof: a simulated LoRa device on `mist-01`, a virtual Semtech UDP gateway path and
-ChirpStack on `fog-01`, and Magistrala plus Smart Adapter on `cloud-01`.
+proof: a simulated LoRa device and virtual Semtech UDP traffic path on `local-01`,
+ChirpStack Gateway Bridge on `mist-01`, ChirpStack on `fog-01`, and Magistrala plus
+Smart Adapter on `cloud-01`.
 
-Stage 78 registers metadata only. It does not clone repositories, build images, render
+Stage 95 registers metadata only. It does not clone repositories, build images, render
 configuration, start containers, contact a node, or execute WASM. Deployment remains
 blocked until the artifact-to-SmartSentinel execution path is implemented and explicitly
 authorized in a later stage.
@@ -14,8 +15,9 @@ authorized in a later stage.
 - `scenario.json`: node addresses, artifact membership, relations, expected data flow and secret references.
 - One JSON file per software component: each file can be POSTed to the dserver artifact registry.
 - Images from the official Magistrala and ChirpStack compose definitions are recorded in
-  the artifacts. The mist images use the `local/` namespace and are intentionally marked
-  `build_before_deploy`; they are not presented as existing public images.
+  the artifacts. The desktop traffic images use the `local/` namespace and must be preloaded as trusted
+  local images before deployment; the governed reconciler does not clone repositories,
+  build images, pull images, or run Make targets.
 - No credential values are stored. `secret_refs` and `bindings` identify values that a
   later governed deployment must resolve.
 
@@ -113,3 +115,10 @@ Expected registry `count = 15), scenario `node_count = 3`,
 `side_effects_performed = false`. The next stage will consume this catalog to materialize
 the static operational D-Graph; SmartSentinel execution is intentionally not part of this
 validation.
+
+## Stage 95 topology
+
+The desktop-local traffic generator and virtual packet forwarder send Semtech UDP to
+`mist-01:1700`. The Gateway Bridge publishes to the fog broker at
+`192.168.10.103:1883`; SMA on the cloud consumes that broker and publishes to Magistrala.
+This catalog does not materialize or modify the D-Graph.
