@@ -122,3 +122,50 @@ fn magistrala_bootstrap_db_tcp_probe_uses_host_parameter() {
     );
     assert!(document["probes"]["health"]["params"]["target"].is_null());
 }
+
+#[test]
+fn magistrala_atom_bootstrap_job_catalog_contract_is_valid() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-atom-bootstrap.json");
+    let raw = std::fs::read_to_string(&path)
+        .expect("Atom bootstrap artifact should be readable");
+    let document: serde_json::Value =
+        serde_json::from_str(&raw).expect("Atom bootstrap artifact should be valid JSON");
+
+    assert_eq!(
+        document["artifact_id"].as_str(),
+        Some("magistrala-atom-bootstrap")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["image"].as_str(),
+        Some("ghcr.io/absmach/magistrala/atom-bootstrap:v0.51.0")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["network"].as_str(),
+        Some("datum-magistrala-net")
+    );
+    assert_eq!(
+        document["runtime"]["container"]["ports"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        document["control_plane"]["dependencies"][0].as_str(),
+        Some("magistrala-atom")
+    );
+    assert_eq!(
+        document["control_plane"]["secret_refs"][0].as_str(),
+        Some("magistrala_atom_bootstrap_admin_secret")
+    );
+    assert_eq!(
+        document["metadata"]["completion_mode"].as_str(),
+        Some("successful_exit")
+    );
+
+    let artifact = load_service_artifact(&path)
+        .expect("Atom bootstrap artifact should satisfy the SmartSentinel artifact schema");
+    validate_service_artifact(&artifact)
+        .expect("Atom bootstrap artifact should pass SmartSentinel validation");
+}
+
