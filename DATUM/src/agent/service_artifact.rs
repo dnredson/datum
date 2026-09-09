@@ -762,6 +762,7 @@ mod tests {
                     }],
                     network: None,
                     volumes: Vec::new(),
+                    configuration_mounts: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet {
