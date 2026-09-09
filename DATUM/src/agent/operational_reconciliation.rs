@@ -1,4 +1,5 @@
 use std::{collections::{BTreeMap, HashSet}, env};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -102,6 +103,8 @@ pub struct OperationalArtifactAssignment {
     #[serde(default)]
     pub volumes: Vec<OperationalVolumeMount>,
     #[serde(default)]
+    pub configuration_mounts: Vec<OperationalConfigurationMount>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ArtifactWasmDecisionPolicy,
     #[serde(default)]
@@ -130,6 +133,14 @@ pub struct OperationalReconciliationContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperationalVolumeMount {
     pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalConfigurationMount {
+    pub source: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
@@ -441,6 +452,8 @@ fn run_operational_reconciliation_from_bootstrap(
                     &mapping.container_name,
                     artifact.network.as_deref(),
                     &artifact.volumes,
+                    &artifact.configuration_mounts,
+                    configuration_root(cfg),
                 )
                 .unwrap_or(false)
             }
@@ -646,6 +659,10 @@ fn run_operational_reconciliation_from_bootstrap(
                     observed_before,
                     assignment.and_then(|artifact| artifact.network.as_deref()),
                     assignment.map(|artifact| artifact.volumes.as_slice()).unwrap_or(&[]),
+                    assignment
+                        .map(|artifact| artifact.configuration_mounts.as_slice())
+                        .unwrap_or(&[]),
+                    configuration_root(cfg),
                     assignment.map(|artifact| &artifact.bindings),
                     &secret_environment,
                 ) {
@@ -855,6 +872,13 @@ fn validate_context(
                     || volume.target.chars().any(char::is_whitespace)
                     || volume.target.contains(',')
             })
+            || artifact.configuration_mounts.iter().any(|mount| {
+                !is_safe_configuration_source(&mount.source)
+                    || !mount.target.starts_with('/')
+                    || mount.target.chars().any(char::is_whitespace)
+                    || mount.target.contains(',')
+                    || !mount.read_only
+            })
             || !policy.explicit_invocation_required
             || policy.host_imports_allowed
             || policy.side_effects_allowed
@@ -949,6 +973,8 @@ fn container_attachments_match(
     container_name: &str,
     network: Option<&str>,
     volumes: &[OperationalVolumeMount],
+    configuration_mounts: &[OperationalConfigurationMount],
+    configuration_root: Option<&Path>,
 ) -> Result<bool> {
     if let Some(network) = network {
         let output = Command::new("docker")
@@ -965,7 +991,7 @@ fn container_attachments_match(
         }
     }
 
-    if volumes.is_empty() {
+    if volumes.is_empty() && configuration_mounts.is_empty() {
         return Ok(true);
     }
 
@@ -982,7 +1008,7 @@ fn container_attachments_match(
         return Ok(false);
     };
 
-    Ok(volumes.iter().all(|volume| {
+    let named_volumes_match = volumes.iter().all(|volume| {
         mounts.iter().any(|mount| {
             mount.get("Type").and_then(serde_json::Value::as_str) == Some("volume")
                 && mount.get("Name").and_then(serde_json::Value::as_str)
@@ -994,6 +1020,23 @@ fn container_attachments_match(
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true)
                     == !volume.read_only
+        })
+    });
+    if !named_volumes_match {
+        return Ok(false);
+    }
+
+    let configuration_mounts = resolve_configuration_mounts(configuration_mounts, configuration_root)?;
+    Ok(configuration_mounts.iter().all(|(source, target)| {
+        mounts.iter().any(|mount| {
+            mount.get("Type").and_then(serde_json::Value::as_str) == Some("bind")
+                && mount.get("Source").and_then(serde_json::Value::as_str) == Some(source)
+                && mount.get("Destination").and_then(serde_json::Value::as_str) == Some(target)
+                && mount
+                    .get("RW")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+                    == false
         })
     }))
 }
@@ -1088,6 +1131,8 @@ fn execute_trusted_container_intent(
     observed_before: ContainerState,
     network: Option<&str>,
     volumes: &[OperationalVolumeMount],
+    configuration_mounts: &[OperationalConfigurationMount],
+    configuration_root: Option<&Path>,
     bindings: Option<&BTreeMap<String, String>>,
     secret_environment: &[(String, String)],
 ) -> Result<(String, String, bool)> {
@@ -1098,10 +1143,18 @@ fn execute_trusted_container_intent(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .expect("trusted mapping requires non-empty artifact image");
+    let resolved_configuration_mounts =
+        resolve_configuration_mounts(configuration_mounts, configuration_root)?;
 
     let attachments_mismatch = match observed_before {
         ContainerState::Running | ContainerState::Stopped => {
-            !container_attachments_match(container_name, network, volumes)?
+            !container_attachments_match(
+                container_name,
+                network,
+                volumes,
+                configuration_mounts,
+                configuration_root,
+            )?
         }
         ContainerState::Missing => false,
     };
@@ -1122,6 +1175,8 @@ fn execute_trusted_container_intent(
             ContainerState::Missing,
             network,
             volumes,
+            configuration_mounts,
+            configuration_root,
             bindings,
             secret_environment,
         );
@@ -1206,6 +1261,13 @@ fn execute_trusted_container_intent(
                     if volume.read_only { ",readonly" } else { "" }
                 ));
             }
+            for mount in &resolved_configuration_mounts {
+                args.push("--mount".to_string());
+                args.push(format!(
+                    "type=bind,source={},target={},readonly",
+                    mount.0, mount.1
+                ));
+            }
             for port in &mapping.ports {
                 args.push("-p".to_string());
                 args.push(format!(
@@ -1260,6 +1322,53 @@ fn execute_trusted_container_intent(
             ))
         }
     }
+}
+
+fn configuration_root(cfg: &Config) -> Option<&Path> {
+    cfg.dispatch
+        .as_ref()
+        .and_then(|dispatch| dispatch.configuration_root.as_deref())
+        .map(Path::new)
+}
+
+fn is_safe_configuration_source(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.chars().any(|character| character.is_control() || character.is_whitespace())
+        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn resolve_configuration_mounts(
+    mounts: &[OperationalConfigurationMount],
+    root: Option<&Path>,
+) -> Result<Vec<(String, String)>> {
+    if mounts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = root.ok_or_else(|| {
+        anyhow::anyhow!("governed configuration mounts require dispatch.configuration_root")
+    })?;
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("resolve governed configuration root '{}'", root.display()))?;
+    let mut resolved = Vec::with_capacity(mounts.len());
+    for mount in mounts {
+        if !is_safe_configuration_source(&mount.source) {
+            bail!("refusing unsafe governed configuration source '{}'", mount.source);
+        }
+        let path = root.join(mount.source.trim());
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("resolve governed configuration source '{}'", mount.source))?;
+        if !canonical.starts_with(&root) {
+            bail!("governed configuration source '{}' escapes configuration root", mount.source);
+        }
+        resolved.push((canonical.display().to_string(), mount.target.trim().to_string()));
+    }
+    Ok(resolved)
 }
 
 fn ensure_docker_network(network: &str) -> Result<()> {
