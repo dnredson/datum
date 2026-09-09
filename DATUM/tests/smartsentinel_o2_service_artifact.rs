@@ -106,3 +106,19 @@ fn magistrala_bootstrap_db_catalog_contract_is_valid() {
     validate_service_artifact(&artifact)
         .expect("Bootstrap DB artifact should pass SmartSentinel validation");
 }
+
+
+#[test]
+fn magistrala_bootstrap_db_tcp_probe_uses_host_parameter() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-bootstrap-db.json");
+    let raw = std::fs::read_to_string(&path).expect("Bootstrap DB artifact should be readable");
+    let document: serde_json::Value =
+        serde_json::from_str(&raw).expect("Bootstrap DB artifact should be valid JSON");
+
+    assert_eq!(
+        document["probes"]["health"]["params"]["host"].as_str(),
+        Some("127.0.0.1")
+    );
+    assert!(document["probes"]["health"]["params"]["target"].is_null());
+}
