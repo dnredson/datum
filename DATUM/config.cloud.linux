@@ -143,6 +143,7 @@ names = [
   "datum-magistrala-bootstrap-db",
   "datum-magistrala-atom",
   "datum-magistrala-bootstrap",
+  "datum-magistrala-atom-bootstrap",
   "datum-magistrala-fluxmq-auth",
   "datum-magistrala-fluxmq-node1"
 ]
@@ -166,6 +167,10 @@ implemented_by = [{ container_name = "datum-magistrala-atom" }]
 [[services.items]]
 name = "magistrala-bootstrap"
 implemented_by = [{ container_name = "datum-magistrala-bootstrap" }]
+
+[[services.items]]
+name = "magistrala-atom-bootstrap"
+implemented_by = [{ container_name = "datum-magistrala-atom-bootstrap" }]
 
 [[services.items]]
 name = "magistrala-fluxmq-auth"
