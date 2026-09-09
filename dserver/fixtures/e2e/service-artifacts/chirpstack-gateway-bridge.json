@@ -51,9 +51,7 @@
     "target_stages": [
       "mist"
     ],
-    "dependencies": [
-      "fog-mosquitto"
-    ],
+    "dependencies": [],
     "acquisition": {
       "kind": "image",
       "source": null,
