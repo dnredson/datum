@@ -100,7 +100,7 @@
       "ATOM_SERVICE_USERNAME": "admin",
       "ATOM_ADMIN_USERNAME": "admin",
       "MG_ATOM_BOOTSTRAP_RETRIES": "30",
-      "MG_ATOM_BOOTSTRAP_RETRY_INTERVAL": "2s",
+      "MG_ATOM_BOOTSTRAP_RETRY_INTERVAL": "10s",
       "MG_ATOM_BOOTSTRAP_TIMEOUT": "30s"
     },
     "secret_refs": [
