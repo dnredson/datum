@@ -28,7 +28,7 @@
       "stage": "fog",
       "address": "192.168.10.103",
       "artifacts": [
-        "fog-mosquitto",
+        "mosquitto",
         "chirpstack-postgres",
         "chirpstack-redis",
         "chirpstack",
@@ -40,6 +40,7 @@
       "stage": "cloud",
       "address": "192.168.10.108",
       "artifacts": [
+        "mosquitto",
         "magistrala-atom-db",
         "magistrala-atom",
         "magistrala-bootstrap-db",
@@ -104,7 +105,7 @@
     "lora-device-simulator",
     "lora-packet-forwarder",
     "chirpstack-gateway-bridge",
-    "fog-mosquitto",
+    "mosquitto",
     "chirpstack",
     "sma",
     "magistrala-nginx",

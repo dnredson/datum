@@ -167,6 +167,12 @@ container_name = "datum-magistrala-bootstrap-db"
 artifact = "postgres:16.2-alpine"
 
 [[dispatch.container_mappings]]
+service_name = "mosquitto"
+container_name = "datum-mosquitto"
+artifact = "eclipse-mosquitto:2"
+ports = [{ host_port = 1883, container_port = 1883, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
 service_name = "magistrala-atom"
 container_name = "datum-magistrala-atom"
 artifact = "ghcr.io/absmach/atom:v1.0.0"
@@ -257,6 +263,7 @@ names = [
   "datum-magistrala-bootstrap-db",
   "datum-magistrala-atom",
   "datum-magistrala-bootstrap",
+  "datum-mosquitto",
   "datum-magistrala-fluxmq-node2",
   "datum-magistrala-fluxmq-node3",
   "datum-magistrala-nginx",
@@ -278,6 +285,10 @@ implemented_by = [{ container_name = "datum-magistrala-atom-db" }]
 [[services.items]]
 name = "magistrala-bootstrap-db"
 implemented_by = [{ container_name = "datum-magistrala-bootstrap-db" }]
+
+[[services.items]]
+name = "mosquitto"
+implemented_by = [{ container_name = "datum-mosquitto" }]
 
 [[services.items]]
 name = "magistrala-atom"

@@ -37,7 +37,7 @@ by this stage.
 lora-device-simulator
   -> lora-packet-forwarder
   -> chirpstack-gateway-bridge
-  -> fog-mosquitto
+  -> mosquitto
   -> chirpstack
   -> sma
   -> magistrala-nginx
