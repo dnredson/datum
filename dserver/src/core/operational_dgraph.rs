@@ -316,9 +316,12 @@ fn validate_desired_service(service: &OperationalDesiredService) -> Result<(), S
             service.service_id, service.runtime
         ));
     }
-    if !service.desired_state.trim().eq_ignore_ascii_case("running") {
+    if !matches!(
+        service.desired_state.trim().to_ascii_lowercase().as_str(),
+        "running" | "completed"
+    ) {
         return Err(format!(
-            "operational service '{}' uses unsupported desired_state '{}'; O2 vertical slice supports only running",
+            "operational service '{}' uses unsupported desired_state '{}'; expected running or completed",
             service.service_id, service.desired_state
         ));
     }
@@ -373,6 +376,25 @@ mod tests {
     fn unsupported_runtime_is_rejected() {
         let mut graph = graph();
         graph.nodes[0].desired_services[0].runtime = "process".to_string();
+        assert!(validate_operational_dgraph(&graph).is_err());
+    }
+
+    #[test]
+    fn completed_one_shot_service_is_valid() {
+        let mut graph = graph();
+        graph.nodes[0].desired_services[0].desired_state = "completed".to_string();
+
+        validate_operational_dgraph(&graph).unwrap();
+        let slice = build_operational_slice(&graph, "fog-01", None).unwrap();
+
+        assert_eq!(slice.desired_services[0].desired_state, "completed");
+    }
+
+    #[test]
+    fn unsupported_desired_state_is_rejected() {
+        let mut graph = graph();
+        graph.nodes[0].desired_services[0].desired_state = "paused".to_string();
+
         assert!(validate_operational_dgraph(&graph).is_err());
     }
 
