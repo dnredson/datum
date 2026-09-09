@@ -28,7 +28,7 @@
       "kind": "http",
       "params": {
         "target": "127.0.0.1",
-        "port": 8080,
+        "port": 18080,
         "path": "/health",
         "expected_status": 200
       },
@@ -38,7 +38,7 @@
       "kind": "tcp_connect",
       "params": {
         "target": "127.0.0.1",
-        "port": 8080
+        "port": 18080
       },
       "vantage_point": "local_host"
     }
@@ -80,8 +80,7 @@
       "cloud"
     ],
     "dependencies": [
-      "magistrala-atom",
-      "fog-mosquitto"
+      "magistrala-atom"
     ],
     "acquisition": {
       "kind": "git",
