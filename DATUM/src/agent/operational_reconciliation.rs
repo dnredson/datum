@@ -559,6 +559,12 @@ fn run_operational_reconciliation_from_bootstrap(
                     ),
                     false,
                 )
+            } else if is_completion_desired(&service.desired_state) && observed_before_running {
+                (
+                    "in_progress".to_string(),
+                    "desired one-shot service is still running; completion has not been verified".to_string(),
+                    false,
+                )
             } else if wasm.action_code == 0 {
             if completion_succeeded {
                 (
@@ -819,8 +825,14 @@ fn validate_context(
         if !service.runtime.eq_ignore_ascii_case("container") {
             bail!("unsupported operational runtime '{}': expected container", service.runtime);
         }
-        if !service.desired_state.eq_ignore_ascii_case("running") {
-            bail!("unsupported operational desired_state '{}': expected running", service.desired_state);
+        if !matches!(
+            service.desired_state.trim().to_ascii_lowercase().as_str(),
+            "running" | "completed"
+        ) {
+            bail!(
+                "unsupported operational desired_state '{}': expected running or completed",
+                service.desired_state
+            );
         }
     }
 
@@ -1374,6 +1386,16 @@ mod tests {
         assert!(is_completion_desired("completed"));
         assert!(is_completion_desired(" COMPLETED "));
         assert!(!is_completion_desired("running"));
+    }
+
+    #[test]
+    fn running_completed_job_is_not_converged() {
+        assert!(is_completion_desired("completed"));
+        assert!(!completed_container_converged(
+            "completed",
+            ContainerState::Running,
+            None
+        ));
     }
 
     #[test]
