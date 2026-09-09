@@ -1,126 +1,67 @@
-# Stage 95 — Distributed E2E service-artifact catalog
+# Stage 96 — Distributed E2E service-artifact catalog
 
-This directory defines the declarative service artifacts for the planned distributed IoT
-proof: a simulated LoRa device and virtual Semtech UDP traffic path on `local-01`,
-ChirpStack Gateway Bridge on `mist-01`, ChirpStack on `fog-01`, and Magistrala plus
-Smart Adapter on `cloud-01`.
+This directory defines the governed service artifacts for the distributed IoT proof:
 
-Stage 95 registers metadata only. It does not clone repositories, build images, render
-configuration, start containers, contact a node, or execute WASM. Deployment remains
-blocked until the artifact-to-SmartSentinel execution path is implemented and explicitly
-authorized in a later stage.
+- desktop `local-01`: simulated LoRa device and virtual Semtech UDP packet forwarder;
+- `mist-01`: ChirpStack Gateway Bridge;
+- `fog-01`: Mosquitto and ChirpStack;
+- `cloud-01`: Magistrala v1.0.0 LTS core and the Smart Adapter.
 
-## Files
+The catalog is declarative only. Registering these JSON documents does not clone a
+repository, build an image, pull an image, render host files, contact a node, start
+a container, execute WASM, or mutate the D-Graph.
 
-- `scenario.json`: node addresses, artifact membership, relations, expected data flow and secret references.
-- One JSON file per software component: each file can be POSTed to the dserver artifact registry.
-- Images from the official Magistrala and ChirpStack compose definitions are recorded in
-  the artifacts. The desktop traffic images use the `local/` namespace and must be preloaded as trusted
-  local images before deployment; the governed reconciler does not clone repositories,
-  build images, pull images, or run Make targets.
-- No credential values are stored. `secret_refs` and `bindings` identify values that a
-  later governed deployment must resolve.
+## Magistrala v1.0.0 LTS composition
 
-## Import contract
+The cloud slice follows the official v1.0.0 Docker composition for the minimum
+telemetry path:
 
-The dserver request header must select the project scope. The server normalizes the
-artifact's control-plane project to that scope and persists it in the configured control
-state database. Import order should follow `control_plane.dependencies`; duplicate IDs
-return HTTP 409 and can be updated with PUT.
+- Atom and its PostgreSQL database;
+- the v1 Bootstrap service and its PostgreSQL database;
+- FluxMQ authentication plus three FluxMQ broker nodes;
+- nginx as the public HTTP/HTTP-adapter ingress;
+- TimescaleDB, Timescale writer, and Timescale reader.
 
-The intended next stages are:
+Magistrala v1.0.0 loads Atom actions and policies from a mounted
+`atom-bootstrap.yaml` at Atom startup. The separate `atom-bootstrap:v0.51.0`
+one-shot job is not part of this catalog and was removed from the scenario.
 
-1. validate this catalog and materialize the static operational D-Graph;
-2. make dserver distribute only the selected artifact and its resolved bindings;
-3. invoke WASM for a decision;
-4. let SmartSentinel perform the explicitly authorized local deployment;
-5. validate the real data path end to end.
+The artifacts record required configuration and certificate mounts as governed
+configuration contracts. Materializing those mounts and the official FluxMQ/nginx
+configuration remains a later execution concern; no cloud mutation is performed
+by this stage.
 
-Always expect `safe_to_auto_execute=false` and `side_effects_performed=false`
-from the catalog and registry responses.
+## End-to-end flow
 
-
-## Desktop validation
-
-From the repository checkout on the desktop, set the dserver URL and project scope. The following
-PowerShell list follows the dependency order and imports all 15 artifacts into the registry:
-
-```powershell
-$PROJECT_ID = "monitor-f49c8"
-$DSERVER_URL = "http://192.168.10.101:8080"
-$ARTIFACT_DIR = Join-Path (Get-Location) "dserver/fixtures/e2e/service-artifacts"
-
-$IMPORT_ORDER = @(
-  "magistrala-atom-db.json",
-  "magistrala-bootstrap-db.json",
-  "magistrala-atom.json",
-  "magistrala-bootstrap.json",
-  "magistrala-fluxmq-auth.json",
-  "magistrala-fluxmq-node1.json",
-  "fog-mosquitto.json",
-  "chirpstack-postgres.json",
-  "chirpstack-redis.json",
-  "chirpstack.json",
-  "chirpstack-gateway-bridge.json",
-  "chirpstack-rest-api.json",
-  "lora-packet-forwarder.json",
-  "lora-device-simulator.json",
-  "sma.json"
-)
-
-foreach ($name in $IMPORT_ORDER) {
-  $path = Join-Path $ARTIFACT_DIR $name
-  curl.exe -fsS `
-    -X POST `
-    "$DSERVER_URL/api/v1/service-artifacts" `
-    -H "Content-Type: application/json" `
-    -H "X-Datum-Project: $PROJECT_ID" `
-    --data-binary "@$path" |
-  jq '{artifact_id, service_id, project_id: .control_plane.project_id, target_nodes: .control_plane.target_nodes}'
-}
+```text
+lora-device-simulator
+  -> lora-packet-forwarder
+  -> chirpstack-gateway-bridge
+  -> fog-mosquitto
+  -> chirpstack
+  -> sma
+  -> magistrala-nginx
+  -> magistrala-fluxmq-auth
+  -> magistrala-timescale-writer
+  -> magistrala-timescale
 ```
 
-Expected: 15 successful JSON responses, all with `project_id = monitor-f49c8`,
-`side_effects_performed` absent or false, and no deployment output. If an artifact was
-already imported, HTTP 409 is expected; use PUT only when intentionally replacing that
-artifact.
+Atom remains the control-plane path for workspaces, devices, resources, credentials,
+and authorization:
 
-Confirm the registry and scenario coverage:
-
-```powershell
-curl.exe -fsS `
-  -X GET `
-  "$DSERVER_URL/api/v1/service-artifacts" `
-  -H "X-Datum-Project: $PROJECT_ID" |
-jq '{
-  project_id,
-  count,
-  artifact_ids: [.artifacts[].artifact_id]
-}'
-
-Get-Content -Raw (Join-Path $ARTIFACT_DIR "scenario.json") |
-jq '{
-  scenario_id,
-  stage,
-  node_count: (.nodes | length),
-  artifact_ref_count: ([.nodes[].artifacts[]] | length),
-  relation_count: (.relations | length),
-  expected_flow,
-  side_effects_performed
-}'
+```text
+magistrala-atom-db -> magistrala-atom -> magistrala-bootstrap
 ```
 
-Expected registry `count = 15), scenario `node_count = 3`,
-`artifact_ref_count = 15), `relation_count = 3), and
-`side_effects_performed = false`. The next stage will consume this catalog to materialize
-the static operational D-Graph; SmartSentinel execution is intentionally not part of this
-validation.
+Cross-node links are represented by scenario relations and bindings, not by
+node-local artifact dependencies. Secrets are represented only by `secret_refs`;
+no credential values are stored here.
 
-## Stage 95 topology
+Expected Stage 96 validation:
 
-The desktop-local traffic generator feeds the virtual packet forwarder, which sends
-Semtech UDP to `mist-01:1700`. The Gateway Bridge publishes to the fog broker at
-`192.168.10.103:1883`; Mosquitto feeds ChirpStack, while SMA on the cloud consumes
-the broker and publishes to Magistrala. Cross-node links are represented by scenario
-relations and network bindings; they are not local artifact dependencies.
-This catalog does not materialize or modify the D-Graph.
+- scenario has 4 nodes;
+- scenario has 21 artifact references;
+- scenario has 6 explicit relations;
+- all cloud Magistrala images are pinned to `v1.0.0` or the official pinned
+  infrastructure image;
+- `magistrala-atom-bootstrap.json` is not registered.
