@@ -149,6 +149,8 @@ pub struct DispatchConfig {
     #[serde(default)]
     pub allow_container_execution: Option<bool>,
     #[serde(default)]
+    pub configuration_root: Option<String>,
+    #[serde(default)]
     pub container_mappings: Vec<DispatchContainerMapping>,
     #[serde(default)]
     pub secret_bindings: Vec<DispatchSecretBinding>,
