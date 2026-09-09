@@ -34,6 +34,10 @@ secret_ref = "magistrala_atom_service_secret"
 environment_variable = "ATOM_SERVICE_SECRET"
 
 [[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_bootstrap_admin_secret"
+environment_variable = "ATOM_ADMIN_SECRET"
+
+[[dispatch.secret_bindings]]
 secret_ref = "magistrala_bootstrap_db_password"
 environment_variable = "MG_BOOTSTRAP_DB_PASS"
 
@@ -87,6 +91,11 @@ service_name = "magistrala-bootstrap"
 container_name = "datum-magistrala-bootstrap"
 artifact = "ghcr.io/absmach/magistrala/bootstrap:v0.51.0"
 ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-atom-bootstrap"
+container_name = "datum-magistrala-atom-bootstrap"
+artifact = "ghcr.io/absmach/magistrala/atom-bootstrap:v0.51.0"
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-auth"
