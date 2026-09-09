@@ -27,7 +27,7 @@
     "health": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
+        "host": "127.0.0.1",
         "port": 1883
       },
       "vantage_point": "local_host"
@@ -35,7 +35,7 @@
     "availability": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
+        "host": "127.0.0.1",
         "port": 1883
       },
       "vantage_point": "local_host"
@@ -133,7 +133,7 @@
     "health_checks": [
       {
         "kind": "tcp",
-        "target": "127.0.0.1",
+        "host": "127.0.0.1",
         "port": 1883,
         "path": null,
         "expected_status": null,
