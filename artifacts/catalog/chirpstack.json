@@ -154,7 +154,11 @@
       "max_fuel": 1000000,
       "timeout_ms": 1000
     },
-    "bindings": {},
+    "bindings": {
+      "POSTGRESQL_HOST": "chirpstack-postgres",
+      "REDIS_HOST": "chirpstack-redis",
+      "MQTT_BROKER_HOST": "mqtt"
+    },
     "secret_refs": [
       "chirpstack_postgres_password",
       "chirpstack_api_secret"
