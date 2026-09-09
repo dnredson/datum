@@ -79,14 +79,26 @@
       "sha256": null
     },
     "lifecycle": {
-      "pre_install": [],
-      "install": [],
+      "pre_install": [
+        {
+          "program": "verify_docker",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "install": [
+        {
+          "program": "pull_image",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
       "configure": [
         {
-          "program": "render_template",
-          "args": [
-            "chirpstack/chirpstack.toml"
-          ],
+          "program": "verify_configuration_mounts",
+          "args": [],
           "working_dir": null,
           "environment": {}
         }
@@ -94,16 +106,28 @@
       "start": [
         {
           "program": "start_container",
-          "args": [
-            "datum-chirpstack"
-          ],
+          "args": [],
           "working_dir": null,
           "environment": {}
         }
       ],
       "stop": [],
-      "post_install": [],
-      "rollback": []
+      "post_install": [
+        {
+          "program": "verify_container_running",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "rollback": [
+        {
+          "program": "remove_container",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ]
     },
     "health_checks": [],
     "wasm_decision": {
