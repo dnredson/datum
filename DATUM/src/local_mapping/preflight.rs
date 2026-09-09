@@ -434,6 +434,7 @@ mod tests {
                 execute: None,
                 publish_results: None,
                 allow_container_execution: Some(false),
+                configuration_root: None,
                 secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
             }),
