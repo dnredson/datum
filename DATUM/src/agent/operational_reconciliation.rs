@@ -1328,6 +1328,13 @@ mod tests {
     }
 
     #[test]
+    fn completed_desired_state_is_detected_case_insensitively() {
+        assert!(is_completion_desired("completed"));
+        assert!(is_completion_desired(" COMPLETED "));
+        assert!(!is_completion_desired("running"));
+    }
+
+    #[test]
     fn dependency_name_validation_rejects_option_like_values() {
         assert!(!is_safe_docker_name("--network"));
         assert!(is_safe_docker_name("datum-magistrala-net"));
