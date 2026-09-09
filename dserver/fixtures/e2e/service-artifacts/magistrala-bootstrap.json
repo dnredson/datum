@@ -6,11 +6,11 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-bootstrap",
-      "image": "ghcr.io/absmach/magistrala/bootstrap:v0.51.0",
+      "image": "ghcr.io/absmach/magistrala/bootstrap:v1.0.0",
       "ports": [
         {
-          "container_port": 8200,
-          "host_port": 8200,
+          "container_port": 9013,
+          "host_port": 9010,
           "protocol": "tcp"
         }
       ],
@@ -30,7 +30,7 @@
       "kind": "http",
       "params": {
         "target": "127.0.0.1",
-        "port": 8200,
+        "port": 9010,
         "path": "/health",
         "expected_status": 200
       },
@@ -40,7 +40,7 @@
       "kind": "tcp_connect",
       "params": {
         "target": "127.0.0.1",
-        "port": 8200
+        "port": 9010
       },
       "vantage_point": "local_host"
     }
@@ -49,31 +49,29 @@
     "role": "cloud_bootstrap",
     "official_compose_service": "bootstrap",
     "configuration": {
-      "template": "magistrala/bootstrap.env",
       "environment_refs": [
-        "MG_BOOTSTRAP_DB_USER",
-        "MG_BOOTSTRAP_DB_PASS",
-        "MG_BOOTSTRAP_DB_NAME",
-        "MG_ATOM_TOKEN_BOOTSTRAP",
-        "MG_BOOTSTRAP_DB_ENCRYPTION_KEY"
+        "MG_BOOTSTRAP_DB_ENCRYPTION_KEY",
+        "ATOM_SERVICE_TOKEN",
+        "ATOM_JWKS_URL",
+        "ATOM_JWT_ISSUER",
+        "ATOM_JWT_AUDIENCE"
       ],
-      "persistent_volume": null
+      "health_contract": "host_port_9010"
     },
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-core"
     },
     "compatibility": {
-      "sma_adapter_contract": "legacy_magistrala_clients_domains_channels",
-      "magistrala_release": "v0.51.0",
-      "atom_release": "v0.50.0",
-      "fluxmq_release": "v0.51.0"
+      "magistrala_release": "v1.0.0",
+      "atom_release": "v1.0.0",
+      "fluxmq_release": "v1.0.0"
     }
   },
   "control_plane": {
-    "project_id": "",
-    "name": "Magistrala Bootstrap service",
-    "version": "v0.51.0",
+    "project_id": "monitor-f49c8",
+    "name": "Magistrala v1 Bootstrap service",
+    "version": "v1.0.0",
     "artifact_kind": "container",
     "target_nodes": [
       "cloud-01"
@@ -83,27 +81,19 @@
     ],
     "dependencies": [
       "magistrala-bootstrap-db",
-      "magistrala-atom"
+      "magistrala-atom",
+      "magistrala-nginx"
     ],
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "v0.51.0",
+      "revision": "ghcr.io/absmach/magistrala/bootstrap:v1.0.0",
       "sha256": null
     },
     "lifecycle": {
       "pre_install": [],
       "install": [],
-      "configure": [
-        {
-          "program": "render_template",
-          "args": [
-            "magistrala/bootstrap.env"
-          ],
-          "working_dir": null,
-          "environment": {}
-        }
-      ],
+      "configure": [],
       "start": [
         {
           "program": "start_container",
@@ -131,14 +121,15 @@
     },
     "bindings": {
       "MG_BOOTSTRAP_DB_HOST": "magistrala-bootstrap-db",
+      "MG_BOOTSTRAP_DB_PORT": "5432",
       "ATOM_URL": "http://magistrala-atom:8080",
       "MG_BOOTSTRAP_HTTP_HOST": "0.0.0.0",
-      "MG_BOOTSTRAP_HTTP_PORT": "8200"
+      "MG_BOOTSTRAP_HTTP_PORT": "9013"
     },
     "secret_refs": [
       "magistrala_bootstrap_db_password",
-      "magistrala_atom_bootstrap_token",
-      "magistrala_bootstrap_db_encryption_key"
+      "magistrala_bootstrap_db_encryption_key",
+      "magistrala_atom_bootstrap_token"
     ],
     "created_at_utc": "",
     "updated_at_utc": ""

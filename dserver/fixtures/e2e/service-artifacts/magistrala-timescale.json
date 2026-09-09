@@ -1,0 +1,130 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "magistrala-timescale",
+  "service_id": "magistrala-timescale",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-magistrala-timescale",
+      "image": "timescale/timescaledb:2.29.0-pg16-oss",
+      "ports": [
+        {
+          "container_port": 5432,
+          "host_port": 5433,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-magistrala-net",
+      "volumes": [
+        {
+          "name": "datum-magistrala-timescale-volume",
+          "target": "/var/lib/postgresql/data",
+          "read_only": false
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-magistrala-timescale"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 5433
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 5433
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "telemetry_database",
+    "official_compose_service": "timescale",
+    "configuration": {
+      "persistent_volume": "datum-magistrala-timescale-volume",
+      "environment_refs": [
+        "MG_TIMESCALE_USER",
+        "MG_TIMESCALE_PASS",
+        "MG_TIMESCALE_NAME"
+      ]
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "cloud-core"
+    },
+    "compatibility": {
+      "magistrala_release": "v1.0.0",
+      "atom_release": "v1.0.0",
+      "fluxmq_release": "v1.0.0"
+    }
+  },
+  "control_plane": {
+    "project_id": "monitor-f49c8",
+    "name": "Magistrala v1 TimescaleDB",
+    "version": "v1.0.0",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "cloud-01"
+    ],
+    "target_stages": [
+      "cloud"
+    ],
+    "dependencies": [],
+    "acquisition": {
+      "kind": "image",
+      "source": null,
+      "revision": "timescale/timescaledb:2.29.0-pg16-oss",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [
+            "datum-magistrala-timescale"
+          ],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "health_checks": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "POSTGRES_DB": "magistrala",
+      "POSTGRES_USER": "magistrala"
+    },
+    "secret_refs": [
+      "magistrala_timescale_db_password"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}

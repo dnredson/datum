@@ -7,7 +7,13 @@
     "container": {
       "container_name": "datum-magistrala-atom-db",
       "image": "postgres:16-alpine",
-      "ports": [],
+      "ports": [
+        {
+          "container_port": 5432,
+          "host_port": 6010,
+          "protocol": "tcp"
+        }
+      ],
       "network": "datum-magistrala-net",
       "volumes": [
         {
@@ -30,11 +36,18 @@
       "kind": "tcp_connect",
       "params": {
         "target": "127.0.0.1",
-        "port": 5432
+        "port": 6010
       },
       "vantage_point": "local_host"
     },
-    "availability": null
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "target": "127.0.0.1",
+        "port": 6010
+      },
+      "vantage_point": "local_host"
+    }
   },
   "metadata": {
     "role": "identity_database",
@@ -50,12 +63,17 @@
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-foundation"
+    },
+    "compatibility": {
+      "magistrala_release": "v1.0.0",
+      "atom_release": "v1.0.0",
+      "fluxmq_release": "v1.0.0"
     }
   },
   "control_plane": {
     "project_id": "monitor-f49c8",
-    "name": "Magistrala Atom PostgreSQL",
-    "version": "16-alpine",
+    "name": "Magistrala v1 Atom PostgreSQL",
+    "version": "v1.0.0",
     "artifact_kind": "container",
     "target_nodes": [
       "cloud-01"
@@ -67,7 +85,7 @@
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "16-alpine",
+      "revision": "postgres:16-alpine",
       "sha256": null
     },
     "lifecycle": {
@@ -100,8 +118,8 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "POSTGRES_DB": "magistrala",
-      "POSTGRES_USER": "datum"
+      "POSTGRES_DB": "atom",
+      "POSTGRES_USER": "atom"
     },
     "secret_refs": [
       "magistrala_atom_db_password"

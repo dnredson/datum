@@ -1,7 +1,7 @@
 {
   "schema_version": "0.1.0",
   "scenario_id": "e2e-magistrala-chirpstack-sma-lora",
-  "stage": 95,
+  "stage": 96,
   "purpose": "declarative_service_artifact_catalog_for_distributed_iot_e2e",
   "deployment_mode": "artifacts_only_pending_governed_execution",
   "project_id": "monitor-f49c8",
@@ -46,6 +46,12 @@
         "magistrala-bootstrap",
         "magistrala-fluxmq-auth",
         "magistrala-fluxmq-node1",
+        "magistrala-fluxmq-node2",
+        "magistrala-fluxmq-node3",
+        "magistrala-nginx",
+        "magistrala-timescale",
+        "magistrala-timescale-writer",
+        "magistrala-timescale-reader",
         "sma"
       ]
     }
@@ -74,10 +80,24 @@
     },
     {
       "from": "sma",
-      "to": "magistrala-atom",
-      "relation": "magistrala_api_publish",
+      "to": "magistrala-nginx",
+      "relation": "magistrala_http_ingest",
       "transport": "http",
-      "port": 8080
+      "port": 18080
+    },
+    {
+      "from": "magistrala-nginx",
+      "to": "magistrala-fluxmq-auth",
+      "relation": "http_publish_proxy",
+      "transport": "http",
+      "port": 9026
+    },
+    {
+      "from": "magistrala-fluxmq-auth",
+      "to": "magistrala-timescale-writer",
+      "relation": "fluxmq_telemetry_persistence",
+      "transport": "amqp",
+      "port": 5682
     }
   ],
   "expected_flow": [
@@ -87,15 +107,40 @@
     "fog-mosquitto",
     "chirpstack",
     "sma",
-    "magistrala-atom"
+    "magistrala-nginx",
+    "magistrala-fluxmq-auth",
+    "magistrala-timescale-writer",
+    "magistrala-timescale"
+  ],
+  "control_plane_flow": [
+    "magistrala-atom-db",
+    "magistrala-atom",
+    "magistrala-bootstrap-db",
+    "magistrala-bootstrap",
+    "magistrala-fluxmq-auth"
   ],
   "secret_refs": [
     "lorawan_device_eui",
     "lorawan_app_eui",
     "lorawan_app_key",
     "fog_mqtt_password",
-    "magistrala_api_token"
+    "magistrala_atom_db_password",
+    "magistrala_atom_jwt_secret",
+    "magistrala_atom_key_encryption_key",
+    "magistrala_atom_admin_secret",
+    "magistrala_atom_service_secret",
+    "magistrala_fluxmq_credentials",
+    "magistrala_timescale_db_password",
+    "magistrala_nginx_server_cert",
+    "magistrala_nginx_server_key"
   ],
+  "compatibility": {
+    "magistrala_release": "v1.0.0",
+    "atom_release": "v1.0.0",
+    "fluxmq_release": "v1.0.0",
+    "atom_bootstrap_mode": "mounted_yaml",
+    "legacy_atom_bootstrap_job": false
+  },
   "wasm_policy": {
     "explicit_invocation_required": true,
     "host_imports_allowed": false,
