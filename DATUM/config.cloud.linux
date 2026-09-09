@@ -16,6 +16,7 @@ timeout_s = 5
 [dispatch]
 enabled = true
 allow_container_execution = true
+configuration_root = "/opt/datum/governed-config"
 
 [[dispatch.secret_bindings]]
 secret_ref = "magistrala_atom_database_url"
@@ -67,6 +68,90 @@ secret_ref = "magistrala_atom_db_password"
 environment_variable = "POSTGRES_PASSWORD"
 
 [[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_jwt_secret"
+environment_variable = "JWT_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_key_encryption_key"
+environment_variable = "ATOM_KEY_ENCRYPTION_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_admin_secret"
+environment_variable = "ADMIN_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_service_secret"
+environment_variable = "ATOM_SERVICE_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_atom_fluxmq_service_token"
+environment_variable = "ATOM_FLUXMQ_SERVICE_TOKEN"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_broker_secret"
+environment_variable = "MAGISTRALA_FLUXMQ_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_client_cert"
+environment_variable = "FLUXMQ_CLIENT_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_client_key"
+environment_variable = "FLUXMQ_CLIENT_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_ca_cert"
+environment_variable = "FLUXMQ_CA_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_service_cert"
+environment_variable = "FLUXMQ_SERVICE_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_service_key"
+environment_variable = "FLUXMQ_SERVICE_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_fluxmq_principal_secrets"
+environment_variable = "FLUXMQ_PRINCIPAL_SECRETS"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_nginx_server_cert"
+environment_variable = "NGINX_SERVER_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_nginx_server_key"
+environment_variable = "NGINX_SERVER_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_nginx_ca_cert"
+environment_variable = "NGINX_CA_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_db_password"
+environment_variable = "TIMESCALE_DB_PASSWORD"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_reader_client_cert"
+environment_variable = "TIMESCALE_READER_CLIENT_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_reader_client_key"
+environment_variable = "TIMESCALE_READER_CLIENT_KEY"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_writer_broker_secret"
+environment_variable = "TIMESCALE_WRITER_BROKER_SECRET"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_writer_client_cert"
+environment_variable = "TIMESCALE_WRITER_CLIENT_CERT"
+
+[[dispatch.secret_bindings]]
+secret_ref = "magistrala_timescale_writer_client_key"
+environment_variable = "TIMESCALE_WRITER_CLIENT_KEY"
+
+[[dispatch.secret_bindings]]
 secret_ref = "stage88_canary_secret"
 environment_variable = "STAGE88_CANARY_SECRET"
 
@@ -74,6 +159,7 @@ environment_variable = "STAGE88_CANARY_SECRET"
 service_name = "magistrala-atom-db"
 container_name = "datum-magistrala-atom-db"
 artifact = "postgres:16-alpine"
+ports = [{ host_port = 6010, container_port = 5432, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-bootstrap-db"
@@ -83,33 +169,61 @@ artifact = "postgres:16.2-alpine"
 [[dispatch.container_mappings]]
 service_name = "magistrala-atom"
 container_name = "datum-magistrala-atom"
-artifact = "ghcr.io/absmach/atom:v0.50.0"
+artifact = "ghcr.io/absmach/atom:v1.0.0"
 ports = [{ host_port = 8080, container_port = 8080, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-bootstrap"
 container_name = "datum-magistrala-bootstrap"
-artifact = "ghcr.io/absmach/magistrala/bootstrap:v0.51.0"
-ports = [{ host_port = 8200, container_port = 8200, protocol = "tcp" }]
-
-[[dispatch.container_mappings]]
-service_name = "magistrala-atom-bootstrap"
-container_name = "datum-magistrala-atom-bootstrap"
-artifact = "ghcr.io/absmach/magistrala/atom-bootstrap:v0.51.0"
+artifact = "ghcr.io/absmach/magistrala/bootstrap:v1.0.0"
+ports = [{ host_port = 9010, container_port = 9013, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-auth"
 container_name = "datum-magistrala-fluxmq-auth"
-artifact = "ghcr.io/absmach/magistrala/fluxmq:v0.51.0"
+artifact = "ghcr.io/absmach/magistrala/fluxmq:v1.0.0"
 
 [[dispatch.container_mappings]]
 service_name = "magistrala-fluxmq-node1"
 container_name = "datum-magistrala-fluxmq-node1"
-artifact = "ghcr.io/absmach/fluxmq:v0.51.0"
-ports = [
-  { host_port = 1883, container_port = 1883, protocol = "tcp" },
-  { host_port = 8883, container_port = 8883, protocol = "tcp" }
-]
+artifact = "ghcr.io/absmach/fluxmq:v1.0.0"
+ports = [{ host_port = 9081, container_port = 8082, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-fluxmq-node2"
+container_name = "datum-magistrala-fluxmq-node2"
+artifact = "ghcr.io/absmach/fluxmq:v1.0.0"
+ports = [{ host_port = 9082, container_port = 8082, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-fluxmq-node3"
+container_name = "datum-magistrala-fluxmq-node3"
+artifact = "ghcr.io/absmach/fluxmq:v1.0.0"
+ports = [{ host_port = 9083, container_port = 8082, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-nginx"
+container_name = "datum-magistrala-nginx"
+artifact = "docker.io/nginx:1.31.3-alpine3.24"
+ports = [{ host_port = 18080, container_port = 80, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-timescale"
+container_name = "datum-magistrala-timescale"
+artifact = "timescale/timescaledb:2.29.0-pg16-oss"
+ports = [{ host_port = 5433, container_port = 5432, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-timescale-reader"
+container_name = "datum-magistrala-timescale-reader"
+artifact = "ghcr.io/absmach/magistrala/timescale-reader:v1.0.0"
+ports = [{ host_port = 9011, container_port = 9011, protocol = "tcp" }]
+
+[[dispatch.container_mappings]]
+service_name = "magistrala-timescale-writer"
+container_name = "datum-magistrala-timescale-writer"
+artifact = "ghcr.io/absmach/magistrala/timescale-writer:v1.0.0"
+ports = [{ host_port = 9012, container_port = 9012, protocol = "tcp" }]
 
 [[dispatch.container_mappings]]
 service_name = "stage88-secret-canary"
@@ -143,7 +257,12 @@ names = [
   "datum-magistrala-bootstrap-db",
   "datum-magistrala-atom",
   "datum-magistrala-bootstrap",
-  "datum-magistrala-atom-bootstrap",
+  "datum-magistrala-fluxmq-node2",
+  "datum-magistrala-fluxmq-node3",
+  "datum-magistrala-nginx",
+  "datum-magistrala-timescale",
+  "datum-magistrala-timescale-reader",
+  "datum-magistrala-timescale-writer",
   "datum-magistrala-fluxmq-auth",
   "datum-magistrala-fluxmq-node1"
 ]
@@ -169,13 +288,33 @@ name = "magistrala-bootstrap"
 implemented_by = [{ container_name = "datum-magistrala-bootstrap" }]
 
 [[services.items]]
-name = "magistrala-atom-bootstrap"
-implemented_by = [{ container_name = "datum-magistrala-atom-bootstrap" }]
-
-[[services.items]]
 name = "magistrala-fluxmq-auth"
 implemented_by = [{ container_name = "datum-magistrala-fluxmq-auth" }]
 
 [[services.items]]
 name = "magistrala-fluxmq-node1"
 implemented_by = [{ container_name = "datum-magistrala-fluxmq-node1" }]
+
+[[services.items]]
+name = "magistrala-fluxmq-node2"
+implemented_by = [{ container_name = "datum-magistrala-fluxmq-node2" }]
+
+[[services.items]]
+name = "magistrala-fluxmq-node3"
+implemented_by = [{ container_name = "datum-magistrala-fluxmq-node3" }]
+
+[[services.items]]
+name = "magistrala-nginx"
+implemented_by = [{ container_name = "datum-magistrala-nginx" }]
+
+[[services.items]]
+name = "magistrala-timescale"
+implemented_by = [{ container_name = "datum-magistrala-timescale" }]
+
+[[services.items]]
+name = "magistrala-timescale-reader"
+implemented_by = [{ container_name = "datum-magistrala-timescale-reader" }]
+
+[[services.items]]
+name = "magistrala-timescale-writer"
+implemented_by = [{ container_name = "datum-magistrala-timescale-writer" }]

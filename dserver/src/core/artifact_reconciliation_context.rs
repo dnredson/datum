@@ -30,6 +30,8 @@ pub struct ArtifactReconciliationAssignment {
     #[serde(default)]
     pub volumes: Vec<ArtifactVolumeMount>,
     #[serde(default)]
+    pub configuration_mounts: Vec<ArtifactConfigurationMount>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ServiceArtifactWasmDecision,
     #[serde(default)]
@@ -41,6 +43,14 @@ pub struct ArtifactReconciliationAssignment {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactVolumeMount {
     pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactConfigurationMount {
+    pub source: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
@@ -135,6 +145,15 @@ pub fn build_artifact_reconciliation_context(
                     read_only: volume.read_only,
                 })
                 .collect(),
+            configuration_mounts: container
+                .configuration_mounts
+                .iter()
+                .map(|mount| ArtifactConfigurationMount {
+                    source: mount.source.clone(),
+                    target: mount.target.clone(),
+                    read_only: mount.read_only,
+                })
+                .collect(),
             dependencies: artifact.control_plane.dependencies.clone(),
             wasm_decision: artifact.control_plane.wasm_decision.clone(),
             bindings: artifact.control_plane.bindings.clone(),
@@ -214,6 +233,19 @@ pub fn validate_artifact_reconciliation_context(
     Ok(())
 }
 
+fn is_safe_configuration_source(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 512
+        && !value.starts_with('/')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '.')
+        })
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 fn is_safe_docker_name(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty()
@@ -264,6 +296,19 @@ fn validate_assignments(
                 ));
             }
         }
+        for mount in &assignment.configuration_mounts {
+            if !is_safe_configuration_source(&mount.source)
+                || !mount.target.starts_with('/')
+                || mount.target.chars().any(char::is_whitespace)
+                || mount.target.contains(',')
+                || !mount.read_only
+            {
+                return Err(format!(
+                    "artifact '{}' has an invalid governed configuration mount",
+                    assignment.artifact_id
+                ));
+            }
+        }
 
         let wasm = &assignment.wasm_decision;
         if !wasm.explicit_invocation_required
@@ -308,6 +353,7 @@ mod tests {
                         target: "/var/lib/mqtt".to_string(),
                         read_only: false,
                     }],
+                    configuration_mounts: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
