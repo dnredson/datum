@@ -162,6 +162,10 @@ fn magistrala_atom_bootstrap_job_catalog_contract_is_valid() {
         document["metadata"]["completion_mode"].as_str(),
         Some("successful_exit")
     );
+    assert_eq!(
+        document["control_plane"]["bindings"]["MG_ATOM_BOOTSTRAP_RETRY_INTERVAL"].as_str(),
+        Some("10s")
+    );
 
     let artifact = load_service_artifact(&path)
         .expect("Atom bootstrap artifact should satisfy the SmartSentinel artifact schema");
