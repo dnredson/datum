@@ -15,7 +15,19 @@
         }
       ],
       "network": "datum-magistrala-net",
-      "volumes": []
+      "volumes": [],
+      "configuration_mounts": [
+        {
+          "source": "magistrala/addons/timescale-writer/config.toml",
+          "target": "/config.toml",
+          "read_only": true
+        },
+        {
+          "source": "magistrala/ssl/certs",
+          "target": "/etc/ssl/certs",
+          "read_only": true
+        }
+      ]
     }
   },
   "probes": {
@@ -46,20 +58,7 @@
   "metadata": {
     "role": "telemetry_persistence_writer",
     "official_compose_service": "timescale-writer",
-    "configuration": {
-      "required_mounts": [
-        {
-          "source": "magistrala/addons/timescale-writer/config.toml",
-          "target": "/config.toml",
-          "read_only": true
-        },
-        {
-          "source": "magistrala/ssl/certs",
-          "target": "/etc/ssl/certs",
-          "read_only": true
-        }
-      ]
-    },
+    "configuration": {},
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-core"

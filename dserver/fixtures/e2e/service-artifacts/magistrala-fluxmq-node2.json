@@ -21,6 +21,18 @@
           "target": "/tmp/fluxmq",
           "read_only": false
         }
+      ],
+      "configuration_mounts": [
+        {
+          "source": "magistrala/fluxmq/node2.yaml",
+          "target": "/etc/fluxmq/config.yaml",
+          "read_only": true
+        },
+        {
+          "source": "magistrala/ssl/certs",
+          "target": "/etc/fluxmq/certs",
+          "read_only": true
+        }
       ]
     }
   },
@@ -54,18 +66,6 @@
     "official_compose_service": "fluxmq-node2",
     "configuration": {
       "config_file": "magistrala/fluxmq/node2.yaml",
-      "required_mounts": [
-        {
-          "source": "magistrala/fluxmq/node2.yaml",
-          "target": "/etc/fluxmq/config.yaml",
-          "read_only": true
-        },
-        {
-          "source": "magistrala/ssl/certs",
-          "target": "/etc/fluxmq/certs",
-          "read_only": true
-        }
-      ],
       "persistent_volume": "datum-magistrala-fluxmq-node2-volume"
     },
     "deployment": {

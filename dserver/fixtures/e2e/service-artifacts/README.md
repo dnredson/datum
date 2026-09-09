@@ -65,3 +65,12 @@ Expected Stage 96 validation:
 - all cloud Magistrala images are pinned to `v1.0.0` or the official pinned
   infrastructure image;
 - `magistrala-atom-bootstrap.json` is not registered.
+
+
+## Governed configuration mounts
+
+Container artifacts may declare `runtime.container.configuration_mounts` with relative logical
+sources and absolute container targets. Sources are resolved only below the node-local
+`[dispatch].configuration_root` and are mounted read-only. Absolute host paths,
+path traversal, and writable configuration mounts are rejected. The reconciler never
+executes a shell command to materialize these files.

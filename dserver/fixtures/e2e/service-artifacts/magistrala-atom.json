@@ -15,7 +15,14 @@
         }
       ],
       "network": "datum-magistrala-net",
-      "volumes": []
+      "volumes": [],
+      "configuration_mounts": [
+        {
+          "source": "magistrala/atom-bootstrap.yaml",
+          "target": "/etc/atom/bootstrap.yaml",
+          "read_only": true
+        }
+      ]
     }
   },
   "probes": {
@@ -58,13 +65,6 @@
         "ATOM_BOOTSTRAP_FILE"
       ],
       "bootstrap_config_artifact": "magistrala-v1-atom-bootstrap.yaml",
-      "required_mounts": [
-        {
-          "source": "magistrala/atom-bootstrap.yaml",
-          "target": "/etc/atom/bootstrap.yaml",
-          "read_only": true
-        }
-      ],
       "persistent_volume": null,
       "note": "v1.0.0 loads action and policy bootstrap directly at Atom startup; no atom-bootstrap job container is used."
     },

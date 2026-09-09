@@ -15,7 +15,14 @@
         }
       ],
       "network": "datum-magistrala-net",
-      "volumes": []
+      "volumes": [],
+      "configuration_mounts": [
+        {
+          "source": "magistrala/ssl/certs",
+          "target": "/etc/ssl/certs",
+          "read_only": true
+        }
+      ]
     }
   },
   "probes": {
@@ -46,15 +53,7 @@
   "metadata": {
     "role": "telemetry_query_api",
     "official_compose_service": "timescale-reader",
-    "configuration": {
-      "required_mounts": [
-        {
-          "source": "magistrala/ssl/certs",
-          "target": "/etc/ssl/certs",
-          "read_only": true
-        }
-      ]
-    },
+    "configuration": {},
     "deployment": {
       "mode": "governed_declarative",
       "phase": "cloud-core"

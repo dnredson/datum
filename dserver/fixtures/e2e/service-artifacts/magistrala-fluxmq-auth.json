@@ -9,7 +9,14 @@
       "image": "ghcr.io/absmach/magistrala/fluxmq:v1.0.0",
       "ports": [],
       "network": "datum-magistrala-net",
-      "volumes": []
+      "volumes": [],
+      "configuration_mounts": [
+        {
+          "source": "magistrala/ssl/certs",
+          "target": "/etc/ssl/certs",
+          "read_only": true
+        }
+      ]
     }
   },
   "probes": {
@@ -31,13 +38,6 @@
         "ATOM_SERVICE_TOKEN",
         "MG_MESSAGE_BROKER_URL",
         "MG_FLUXMQ_BROKER_URL"
-      ],
-      "required_mounts": [
-        {
-          "source": "magistrala/ssl/certs",
-          "target": "/etc/ssl/certs",
-          "read_only": true
-        }
       ]
     },
     "deployment": {
