@@ -1,0 +1,174 @@
+{
+  "schema_version": "0.1.0",
+  "artifact_id": "chirpstack-provisioner",
+  "service_id": "chirpstack-provisioner",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-chirpstack-provisioner",
+      "image": "ghcr.io/dnredson/chirpstack-provisioner:main",
+      "ports": [
+        {
+          "host_port": 18082,
+          "container_port": 8085,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-fog-net",
+      "volumes": [
+        {
+          "name": "datum-chirpstack-provisioner-volume",
+          "target": "/var/lib/chirpstack-provisioner",
+          "read_only": false
+        }
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack-provisioner",
+          "target": "/etc/chirpstack-provisioner",
+          "read_only": true
+        }
+      ]
+    }
+  },
+  "probes": {
+    "execution": {
+      "kind": "docker_container_running",
+      "params": {
+        "container_name": "datum-chirpstack-provisioner"
+      },
+      "vantage_point": "local_host"
+    },
+    "health": {
+      "kind": "http",
+      "params": {
+        "url": "http://127.0.0.1:18082/health"
+      },
+      "vantage_point": "local_host"
+    },
+    "availability": {
+      "kind": "tcp_connect",
+      "params": {
+        "host": "127.0.0.1",
+        "port": 18082
+      },
+      "vantage_point": "local_host"
+    }
+  },
+  "metadata": {
+    "role": "chirpstack_logical_resource_provisioner",
+    "source_repository": "https://github.com/dnredson/chirpstack-provisioner",
+    "configuration": {
+      "config_path": "/etc/chirpstack-provisioner/config.yaml",
+      "bootstrap_plan_path": "/etc/chirpstack-provisioner/desired.yaml",
+      "persistent_state_path": "/var/lib/chirpstack-provisioner/state.json",
+      "persistent_plan_path": "/var/lib/chirpstack-provisioner/desired.yaml"
+    },
+    "deployment": {
+      "mode": "governed_declarative",
+      "phase": "fog-lorawan"
+    },
+    "contract": "reconciles ChirpStack tenant, device profiles, applications, gateways and devices"
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "ChirpStack logical resource provisioner",
+    "version": "main",
+    "artifact_kind": "container",
+    "target_nodes": [
+      "fog-01"
+    ],
+    "target_stages": [
+      "fog"
+    ],
+    "dependencies": [
+      "chirpstack"
+    ],
+    "acquisition": {
+      "kind": "image",
+      "source": "ghcr.io/dnredson/chirpstack-provisioner",
+      "revision": "main",
+      "sha256": null
+    },
+    "lifecycle": {
+      "pre_install": [
+        {
+          "program": "verify_docker",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "install": [
+        {
+          "program": "pull_image",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "configure": [
+        {
+          "program": "verify_configuration_mounts",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "start": [
+        {
+          "program": "start_container",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "stop": [],
+      "post_install": [
+        {
+          "program": "verify_container_running",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ],
+      "rollback": [
+        {
+          "program": "remove_container",
+          "args": [],
+          "working_dir": null,
+          "environment": {}
+        }
+      ]
+    },
+    "health_checks": [
+      {
+        "kind": "http",
+        "target": "127.0.0.1",
+        "port": 18082,
+        "path": "/health",
+        "expected_status": 200,
+        "timeout_ms": 5000
+      }
+    ],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false,
+      "max_fuel": 1000000,
+      "timeout_ms": 1000
+    },
+    "bindings": {
+      "CHIRPSTACK_PROVISIONER_CONFIG": "/etc/chirpstack-provisioner/config.yaml",
+      "CHIRPSTACK_ENDPOINT": "http://datum-chirpstack:8080"
+    },
+    "secret_refs": [
+      "chirpstack_api_token"
+    ],
+    "created_at_utc": "",
+    "updated_at_utc": ""
+  }
+}
