@@ -6,6 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub const OPERATIONAL_DGRAPH_SCHEMA_VERSION: &str = "0.1.0";
+pub const OPERATIONAL_DGRAPH_BOOTSTRAP_MODE_EMPTY: &str = "empty";
 pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1";
 pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
 pub const AUTHORIZATION_SCOPE_PROCESS: &str = "process";
@@ -108,6 +109,15 @@ pub struct OperationalDGraphSlice {
     pub reconciler: OperationalReconcilerDescriptor,
 }
 
+fn is_empty_bootstrap_graph(graph: &OperationalDGraph) -> bool {
+    graph
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("bootstrap_mode"))
+        .and_then(Value::as_str)
+        == Some(OPERATIONAL_DGRAPH_BOOTSTRAP_MODE_EMPTY)
+}
+
 pub fn validate_operational_dgraph(graph: &OperationalDGraph) -> Result<(), String> {
     if graph.schema_version.trim() != OPERATIONAL_DGRAPH_SCHEMA_VERSION {
         return Err(format!(
@@ -117,11 +127,18 @@ pub fn validate_operational_dgraph(graph: &OperationalDGraph) -> Result<(), Stri
     }
     required("dgraph_id", &graph.dgraph_id)?;
     required("project_id", &graph.project_id)?;
-    if graph.revision == 0 {
+    let empty_bootstrap = is_empty_bootstrap_graph(graph);
+    if graph.revision == 0 && !empty_bootstrap {
         return Err("operational D-Graph revision must be greater than zero".to_string());
     }
-    if graph.nodes.is_empty() {
+    if graph.nodes.is_empty() && !empty_bootstrap {
         return Err("operational D-Graph must contain at least one node".to_string());
+    }
+    if empty_bootstrap && (graph.revision != 0 || !graph.nodes.is_empty()) {
+        return Err(
+            "empty operational D-Graph bootstrap must use revision 0 and contain no nodes"
+                .to_string(),
+        );
     }
 
     let mut seen_nodes = HashSet::new();
