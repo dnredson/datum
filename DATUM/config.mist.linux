@@ -1,0 +1,42 @@
+[agent]
+node_id = "mist-01"
+cycle_s = 5
+schema_version = "0.0.1"
+
+[outputs.file_json]
+enabled = true
+path = "snapshot.json"
+
+[outputs.http]
+enabled = false
+url = "http://192.168.10.101:8080/api/v1/snapshots"
+project_id = "monitor-f49c8"
+timeout_s = 5
+
+# Local permission still requires --execute and control-plane authorization.
+[dispatch]
+enabled = true
+allow_container_execution = true
+configuration_root = "/opt/datum/governed-config"
+
+[[dispatch.container_mappings]]
+service_name = "chirpstack-gateway-bridge"
+container_name = "datum-chirpstack-gateway-bridge"
+artifact = "chirpstack/chirpstack-gateway-bridge@sha256:cc820a195e739fa653c6d7fd403abe73b9b0c79b5dd4ab0f4bf9c6443470121b"
+ports = [
+  { host_port = 1700, container_port = 1700, protocol = "udp" },
+  { host_port = 19100, container_port = 9100, protocol = "tcp" },
+]
+
+[collectors.docker]
+enabled = true
+mode = "allowlist"
+names = ["datum-chirpstack-gateway-bridge"]
+max_entries = 20
+
+[services]
+enabled = true
+
+[[services.items]]
+name = "chirpstack-gateway-bridge"
+implemented_by = [{ container_name = "datum-chirpstack-gateway-bridge" }]

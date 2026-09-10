@@ -9,9 +9,26 @@
       "image": "chirpstack/chirpstack:4",
       "ports": [
         {
+          "host_port": 18081,
           "container_port": 8080,
-          "host_port": 8080,
           "protocol": "tcp"
+        },
+        {
+          "host_port": 19101,
+          "container_port": 9100,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-fog-net",
+      "command": [
+        "-c",
+        "/etc/chirpstack"
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack/server",
+          "target": "/etc/chirpstack",
+          "read_only": true
         }
       ]
     }
@@ -27,18 +44,15 @@
     "health": {
       "kind": "http",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8080,
-        "path": "/api/health",
-        "expected_status": 200
+        "url": "http://127.0.0.1:18081/"
       },
       "vantage_point": "local_host"
     },
     "availability": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8080
+        "host": "127.0.0.1",
+        "port": 18081
       },
       "vantage_point": "local_host"
     }
@@ -68,7 +82,7 @@
       "fog"
     ],
     "dependencies": [
-      "fog-mosquitto",
+      "mosquitto",
       "chirpstack-postgres",
       "chirpstack-redis"
     ],
@@ -141,14 +155,13 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "MQTT_BROKER_HOST": "fog-mosquitto",
-      "REDIS_HOST": "chirpstack-redis",
       "POSTGRESQL_HOST": "chirpstack-postgres",
-      "CHIRPSTACK_LISTEN_ADDR": "0.0.0.0:8080"
+      "REDIS_HOST": "chirpstack-redis",
+      "MQTT_BROKER_HOST": "mqtt"
     },
     "secret_refs": [
       "chirpstack_postgres_password",
-      "fog_mqtt_password"
+      "chirpstack_api_secret"
     ],
     "created_at_utc": "",
     "updated_at_utc": ""

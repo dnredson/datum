@@ -1,17 +1,29 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "chirpstack-rest-api",
-  "service_id": "chirpstack-rest-api",
+  "artifact_id": "chirpstack-gateway-bridge",
+  "service_id": "chirpstack-gateway-bridge",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-chirpstack-rest-api",
-      "image": "chirpstack/chirpstack-rest-api:4",
+      "container_name": "datum-chirpstack-gateway-bridge",
+      "image": "chirpstack/chirpstack-gateway-bridge@sha256:cc820a195e739fa653c6d7fd403abe73b9b0c79b5dd4ab0f4bf9c6443470121b",
       "ports": [
         {
-          "container_port": 8090,
-          "host_port": 8090,
+          "container_port": 1700,
+          "host_port": 1700,
+          "protocol": "udp"
+        },
+        {
+          "container_port": 9100,
+          "host_port": 19100,
           "protocol": "tcp"
+        }
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack/gateway-bridge.toml",
+          "target": "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml",
+          "read_only": true
         }
       ]
     }
@@ -20,64 +32,51 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-chirpstack-rest-api"
+        "container_name": "datum-chirpstack-gateway-bridge"
       },
       "vantage_point": "local_host"
     },
     "health": {
       "kind": "http",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8090,
-        "path": "/api/health",
-        "expected_status": 200
+        "url": "http://127.0.0.1:19100/metrics"
       },
       "vantage_point": "local_host"
     },
-    "availability": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 8090
-      },
-      "vantage_point": "local_host"
-    }
+    "availability": null
   },
   "metadata": {
-    "role": "lorawan_control_api",
-    "official_compose_service": "chirpstack-rest-api",
+    "role": "lorawan_gateway_bridge",
+    "official_compose_service": "chirpstack-gateway-bridge",
     "configuration": {
-      "command": [
-        "--server",
-        "chirpstack:8080",
-        "--bind",
-        "0.0.0.0:8090",
-        "--insecure"
-      ]
+      "template": "chirpstack/gateway-bridge.toml",
+      "event_topic_template": "eu868/gateway/{{ .GatewayID }}/event/{{ .EventType }}",
+      "command_topic_template": "eu868/gateway/{{ .GatewayID }}/command/#",
+      "state_topic_template": "eu868/gateway/{{ .GatewayID }}/state/{{ .StateType }}",
+      "mqtt_authentication": "anonymous_lab",
+      "health_contract": "HTTP metrics indicates process responsiveness; Semtech UDP to MQTT delivery requires the functional canary."
     },
     "deployment": {
       "mode": "governed_declarative",
-      "phase": "fog-lorawan"
+      "phase": "mist-gateway"
     }
   },
   "control_plane": {
     "project_id": "",
-    "name": "ChirpStack REST API",
-    "version": "4",
+    "name": "ChirpStack Gateway Bridge",
+    "version": "4.1.2",
     "artifact_kind": "container",
     "target_nodes": [
-      "fog-01"
+      "mist-01"
     ],
     "target_stages": [
-      "fog"
+      "mist"
     ],
-    "dependencies": [
-      "chirpstack"
-    ],
+    "dependencies": [],
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "4",
+      "revision": "4.1.2",
       "sha256": null
     },
     "lifecycle": {
@@ -142,10 +141,7 @@
       "max_fuel": 1000000,
       "timeout_ms": 1000
     },
-    "bindings": {
-      "CHIRPSTACK_SERVER": "chirpstack:8080",
-      "REST_API_BIND": "0.0.0.0:8090"
-    },
+    "bindings": {},
     "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""

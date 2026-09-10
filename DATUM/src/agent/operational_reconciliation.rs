@@ -136,6 +136,8 @@ pub struct OperationalArtifactAssignment {
     #[serde(default)]
     pub configuration_mounts: Vec<OperationalConfigurationMount>,
     #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     pub wasm_decision: ArtifactWasmDecisionPolicy,
     #[serde(default)]
@@ -484,6 +486,7 @@ fn run_operational_reconciliation_from_bootstrap(
                     artifact.network.as_deref(),
                     &artifact.volumes,
                     &artifact.configuration_mounts,
+                    &artifact.command,
                     configuration_root(cfg),
                 )
                 .unwrap_or(false)
@@ -693,6 +696,7 @@ fn run_operational_reconciliation_from_bootstrap(
                     assignment
                         .map(|artifact| artifact.configuration_mounts.as_slice())
                         .unwrap_or(&[]),
+                    assignment.map(|artifact| artifact.command.as_slice()).unwrap_or(&[]),
                     configuration_root(cfg),
                     assignment
                         .map(|artifact| &artifact.lifecycle)
@@ -896,6 +900,8 @@ fn validate_context(
             || artifact.image.trim().is_empty()
             || artifact.target_node != context.node_id
             || artifact.runtime_kind != "container"
+            || artifact.command.len() > 64
+            || artifact.command.iter().any(|arg| arg.len() > 4096 || arg.contains('\0'))
             || artifact
                 .network
                 .as_deref()
@@ -1008,8 +1014,17 @@ fn container_attachments_match(
     network: Option<&str>,
     volumes: &[OperationalVolumeMount],
     configuration_mounts: &[OperationalConfigurationMount],
+    container_command: &[String],
     configuration_root: Option<&Path>,
 ) -> Result<bool> {
+    if !container_command.is_empty() {
+        let output = Command::new("docker")
+            .args(["inspect", "-f", "{{json .Config.Cmd}}", container_name])
+            .output().context("inspect container command")?;
+        if !output.status.success() { return Ok(false); }
+        let actual: Option<Vec<String>> = serde_json::from_slice(&output.stdout)?;
+        if actual.as_deref() != Some(container_command) { return Ok(false); }
+    }
     if let Some(network) = network {
         let output = Command::new("docker")
             .args(["inspect", "-f", "{{json .NetworkSettings.Networks}}", container_name])
@@ -1250,6 +1265,7 @@ fn execute_trusted_container_intent(
     network: Option<&str>,
     volumes: &[OperationalVolumeMount],
     configuration_mounts: &[OperationalConfigurationMount],
+    container_command: &[String],
     configuration_root: Option<&Path>,
     lifecycle: &OperationalLifecycle,
     bindings: Option<&BTreeMap<String, String>>,
@@ -1277,6 +1293,7 @@ fn execute_trusted_container_intent(
                 network,
                 volumes,
                 configuration_mounts,
+                container_command,
                 configuration_root,
             )?
         }
@@ -1300,6 +1317,7 @@ fn execute_trusted_container_intent(
             network,
             volumes,
             configuration_mounts,
+            container_command,
             configuration_root,
             lifecycle,
             bindings,
@@ -1325,6 +1343,7 @@ fn execute_trusted_container_intent(
             network,
             volumes,
             configuration_mounts,
+            container_command,
             configuration_root,
             lifecycle,
             bindings,
@@ -1424,6 +1443,7 @@ fn execute_trusted_container_intent(
                 args.push(environment_variable.clone());
             }
             args.push(image.to_string());
+            args.extend(container_command.iter().cloned());
             let mut command = Command::new("docker");
             command.args(&args);
             if let Some(bindings) = bindings {

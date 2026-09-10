@@ -24,7 +24,7 @@ Registre/atualize o fixture:
 ```powershell
 $PROJECT_ID = "monitor-f49c8"
 $DSERVER_URL = "http://192.168.10.101:8080"
-$ARTIFACT_PATH = Join-Path (Get-Location) "dserver/fixtures/e2e/service-artifacts/magistrala-atom-db.json"
+$ARTIFACT_PATH = Join-Path (Get-Location) "artifacts/catalog/magistrala-atom-db.json"
 
 curl.exe -fsS \
   -X PUT \

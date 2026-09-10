@@ -80,3 +80,22 @@ fn trusted_container_artifact_builds_typed_docker_run_arguments() {
         ]
     );
 }
+
+#[test]
+fn container_command_is_appended_as_literal_arguments_after_image() {
+    let mut artifact = mqtt_artifact();
+    let command = vec!["-c".to_string(), "/etc/chirpstack".to_string(), "$(literal); text".to_string()];
+    artifact.runtime.container.as_mut().unwrap().command = command.clone();
+    let args = build_docker_run_args(&artifact).unwrap();
+    assert_eq!(&args[args.len() - command.len()..], command.as_slice());
+    assert_eq!(args[args.len() - command.len() - 1], "eclipse-mosquitto:2");
+}
+
+#[test]
+fn container_command_rejects_nul_and_excessive_arguments() {
+    let mut artifact = mqtt_artifact();
+    for command in [vec!["bad\0arg".to_string()], vec!["x".to_string(); 65], vec!["x".repeat(4097)]] {
+        artifact.runtime.container.as_mut().unwrap().command = command;
+        assert!(build_docker_run_args(&artifact).is_err());
+    }
+}

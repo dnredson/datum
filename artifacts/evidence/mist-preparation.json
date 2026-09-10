@@ -1,0 +1,24 @@
+{
+  "node_id": "mist-01",
+  "host": "192.168.10.109",
+  "architecture": "aarch64",
+  "base_commit": "f468452",
+  "source_kind": "git archive plus uncommitted mist config",
+  "rust_toolchain": "1.94.1",
+  "docker_server": "26.1.5+dfsg1",
+  "gateway_version": "4.1.2",
+  "gateway_image": "chirpstack/chirpstack-gateway-bridge@sha256:cc820a195e739fa653c6d7fd403abe73b9b0c79b5dd4ab0f4bf9c6443470121b",
+  "sha256": {
+    "source_archive": "822ed88e5500e532fa4a9600febafd16ede4fc6640a7df98e1e126cb55add3ed",
+    "mist_config": "503324b1eed6f34584c5198cf3e210aea06b5caa1f2c461499ce26c684a5586e",
+    "gateway_config": "d4a2f059280c562c54978828b56ca6fce8f49ddcaab1494c3a1bbd6981defec4"
+  },
+  "image_config_validation": "all explicit TOML values preserved by configfile command with network disabled",
+  "smart_sentinel_build": "passed: native ARM64, cargo build --locked, dev profile, 18m12s",
+  "control_plane_published": false,
+  "service_deployed": false,
+  "binary_sha256": "70c40406a6ef09e80bdc7845c4718614610b74caa347e6466c83acf493001f52",
+  "binary_help": "passed",
+  "remote_root": "/home/dener/datum-mist-f468452",
+  "configuration_provisioned": "/opt/datum/governed-config/chirpstack/gateway-bridge.toml"
+}

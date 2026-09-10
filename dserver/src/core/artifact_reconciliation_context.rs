@@ -32,6 +32,8 @@ pub struct ArtifactReconciliationAssignment {
     #[serde(default)]
     pub configuration_mounts: Vec<ArtifactConfigurationMount>,
     #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
     pub lifecycle: ServiceArtifactLifecycle,
     #[serde(default)]
     pub dependencies: Vec<String>,
@@ -136,6 +138,7 @@ pub fn build_artifact_reconciliation_context(
             runtime_kind: artifact.runtime.kind.clone(),
             container_name: container.container_name.clone(),
             image: container.image.clone(),
+            command: container.command.clone(),
             target_node: slice.node_id.clone(),
             network: container.network.clone(),
             volumes: container
@@ -263,6 +266,11 @@ fn validate_assignments(
     assignments: &[ArtifactReconciliationAssignment],
 ) -> Result<(), String> {
     for assignment in assignments {
+        if assignment.command.len() > 64
+            || assignment.command.iter().any(|arg| arg.len() > 4096 || arg.contains('\0'))
+        {
+            return Err("invalid container command arguments".to_string());
+        }
         if assignment.artifact_id.trim().is_empty()
             || assignment.service_id.trim().is_empty()
             || assignment.version.trim().is_empty()
@@ -357,6 +365,7 @@ mod tests {
                         read_only: false,
                     }],
                     configuration_mounts: Vec::new(),
+                    command: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
@@ -410,6 +419,16 @@ mod tests {
                 host_imports_allowed: false,
             },
         }
+    }
+
+    #[test]
+    fn command_survives_context_and_invalid_command_is_rejected() {
+        let mut item = artifact("fog-01");
+        item.runtime.container.as_mut().unwrap().command = vec!["-c".into(), "/etc/chirpstack".into()];
+        let mut context = build_artifact_reconciliation_context(&slice(), &[item]).unwrap();
+        assert_eq!(context.artifacts[0].command, vec!["-c", "/etc/chirpstack"]);
+        context.artifacts[0].command = vec!["bad\0arg".into()];
+        assert!(validate_artifact_reconciliation_context(&context).is_err());
     }
 
     #[test]

@@ -7,7 +7,20 @@
     "container": {
       "container_name": "datum-chirpstack-redis",
       "image": "redis:7-alpine",
-      "ports": []
+      "ports": [],
+      "network": "datum-fog-net",
+      "volumes": [
+        {
+          "name": "datum-chirpstack-redis-data",
+          "target": "/data",
+          "read_only": false
+        }
+      ],
+      "command": [
+        "redis-server",
+        "--appendonly",
+        "yes"
+      ]
     }
   },
   "probes": {
@@ -18,21 +31,15 @@
       },
       "vantage_point": "local_host"
     },
-    "health": {
-      "kind": "tcp_connect",
-      "params": {
-        "target": "127.0.0.1",
-        "port": 6379
-      },
-      "vantage_point": "local_host"
-    },
+    "health": null,
     "availability": null
   },
   "metadata": {
     "role": "chirpstack_cache",
     "official_compose_service": "redis",
     "configuration": {
-      "persistent_volume": "chirpstack-redisdata"
+      "persistent_volume": "chirpstack-redisdata",
+      "health_contract": "docker exec datum-chirpstack-redis redis-cli ping must return PONG"
     },
     "deployment": {
       "mode": "governed_declarative",
