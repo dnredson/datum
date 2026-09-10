@@ -163,11 +163,12 @@
     },
     "bindings": {
       "CHIRPSTACK_PROVISIONER_CONFIG": "/etc/chirpstack-provisioner/config.yaml",
-      "CHIRPSTACK_ENDPOINT": "http://datum-chirpstack:8080"
+      "CHIRPSTACK_ENDPOINT": "http://datum-chirpstack:8080",
+      "CHIRPSTACK_BOOTSTRAP_MODE": "default_migration_credentials",
+      "CHIRPSTACK_BOOTSTRAP_EMAIL": "admin",
+      "CHIRPSTACK_BOOTSTRAP_PASSWORD": "admin"
     },
-    "secret_refs": [
-      "chirpstack_api_token"
-    ],
+    "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""
   }
