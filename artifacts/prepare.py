@@ -8,8 +8,9 @@ import secrets
 import shlex
 
 ROOT = Path(__file__).resolve().parent
+EXTERNAL_SECRET_NAMES = {"CHIRPSTACK_API_TOKEN"}
 NODES = {
-    "fog-01": ("fog", ["mosquitto", "chirpstack-postgres", "chirpstack-redis", "chirpstack"]),
+    "fog-01": ("fog", ["mosquitto", "chirpstack-postgres", "chirpstack-redis", "chirpstack", "chirpstack-provisioner"]),
     "mist-01": ("mist", ["chirpstack-gateway-bridge"]),
 }
 
@@ -24,7 +25,7 @@ def prepare(node, destination):
     if destination.is_relative_to(ROOT.parent):
         raise ValueError("generated bundles and secrets must stay outside the repository")
     files = {}
-    secret_names = {"fog-01": ["POSTGRES_PASSWORD", "CHIRPSTACK_API_SECRET"], "mist-01": []}[node]
+    secret_names = {"fog-01": ["POSTGRES_PASSWORD", "CHIRPSTACK_API_SECRET", "CHIRPSTACK_API_TOKEN"], "mist-01": []}[node]
     for artifact_id in ids:
         document = json.loads((ROOT / "catalog" / f"{artifact_id}.json").read_text())
         files[f"catalog/{artifact_id}.json"] = (json.dumps(document, indent=2) + "\n").encode()
@@ -62,10 +63,29 @@ def prepare(node, destination):
         expected = {name for name in secret_names}
         if len(lines) != len(expected) or {line.partition('=')[0] for line in lines} != expected:
             raise ValueError("existing node.env has unexpected keys; preserve it and resolve manually")
-        if any(not re.fullmatch(r'[A-Z_]+=[0-9a-f]{64}', line) for line in lines):
-            raise ValueError("existing node.env must contain generated hex secrets only")
+        def valid_secret_line(line):
+            name, separator, value = line.partition("=")
+            if not separator:
+                return False
+            if name in EXTERNAL_SECRET_NAMES:
+                return bool(re.fullmatch(r'[A-Za-z0-9._~-]{16,}', value))
+            return bool(re.fullmatch(r'[0-9a-f]{64}', value))
+
+        if any(not valid_secret_line(line) for line in lines):
+            raise ValueError("existing node.env contains an invalid secret value")
     else:
-        files["node.env"] = ''.join(f'{name}={secrets.token_hex(32)}\n' for name in secret_names).encode()
+        values = []
+        for name in secret_names:
+            if name in EXTERNAL_SECRET_NAMES:
+                value = os.environ.get(name)
+                if not value:
+                    raise ValueError(f"{name} must be exported before preparing this bundle")
+                if not re.fullmatch(r'[A-Za-z0-9._~-]{16,}', value):
+                    raise ValueError(f"{name} contains unsupported characters")
+            else:
+                value = secrets.token_hex(32)
+            values.append(f'{name}={value}\n')
+        files["node.env"] = ''.join(values).encode()
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     for relative, content in files.items():
         path = destination / relative
