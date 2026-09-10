@@ -11,6 +11,7 @@ use axum::{
     Json as JsonResponse,
 };
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
@@ -129,6 +130,93 @@ fn prepare_restored_authorizations(state: &OperationalDGraphPersistedState) -> R
         }
     }
     Ok(restored)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOperationalProjectRequest {
+    pub project_id: String,
+    #[serde(default)]
+    pub dgraph_id: Option<String>,
+}
+
+/// Create a new project with an explicit, inert empty operational graph.
+///
+/// This endpoint never creates nodes, desired services, or host-mutation
+/// authorization. The first deployable graph must be published later with a
+/// higher revision and explicit reconciliation authorization.
+pub async fn post_operational_project(
+    Json(request): Json<CreateOperationalProjectRequest>,
+) -> Result<JsonResponse<OperationalDGraph>, ApiError> {
+    ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
+
+    let project_id = request.project_id.trim();
+    if project_id.is_empty() {
+        return Err(bad_request(
+            "project_id must be a non-empty string".to_string(),
+        ));
+    }
+    let dgraph_id = request
+        .dgraph_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("dgraph:{project_id}"));
+
+    let _transaction = state_transaction().lock().map_err(lock_error)?;
+    if graph_store()
+        .read()
+        .map_err(lock_error)?
+        .contains_key(project_id)
+    {
+        return Err(conflict(format!(
+            "operational D-Graph project '{}' already exists",
+            project_id
+        )));
+    }
+
+    let graph = OperationalDGraph {
+        schema_version: crate::core::operational_dgraph::OPERATIONAL_DGRAPH_SCHEMA_VERSION
+            .to_string(),
+        dgraph_id,
+        revision: 0,
+        project_id: project_id.to_string(),
+        nodes: Vec::new(),
+        metadata: Some(json!({
+            "bootstrap_mode": crate::core::operational_dgraph::OPERATIONAL_DGRAPH_BOOTSTRAP_MODE_EMPTY,
+            "host_mutation_allowed": false,
+        })),
+    };
+    validate_operational_dgraph(&graph).map_err(bad_request)?;
+
+    let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
+    candidate
+        .graphs
+        .insert(project_id.to_string(), graph.clone());
+    persist_candidate(&candidate).map_err(internal_error)?;
+    replace_in_memory_graphs(&candidate).map_err(internal_error)?;
+    Ok(JsonResponse(graph))
+}
+
+pub async fn get_operational_projects() -> Result<JsonResponse<Value>, ApiError> {
+    ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
+    let _transaction = state_transaction().lock().map_err(lock_error)?;
+    let graphs = graph_store().read().map_err(lock_error)?;
+    let projects = graphs
+        .values()
+        .map(|graph| {
+            json!({
+                "project_id": graph.project_id,
+                "dgraph_id": graph.dgraph_id,
+                "revision": graph.revision,
+                "node_count": graph.nodes.len(),
+                "bootstrap_mode": graph.metadata.as_ref()
+                    .and_then(|metadata| metadata.get("bootstrap_mode"))
+                    .and_then(Value::as_str),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(JsonResponse(json!({ "projects": projects })))
 }
 
 pub async fn put_operational_dgraph(

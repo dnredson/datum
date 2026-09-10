@@ -75,8 +75,12 @@ impl OperationalDGraphRecoveryPolicy {
         }
         let empty = state.is_none_or(|state| state.graphs.is_empty());
         if empty {
-            if !self.allow_empty {
-                return Err("operational D-Graph state is missing or empty; recovery refused. Check the configured SQLite/JSON path and restore the accepted state before startup. Empty bootstrap requires DATUM_ALLOW_EMPTY_OPERATIONAL_DGRAPH_STATE=true and no expected graph identity".to_string());
+            // A brand-new DServer may start with no projects at all. The
+            // project bootstrap API creates the first canonical graph later.
+            // Existing projects remain fail-closed when an expected identity
+            // is configured, and explicit empty bootstrap remains supported.
+            if !self.allow_empty && self.expected_project_id.is_some() {
+                return Err("operational D-Graph state is missing or empty for the expected project; recovery refused. Restore the accepted project state before startup or create a new project explicitly".to_string());
             }
             if state.is_some_and(|state| !state.authorizations.is_empty()) {
                 return Err("empty operational D-Graph bootstrap cannot contain authorizations".to_string());
@@ -200,7 +204,7 @@ mod tests {
         wrong.graphs.get_mut("monitor-f49c8").unwrap().dgraph_id = "wrong".to_string();
         assert!(strict().validate(Some(&wrong)).is_err());
         assert!(strict().validate(Some(&state(4))).is_ok());
-        assert!(OperationalDGraphRecoveryPolicy::default().validate(None).is_err());
+        assert!(OperationalDGraphRecoveryPolicy::default().validate(None).is_ok());
     }
     #[test]
     fn c60_recovery_accepts_forward_revision_evolution_but_rejects_regression() {

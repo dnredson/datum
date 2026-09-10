@@ -84,7 +84,7 @@ use api::operational_analysis_context::{
     acquire_active_analysis_context, acquire_passive_analysis_context,
 };
 use api::operational_dgraph::{
-    get_operational_dgraph, get_operational_dgraph_slice,
+    get_operational_dgraph, get_operational_projects, post_operational_project, get_operational_dgraph_slice,
     post_operational_reconciliation_authorization,
     post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
@@ -256,6 +256,10 @@ async fn main() {
         .route(
             "/api/v1/resources/:resource_id/binding",
             post(post_resource_binding).get(get_resource_binding),
+        )
+        .route(
+            "/api/v1/projects",
+            get(get_operational_projects).post(post_operational_project),
         )
         .route(
             "/api/v1/operational-dgraph",
