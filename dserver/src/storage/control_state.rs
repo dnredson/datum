@@ -11,7 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 pub const CONTROL_STATE_DB_PATH_ENV: &str = "DATUM_CONTROL_STATE_DB_PATH";
-pub const DEFAULT_CONTROL_STATE_DB_PATH: &str = ".datum-control-state.db";
+pub const DEFAULT_CONTROL_STATE_DB_PATH: &str = "datum-control-plane.db";
 pub const CONTROL_STATE_SCHEMA_VERSION: &str = "0.1.0";
 pub const DOMAIN_RESOURCE_REGISTRY: &str = "resource_registry";
 pub const DOMAIN_OPERATIONAL_DGRAPH: &str = "operational_dgraph";
