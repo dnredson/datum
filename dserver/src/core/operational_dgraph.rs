@@ -497,4 +497,28 @@ mod tests {
             now + Duration::seconds(60)
         ));
     }
+    #[test]
+    fn stage106_empty_project_bootstrap_graph_is_valid_and_inert() {
+        let graph = OperationalDGraph {
+            schema_version: OPERATIONAL_DGRAPH_SCHEMA_VERSION.to_string(),
+            dgraph_id: "dgraph:project-new".to_string(),
+            revision: 0,
+            project_id: "project-new".to_string(),
+            nodes: Vec::new(),
+            metadata: Some(serde_json::json!({
+                "bootstrap_mode": OPERATIONAL_DGRAPH_BOOTSTRAP_MODE_EMPTY,
+                "host_mutation_allowed": false,
+            })),
+        };
+        assert!(validate_operational_dgraph(&graph).is_ok());
+
+        let mut invalid = graph.clone();
+        invalid.revision = 1;
+        assert!(validate_operational_dgraph(&invalid).is_err());
+
+        let mut invalid = graph;
+        invalid.metadata = None;
+        assert!(validate_operational_dgraph(&invalid).is_err());
+    }
+
 }
