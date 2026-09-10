@@ -14,6 +14,13 @@ files and secrets; the governed reconciler remains responsible for execution.
 | Optional REST API | Declarative artifact with native CLI arguments | Not included in the prepared fog core profile; deployment pending. |
 | Cloud, SMA, simulated devices | Existing declarative artifacts preserved | Full reproducible configurations and end-to-end deployment remain future slices. |
 
+The fog bundle also contains `chirpstack-provisioner` after ChirpStack. It mounts a
+bootstrap plan read-only, copies that plan into its persistent writable volume on first
+start, and keeps the reconciled IDs and later dynamic device registrations there. Its
+`CHIRPSTACK_API_TOKEN` is an external secret: prepare the bundle only after exporting a
+valid ChirpStack API token. The server-side `CHIRPSTACK_API_SECRET` is not interchangeable
+with this Bearer token.
+
 The mist test proves gateway statistics transport, not device activation,
 LoRaWAN application uplink decoding, SMA transformation or cloud persistence.
 Images for the fog core still use upstream tags; record and pin the tested
