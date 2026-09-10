@@ -9,7 +9,7 @@ import shlex
 
 ROOT = Path(__file__).resolve().parent
 NODES = {
-    "fog-01": ("fog", ["mosquitto", "chirpstack-postgres", "chirpstack-redis", "chirpstack"]),
+    "fog-01": ("fog", ["mosquitto", "chirpstack-postgres", "chirpstack-redis", "chirpstack", "chirpstack-provisioner"]),
     "mist-01": ("mist", ["chirpstack-gateway-bridge"]),
 }
 
@@ -60,9 +60,9 @@ def prepare(node, destination):
     if env_path.exists():
         lines = env_path.read_text().splitlines()
         expected = {name for name in secret_names}
-        if len(lines) != len(expected) or {line.partition('=')[0] for line in lines} != expected:
+        if len(lines) != len(expected) or {line.partition("=")[0] for line in lines} != expected:
             raise ValueError("existing node.env has unexpected keys; preserve it and resolve manually")
-        if any(not re.fullmatch(r'[A-Z_]+=[0-9a-f]{64}', line) for line in lines):
+        if any(not re.fullmatch(r"[A-Z_]+=[0-9a-f]{64}", line) for line in lines):
             raise ValueError("existing node.env must contain generated hex secrets only")
     else:
         files["node.env"] = ''.join(f'{name}={secrets.token_hex(32)}\n' for name in secret_names).encode()
@@ -72,7 +72,7 @@ def prepare(node, destination):
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if relative == "node.env" else 0o644)
-            with os.fdopen(fd, 'wb') as out:
+            with os.fdopen(fd, "wb") as out:
                 out.write(content)
     if os.name == "posix":
         env_path.chmod(0o600)
