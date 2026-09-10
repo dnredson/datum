@@ -1,15 +1,19 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 import tomllib
+from unittest.mock import patch
 
 from prepare import NODES, ROOT, prepare
 
 
 class BundleTests(unittest.TestCase):
     def test_profiles_mounts_and_secrets_agree(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"CHIRPSTACK_API_TOKEN": "test-token-for-provisioner"}
+        ):
             for node in NODES:
                 dest = Path(temp) / node
                 result = prepare(node, dest)
@@ -36,7 +40,9 @@ class BundleTests(unittest.TestCase):
                 self.assertEqual(before, {p.relative_to(dest): p.read_bytes() for p in dest.rglob('*') if p.is_file()})
 
     def test_preserves_modified_configuration_and_secrets(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"CHIRPSTACK_API_TOKEN": "test-token-for-provisioner"}
+        ):
             dest = Path(temp) / 'fog'
             prepare('fog-01', dest)
             secret = (dest / 'node.env').read_bytes()
