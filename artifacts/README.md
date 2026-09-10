@@ -16,10 +16,13 @@ files and secrets; the governed reconciler remains responsible for execution.
 
 The fog bundle also contains `chirpstack-provisioner` after ChirpStack. It mounts a
 bootstrap plan read-only, copies that plan into its persistent writable volume on first
-start, and keeps the reconciled IDs and later dynamic device registrations there. Its
-`CHIRPSTACK_API_TOKEN` is an external secret: prepare the bundle only after exporting a
-valid ChirpStack API token. The server-side `CHIRPSTACK_API_SECRET` is not interchangeable
-with this Bearer token.
+start, and keeps the reconciled IDs and later dynamic device registrations there. On a
+fresh ChirpStack database, the provisioner authenticates through the official internal
+gRPC login using the migration credentials `admin/admin`, creates its own API key, and
+persists the returned token in the provisioner volume. No browser login or manually
+copied API token is required. The credentials are defaults for this laboratory path;
+production hardening must rotate them through a governed secret workflow. The
+server-side `CHIRPSTACK_API_SECRET` remains separate from this bootstrap flow.
 
 The mist test proves gateway statistics transport, not device activation,
 LoRaWAN application uplink decoding, SMA transformation or cloud persistence.
