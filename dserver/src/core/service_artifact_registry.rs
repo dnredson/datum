@@ -10,7 +10,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::storage::control_state::{
-    configured_control_state_db_path, load_domain_json, persist_domain_json,
+    default_control_state_db_path, load_domain_json, persist_domain_json,
 };
 
 pub const SERVICE_ARTIFACT_SCHEMA_VERSION: &str = "0.1.0";
@@ -255,10 +255,7 @@ pub struct ServiceArtifactRegistry {
 
 impl ServiceArtifactRegistry {
     pub fn load() -> Result<Self, String> {
-        let path = configured_control_state_db_path().ok_or_else(|| {
-            "DATUM_CONTROL_STATE_DB_PATH must be configured for durable service artifact registry persistence"
-                .to_string()
-        })?;
+        let path = default_control_state_db_path();
         Self::load_from_path(&path)
     }
 
