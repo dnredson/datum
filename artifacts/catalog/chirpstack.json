@@ -44,7 +44,7 @@
     "health": {
       "kind": "http",
       "params": {
-        "url": "http://127.0.0.1:19101/health"
+        "url": "http://127.0.0.1:18081/"
       },
       "vantage_point": "local_host"
     },
