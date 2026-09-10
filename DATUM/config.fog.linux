@@ -67,7 +67,7 @@ timeout_s = 2
 [collectors.docker]
 enabled = true
 mode = "allowlist"
-names = ["datum-mosquitto", "datum-chirpstack-postgres", "datum-chirpstack-redis", "datum-chirpstack"]
+names = ["datum-mosquitto", "datum-chirpstack-postgres", "datum-chirpstack-redis", "datum-chirpstack", "datum-chirpstack-provisioner"]
 max_entries = 20
 
 [services]
@@ -100,6 +100,12 @@ artifact = "chirpstack/chirpstack:4"
 command = ["-c", "/etc/chirpstack"]
 ports = [{ host_port = 18081, container_port = 8080, protocol = "tcp" }, { host_port = 19101, container_port = 9100, protocol = "tcp" }]
 
+[[dispatch.container_mappings]]
+service_name = "chirpstack-provisioner"
+container_name = "datum-chirpstack-provisioner"
+artifact = "ghcr.io/dnredson/chirpstack-provisioner:main"
+ports = []
+
 [[services.items]]
 name = "chirpstack-postgres"
 implemented_by = [{ container_name = "datum-chirpstack-postgres" }]
@@ -111,3 +117,7 @@ implemented_by = [{ container_name = "datum-chirpstack-redis" }]
 [[services.items]]
 name = "chirpstack"
 implemented_by = [{ container_name = "datum-chirpstack" }]
+
+[[services.items]]
+name = "chirpstack-provisioner"
+implemented_by = [{ container_name = "datum-chirpstack-provisioner" }]
