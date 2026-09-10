@@ -25,11 +25,6 @@ environment_variable = "POSTGRES_PASSWORD"
 secret_ref = "chirpstack_api_secret"
 environment_variable = "CHIRPSTACK_API_SECRET"
 
-[[dispatch.secret_bindings]]
-secret_ref = "chirpstack_api_token"
-environment_variable = "CHIRPSTACK_API_TOKEN"
-
-
 [[dispatch.container_mappings]]
 service_name = "mqtt"
 container_name = "datum-mosquitto"
