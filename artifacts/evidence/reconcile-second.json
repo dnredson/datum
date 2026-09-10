@@ -1,0 +1,24 @@
+{
+  "node_id": "mist-01",
+  "dgraph_id": "dgraph:o2-mqtt-role-1",
+  "dgraph_revision": 14,
+  "execute_requested": true,
+  "control_plane_authorized": true,
+  "local_container_execution_allowed": true,
+  "snapshot_published": true,
+  "services": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "artifact_id": "chirpstack-gateway-bridge",
+      "artifact_version": "4.1.2",
+      "desired_state": "running",
+      "trusted_container_name": "datum-chirpstack-gateway-bridge",
+      "trusted_image": "chirpstack/chirpstack-gateway-bridge@sha256:cc820a195e739fa653c6d7fd403abe73b9b0c79b5dd4ab0f4bf9c6443470121b",
+      "observed_before_running": true,
+      "secret_resolution_status": "not_required",
+      "execution_status": "converged",
+      "observed_after_running": true,
+      "host_mutation_performed": false
+    }
+  ]
+}

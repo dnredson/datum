@@ -1,17 +1,32 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "chirpstack",
-  "service_id": "chirpstack",
+  "artifact_id": "chirpstack-provisioner",
+  "service_id": "chirpstack-provisioner",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-chirpstack",
-      "image": "chirpstack/chirpstack:4",
+      "container_name": "datum-chirpstack-provisioner",
+      "image": "ghcr.io/dnredson/chirpstack-provisioner:main",
       "ports": [
         {
-          "container_port": 8080,
-          "host_port": 8080,
+          "host_port": 18082,
+          "container_port": 8085,
           "protocol": "tcp"
+        }
+      ],
+      "network": "datum-fog-net",
+      "volumes": [
+        {
+          "name": "datum-chirpstack-provisioner-volume",
+          "target": "/var/lib/chirpstack-provisioner",
+          "read_only": false
+        }
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack-provisioner",
+          "target": "/etc/chirpstack-provisioner",
+          "read_only": true
         }
       ]
     }
@@ -20,46 +35,45 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-chirpstack"
+        "container_name": "datum-chirpstack-provisioner"
       },
       "vantage_point": "local_host"
     },
     "health": {
       "kind": "http",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8080,
-        "path": "/api/health",
-        "expected_status": 200
+        "url": "http://127.0.0.1:18082/health"
       },
       "vantage_point": "local_host"
     },
     "availability": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8080
+        "host": "127.0.0.1",
+        "port": 18082
       },
       "vantage_point": "local_host"
     }
   },
   "metadata": {
-    "role": "lorawan_network_server",
-    "official_compose_service": "chirpstack",
+    "role": "chirpstack_logical_resource_provisioner",
+    "source_repository": "https://github.com/dnredson/chirpstack-provisioner",
     "configuration": {
-      "template": "chirpstack/chirpstack.toml",
-      "region": "EU868",
-      "mqtt_topic_namespace": "eu868"
+      "config_path": "/etc/chirpstack-provisioner/config.yaml",
+      "bootstrap_plan_path": "/etc/chirpstack-provisioner/desired.yaml",
+      "persistent_state_path": "/var/lib/chirpstack-provisioner/state.json",
+      "persistent_plan_path": "/var/lib/chirpstack-provisioner/desired.yaml"
     },
     "deployment": {
       "mode": "governed_declarative",
       "phase": "fog-lorawan"
-    }
+    },
+    "contract": "reconciles ChirpStack tenant, device profiles, applications, gateways and devices"
   },
   "control_plane": {
     "project_id": "",
-    "name": "ChirpStack network server",
-    "version": "4",
+    "name": "ChirpStack logical resource provisioner",
+    "version": "main",
     "artifact_kind": "container",
     "target_nodes": [
       "fog-01"
@@ -68,14 +82,12 @@
       "fog"
     ],
     "dependencies": [
-      "fog-mosquitto",
-      "chirpstack-postgres",
-      "chirpstack-redis"
+      "chirpstack"
     ],
     "acquisition": {
       "kind": "image",
-      "source": null,
-      "revision": "4",
+      "source": "ghcr.io/dnredson/chirpstack-provisioner",
+      "revision": "main",
       "sha256": null
     },
     "lifecycle": {
@@ -129,7 +141,16 @@
         }
       ]
     },
-    "health_checks": [],
+    "health_checks": [
+      {
+        "kind": "http",
+        "target": "127.0.0.1",
+        "port": 18082,
+        "path": "/health",
+        "expected_status": 200,
+        "timeout_ms": 5000
+      }
+    ],
     "wasm_decision": {
       "explicit_invocation_required": true,
       "module_id": "reconcile_service",
@@ -141,15 +162,13 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "MQTT_BROKER_HOST": "fog-mosquitto",
-      "REDIS_HOST": "chirpstack-redis",
-      "POSTGRESQL_HOST": "chirpstack-postgres",
-      "CHIRPSTACK_LISTEN_ADDR": "0.0.0.0:8080"
+      "CHIRPSTACK_PROVISIONER_CONFIG": "/etc/chirpstack-provisioner/config.yaml",
+      "CHIRPSTACK_ENDPOINT": "http://datum-chirpstack:8080",
+      "CHIRPSTACK_BOOTSTRAP_MODE": "default_migration_credentials",
+      "CHIRPSTACK_BOOTSTRAP_EMAIL": "admin",
+      "CHIRPSTACK_BOOTSTRAP_PASSWORD": "admin"
     },
-    "secret_refs": [
-      "chirpstack_postgres_password",
-      "fog_mqtt_password"
-    ],
+    "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""
   }

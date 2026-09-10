@@ -1,0 +1,32 @@
+# Static EU868 laboratory scenario; anonymous Mosquitto on fog-01.
+# https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
+[general]
+log_level = 4
+
+[backend]
+type = "semtech_udp"
+
+[backend.semtech_udp]
+udp_bind = "0.0.0.0:1700"
+
+[integration]
+marshaler = "protobuf"
+
+[integration.mqtt]
+event_topic_template = "eu868/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+state_topic_template = "eu868/gateway/{{ .GatewayID }}/state/{{ .StateType }}"
+command_topic_template = "eu868/gateway/{{ .GatewayID }}/command/#"
+terminate_on_connect_error = true
+
+[integration.mqtt.auth]
+type = "generic"
+
+[integration.mqtt.auth.generic]
+servers = ["tcp://192.168.10.103:1883"]
+username = ""
+password = ""
+clean_session = true
+
+[metrics.prometheus]
+endpoint_enabled = true
+bind = "0.0.0.0:9100"

@@ -6,12 +6,24 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack-gateway-bridge",
-      "image": "chirpstack/chirpstack-gateway-bridge:4",
+      "image": "chirpstack/chirpstack-gateway-bridge@sha256:cc820a195e739fa653c6d7fd403abe73b9b0c79b5dd4ab0f4bf9c6443470121b",
       "ports": [
         {
           "container_port": 1700,
           "host_port": 1700,
           "protocol": "udp"
+        },
+        {
+          "container_port": 9100,
+          "host_port": 19100,
+          "protocol": "tcp"
+        }
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack/gateway-bridge.toml",
+          "target": "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml",
+          "read_only": true
         }
       ]
     }
@@ -24,7 +36,13 @@
       },
       "vantage_point": "local_host"
     },
-    "health": null,
+    "health": {
+      "kind": "http",
+      "params": {
+        "url": "http://127.0.0.1:19100/metrics"
+      },
+      "vantage_point": "local_host"
+    },
     "availability": null
   },
   "metadata": {
@@ -32,8 +50,11 @@
     "official_compose_service": "chirpstack-gateway-bridge",
     "configuration": {
       "template": "chirpstack/gateway-bridge.toml",
-      "event_topic_template": "eu868/gateway/{{gateway_id}}/event/{{event_type}}",
-      "command_topic_template": "eu868/gateway/{{gateway_id}}/command/#"
+      "event_topic_template": "eu868/gateway/{{ .GatewayID }}/event/{{ .EventType }}",
+      "command_topic_template": "eu868/gateway/{{ .GatewayID }}/command/#",
+      "state_topic_template": "eu868/gateway/{{ .GatewayID }}/state/{{ .StateType }}",
+      "mqtt_authentication": "anonymous_lab",
+      "health_contract": "HTTP metrics indicates process responsiveness; Semtech UDP to MQTT delivery requires the functional canary."
     },
     "deployment": {
       "mode": "governed_declarative",
@@ -43,7 +64,7 @@
   "control_plane": {
     "project_id": "",
     "name": "ChirpStack Gateway Bridge",
-    "version": "4",
+    "version": "4.1.2",
     "artifact_kind": "container",
     "target_nodes": [
       "mist-01"
@@ -55,7 +76,7 @@
     "acquisition": {
       "kind": "image",
       "source": null,
-      "revision": "4",
+      "revision": "4.1.2",
       "sha256": null
     },
     "lifecycle": {
@@ -120,14 +141,8 @@
       "max_fuel": 1000000,
       "timeout_ms": 1000
     },
-    "bindings": {
-      "MQTT_BROKER_HOST": "192.168.10.103",
-      "UDP_LISTEN_ADDR": "0.0.0.0:1700",
-      "REGION": "EU868"
-    },
-    "secret_refs": [
-      "fog_mqtt_password"
-    ],
+    "bindings": {},
+    "secret_refs": [],
     "created_at_utc": "",
     "updated_at_utc": ""
   }

@@ -48,6 +48,7 @@ fn unsupported_execution_probe_is_rejected() {
                 network: None,
                 volumes: Vec::new(),
             configuration_mounts: Vec::new(),
+            command: Vec::new(),
             }),
         },
         probes: ServiceProbeSet {
@@ -68,7 +69,7 @@ fn unsupported_execution_probe_is_rejected() {
 #[test]
 fn magistrala_bootstrap_db_catalog_contract_is_valid() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-bootstrap-db.json");
+        .join("../artifacts/catalog/magistrala-bootstrap-db.json");
     let raw = std::fs::read_to_string(&path).expect("Bootstrap DB artifact should be readable");
     let document: serde_json::Value =
         serde_json::from_str(&raw).expect("Bootstrap DB artifact should be valid JSON");
@@ -112,7 +113,7 @@ fn magistrala_bootstrap_db_catalog_contract_is_valid() {
 #[test]
 fn magistrala_bootstrap_db_uses_container_health_contract() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-bootstrap-db.json");
+        .join("../artifacts/catalog/magistrala-bootstrap-db.json");
     let raw = std::fs::read_to_string(&path).expect("Bootstrap DB artifact should be readable");
     let document: serde_json::Value =
         serde_json::from_str(&raw).expect("Bootstrap DB artifact should be valid JSON");
@@ -126,7 +127,7 @@ fn magistrala_bootstrap_db_uses_container_health_contract() {
 #[test]
 fn magistrala_atom_uses_mounted_bootstrap_configuration() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../dserver/fixtures/e2e/service-artifacts/magistrala-atom.json");
+        .join("../artifacts/catalog/magistrala-atom.json");
     let artifact = load_service_artifact(&path)
         .expect("Atom artifact should satisfy the SmartSentinel artifact schema");
     let container = artifact.runtime.container.as_ref().expect("Atom should use a container runtime");

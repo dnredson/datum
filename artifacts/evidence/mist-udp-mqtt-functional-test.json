@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "test": "Semtech PUSH_DATA stats to MQTT GatewayStats",
+  "sent_at_utc": "2026-09-09T22:38:19+00:00",
+  "gateway_id": "da7a773c066e0ad5",
+  "topic": "eu868/gateway/da7a773c066e0ad5/event/stats",
+  "udp_destination": "192.168.10.109:1700",
+  "mqtt_broker": "192.168.10.103:1883",
+  "push_ack_verified": true,
+  "mqtt_suback_verified": true,
+  "retained": false,
+  "gateway_id_verified": true,
+  "timestamp_verified": true,
+  "rx_packets_received": 7,
+  "rx_packets_received_ok": 7,
+  "elapsed_ms": 31.0,
+  "protobuf_payload_hex": "120608dbbf87d506280730078a011064613761373733633036366530616435",
+  "udp_packet_hex": "023c3c00da7a773c066e0ad57b2273746174223a7b2274696d65223a22323032362d30392d30392032323a33383a313920474d54222c2272786e62223a372c2272786f6b223a372c2272786677223a372c2261636b72223a3130302e302c2264776e62223a302c2274786e62223a307d7d",
+  "scope": "Gateway statistics transport only; no LoRaWAN device uplink, ChirpStack server, SMA or storage validation"
+}

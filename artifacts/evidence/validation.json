@@ -1,0 +1,21 @@
+{
+  "date": "2026-09-09",
+  "dserver": {
+    "passed": 615,
+    "failed": 0
+  },
+  "datum_selected_contracts": {
+    "passed": 10,
+    "failed": 0
+  },
+  "fog_bundle_contract": {
+    "passed": 1,
+    "failed": 0
+  },
+  "python_bundle": {
+    "passed": 3,
+    "skipped": 1,
+    "reason": "Windows symlink privilege unavailable"
+  },
+  "fog_deployment": "not performed"
+}

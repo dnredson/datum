@@ -45,6 +45,8 @@ pub struct ContainerDeploymentSpec {
     pub volumes: Vec<ContainerVolumeMount>,
     #[serde(default)]
     pub configuration_mounts: Vec<ContainerConfigurationMount>,
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,6 +279,9 @@ fn validate_container_attachments(container: &ContainerDeploymentSpec) -> Result
         {
             bail!("runtime.container.volumes target must be an absolute path without whitespace or commas");
         }
+    }
+    if container.command.len() > 64 || container.command.iter().any(|arg| arg.len() > 4096 || arg.contains('\0')) {
+        bail!("invalid container command");
     }
     for mount in &container.configuration_mounts {
         if !is_safe_configuration_source(&mount.source) {
@@ -766,6 +771,7 @@ mod tests {
                     network: None,
                     volumes: Vec::new(),
                     configuration_mounts: Vec::new(),
+                    command: Vec::new(),
                 }),
             },
             probes: ServiceProbeSet {

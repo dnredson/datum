@@ -1,17 +1,34 @@
 {
   "schema_version": "0.1.0",
-  "artifact_id": "chirpstack-rest-api",
-  "service_id": "chirpstack-rest-api",
+  "artifact_id": "chirpstack",
+  "service_id": "chirpstack",
   "runtime": {
     "kind": "container",
     "container": {
-      "container_name": "datum-chirpstack-rest-api",
-      "image": "chirpstack/chirpstack-rest-api:4",
+      "container_name": "datum-chirpstack",
+      "image": "chirpstack/chirpstack:4",
       "ports": [
         {
-          "container_port": 8090,
-          "host_port": 8090,
+          "host_port": 18081,
+          "container_port": 8080,
           "protocol": "tcp"
+        },
+        {
+          "host_port": 19101,
+          "container_port": 9100,
+          "protocol": "tcp"
+        }
+      ],
+      "network": "datum-fog-net",
+      "command": [
+        "-c",
+        "/etc/chirpstack"
+      ],
+      "configuration_mounts": [
+        {
+          "source": "chirpstack/server",
+          "target": "/etc/chirpstack",
+          "read_only": true
         }
       ]
     }
@@ -20,40 +37,33 @@
     "execution": {
       "kind": "docker_container_running",
       "params": {
-        "container_name": "datum-chirpstack-rest-api"
+        "container_name": "datum-chirpstack"
       },
       "vantage_point": "local_host"
     },
     "health": {
       "kind": "http",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8090,
-        "path": "/api/health",
-        "expected_status": 200
+        "url": "http://127.0.0.1:18081/"
       },
       "vantage_point": "local_host"
     },
     "availability": {
       "kind": "tcp_connect",
       "params": {
-        "target": "127.0.0.1",
-        "port": 8090
+        "host": "127.0.0.1",
+        "port": 18081
       },
       "vantage_point": "local_host"
     }
   },
   "metadata": {
-    "role": "lorawan_control_api",
-    "official_compose_service": "chirpstack-rest-api",
+    "role": "lorawan_network_server",
+    "official_compose_service": "chirpstack",
     "configuration": {
-      "command": [
-        "--server",
-        "chirpstack:8080",
-        "--bind",
-        "0.0.0.0:8090",
-        "--insecure"
-      ]
+      "template": "chirpstack/chirpstack.toml",
+      "region": "EU868",
+      "mqtt_topic_namespace": "eu868"
     },
     "deployment": {
       "mode": "governed_declarative",
@@ -62,7 +72,7 @@
   },
   "control_plane": {
     "project_id": "",
-    "name": "ChirpStack REST API",
+    "name": "ChirpStack network server",
     "version": "4",
     "artifact_kind": "container",
     "target_nodes": [
@@ -72,7 +82,9 @@
       "fog"
     ],
     "dependencies": [
-      "chirpstack"
+      "mosquitto",
+      "chirpstack-postgres",
+      "chirpstack-redis"
     ],
     "acquisition": {
       "kind": "image",
@@ -143,10 +155,14 @@
       "timeout_ms": 1000
     },
     "bindings": {
-      "CHIRPSTACK_SERVER": "chirpstack:8080",
-      "REST_API_BIND": "0.0.0.0:8090"
+      "POSTGRESQL_HOST": "chirpstack-postgres",
+      "REDIS_HOST": "chirpstack-redis",
+      "MQTT_BROKER_HOST": "mqtt"
     },
-    "secret_refs": [],
+    "secret_refs": [
+      "chirpstack_postgres_password",
+      "chirpstack_api_secret"
+    ],
     "created_at_utc": "",
     "updated_at_utc": ""
   }
