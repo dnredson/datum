@@ -25,6 +25,10 @@ environment_variable = "POSTGRES_PASSWORD"
 secret_ref = "chirpstack_api_secret"
 environment_variable = "CHIRPSTACK_API_SECRET"
 
+[[dispatch.secret_bindings]]
+secret_ref = "chirpstack_api_token"
+environment_variable = "CHIRPSTACK_API_TOKEN"
+
 
 [[dispatch.container_mappings]]
 service_name = "mqtt"
@@ -67,7 +71,7 @@ timeout_s = 2
 [collectors.docker]
 enabled = true
 mode = "allowlist"
-names = ["datum-mosquitto", "datum-chirpstack-postgres", "datum-chirpstack-redis", "datum-chirpstack"]
+names = ["datum-mosquitto", "datum-chirpstack-postgres", "datum-chirpstack-redis", "datum-chirpstack", "datum-chirpstack-provisioner"]
 max_entries = 20
 
 [services]
@@ -111,3 +115,13 @@ implemented_by = [{ container_name = "datum-chirpstack-redis" }]
 [[services.items]]
 name = "chirpstack"
 implemented_by = [{ container_name = "datum-chirpstack" }]
+
+[[dispatch.container_mappings]]
+service_name = "chirpstack-provisioner"
+container_name = "datum-chirpstack-provisioner"
+artifact = "ghcr.io/dnredson/chirpstack-provisioner:main"
+ports = [{ host_port = 18082, container_port = 8085, protocol = "tcp" }]
+
+[[services.items]]
+name = "chirpstack-provisioner"
+implemented_by = [{ container_name = "datum-chirpstack-provisioner" }]
