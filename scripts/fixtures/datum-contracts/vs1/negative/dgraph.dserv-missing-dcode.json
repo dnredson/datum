@@ -1,0 +1,19 @@
+{
+  "schema": "datum.dgraph/1",
+  "x_expect_reject": { "code": "dserv_missing_dcode", "reason": "D-Serv 'decode' has no dcode reference; every D-Serv needs exactly one D-Code reference with a sha256." },
+  "application_id": "app:sensor-pipeline",
+  "dgraph_id": "dgraph:sensor-pipeline-no-dcode",
+  "revision": 1,
+  "source": { "dscript_id": "dscript:x", "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "compiler": { "name": "dcompile", "version": "0.1.0" }, "mapping_style": "1:1" },
+  "dservs": [
+    {
+      "dserv_id": "decode",
+      "d_functions": ["decode_uplink"],
+      "ports": { "inputs": [ { "port": "uplink", "payload_schema": "datum://schemas/u/1", "external": true } ], "outputs": [ { "port": "reading", "payload_schema": "datum://schemas/r/1", "external": false } ] },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    }
+  ],
+  "dcalls": []
+}

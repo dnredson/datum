@@ -1,0 +1,60 @@
+{
+  "schema": "datum.dcontinuum/1",
+  "project_id": "monitor-f49c8",
+  "continuum_id": "continuum:monitor-f49c8",
+  "revision": 1,
+  "stages": [
+    { "stage_id": "S2-Mist", "order": 2, "substages": [ { "substage_id": "S21", "element_class": "arm64-sbc-gateway" } ] },
+    { "stage_id": "S3-Fog", "order": 3, "substages": [ { "substage_id": "S31", "element_class": "x86_64-vm" } ] },
+    { "stage_id": "S5-Cloud", "order": 5, "substages": [ { "substage_id": "S51", "element_class": "x86_64-vm" } ] }
+  ],
+  "elements": [
+    {
+      "element_id": "fog-01",
+      "stage_id": "S3-Fog",
+      "substage_id": "S31",
+      "platform": { "os": "linux", "architecture": "amd64", "variant": null },
+      "declared_capacity": { "cpu_cores": 4, "memory_mb": 8192 },
+      "declared_runtimes": [ { "runtime_kind": "container", "engine": "docker" } ],
+      "declared_dnodes": [
+        {
+          "dnode_id": "dnode:fog-01",
+          "abi_versions": ["datum-dnode/0"],
+          "supported_host_kinds": ["container"],
+          "interface": {
+            "module_store": "content_addressed_directory",
+            "instance_specs": "atomic_json_directory",
+            "status_endpoint": "loopback_http"
+          }
+        }
+      ],
+      "network": { "endpoint_address_ref": "resource-binding", "zones": ["lab-lan"] },
+      "links": [ { "to_element": "cloud-01", "kind": "lan" } ]
+    },
+    {
+      "element_id": "cloud-01",
+      "stage_id": "S5-Cloud",
+      "substage_id": "S51",
+      "platform": { "os": "linux", "architecture": "amd64", "variant": null },
+      "declared_capacity": { "cpu_cores": 8, "memory_mb": 16384 },
+      "declared_runtimes": [ { "runtime_kind": "container", "engine": "docker" } ],
+      "declared_dnodes": [
+        {
+          "dnode_id": "dnode:cloud-01",
+          "abi_versions": ["datum-dnode/0"],
+          "supported_host_kinds": ["container"],
+          "interface": {
+            "module_store": "content_addressed_directory",
+            "instance_specs": "atomic_json_directory",
+            "status_endpoint": "loopback_http"
+          }
+        }
+      ],
+      "network": { "endpoint_address_ref": "resource-binding", "zones": ["lab-lan"] },
+      "links": [ { "to_element": "fog-01", "kind": "lan" } ]
+    }
+  ],
+  "simulated_elements": [
+    { "element_id": "local-01", "hosts_simulation_of": ["S1-Thing", "S2-Mist"], "note": "desktop traffic/device simulation host" }
+  ]
+}

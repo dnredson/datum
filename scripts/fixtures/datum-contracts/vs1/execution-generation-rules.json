@@ -1,0 +1,37 @@
+{
+  "schema": "datum.x-fixture.execution-generation-rules/1",
+  "x_note": "ADR-0011 section 2 (D-7a round-3 model). Documented expectations only. Stage 107 does not implement this; Stage 107A does. The checker validates internal consistency of this table.",
+  "rules": [
+    "On CREATE (POST): execution_generation = high_water(project, artifact_id) + 1. First creation => 1.",
+    "On UPDATE (PUT) with a changed ArtifactExecutionProjectionV1 digest: increment execution_generation exactly once and store the new digest.",
+    "On UPDATE (PUT) with an unchanged digest (semantic no-op): execution_generation and digest are unchanged.",
+    "On DELETE: remove the artifact but retain high_water(project, artifact_id) (DC-1).",
+    "Authorization binds {service_id, artifact_id, execution_generation, execution_projection_digest} and execution_pinning_mode.",
+    "Authorization is valid only if BOTH execution_generation AND execution_projection_digest equal the current artifact values, and the delivered artifact_id matches.",
+    "No resurrection: reverting content to an earlier digest never re-validates an authorization bound to an earlier generation, because the generation has moved on.",
+    "Server-owned: client-supplied execution_generation / execution_projection_digest are rejected unless equal to current (DC-5).",
+    "Safety never depends on writing to the authorization domain on an artifact change; invalidation is derived at use time by comparison.",
+    "Execution-time validity (an artifact change between context fetch and mutation start) is TD-1 / ADR-0012 and is NOT decided here."
+  ],
+  "scenario": {
+    "project_id": "monitor-f49c8",
+    "artifact_id": "mosquitto",
+    "steps": [
+      { "op": "create", "content": "A", "projection_digest": "digest-A", "expected_generation": 4, "note": "high_water was 3 from earlier lifecycle" },
+      { "op": "authorize", "binds_generation": 4, "binds_digest": "digest-A", "expected_valid": true },
+      { "op": "put", "content": "B", "projection_digest": "digest-B", "expected_generation": 5, "note": "projection changed => +1" },
+      { "op": "check_authorization", "authorization_binds_generation": 4, "expected_valid": false, "reason": "execution_generation_changed" },
+      { "op": "put", "content": "A", "projection_digest": "digest-A", "expected_generation": 6, "note": "content reverted, digest equals digest-A again, but generation still increments" },
+      { "op": "check_authorization", "authorization_binds_generation": 4, "expected_valid": false, "reason": "execution_generation_changed; NO resurrection even though digest matches" },
+      { "op": "put", "content": "A", "projection_digest": "digest-A", "expected_generation": 6, "note": "semantic no-op: digest unchanged => generation unchanged" },
+      { "op": "authorize", "binds_generation": 6, "binds_digest": "digest-A", "expected_valid": true },
+      { "op": "put", "content": "A-probes-only", "projection_digest": "digest-A", "expected_generation": 6, "note": "class-N change (probes/health_checks/metadata): projection digest unchanged => generation unchanged, authorization preserved" }
+    ]
+  },
+  "invalid_reason_codes": [
+    "execution_generation_changed",
+    "execution_content_mismatch",
+    "authorization_predates_execution_binding",
+    "pinning_mode_insufficient"
+  ]
+}

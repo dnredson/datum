@@ -26,6 +26,39 @@ DATUM itself is not a deployment engine and is not synonymous with either dserve
 
 This distinction matters because a planner can produce a valid proposal without executing it, and the D-Graph can change because new evidence arrived without any mutation of the managed environment.
 
+## Canonical model vs current structures (Stage 107)
+
+The [DATUM canonical model](../reference/datum-canonical-model.md) page and the
+[Architecture Decision Records](../adr/README.md) freeze the reference meaning of
+every `D-*` concept as the **Stage 107 baseline**. Two points matter for reading
+the current codebase:
+
+- **"D-Graph" names three different structures today.** `OperationalDGraph` is the
+  *operational deployment document v1* (a per-node desired-services list, no
+  edges). `DGraph` is the *controlled composite graph* from the closed
+  Controlled WASM Deployment phase. The snapshot-materialized graph is the
+  *observed runtime graph*. None of these is the canonical application D-Graph,
+  which is the new `datum.dgraph/1` contract (D-Serv vertices, D-Call edges,
+  placement-free). Stage 107 relabels the structures in prose; it renames no Rust
+  type.
+- **SmartSentinel currently implements *D-Agent* plus the *deployment executor*.**
+  "D-Agent" is a project extension, not a DATUM-paper term; it continues the
+  IoTMan Agent lineage of the IoTManA / IoTManS thesis. A separate **D-Node**
+  runtime — which actually executes application code — does not exist yet.
+
+## D-Code and Management WASM
+
+Three uses of "WASM" must be kept apart (ADR-0005):
+
+- **D-Code** is the executable of an application service (D-Serv). WASM is the
+  prototype target (ABI `datum-dnode/0`). Nothing in the repository executes
+  application code as a service yet.
+- **Management WASM** is the small `desired AND NOT observed` reconciler embedded
+  in the agent, plus the artifact `wasm_decision` policy. It is legacy v1
+  compatibility only and **is not D-Code**.
+- **Container / runtime artifacts** are middleware and host images governed
+  through the container lifecycle.
+
 ## Core concepts
 
 ### Node
@@ -91,3 +124,5 @@ The current SmartSentinel service loop runs continuously for a logical `node_id`
 ## Naming note
 
 The expansion of the name **DATUM** is intentionally not frozen here yet because historical project material contains more than one expansion. Until one is selected and normalized across the project, DATUM is treated as the proper name of the architecture.
+
+The Stage 107 reference paper uses the expansion "Distributed Applications for the IoTinuum". That is recorded for traceability; it does not mandate a repository-wide rename.

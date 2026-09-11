@@ -1,0 +1,33 @@
+{
+  "schema": "datum.dserv-artifact/1",
+  "artifact_id": "dserv:sensor-pipeline:alert",
+  "version": "0.1.0",
+  "application_id": "app:sensor-pipeline",
+  "dserv_id": "alert",
+  "dcode": {
+    "uri": "datum-blob://sha256/0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "content_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "size_bytes": 0
+  },
+  "abi": { "name": "datum-dnode", "version": "0", "required_exports": ["memory", "datum_abi_version", "datum_alloc", "datum_dealloc", "datum_handle"], "allowed_imports": [] },
+  "ports": {
+    "inputs": [ { "port": "reading", "payload_schema": "datum://schemas/sensor-reading/1", "external": false } ],
+    "outputs": [ { "port": "alert", "payload_schema": "datum://schemas/sensor-alert/1", "external": true } ]
+  },
+  "limits": { "fuel_per_invocation": 5000000, "timeout_ms": 200, "max_memory_pages": 64, "max_message_bytes": 65536, "max_emits_per_invocation": 8 },
+  "safety": { "filesystem_access": false, "network_access": false, "host_command_access": false, "docker_access": false, "side_effects_allowed": false },
+  "state_model": "stateless",
+  "instantiation": "fresh_instance_per_invocation",
+  "constraints": { "allowed_stages": ["S3-Fog", "S5-Cloud"] },
+  "qos": {},
+  "provenance": {
+    "dscript_id": "dscript:sensor-pipeline",
+    "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "d_functions": ["threshold_alert"],
+    "compiler": { "name": "dcompile", "version": "0.1.0" },
+    "build": { "rustc": "unset", "target": "wasm32-unknown-unknown", "cargo_lock_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "feature": "dserv-alert" }
+  },
+  "probes": { "instance": ["dnode_instance_loaded", "dnode_invocation_error_rate"] },
+  "signature_ref": null
+}

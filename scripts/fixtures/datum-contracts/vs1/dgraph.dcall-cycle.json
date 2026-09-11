@@ -1,0 +1,72 @@
+{
+  "schema": "datum.dgraph/1",
+  "application_id": "app:feedback-loop",
+  "dgraph_id": "dgraph:feedback-loop",
+  "revision": 1,
+  "x_note": "D-4: a D-Call cycle is ACCEPTED. Communication topology is not installation ordering. The deployment-dependency graph derived from this D-Graph must still be acyclic; that is a D-Map concern, not a D-Graph rejection reason.",
+  "source": {
+    "dscript_id": "dscript:feedback-loop",
+    "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "compiler": { "name": "dcompile", "version": "0.1.0" },
+    "mapping_style": "1:1"
+  },
+  "dservs": [
+    {
+      "dserv_id": "estimator",
+      "d_functions": ["estimate"],
+      "dcode": {
+        "artifact_id": "dserv:feedback-loop:estimator",
+        "version": "0.1.0",
+        "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "ports": {
+        "inputs": [
+          { "port": "sample", "payload_schema": "datum://schemas/sample/1", "external": true },
+          { "port": "correction", "payload_schema": "datum://schemas/correction/1", "external": false }
+        ],
+        "outputs": [
+          { "port": "estimate", "payload_schema": "datum://schemas/estimate/1", "external": false }
+        ]
+      },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    },
+    {
+      "dserv_id": "controller",
+      "d_functions": ["control"],
+      "dcode": {
+        "artifact_id": "dserv:feedback-loop:controller",
+        "version": "0.1.0",
+        "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "ports": {
+        "inputs": [
+          { "port": "estimate", "payload_schema": "datum://schemas/estimate/1", "external": false }
+        ],
+        "outputs": [
+          { "port": "correction", "payload_schema": "datum://schemas/correction/1", "external": false }
+        ]
+      },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    }
+  ],
+  "dcalls": [
+    {
+      "dcall_id": "estimate-to-controller",
+      "from": { "dserv_id": "estimator", "port": "estimate" },
+      "to": { "dserv_id": "controller", "port": "estimate" },
+      "semantics": "async_message",
+      "qos": {}
+    },
+    {
+      "dcall_id": "correction-to-estimator",
+      "from": { "dserv_id": "controller", "port": "correction" },
+      "to": { "dserv_id": "estimator", "port": "correction" },
+      "semantics": "async_message",
+      "qos": {}
+    }
+  ]
+}

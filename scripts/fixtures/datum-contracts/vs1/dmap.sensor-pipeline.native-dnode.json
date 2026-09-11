@@ -1,0 +1,58 @@
+{
+  "schema": "datum.dmap/1",
+  "project_id": "monitor-f49c8",
+  "dmap_id": "dmap:sensor-pipeline:fog-only-native-dnode",
+  "revision": 1,
+  "x_note": "Host-invariance pair of dmap:sensor-pipeline:fog-only. It differs ONLY in dnode_runtime_placements[].host (native_process instead of container). dserv_placements are identical, so the derived DServExecutionContractV1 for decode-1 and alert-1 must be identical. Uses the test-only continuum:monitor-f49c8-host-invariance, in which fog-01 declares supported_host_kinds [container, native_process].",
+  "inputs": {
+    "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dcontinuum": { "continuum_id": "continuum:monitor-f49c8-host-invariance", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dforward": { "dforward_id": "dforward:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+  },
+  "decision": {
+    "kind": "explicitly_accepted_proposal",
+    "proposal_ref": "proposal:dd-deterministic:host-invariance",
+    "proposal_source": "d_deploy_deterministic_v0",
+    "accepted_by": "operator"
+  },
+  "dserv_placements": [
+    { "placement_id": "p-decode", "dserv_id": "decode", "element_id": "fog-01", "dnode_id": "dnode:fog-01", "instance_id": "decode-1", "replicas": 1 },
+    { "placement_id": "p-alert", "dserv_id": "alert", "element_id": "fog-01", "dnode_id": "dnode:fog-01", "instance_id": "alert-1", "replicas": 1 }
+  ],
+  "dnode_runtime_placements": [
+    {
+      "placement_id": "p-dnode-fog",
+      "dnode_id": "dnode:fog-01",
+      "element_id": "fog-01",
+      "host": {
+        "kind": "native_process",
+        "hosting_artifact": { "artifact_id": "datum-dnode-native", "version": "0.1.0" }
+      },
+      "dnode_binary": { "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    }
+  ],
+  "diot_placements": [
+    { "placement_id": "p-mqtt-fog", "diot_id": "mqtt-broker", "element_id": "fog-01", "artifact": { "artifact_id": "mosquitto", "version": "2" } }
+  ],
+  "dcall_realizations": [
+    {
+      "dcall_id": "decode-to-alert",
+      "kind": "via_diot_pubsub",
+      "diot_placement_id": "p-mqtt-fog",
+      "channel": "datum/monitor-f49c8/sensor-pipeline/decode-to-alert"
+    }
+  ],
+  "external_port_bindings": [
+    { "dserv_id": "decode", "port": "uplink", "diot_placement_id": "p-mqtt-fog", "channel": "datum/monitor-f49c8/ingress/uplink" },
+    { "dserv_id": "alert", "port": "alert", "diot_placement_id": "p-mqtt-fog", "channel": "datum/monitor-f49c8/egress/alert" }
+  ],
+  "validation": {
+    "all_dserv_placed": true,
+    "stage_constraints_satisfied": true,
+    "dnode_abi_compatible": true,
+    "dnode_host_kind_supported": true,
+    "dcalls_realizable": true,
+    "deployment_dependencies_acyclic": true,
+    "cross_element_dependencies": []
+  }
+}

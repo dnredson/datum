@@ -1,0 +1,35 @@
+{
+  "schema": "datum.x-fixture.execution-pinning-modes/1",
+  "x_note": "ADR-0011 section 5 (N-2). Documented expectations only. Stage 107A implements this.",
+  "modes": ["legacy_partial", "required"],
+  "ordering": "required > legacy_partial",
+  "where_it_lives": "project-level control-plane setting; changed only by an explicit recorded operator action; each authorization binds the mode at issuance",
+  "agent_local_minimum": {
+    "key": "minimum_execution_pinning_mode",
+    "semantics": "narrowing only; refuses authorizations below it; cannot upgrade one",
+    "default": "required"
+  },
+  "defaults": {
+    "new_project": "required",
+    "upgraded_project_without_mode": "required",
+    "agent_default": "required",
+    "no_silent_legacy": "A project or agent that wants legacy_partial must set it explicitly; it is never the silent default."
+  },
+  "legacy_partial": {
+    "purpose": "migration compatibility for the validated v1 path",
+    "class_a_content": "fully bound by execution_generation + execution_projection_digest",
+    "declared_external_digests": "verified",
+    "undeclared_external_digests": "listed as unpinned_inputs",
+    "local_substitutions": "permitted only where the artifact leaves the value undeclared; listed as local_substitutions",
+    "evidence": "every authorization, context and evidence record carries f2_status = partial_hardening"
+  },
+  "required": {
+    "issuance": "refused unless the projection is required-complete for the node platform",
+    "agent_execution": "declared execution semantics only; any local substitution attempt => blocked_local_policy_substitution",
+    "external_input_verification": "image identity and configuration content verified before any create / recreate / start; mismatch => blocked_external_input_mismatch",
+    "needed_for": ["F2-closed claim (subject to TD-1)", "canonical VS1 governed-execution evidence"],
+    "evidence": "f2_status = closed only if the ADR-0011 closure conditions hold"
+  },
+  "v2_slices": "always execution_pinning_mode = required; legacy_partial exists only on the v1 path",
+  "f2_status_values": ["partial_hardening", "closed"]
+}

@@ -1,6 +1,36 @@
 # D-Graph
 
-The **D-Graph** is DATUM's graph-based representation for correlating application structure, infrastructure, runtimes, modules, capabilities, flows, and observed state.
+!!! warning "Canonical D-Graph vs structures currently called D-Graph (Stage 107)"
+    The [canonical application **D-Graph**](../reference/datum-canonical-model.md)
+    is `G = (V, E)` with `V` = D-Serv and `E` = D-Call. It is **placement-free**,
+    it may contain D-Call cycles, and it is expressed by the new `datum.dgraph/1`
+    contract. It does **not** carry nodes, addresses, images or stages.
+
+    The current codebase uses "D-Graph" for three other structures, each relabelled
+    in documentation (no Rust type is renamed):
+
+    - `OperationalDGraph` → **operational deployment document v1** (per-node desired
+      container services, no edges);
+    - `DGraph` → **controlled composite graph** (the closed C59–I44 phase:
+      application + infrastructure + placement + health);
+    - the snapshot-materialized graph → **observed runtime graph**.
+
+    The rest of this page describes the current information-model structures and
+    the observed-vs-source distinction, which remain valid. See the
+    [Architecture Decision Records](../adr/README.md) for the canonical model.
+
+## The legacy / composite information-model graph
+
+Everything below this heading describes the **composite information-model graph**
+that the current codebase (and this page's history) has called "D-Graph". It is
+**not** the canonical application D-Graph of Stage 107; canonical `datum.dgraph/1`
+is `G = (V, E)` with `V` = D-Serv, `E` = D-Call, and it carries no infrastructure,
+runtimes, capabilities, flows or observed state.
+
+The legacy / composite graph is DATUM's graph-based representation for
+**correlating application structure with infrastructure, runtimes, modules,
+capabilities, flows, and observed state** — that is, an operational correlation
+model, distinct from the placement-free application graph.
 
 It is an **information model**, not an executor.
 

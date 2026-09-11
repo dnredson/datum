@@ -4,6 +4,23 @@
 
 The current long-running implementation lives in `DATUM/src/agent/service_loop.rs` and the `smartsentinel` binary.
 
+!!! note "SmartSentinel in canonical terms (Stage 107)"
+    In the [DATUM canonical vocabulary](../reference/datum-canonical-model.md),
+    SmartSentinel currently implements **two** responsibilities:
+
+    - **D-Agent** — node identity, resource-binding resolution, slice fetch,
+      observation, evidence, heartbeat. "D-Agent" is a **project extension**, not a
+      DATUM-paper term; it continues the IoTMan Agent lineage of the
+      IoTManA / IoTManS thesis.
+    - the **deployment executor** — gated container lifecycle, secret resolution,
+      runtime installation.
+
+    A separate **D-Node** runtime, which actually executes application D-Code, does
+    not exist yet. The target module split (D-Agent / executor / D-Node client) and
+    the runtime-agnostic D-Node are introduced in later stages
+    ([ADR-0004](../adr/ADR-0004-dnode-runtime-agnostic-host.md)). Stage 107 changes
+    no SmartSentinel runtime behaviour.
+
 ## Service-loop lifecycle
 
 ```mermaid

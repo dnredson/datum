@@ -1,0 +1,49 @@
+{
+  "projection": "datum.artifact-execution-projection/1",
+  "x_note": "ADR-0011 / report G.4.2. A required-complete variant of artifact-execution-projection.mosquitto.legacy.json, as Stage 107B would produce it: image identity pinned per platform, configuration content_sha256 declared, network_aliases declared, secret_bindings carry target environment-variable NAMES only (never values). Under execution_pinning_mode = required this is accepted and can contribute to an F2-closed claim (subject to TD-1, ADR-0012).",
+  "project_id": "monitor-f49c8",
+  "artifact": { "artifact_id": "mosquitto", "version": "2", "artifact_kind": "container", "runtime_kind": "container" },
+  "container": {
+    "container_name": "datum-mosquitto",
+    "image_identity": {
+      "reference": "docker.io/library/eclipse-mosquitto:2",
+      "repository": "docker.io/library/eclipse-mosquitto",
+      "index_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "platform": { "os": "linux", "architecture": "amd64", "variant": null },
+      "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "command": [],
+    "network": "datum-fog-net",
+    "network_aliases": ["mqtt"],
+    "ports": [ { "container_port": 1883, "host_port": 1883, "protocol": "tcp" } ],
+    "volumes": [],
+    "configuration_mounts": [
+      { "source": "mosquitto/mosquitto.conf", "target": "/mosquitto/config/mosquitto.conf", "read_only": true, "content_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    ]
+  },
+  "environment_bindings": {},
+  "secret_bindings": [],
+  "dependencies": [],
+  "lifecycle": {
+    "pre_install": [ { "program": "verify_docker", "args": [], "working_dir": null, "environment": {} } ],
+    "install": [ { "program": "pull_image", "args": [], "working_dir": null, "environment": {} } ],
+    "configure": [ { "program": "verify_configuration_mounts", "args": [], "working_dir": null, "environment": {} } ],
+    "start": [ { "program": "start_container", "args": [], "working_dir": null, "environment": {} } ],
+    "stop": [],
+    "post_install": [ { "program": "verify_container_running", "args": [], "working_dir": null, "environment": {} } ],
+    "rollback": [ { "program": "remove_container", "args": [], "working_dir": null, "environment": {} } ]
+  },
+  "management_decision": {
+    "explicit_invocation_required": true,
+    "module_id": "reconcile_service",
+    "function_name": "decide",
+    "host_imports_allowed": false,
+    "side_effects_allowed": false,
+    "safe_to_auto_execute": false,
+    "max_fuel": 1000000,
+    "timeout_ms": 1000
+  },
+  "x_required_complete": true,
+  "x_unpinned_inputs": []
+}

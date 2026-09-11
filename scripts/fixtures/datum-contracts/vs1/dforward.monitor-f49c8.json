@@ -1,0 +1,67 @@
+{
+  "schema": "datum.dforward/1",
+  "project_id": "monitor-f49c8",
+  "dforward_id": "dforward:monitor-f49c8",
+  "revision": 1,
+  "x_note": "project_id here is a deployment / persistence scoping field (implementation choice). Every chain hop from/to identifier must resolve to a declared diot_id or to an entry in external_endpoints (ADR / Stage 107 checker rule).",
+  "diots": [
+    {
+      "diot_id": "lora-packet-forwarder",
+      "diot_kind": "semtech_packet_forwarder",
+      "x_note": "Simulated S2 gateway packet-forwarder function (D-IoT, simulated). Emits Semtech UDP toward the gateway bridge.",
+      "artifact": { "artifact_id": "lora-packet-forwarder", "version": "stage78" },
+      "provides": [
+        { "interface": "semtech-udp", "endpoint": "udp", "container_port": 1700, "protocol": "udp" }
+      ],
+      "requires": []
+    },
+    {
+      "diot_id": "chirpstack-gateway-bridge",
+      "diot_kind": "lorawan_gateway_bridge",
+      "artifact": { "artifact_id": "chirpstack-gateway-bridge", "version": "4" },
+      "provides": [
+        { "interface": "chirpstack.gateway-events/4", "via": "mqtt-broker" }
+      ],
+      "requires": [
+        { "interface": "semtech-udp", "scope": "any_element" },
+        { "interface": "mqtt.pubsub/3.1.1", "scope": "any_element" }
+      ]
+    },
+    {
+      "diot_id": "mqtt-broker",
+      "diot_kind": "mqtt_broker",
+      "artifact": { "artifact_id": "mosquitto", "version": "2" },
+      "provides": [
+        { "interface": "mqtt.pubsub/3.1.1", "endpoint": "mqtt", "container_port": 1883, "protocol": "tcp" }
+      ],
+      "requires": []
+    },
+    {
+      "diot_id": "lorawan-network-server",
+      "diot_kind": "lorawan_ns",
+      "artifact": { "artifact_id": "chirpstack", "version": "4" },
+      "provides": [
+        { "interface": "chirpstack.uplink-events/4", "via": "mqtt-broker" }
+      ],
+      "requires": [
+        { "interface": "mqtt.pubsub/3.1.1", "scope": "any_element" },
+        { "interface": "postgres.sql/14", "scope": "same_element" },
+        { "interface": "redis/7", "scope": "same_element" }
+      ]
+    }
+  ],
+  "external_endpoints": [],
+  "chains": [
+    {
+      "chain_id": "lorawan-uplink",
+      "hops": [
+        { "from": "lora-packet-forwarder", "to": "chirpstack-gateway-bridge", "interface": "semtech-udp" },
+        { "from": "chirpstack-gateway-bridge", "to": "mqtt-broker", "interface": "mqtt.pubsub/3.1.1" },
+        { "from": "mqtt-broker", "to": "lorawan-network-server", "interface": "mqtt.pubsub/3.1.1" }
+      ]
+    }
+  ],
+  "support_jobs": [
+    { "diot_id": "chirpstack-provisioner", "artifact": { "artifact_id": "chirpstack-provisioner" }, "desired_state": "completed" }
+  ]
+}

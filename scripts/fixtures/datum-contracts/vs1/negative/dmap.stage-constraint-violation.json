@@ -1,0 +1,37 @@
+{
+  "schema": "datum.dmap/1",
+  "x_expect_reject": { "code": "stage_constraint_violation", "reason": "decode declares allowed_stages [S3-Fog, S5-Cloud] but is placed on local-01, which is a simulated S1/S2 element, not S3-Fog or S5-Cloud." },
+  "project_id": "monitor-f49c8",
+  "dmap_id": "dmap:bad:stage-constraint",
+  "revision": 1,
+  "inputs": {
+    "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dcontinuum": { "continuum_id": "continuum:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dforward": { "dforward_id": "dforward:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+  },
+  "decision": { "kind": "explicitly_accepted_proposal", "proposal_ref": "proposal:x", "proposal_source": "d_deploy_deterministic_v0", "accepted_by": "operator" },
+  "dserv_placements": [
+    { "placement_id": "p-decode", "dserv_id": "decode", "element_id": "local-01", "dnode_id": "dnode:local-01", "instance_id": "decode-1", "replicas": 1 }
+  ],
+  "dnode_runtime_placements": [
+    {
+      "placement_id": "p-dnode-local",
+      "dnode_id": "dnode:local-01",
+      "element_id": "local-01",
+      "host": { "kind": "container", "hosting_artifact": { "artifact_id": "datum-dnode-container", "version": "0.1.0" } },
+      "dnode_binary": { "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    }
+  ],
+  "diot_placements": [],
+  "dcall_realizations": [],
+  "external_port_bindings": [],
+  "validation": {
+    "all_dserv_placed": true,
+    "stage_constraints_satisfied": false,
+    "dnode_abi_compatible": true,
+    "dnode_host_kind_supported": true,
+    "dcalls_realizable": true,
+    "deployment_dependencies_acyclic": true,
+    "cross_element_dependencies": []
+  }
+}

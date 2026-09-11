@@ -8,10 +8,10 @@ DATUM separates **model**, **observation**, **reasoning**, **control**, and **ex
 |---|---|
 | DATUM | Architecture and information model. |
 | IoTinuum | Heterogeneous continuum environment in which distributed application roles execute. |
-| D-Graph | Graph representation correlating application/infrastructure relationships and state. |
-| SmartSentinel | Distributed node agent for observation and explicitly governed local interaction. |
-| dserver | Central control plane that receives evidence, materializes state, reasons, plans, and coordinates governed operations. |
-| Runtime/executor mechanisms | Perform concrete local operations when authorization/contracts allow them. |
+| D-Graph | Canonically the application graph (D-Serv vertices, D-Call edges, `datum.dgraph/1`). The structures currently called D-Graph in code are relabelled in the [glossary](../reference/glossary.md). |
+| SmartSentinel | The distributed node agent. In canonical terms it currently implements **D-Agent** (observation, reporting, governed interaction — a project extension of the reference model, IoTMan Agent lineage) **plus the deployment executor**. |
+| dserver | The **D-Controller** implementation: central control plane that receives evidence, materializes state, reasons, plans, and coordinates governed operations. |
+| Runtime/executor mechanisms | Perform concrete local operations when authorization/contracts allow them. A separate **D-Node** runtime that executes application D-Code does not exist yet. |
 
 ## End-to-end information flow
 
@@ -53,6 +53,24 @@ DATUM data is time-sensitive. Timestamps, TTL, freshness thresholds, heartbeat s
 ## Persistence boundary
 
 The current dserver uses Firebase collections for persistence. Firebase is an implementation choice, not a defining DATUM concept. Domain semantics should remain stable if the persistence backend changes.
+
+## D-Agent, executor, and D-Node (target separation)
+
+The Stage 107 baseline defines a three-way separation that the current code does
+not yet make explicit as modules. This is a **target**; current runtime behaviour
+is unchanged.
+
+| Responsibility | Canonical name | Current state |
+|---|---|---|
+| Node identity, resource-binding resolution, slice fetch, observation, evidence, heartbeat | **D-Agent** | Implemented inside SmartSentinel. A project extension of the reference model (IoTMan Agent lineage). |
+| Gated host mutation: container lifecycle, secret resolution, runtime installation, and (future) `DNodeHost` lifecycle | **Deployment executor** | Implemented inside SmartSentinel, not a separate module. |
+| Executing application D-Code as a service, and providing or supporting D-Serv communication per the selected communication model (direct / via the D-Node / hybrid) | **D-Node** | Does not exist. A runtime-agnostic `datum-dnode` is introduced in later stages; VS1 hosts it in a container and its ABI `datum-dnode/0` uses indirect communication through the D-Node. |
+
+The D-Serv **execution contract** (`DServExecutionContractV1`) is host-independent:
+a D-Node hosted in a container and the same D-Node hosted as a native process must
+produce identical execution contracts. Only the host-lifecycle projection (the
+`dnode_runtime` workload) may differ. See
+[ADR-0004](../adr/ADR-0004-dnode-runtime-agnostic-host.md).
 
 ## Historical phase boundaries
 

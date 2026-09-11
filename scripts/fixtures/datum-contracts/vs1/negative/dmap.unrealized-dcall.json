@@ -1,0 +1,43 @@
+{
+  "schema": "datum.dmap/1",
+  "x_expect_reject": { "code": "dcall_not_realized", "reason": "dgraph:sensor-pipeline r1 contains D-Call 'decode-to-alert' but there is no dcall_realizations entry for it." },
+  "project_id": "monitor-f49c8",
+  "dmap_id": "dmap:bad:unrealized-dcall",
+  "revision": 1,
+  "inputs": {
+    "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dcontinuum": { "continuum_id": "continuum:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dforward": { "dforward_id": "dforward:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+  },
+  "decision": { "kind": "explicitly_accepted_proposal", "proposal_ref": "proposal:x", "proposal_source": "d_deploy_deterministic_v0", "accepted_by": "operator" },
+  "dserv_placements": [
+    { "placement_id": "p-decode", "dserv_id": "decode", "element_id": "fog-01", "dnode_id": "dnode:fog-01", "instance_id": "decode-1", "replicas": 1 },
+    { "placement_id": "p-alert", "dserv_id": "alert", "element_id": "fog-01", "dnode_id": "dnode:fog-01", "instance_id": "alert-1", "replicas": 1 }
+  ],
+  "dnode_runtime_placements": [
+    {
+      "placement_id": "p-dnode-fog",
+      "dnode_id": "dnode:fog-01",
+      "element_id": "fog-01",
+      "host": { "kind": "container", "hosting_artifact": { "artifact_id": "datum-dnode-container", "version": "0.1.0" } },
+      "dnode_binary": { "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    }
+  ],
+  "diot_placements": [
+    { "placement_id": "p-mqtt-fog", "diot_id": "mqtt-broker", "element_id": "fog-01", "artifact": { "artifact_id": "mosquitto", "version": "2" } }
+  ],
+  "dcall_realizations": [],
+  "external_port_bindings": [
+    { "dserv_id": "decode", "port": "uplink", "diot_placement_id": "p-mqtt-fog", "channel": "datum/monitor-f49c8/ingress/uplink" },
+    { "dserv_id": "alert", "port": "alert", "diot_placement_id": "p-mqtt-fog", "channel": "datum/monitor-f49c8/egress/alert" }
+  ],
+  "validation": {
+    "all_dserv_placed": true,
+    "stage_constraints_satisfied": true,
+    "dnode_abi_compatible": true,
+    "dnode_host_kind_supported": true,
+    "dcalls_realizable": false,
+    "deployment_dependencies_acyclic": true,
+    "cross_element_dependencies": []
+  }
+}

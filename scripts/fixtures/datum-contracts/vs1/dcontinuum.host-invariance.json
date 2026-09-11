@@ -1,0 +1,38 @@
+{
+  "schema": "datum.dcontinuum/1",
+  "project_id": "monitor-f49c8",
+  "continuum_id": "continuum:monitor-f49c8-host-invariance",
+  "revision": 1,
+  "x_note": "Test-only continuum used to demonstrate ADR-0004 host invariance. fog-01 here declares BOTH container and native_process host kinds so that a native-host D-Map can be paired with the container-host D-Map. VS1 itself uses only the container host and continuum:monitor-f49c8.",
+  "stages": [
+    { "stage_id": "S3-Fog", "order": 3, "substages": [ { "substage_id": "S31", "element_class": "x86_64-vm" } ] }
+  ],
+  "elements": [
+    {
+      "element_id": "fog-01",
+      "stage_id": "S3-Fog",
+      "substage_id": "S31",
+      "platform": { "os": "linux", "architecture": "amd64", "variant": null },
+      "declared_capacity": { "cpu_cores": 4, "memory_mb": 8192 },
+      "declared_runtimes": [
+        { "runtime_kind": "container", "engine": "docker" },
+        { "runtime_kind": "process", "engine": "systemd" }
+      ],
+      "declared_dnodes": [
+        {
+          "dnode_id": "dnode:fog-01",
+          "abi_versions": ["datum-dnode/0"],
+          "supported_host_kinds": ["container", "native_process"],
+          "interface": {
+            "module_store": "content_addressed_directory",
+            "instance_specs": "atomic_json_directory",
+            "status_endpoint": "loopback_http"
+          }
+        }
+      ],
+      "network": { "endpoint_address_ref": "resource-binding", "zones": ["lab-lan"] },
+      "links": []
+    }
+  ],
+  "simulated_elements": []
+}

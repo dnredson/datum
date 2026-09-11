@@ -1,0 +1,118 @@
+{
+  "schema": "datum.operational-slice/2",
+  "project_id": "monitor-f49c8",
+  "node_id": "fog-01",
+  "slice_revision": 1,
+  "execution_pinning_mode": "required",
+  "derived_from": {
+    "dmap": { "dmap_id": "dmap:sensor-pipeline:fog-only", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dforward": { "dforward_id": "dforward:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dcontinuum": { "continuum_id": "continuum:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "derivation": { "function": "derive_operational_slices", "version": "0.1.0" }
+  },
+  "workloads": [
+    {
+      "workload_id": "diot:mqtt-broker",
+      "workload_class": "diot",
+      "desired_state": "running",
+      "artifact": {
+        "artifact_id": "mosquitto",
+        "version": "2",
+        "execution_projection_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "image_identity": {
+          "repository": "docker.io/library/eclipse-mosquitto",
+          "index_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "platform": { "os": "linux", "architecture": "amd64", "variant": null },
+          "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      "depends_on": []
+    },
+    {
+      "workload_id": "dnode:fog-01",
+      "workload_class": "dnode_runtime",
+      "desired_state": "running",
+      "dnode_id": "dnode:fog-01",
+      "abi_versions": ["datum-dnode/0"],
+      "dnode_binary": { "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+      "host": {
+        "kind": "container",
+        "hosting_artifact": {
+          "artifact_id": "datum-dnode-container",
+          "version": "0.1.0",
+          "execution_projection_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "resolved_endpoints": { "p-mqtt-fog": "container-network-alias:mqtt" }
+      },
+      "depends_on": ["diot:mqtt-broker"]
+    },
+    {
+      "workload_id": "dserv:decode-1",
+      "workload_class": "dserv_instance",
+      "desired_state": "running",
+      "dnode_id": "dnode:fog-01",
+      "execution_contract": {
+        "schema": "datum.dserv-execution-contract/1",
+        "application_id": "app:sensor-pipeline",
+        "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+        "dserv_id": "decode",
+        "instance_id": "decode-1",
+        "element_id": "fog-01",
+        "dnode_id": "dnode:fog-01",
+        "dcode": { "artifact_id": "dserv:sensor-pipeline:decode", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+        "abi": "datum-dnode/0",
+        "ports": [
+          { "port": "uplink", "direction": "input", "payload_schema": "datum://schemas/chirpstack-v4-uplink-subset/1", "external": true, "channel": "datum/monitor-f49c8/ingress/uplink", "realization": { "diot_placement_id": "p-mqtt-fog", "interface": "mqtt.pubsub/3.1.1" } },
+          { "port": "reading", "direction": "output", "payload_schema": "datum://schemas/sensor-reading/1", "dcall_id": "decode-to-alert", "channel": "datum/monitor-f49c8/sensor-pipeline/decode-to-alert", "realization": { "diot_placement_id": "p-mqtt-fog", "interface": "mqtt.pubsub/3.1.1" } }
+        ],
+        "limits": { "fuel_per_invocation": 5000000, "timeout_ms": 200, "max_memory_pages": 64, "max_message_bytes": 65536, "max_emits_per_invocation": 8 },
+        "state_model": "stateless",
+        "instantiation": "fresh_instance_per_invocation"
+      },
+      "depends_on": ["dnode:fog-01"]
+    },
+    {
+      "workload_id": "dserv:alert-1",
+      "workload_class": "dserv_instance",
+      "desired_state": "running",
+      "dnode_id": "dnode:fog-01",
+      "execution_contract": {
+        "schema": "datum.dserv-execution-contract/1",
+        "application_id": "app:sensor-pipeline",
+        "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+        "dserv_id": "alert",
+        "instance_id": "alert-1",
+        "element_id": "fog-01",
+        "dnode_id": "dnode:fog-01",
+        "dcode": { "artifact_id": "dserv:sensor-pipeline:alert", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+        "abi": "datum-dnode/0",
+        "ports": [
+          { "port": "reading", "direction": "input", "payload_schema": "datum://schemas/sensor-reading/1", "dcall_id": "decode-to-alert", "channel": "datum/monitor-f49c8/sensor-pipeline/decode-to-alert", "realization": { "diot_placement_id": "p-mqtt-fog", "interface": "mqtt.pubsub/3.1.1" } },
+          { "port": "alert", "direction": "output", "payload_schema": "datum://schemas/sensor-alert/1", "external": true, "channel": "datum/monitor-f49c8/egress/alert", "realization": { "diot_placement_id": "p-mqtt-fog", "interface": "mqtt.pubsub/3.1.1" } }
+        ],
+        "limits": { "fuel_per_invocation": 5000000, "timeout_ms": 200, "max_memory_pages": 64, "max_message_bytes": 65536, "max_emits_per_invocation": 8 },
+        "state_model": "stateless",
+        "instantiation": "fresh_instance_per_invocation"
+      },
+      "depends_on": ["dnode:fog-01"]
+    }
+  ],
+  "remote_dependencies": [],
+  "slice_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "authorization": {
+    "authorization_id": "opauth:00000000-0000-0000-0000-000000000000",
+    "operation": "reconcile",
+    "binds": {
+      "project_id": "monitor-f49c8",
+      "node_id": "fog-01",
+      "binding_id": "binding:fog-01:00000000",
+      "slice_revision": 1,
+      "slice_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "execution_pinning_mode": "required",
+    "persistence_scope": "durable",
+    "expires_at_utc": "2026-09-11T00:00:00Z"
+  }
+}

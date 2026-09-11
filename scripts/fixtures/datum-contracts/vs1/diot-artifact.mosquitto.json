@@ -1,0 +1,56 @@
+{
+  "schema": "datum.x-fixture.diot-artifact/1",
+  "x_note": "Illustrates the Stage-107-report section C.1 target shape: the existing ServiceArtifact plus artifact_class and the new execution-semantics fields. This is a standalone fixture. The real catalog under artifacts/catalog/ is NOT modified in Stage 107. The Rust ServiceArtifact type is NOT changed in Stage 107 (that is Stage 108+). Absent artifact_class defaults to 'diot' so existing catalog files still deserialize.",
+  "artifact_id": "mosquitto",
+  "service_id": "mqtt",
+  "artifact_class": "diot",
+  "runtime": {
+    "kind": "container",
+    "container": {
+      "container_name": "datum-mosquitto",
+      "image_identity": {
+        "repository": "docker.io/library/eclipse-mosquitto",
+        "tag": "2",
+        "index_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "platforms": [
+          { "os": "linux", "architecture": "amd64", "variant": null, "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+          { "os": "linux", "architecture": "arm64", "variant": "v8", "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+        ]
+      },
+      "command": [],
+      "network": "datum-fog-net",
+      "network_aliases": ["mqtt"],
+      "ports": [ { "container_port": 1883, "host_port": 1883, "protocol": "tcp" } ],
+      "volumes": [],
+      "configuration_mounts": [
+        { "source": "mosquitto/mosquitto.conf", "target": "/mosquitto/config/mosquitto.conf", "read_only": true, "content_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+      ]
+    }
+  },
+  "provides": [ { "interface": "mqtt.pubsub/3.1.1", "endpoint": "mqtt", "container_port": 1883, "protocol": "tcp" } ],
+  "requires": [],
+  "endpoint_bindings": [],
+  "secret_bindings": [],
+  "desired_state_kind": "long_running",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "resource_requirements": { "cpu_millis": 100, "memory_mb": 64 },
+  "probes": {
+    "execution": { "kind": "docker_container_running", "params": { "container_name": "datum-mosquitto" }, "vantage_point": "local_host" },
+    "health": { "kind": "tcp_connect", "params": { "host": "127.0.0.1", "port": 1883 }, "vantage_point": "local_host" }
+  },
+  "control_plane": {
+    "project_id": "",
+    "name": "MQTT broker",
+    "version": "2",
+    "dependencies": [],
+    "lifecycle": {
+      "pre_install": [ { "program": "verify_docker", "args": [], "working_dir": null, "environment": {} } ],
+      "install": [ { "program": "pull_image", "args": [], "working_dir": null, "environment": {} } ],
+      "configure": [ { "program": "verify_configuration_mounts", "args": [], "working_dir": null, "environment": {} } ],
+      "start": [ { "program": "start_container", "args": [], "working_dir": null, "environment": {} } ],
+      "stop": [],
+      "post_install": [ { "program": "verify_container_running", "args": [], "working_dir": null, "environment": {} } ],
+      "rollback": [ { "program": "remove_container", "args": [], "working_dir": null, "environment": {} } ]
+    }
+  }
+}

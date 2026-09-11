@@ -36,6 +36,20 @@ nav:
       - Overview: architecture/overview.md
       - dserver: architecture/dserver.md
       - SmartSentinel: architecture/smartsentinel.md
+  - Decisions (ADR):
+      - Index: adr/README.md
+      - ADR-0001 Canonical DATUM vocabulary: adr/ADR-0001-canonical-datum-vocabulary.md
+      - ADR-0002 D-Map single placement carrier: adr/ADR-0002-dmap-single-placement-carrier.md
+      - ADR-0003 D-Node ABI datum-dnode/0: adr/ADR-0003-dnode-abi-v0.md
+      - ADR-0004 Runtime-agnostic D-Node: adr/ADR-0004-dnode-runtime-agnostic-host.md
+      - ADR-0005 D-Code vs Management WASM: adr/ADR-0005-dcode-and-management-wasm.md
+      - ADR-0006 Canonical digest (JCS + SHA-256): adr/ADR-0006-canonical-digest-jcs-sha256.md
+      - ADR-0007 datum-model crate: adr/ADR-0007-datum-model-crate.md
+      - ADR-0008 Fresh instance per invocation: adr/ADR-0008-fresh-instance-per-invocation.md
+      - ADR-0009 Application identity: adr/ADR-0009-application-identity.md
+      - ADR-0010 Cross-node readiness: adr/ADR-0010-cross-node-readiness-fresh-evidence.md
+      - ADR-0011 F2 execution-content authorization: adr/ADR-0011-f2-execution-content-authorization.md
+      - ADR-0012 TOCTOU (deferred): adr/ADR-0012-toctou-authorization-validity.md
   - Data Models:
       - Snapshot: reference/snapshot-model.md
       - Local D-Graph Snapshot: reference/local-dgraph-snapshot.md
@@ -49,4 +63,6 @@ nav:
       - Overview: api/overview.md
   - Reference:
       - Glossary: reference/glossary.md
+      - DATUM canonical model (Stage 107): reference/datum-canonical-model.md
+      - VS1 contract fixtures: reference/vs1-contract-fixtures.md
       - Visual Identity: reference/visual-identity.md

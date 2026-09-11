@@ -1,0 +1,29 @@
+{
+  "schema": "datum.dgraph/1",
+  "x_expect_reject": { "code": "duplicate_dserv_id", "reason": "Two D-Serv entries share dserv_id 'decode'." },
+  "application_id": "app:sensor-pipeline",
+  "dgraph_id": "dgraph:sensor-pipeline-dup-id",
+  "revision": 1,
+  "source": { "dscript_id": "dscript:x", "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "compiler": { "name": "dcompile", "version": "0.1.0" }, "mapping_style": "1:1" },
+  "dservs": [
+    {
+      "dserv_id": "decode",
+      "d_functions": ["decode_uplink"],
+      "dcode": { "artifact_id": "dserv:x:decode", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+      "ports": { "inputs": [ { "port": "uplink", "payload_schema": "datum://schemas/u/1", "external": true } ], "outputs": [ { "port": "reading", "payload_schema": "datum://schemas/r/1", "external": false } ] },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    },
+    {
+      "dserv_id": "decode",
+      "d_functions": ["decode_uplink_again"],
+      "dcode": { "artifact_id": "dserv:x:decode2", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+      "ports": { "inputs": [ { "port": "uplink", "payload_schema": "datum://schemas/u/1", "external": true } ], "outputs": [ { "port": "reading", "payload_schema": "datum://schemas/r/1", "external": false } ] },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    }
+  ],
+  "dcalls": []
+}

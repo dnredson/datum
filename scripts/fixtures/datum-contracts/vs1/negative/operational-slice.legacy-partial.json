@@ -1,0 +1,28 @@
+{
+  "schema": "datum.operational-slice/2",
+  "x_expect_reject": { "code": "v2_slice_not_required_mode", "reason": "ADR-0011 / report B.5: v2 slices are ALWAYS execution_pinning_mode = required. legacy_partial exists only on the v1 path. A v2 slice or authorization in legacy_partial mode is rejected." },
+  "project_id": "monitor-f49c8",
+  "node_id": "fog-01",
+  "slice_revision": 1,
+  "execution_pinning_mode": "legacy_partial",
+  "derived_from": {
+    "dmap": { "dmap_id": "dmap:sensor-pipeline:fog-only", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dforward": { "dforward_id": "dforward:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "dcontinuum": { "continuum_id": "continuum:monitor-f49c8", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "derivation": { "function": "derive_operational_slices", "version": "0.1.0" }
+  },
+  "workloads": [
+    { "workload_id": "diot:mqtt-broker", "workload_class": "diot", "desired_state": "running", "artifact": { "artifact_id": "mosquitto", "version": "2", "execution_projection_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }, "depends_on": [] }
+  ],
+  "remote_dependencies": [],
+  "slice_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "authorization": {
+    "authorization_id": "opauth:22222222-2222-2222-2222-222222222222",
+    "operation": "reconcile",
+    "binds": { "project_id": "monitor-f49c8", "node_id": "fog-01", "binding_id": "binding:fog-01:00000000", "slice_revision": 1, "slice_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "execution_pinning_mode": "legacy_partial",
+    "persistence_scope": "durable",
+    "expires_at_utc": "2026-09-11T00:00:00Z"
+  }
+}

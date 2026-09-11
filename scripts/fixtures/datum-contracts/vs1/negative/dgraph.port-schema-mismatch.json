@@ -1,0 +1,31 @@
+{
+  "schema": "datum.dgraph/1",
+  "x_expect_reject": { "code": "dcall_payload_schema_mismatch", "reason": "D-Call joins output payload_schema .../sensor-reading/1 to input payload_schema .../other/1." },
+  "application_id": "app:sensor-pipeline",
+  "dgraph_id": "dgraph:sensor-pipeline-schema-mismatch",
+  "revision": 1,
+  "source": { "dscript_id": "dscript:x", "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "compiler": { "name": "dcompile", "version": "0.1.0" }, "mapping_style": "1:1" },
+  "dservs": [
+    {
+      "dserv_id": "decode",
+      "d_functions": ["decode_uplink"],
+      "dcode": { "artifact_id": "dserv:x:decode", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+      "ports": { "inputs": [ { "port": "uplink", "payload_schema": "datum://schemas/u/1", "external": true } ], "outputs": [ { "port": "reading", "payload_schema": "datum://schemas/sensor-reading/1", "external": false } ] },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    },
+    {
+      "dserv_id": "alert",
+      "d_functions": ["threshold_alert"],
+      "dcode": { "artifact_id": "dserv:x:alert", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+      "ports": { "inputs": [ { "port": "reading", "payload_schema": "datum://schemas/other/1", "external": false } ], "outputs": [ { "port": "alert", "payload_schema": "datum://schemas/a/1", "external": true } ] },
+      "constraints": { "allowed_stages": ["S3-Fog"], "location_bound": false, "hardware": [] },
+      "qos": {},
+      "state_model": "stateless"
+    }
+  ],
+  "dcalls": [
+    { "dcall_id": "decode-to-alert", "from": { "dserv_id": "decode", "port": "reading" }, "to": { "dserv_id": "alert", "port": "reading" }, "semantics": "async_message", "qos": {} }
+  ]
+}

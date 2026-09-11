@@ -1,0 +1,54 @@
+# VS1 contract fixtures (Stage 107)
+
+These fixtures establish the concrete shape of the canonical DATUM v2 contracts and
+the v1 F2 support objects, ahead of any runtime code. They are validated by
+`scripts/check_datum_contract_fixtures.py`.
+
+Stage 107 is specification only. There is no `datum-model` crate yet (Stage 108),
+no D-Compile (Stage 110) and no D-Node runtime (Stage 113). These fixtures are
+hand-authored and structurally consistent; they are not produced by a compiler.
+
+## Placeholder-digest convention
+
+Digests that can only be computed from a real artifact use the sanctioned
+placeholder:
+
+```
+sha256:0000000000000000000000000000000000000000000000000000000000000000
+```
+
+The consistency checker verifies cross-references by **natural key** — for example
+a D-Map's `inputs.dgraph = {dgraph_id, revision}` must match a `datum.dgraph/1`
+fixture's `dgraph_id` + `revision` — not by digest string. The checker also flags
+any other real-looking `sha256:` value in a Stage 107 fixture.
+
+Real JCS + SHA-256 digests (ADR-0006) arrive with the `datum-model` crate in
+Stage 108, which turns these fixtures into typed tests.
+
+## Layout
+
+| File | Schema / role |
+|---|---|
+| `dgraph.sensor-pipeline.json` | `datum.dgraph/1` — the VS1 application graph (acyclic `decode → alert`). |
+| `dgraph.dcall-cycle.json` | `datum.dgraph/1` — a graph containing a D-Call cycle, which is **accepted** (D-4). |
+| `dcontinuum.monitor-f49c8.json` | `datum.dcontinuum/1` — the VS1 continuum (S2-Mist / S3-Fog / S5-Cloud). |
+| `dcontinuum.host-invariance.json` | `datum.dcontinuum/1` — test-only: `fog-01` supports `container` and `native_process`. |
+| `dforward.monitor-f49c8.json` | `datum.dforward/1` — D-IoT elements, interfaces, chains. Every chain hop `from`/`to` resolves to a declared `diot_id` (or an `external_endpoints` entry). |
+| `dmap.sensor-pipeline.fog-only.json` | `datum.dmap/1` — VS1a: `decode` + `alert` on `fog-01`. |
+| `dmap.sensor-pipeline.fog-cloud.json` | `datum.dmap/1` — VS1b: `decode@fog-01`, `alert@cloud-01`. |
+| `dmap.sensor-pipeline.native-dnode.json` | `datum.dmap/1` — host-invariance pair of `fog-only`, native D-Node host. |
+| `operational-slice.fog-01.container.json` | `datum.operational-slice/2` — VS1a slice, container-hosted D-Node. |
+| `operational-slice.fog-01.native.json` | `datum.operational-slice/2` — same slice, native D-Node; `execution_contract` blocks are byte-identical. |
+| `dserv-artifact.decode.json` | `datum.dserv-artifact/1` — D-Code artifact for `decode`. |
+| `dserv-artifact.alert.json` | `datum.dserv-artifact/1` — D-Code artifact for `alert`. |
+| `diot-artifact.mosquitto.json` | `ServiceArtifact` + `artifact_class = diot` + the new C.1 fields (standalone; the real catalog is untouched). |
+| `artifact-execution-projection.mosquitto.legacy.json` | `datum.artifact-execution-projection/1` — current mosquitto content; **not `required`-complete**. |
+| `artifact-execution-projection.mosquitto.required.json` | `datum.artifact-execution-projection/1` — a `required`-complete variant. |
+| `execution-generation-rules.json` | `datum.x-fixture.execution-generation-rules/1` — documented expectations for the generation model. |
+| `execution-pinning-modes.json` | `datum.x-fixture.execution-pinning-modes/1` — the two modes, defaults, `f2_status` mapping. |
+| `local-policy-digest.json` | `datum.x-fixture.local-policy-digest/1` — an example effective local policy; no secret values. |
+| `oci-image-identity.json` | `datum.x-fixture.oci-image-identity/1` — single- and multi-platform image identity examples. |
+| `negative/*.json` | Each carries `x_expect_reject.code`. The checker produces **structured findings** `{code, message}` and a negative fixture passes only when its expected code is among the produced codes — an unrelated validation error is not enough. Extra findings are allowed. |
+
+Schemas beginning `datum.x-fixture.` are Stage-107 explanatory fixtures, not
+runtime contracts.

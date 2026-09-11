@@ -1,0 +1,37 @@
+{
+  "schema": "datum.x-fixture.oci-image-identity/1",
+  "x_note": "ADR-0011 / report G.5 (Stage 107B). The OCI image identity model. A mutable tag is NEVER assumed to denote identical bytes across architectures: ARM64 (mist) and AMD64 (fog/cloud) require distinct platform entries. The target platform is taken from D-Continuum and must match the node's observed engine platform; a missing platform entry denies execution in required mode.",
+  "model": {
+    "repository": "fully qualified repository, e.g. docker.io/library/eclipse-mosquitto",
+    "tag": "informational only; never trusted for identity",
+    "index_digest": "digest of the OCI image index / Docker manifest list when the reference is multi-platform; null for single-platform images",
+    "platforms": "one entry per target platform: {os, architecture, variant, manifest_digest, config_digest}",
+    "execution_reference": "repository@index_digest (multi-platform) or repository@manifest_digest (single-platform)"
+  },
+  "examples": {
+    "multi_platform": {
+      "repository": "docker.io/library/eclipse-mosquitto",
+      "tag": "2",
+      "index_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "platforms": [
+        { "os": "linux", "architecture": "amd64", "variant": null, "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+        { "os": "linux", "architecture": "arm64", "variant": "v8", "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+      ],
+      "execution_reference_amd64": "docker.io/library/eclipse-mosquitto@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "single_platform": {
+      "repository": "ghcr.io/dnredson/chirpstack-provisioner",
+      "tag": "main",
+      "index_digest": null,
+      "platforms": [
+        { "os": "linux", "architecture": "amd64", "variant": null, "manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+      ],
+      "execution_reference": "ghcr.io/dnredson/chirpstack-provisioner@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "executed_image_identity_evidence": {
+    "fields": ["platform", "manifest_digest", "config_digest", "local_image_id", "container_image_ref", "engine_image_store"],
+    "note": "The verification method must be engine-store-aware and is validated in Stage 107B. With the classic Docker image store the local image ID is the config digest; with the containerd image store the local ID can be the index or manifest digest."
+  },
+  "open_item": "The existing artifacts/catalog/chirpstack-gateway-bridge.json digest must be classified as index or platform manifest before it can be marked required-complete. Stage 107 does not modify the catalog."
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "datum.x-fixture.local-policy-digest/1",
+  "x_note": "ADR-0011 section 4 / 6 (N-1). An example of the effective node-local policy relevant to one executed workload, over which local_policy_digest = SHA-256(RFC 8785 JCS(...)) is computed. Local policy may only NARROW or DENY authorized behaviour; it never substitutes execution semantics. Secret VALUES never appear here; only secret_ref -> local value source name. DServer stores local_policy_digest for audit but is not authoritative over local policy.",
+  "node_id": "fog-01",
+  "effective_policy": {
+    "allow_container_execution": true,
+    "allow_dserv_execution": true,
+    "allowed_dnode_host_kinds": ["container"],
+    "allowed_dnode_abis": ["datum-dnode/0"],
+    "dnode_state_root": "/var/lib/datum/dnode",
+    "configuration_root": "/opt/datum/governed-config",
+    "trusted_container_mapping": {
+      "service_name": "mqtt",
+      "container_name": "datum-mosquitto",
+      "permitted_host_ports": [1883]
+    },
+    "network_allowlist": ["datum-fog-net"],
+    "limit_caps": { "max_fuel_per_invocation": 8000000, "max_timeout_ms": 500, "max_memory_pages": 128 },
+    "minimum_execution_pinning_mode": "required",
+    "secret_value_sources": [
+      { "secret_ref": "fog_mqtt_password", "local_value_source": "env:FOG_MQTT_PASSWORD" }
+    ]
+  },
+  "excluded_from_digest": ["any secret value", "runtime availability observations (recorded separately as evidence)"],
+  "recorded_in": ["every reconciliation report", "every operational evidence event", "dserv_convergence_proof"]
+}

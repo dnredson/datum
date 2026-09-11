@@ -1,0 +1,42 @@
+{
+  "projection": "datum.artifact-execution-projection/1",
+  "x_note": "ADR-0011 / report G.4.2. This mirrors the CURRENT artifacts/catalog/mosquitto.json execution content. It is NOT required-complete: the image is a mutable tag with no pinned digest, there is no configuration content_sha256, network_aliases is undeclared (null), and there are no secret_bindings. Under execution_pinning_mode = legacy_partial this is accepted with f2_status = partial_hardening. Under required it is refused. Stage 107A computes the SHA-256 over the RFC 8785 JCS form of this object; Stage 107 does not.",
+  "project_id": "monitor-f49c8",
+  "artifact": { "artifact_id": "mosquitto", "version": "2", "artifact_kind": "container", "runtime_kind": "container" },
+  "container": {
+    "container_name": "datum-mosquitto",
+    "image_identity": { "reference": "eclipse-mosquitto:2", "pinned_digest": null },
+    "command": [],
+    "network": "datum-fog-net",
+    "network_aliases": null,
+    "ports": [ { "container_port": 1883, "host_port": 1883, "protocol": "tcp" } ],
+    "volumes": [],
+    "configuration_mounts": [
+      { "source": "mosquitto/mosquitto.conf", "target": "/mosquitto/config/mosquitto.conf", "read_only": true, "content_sha256": null }
+    ]
+  },
+  "environment_bindings": {},
+  "secret_bindings": [],
+  "dependencies": [],
+  "lifecycle": {
+    "pre_install": [ { "program": "verify_docker", "args": [], "working_dir": null, "environment": {} } ],
+    "install": [ { "program": "pull_image", "args": [], "working_dir": null, "environment": {} } ],
+    "configure": [ { "program": "verify_configuration_mounts", "args": [], "working_dir": null, "environment": {} } ],
+    "start": [ { "program": "start_container", "args": [], "working_dir": null, "environment": {} } ],
+    "stop": [],
+    "post_install": [ { "program": "verify_container_running", "args": [], "working_dir": null, "environment": {} } ],
+    "rollback": [ { "program": "remove_container", "args": [], "working_dir": null, "environment": {} } ]
+  },
+  "management_decision": {
+    "explicit_invocation_required": true,
+    "module_id": "reconcile_service",
+    "function_name": "decide",
+    "host_imports_allowed": false,
+    "side_effects_allowed": false,
+    "safe_to_auto_execute": false,
+    "max_fuel": 1000000,
+    "timeout_ms": 1000
+  },
+  "x_required_complete": false,
+  "x_unpinned_inputs": ["container.image_identity.pinned_digest", "container.configuration_mounts[0].content_sha256", "container.network_aliases"]
+}

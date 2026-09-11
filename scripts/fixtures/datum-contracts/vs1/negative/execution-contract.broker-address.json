@@ -1,0 +1,25 @@
+{
+  "schema": "datum.dserv-execution-contract/1",
+  "x_expect_reject": { "code": "host_dependent_value_in_execution_contract", "reason": "ADR-0004: DServExecutionContractV1 must reference a D-IoT realization IDENTITY (placement id + interface), never a network address. This fixture puts 'tcp://192.168.10.103:1883' in a port realization." },
+  "application_id": "app:sensor-pipeline",
+  "dgraph": { "dgraph_id": "dgraph:sensor-pipeline", "revision": 1, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+  "dserv_id": "decode",
+  "instance_id": "decode-1",
+  "element_id": "fog-01",
+  "dnode_id": "dnode:fog-01",
+  "dcode": { "artifact_id": "dserv:sensor-pipeline:decode", "version": "0.1.0", "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+  "abi": "datum-dnode/0",
+  "ports": [
+    {
+      "port": "reading",
+      "direction": "output",
+      "payload_schema": "datum://schemas/sensor-reading/1",
+      "dcall_id": "decode-to-alert",
+      "channel": "datum/monitor-f49c8/sensor-pipeline/decode-to-alert",
+      "realization": { "broker_address": "tcp://192.168.10.103:1883", "interface": "mqtt.pubsub/3.1.1" }
+    }
+  ],
+  "limits": { "fuel_per_invocation": 5000000, "timeout_ms": 200, "max_memory_pages": 64, "max_message_bytes": 65536, "max_emits_per_invocation": 8 },
+  "state_model": "stateless",
+  "instantiation": "fresh_instance_per_invocation"
+}

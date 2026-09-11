@@ -1,0 +1,30 @@
+{
+  "schema": "datum.dserv-artifact/1",
+  "x_expect_reject": { "code": "host_kind_field_in_host_invariant_contract", "reason": "ADR-0004 invariant 10: datum.dserv-artifact/1 must not carry any host-kind field. This fixture illegally adds runtime.container and host_kind." },
+  "artifact_id": "dserv:sensor-pipeline:decode",
+  "version": "0.1.0",
+  "application_id": "app:sensor-pipeline",
+  "dserv_id": "decode",
+  "host_kind": "container",
+  "runtime": { "container": { "image": "some/image:tag" } },
+  "dcode": {
+    "uri": "datum-blob://sha256/0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "content_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "size_bytes": 0
+  },
+  "abi": { "name": "datum-dnode", "version": "0", "required_exports": ["memory", "datum_abi_version", "datum_alloc", "datum_dealloc", "datum_handle"], "allowed_imports": [] },
+  "ports": {
+    "inputs": [ { "port": "uplink", "payload_schema": "datum://schemas/u/1", "external": true } ],
+    "outputs": [ { "port": "reading", "payload_schema": "datum://schemas/r/1", "external": false } ]
+  },
+  "limits": { "fuel_per_invocation": 5000000, "timeout_ms": 200, "max_memory_pages": 64, "max_message_bytes": 65536, "max_emits_per_invocation": 8 },
+  "safety": { "filesystem_access": false, "network_access": false, "host_command_access": false, "docker_access": false, "side_effects_allowed": false },
+  "state_model": "stateless",
+  "instantiation": "fresh_instance_per_invocation",
+  "constraints": { "allowed_stages": ["S3-Fog"] },
+  "qos": {},
+  "provenance": { "dscript_id": "dscript:x", "dscript_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "d_functions": ["decode_uplink"], "compiler": { "name": "dcompile", "version": "0.1.0" }, "build": { "rustc": "unset", "target": "wasm32-unknown-unknown", "cargo_lock_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "feature": "dserv-decode" } },
+  "probes": { "instance": ["dnode_instance_loaded"] },
+  "signature_ref": null
+}
