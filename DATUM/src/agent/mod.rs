@@ -1,7 +1,9 @@
 pub mod bootstrap;
 pub mod discovery;
 pub mod discovery_collectors;
+pub mod execution_projection;
 pub mod integrated_service_evidence;
+pub mod jcs;
 pub mod operational_evidence;
 pub mod operational_reconciliation;
 pub mod operational_service_loop;
@@ -12,3 +14,4 @@ pub mod service_artifact;
 pub mod service_deployment_drift;
 pub mod service_deployment_reconciliation;
 pub mod service_loop;
+pub mod stage107a_enforcement;

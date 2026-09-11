@@ -1,0 +1,499 @@
+//! `ArtifactExecutionProjectionV1` (Stage 107A, ADR-0011 §1) -- SmartSentinel
+//! side.
+//!
+//! Independently reconstructs the same logical projection DServer computes
+//! authoritatively (`dserver/src/core/execution_projection.rs`), from the
+//! `OperationalArtifactAssignment` this agent actually receives over the
+//! wire, and recomputes its RFC 8785 JCS + SHA-256 digest. The reconstruction
+//! is "independent" in that this crate never imports DServer's types or
+//! functions (separate Cargo workspaces, by design -- ADR-0006/ADR-0011);
+//! what proves the two sides agree is field-shape parity (asserted by the
+//! `dserver_shape_field_names` test below, which enumerates the exact set)
+//! plus the shared JCS conformance vectors in `jcs.rs`.
+//!
+//! Excluded from the projection, per ADR-0011 §1 and the Stage 107A
+//! design-review correction: `version` (evidence only); `probes`;
+//! `health_checks`; `acquisition`; `wasm_decision.module_id`,
+//! `.function_name`, `.max_fuel`, `.timeout_ms` (not consumed for behaviour
+//! selection by `run_embedded_reconciler`, and the latter two are not even
+//! present on `ArtifactWasmDecisionPolicy`). `service_aliases` is likewise
+//! excluded on both sides -- see `dserver/src/core/execution_projection.rs`'s
+//! module note.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::agent::jcs;
+use crate::agent::operational_reconciliation::{
+    ArtifactWasmDecisionPolicy, OperationalArtifactAssignment,
+};
+
+pub const ARTIFACT_EXECUTION_PROJECTION_KIND: &str = "datum.artifact-execution-projection/1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactExecutionProjectionV1 {
+    pub projection: String,
+    pub artifact_id: String,
+    pub service_id: String,
+    pub artifact_kind: String,
+    pub runtime_kind: String,
+    pub container_name: String,
+    pub image_identity: ImageIdentityV1,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub network_aliases: Vec<String>,
+    #[serde(default)]
+    pub ports: Vec<PortMappingV1>,
+    #[serde(default)]
+    pub volumes: Vec<VolumeMountV1>,
+    #[serde(default)]
+    pub configuration_mounts: Vec<ConfigurationMountV1>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub lifecycle: LifecycleV1,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+    /// Mirrors `dserver::core::execution_projection::ArtifactExecutionProjectionV1::secret_refs`
+    /// (review finding P0-5). Order preserved, not sorted.
+    #[serde(default)]
+    pub secret_refs: Vec<String>,
+    #[serde(default)]
+    pub secret_bindings: Vec<SecretBindingV1>,
+    pub wasm_safety: WasmSafetyFlagsV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageIdentityV1 {
+    pub reference: String,
+    #[serde(default)]
+    pub declared_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortMappingV1 {
+    pub container_port: u16,
+    #[serde(default)]
+    pub host_port: Option<u16>,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VolumeMountV1 {
+    pub name: String,
+    pub target: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigurationMountV1 {
+    pub source: String,
+    pub target: String,
+    pub read_only: bool,
+    #[serde(default)]
+    pub declared_content_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleV1 {
+    #[serde(default)]
+    pub pre_install: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub install: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub configure: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub start: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub stop: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub post_install: Vec<LifecycleCommandV1>,
+    #[serde(default)]
+    pub rollback: Vec<LifecycleCommandV1>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleCommandV1 {
+    pub program: String,
+    // Mirrors dserver::core::execution_projection::LifecycleCommandV1 (review
+    // finding P1-6): `args`/`working_dir`/`environment` excluded because
+    // `execute_lifecycle_phase` never reads them.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecretBindingV1 {
+    pub secret_ref: String,
+    pub target_environment_variable: String,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WasmSafetyFlagsV1 {
+    pub explicit_invocation_required: bool,
+    pub host_imports_allowed: bool,
+    pub side_effects_allowed: bool,
+    pub safe_to_auto_execute: bool,
+}
+
+/// Reconstruct the projection from the assignment this agent received --
+/// never from a locally re-read mutable pointer (ADR-0012 point 8: "no
+/// silent re-resolution").
+pub fn compute_projection(assignment: &OperationalArtifactAssignment) -> ArtifactExecutionProjectionV1 {
+    let wasm: &ArtifactWasmDecisionPolicy = &assignment.wasm_decision;
+    ArtifactExecutionProjectionV1 {
+        projection: ARTIFACT_EXECUTION_PROJECTION_KIND.to_string(),
+        artifact_id: assignment.artifact_id.clone(),
+        // P0-6: the projection's identity is the artifact's OWN canonical
+        // service_id, never the (possibly alias) desired service_id.
+        service_id: assignment.artifact_service_id.clone(),
+        artifact_kind: assignment.artifact_kind.clone(),
+        runtime_kind: assignment.runtime_kind.clone(),
+        container_name: assignment.container_name.clone(),
+        image_identity: ImageIdentityV1 {
+            reference: assignment.image.clone(),
+            declared_digest: None,
+        },
+        command: assignment.command.clone(),
+        network: assignment.network.clone(),
+        network_aliases: assignment.network_aliases.clone(),
+        ports: assignment
+            .ports
+            .iter()
+            .map(|port| PortMappingV1 {
+                container_port: port.container_port,
+                host_port: port.host_port,
+                protocol: port.protocol.clone(),
+            })
+            .collect(),
+        volumes: assignment
+            .volumes
+            .iter()
+            .map(|volume| VolumeMountV1 {
+                name: volume.name.clone(),
+                target: volume.target.clone(),
+                read_only: volume.read_only,
+            })
+            .collect(),
+        configuration_mounts: assignment
+            .configuration_mounts
+            .iter()
+            .map(|mount| ConfigurationMountV1 {
+                source: mount.source.clone(),
+                target: mount.target.clone(),
+                read_only: mount.read_only,
+                declared_content_sha256: mount.declared_content_sha256.clone(),
+            })
+            .collect(),
+        dependencies: assignment.dependencies.clone(),
+        lifecycle: LifecycleV1 {
+            pre_install: convert_commands(&assignment.lifecycle.pre_install),
+            install: convert_commands(&assignment.lifecycle.install),
+            configure: convert_commands(&assignment.lifecycle.configure),
+            start: convert_commands(&assignment.lifecycle.start),
+            stop: convert_commands(&assignment.lifecycle.stop),
+            post_install: convert_commands(&assignment.lifecycle.post_install),
+            rollback: convert_commands(&assignment.lifecycle.rollback),
+        },
+        bindings: assignment.bindings.clone(),
+        secret_refs: assignment.secret_refs.clone(),
+        secret_bindings: assignment
+            .secret_bindings
+            .iter()
+            .map(|binding| SecretBindingV1 {
+                secret_ref: binding.secret_ref.clone(),
+                target_environment_variable: binding.target_environment_variable.clone(),
+                version: binding.version.clone(),
+            })
+            .collect(),
+        wasm_safety: WasmSafetyFlagsV1 {
+            explicit_invocation_required: wasm.explicit_invocation_required,
+            host_imports_allowed: wasm.host_imports_allowed,
+            side_effects_allowed: wasm.side_effects_allowed,
+            safe_to_auto_execute: wasm.safe_to_auto_execute,
+        },
+    }
+}
+
+fn convert_commands(
+    commands: &[crate::agent::operational_reconciliation::OperationalLifecycleCommand],
+) -> Vec<LifecycleCommandV1> {
+    commands
+        .iter()
+        .map(|command| LifecycleCommandV1 {
+            program: command.program.clone(),
+        })
+        .collect()
+}
+
+/// SHA-256 (hex) of the RFC 8785 JCS serialization of `projection`.
+pub fn projection_digest(projection: &ArtifactExecutionProjectionV1) -> Result<String, String> {
+    let value: Value = serde_json::to_value(projection)
+        .map_err(|error| format!("serialize ArtifactExecutionProjectionV1: {error}"))?;
+    jcs::canonical_digest_sha256_hex(&value).map_err(|error| error.to_string())
+}
+
+/// Recompute the digest directly from the delivered assignment (the common
+/// call site: gate checks compare this against `assignment.execution_projection_digest`).
+pub fn recompute_digest(assignment: &OperationalArtifactAssignment) -> Result<String, String> {
+    projection_digest(&compute_projection(assignment))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::operational_reconciliation::{
+        ArtifactWasmDecisionPolicy, OperationalConfigurationMount, OperationalLifecycle,
+        OperationalPortMapping, OperationalSecretBinding, OperationalVolumeMount,
+    };
+
+    fn assignment() -> OperationalArtifactAssignment {
+        OperationalArtifactAssignment {
+            artifact_id: "mqtt".to_string(),
+            service_id: "mqtt".to_string(),
+            artifact_service_id: "mqtt".to_string(),
+            version: "2".to_string(),
+            artifact_kind: "container".to_string(),
+            runtime_kind: "container".to_string(),
+            container_name: "datum-mqtt".to_string(),
+            image: "eclipse-mosquitto:2".to_string(),
+            target_node: "fog-01".to_string(),
+            lifecycle: OperationalLifecycle::default(),
+            network: Some("datum-net".to_string()),
+            network_aliases: vec!["mqtt".to_string()],
+            ports: vec![OperationalPortMapping {
+                container_port: 1883,
+                host_port: Some(1883),
+                protocol: "tcp".to_string(),
+            }],
+            volumes: vec![OperationalVolumeMount {
+                name: "mqtt-data".to_string(),
+                target: "/mosquitto/data".to_string(),
+                read_only: false,
+            }],
+            configuration_mounts: vec![OperationalConfigurationMount {
+                source: "mosquitto/mosquitto.conf".to_string(),
+                target: "/mosquitto/config/mosquitto.conf".to_string(),
+                read_only: true,
+                declared_content_sha256: Some("a".repeat(64)),
+            }],
+            command: vec![],
+            dependencies: vec![],
+            wasm_decision: ArtifactWasmDecisionPolicy {
+                explicit_invocation_required: true,
+                module_id: "reconcile_service".to_string(),
+                function_name: "decide".to_string(),
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            bindings: BTreeMap::new(),
+            secret_refs: vec!["mqtt_token".to_string()],
+            secret_bindings: vec![OperationalSecretBinding {
+                secret_ref: "mqtt_token".to_string(),
+                target_environment_variable: "MQTT_TOKEN".to_string(),
+                version: Some("v1".to_string()),
+            }],
+            execution_generation: 1,
+            execution_projection_digest: String::new(),
+        }
+    }
+
+    #[test]
+    fn projection_excludes_wasm_identity_fields() {
+        let projection = compute_projection(&assignment());
+        let text = serde_json::to_string(&serde_json::to_value(&projection).unwrap()).unwrap();
+        assert!(!text.contains("module_id"));
+        assert!(!text.contains("function_name"));
+    }
+
+    #[test]
+    fn digest_is_deterministic() {
+        let d1 = recompute_digest(&assignment()).unwrap();
+        let d2 = recompute_digest(&assignment()).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn digest_changes_with_command() {
+        let a = assignment();
+        let mut b = assignment();
+        b.command = vec!["-v".to_string()];
+        assert_ne!(recompute_digest(&a).unwrap(), recompute_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn alias_joined_desired_service_id_does_not_affect_digest_only_canonical_does() {
+        // P0-6: a desired-service alias join (service_id = "broker", a
+        // service_aliases match; artifact_service_id = "mqtt", the
+        // artifact's own canonical id) must produce the SAME digest as the
+        // non-aliased case, because the projection identity is sourced from
+        // artifact_service_id, never service_id.
+        let canonical = assignment();
+        let mut aliased = assignment();
+        aliased.service_id = "broker".to_string(); // desired D-Serv alias
+        assert_eq!(aliased.artifact_service_id, canonical.artifact_service_id);
+        assert_eq!(
+            recompute_digest(&canonical).unwrap(),
+            recompute_digest(&aliased).unwrap(),
+            "digest must be invariant to which desired-service alias resolved the join"
+        );
+
+        // Conversely, changing the CANONICAL id must change the digest.
+        let mut different_artifact = assignment();
+        different_artifact.artifact_service_id = "different-canonical-id".to_string();
+        assert_ne!(
+            recompute_digest(&canonical).unwrap(),
+            recompute_digest(&different_artifact).unwrap()
+        );
+    }
+
+    #[test]
+    fn version_change_alone_does_not_affect_digest() {
+        // `version` is not part of OperationalArtifactAssignment's projection
+        // input at all (it is carried separately for evidence), so this is
+        // definitionally true -- asserted here as a guard against a future
+        // change accidentally wiring it in.
+        let a = assignment();
+        let mut b = assignment();
+        b.version = "99".to_string();
+        assert_eq!(recompute_digest(&a).unwrap(), recompute_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn lifecycle_args_working_dir_and_environment_are_projection_no_ops() {
+        // P1-6: execute_lifecycle_phase dispatches solely on `program`; it
+        // never reads args/working_dir/environment, so changing only those
+        // fields must not change the digest (and therefore must not
+        // increment execution_generation upstream, since the registry
+        // increments exactly when the projection digest changes).
+        use crate::agent::operational_reconciliation::OperationalLifecycleCommand;
+        let a = assignment();
+        let mut b = assignment();
+        b.lifecycle.install.push(OperationalLifecycleCommand {
+            program: "verify_docker".to_string(),
+            args: vec!["--ignored".to_string()],
+            working_dir: Some("/ignored".to_string()),
+            environment: [("IGNORED".to_string(), "value".to_string())].into_iter().collect(),
+        });
+        let mut c = assignment();
+        c.lifecycle.install.push(OperationalLifecycleCommand {
+            program: "verify_docker".to_string(),
+            ..Default::default()
+        });
+        // b and c differ only in args/working_dir/environment (both add the
+        // same `program`) -- their digests must be identical.
+        assert_eq!(recompute_digest(&b).unwrap(), recompute_digest(&c).unwrap());
+        // Adding the command AT ALL (a new `program` entry) is still
+        // execution-relevant and must change the digest relative to `a`.
+        assert_ne!(recompute_digest(&a).unwrap(), recompute_digest(&c).unwrap());
+    }
+
+    /// Field-shape parity with `dserver::core::execution_projection::ArtifactExecutionProjectionV1`.
+    /// Both sides are hand-written, separate types (no shared crate); this
+    /// test enumerates the exact JSON key set this side produces so a
+    /// reviewer can diff it directly against the DServer struct's `#[derive(Serialize)]`
+    /// output rather than trusting the two files stayed in sync by eye.
+    #[test]
+    fn dserver_shape_field_names() {
+        let projection = compute_projection(&assignment());
+        let value = serde_json::to_value(&projection).unwrap();
+        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "artifact_id",
+                "artifact_kind",
+                "bindings",
+                "command",
+                "configuration_mounts",
+                "container_name",
+                "dependencies",
+                "image_identity",
+                "lifecycle",
+                "network",
+                "network_aliases",
+                "ports",
+                "projection",
+                "runtime_kind",
+                "secret_bindings",
+                "secret_refs",
+                "service_id",
+                "volumes",
+                "wasm_safety",
+            ]
+        );
+    }
+
+    /// Review finding P1-5 (v4 review): executes the REAL `compute_projection`
+    /// against an `OperationalArtifactAssignment` from a fixture ALSO
+    /// consumed by dserver's own test
+    /// (`dserver::core::execution_projection::tests::cross_crate_fixture_produces_the_expected_projection_and_digest`)
+    /// against its OWN real mapper over the authoritative `ServiceArtifact`
+    /// for the SAME logical artifact. The fixture's assignment carries the
+    /// alias case: `service_id` ("broker-alias") differs from
+    /// `artifact_service_id` ("mqtt-broker") -- proving this side's digest
+    /// still matches dserver's despite being computed FROM the aliased wire
+    /// shape, because both real mappers key off the canonical id (P0-6).
+    /// This is a real behavioural equivalence proof by execution, not a
+    /// key-name-set comparison like `dserver_shape_field_names` above.
+    #[test]
+    fn dserver_cross_crate_fixture_produces_the_expected_projection_and_digest() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("fixtures")
+            .join("datum-contracts")
+            .join("vs1")
+            .join("execution-projection.cross-crate-mapper.mqtt-broker.json");
+        let text = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+
+        let assignment: OperationalArtifactAssignment =
+            serde_json::from_value(fixture["agent_operational_artifact_assignment"].clone())
+                .expect("fixture agent_operational_artifact_assignment must deserialize as OperationalArtifactAssignment");
+        assert_ne!(
+            assignment.service_id, assignment.artifact_service_id,
+            "fixture must actually exercise the alias case (P0-6)"
+        );
+
+        let projection = compute_projection(&assignment);
+
+        let expected_projection: ArtifactExecutionProjectionV1 =
+            serde_json::from_value(fixture["expected_projection"].clone())
+                .expect("fixture expected_projection must deserialize as this crate's ArtifactExecutionProjectionV1");
+        assert_eq!(projection, expected_projection, "real compute_projection output must equal the fixture's expected_projection");
+
+        let serialized = serde_json::to_value(&projection).unwrap();
+        assert_eq!(serialized, fixture["expected_projection"], "serialized optional nulls must agree");
+        assert_eq!(jcs::canonicalize(&serialized).unwrap(), fixture["expected_canonical_json"].as_str().unwrap());
+        let expected_digest = fixture["expected_projection_digest_sha256"].as_str().unwrap();
+        assert_eq!(projection_digest(&projection).unwrap(), expected_digest);
+        assert_eq!(recompute_digest(&assignment).unwrap(), expected_digest);
+
+        // The artifact's OWN canonical service_id, never the alias -- P0-6.
+        assert_eq!(projection.service_id, "mqtt-broker");
+    }
+    #[test]
+    fn absent_optionals_are_explicit_null_and_digest_is_canonical() {
+        let mut a = assignment();
+        a.network = None;
+        a.ports[0].host_port = None;
+        a.configuration_mounts[0].declared_content_sha256 = None;
+        a.secret_bindings[0].version = None;
+        let value = serde_json::to_value(compute_projection(&a)).unwrap();
+        for pointer in ["/network", "/image_identity/declared_digest", "/ports/0/host_port",
+                        "/configuration_mounts/0/declared_content_sha256", "/secret_bindings/0/version"] {
+            assert_eq!(value.pointer(pointer), Some(&Value::Null), "{pointer}");
+        }
+        let digest = recompute_digest(&a).unwrap();
+        assert!(jcs::is_canonical_digest_format(&digest));
+        assert!(!jcs::is_canonical_digest_format(&digest[7..]));
+    }
+
+}

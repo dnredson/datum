@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::service_artifact_registry::{
+    EXECUTION_PINNING_MODE_LEGACY_PARTIAL, EXECUTION_PINNING_MODE_REQUIRED,
+};
+
 pub const OPERATIONAL_DGRAPH_SCHEMA_VERSION: &str = "0.1.0";
 pub const OPERATIONAL_DGRAPH_BOOTSTRAP_MODE_EMPTY: &str = "empty";
 pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1";
@@ -68,15 +72,37 @@ pub struct OperationalReconciliationAuthorizationRequest {
     pub valid_for_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// `Eq` (not just `PartialEq`) was dropped: `snapshot` holds
+// `ArtifactReconciliationAssignment`, which is not (and need not be) `Eq`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OperationalReconciliationAuthorization {
     pub authorization_id: String,
     pub project_id: String,
     pub dgraph_id: String,
     pub dgraph_revision: u64,
     pub node_id: String,
+    /// The active Resource Registry binding at issuance. DServer verifies
+    /// this against the CURRENTLY active binding when SERVING a context
+    /// (`get_operational_reconciliation_context`). The agent deserializes
+    /// this field but does not independently re-verify it (review finding
+    /// P1-6, v4) -- it instead verifies `resource_id` below, locally. See
+    /// `resource_id`'s doc comment and
+    /// `DATUM::agent::stage107a_enforcement::check_resource_identity` for
+    /// the precise boundary and the bounded `binding_id`-staleness
+    /// consequence this leaves for an already-delivered lease.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<String>,
+    /// The `ResourceRoleBindingRecord.resource_id` active for `node_id` at
+    /// issuance (review finding P1-1). Previously this authorization bound
+    /// `binding_id` but not `resource_id`, and the agent's own copy of this
+    /// type did not even deserialize `binding_id`, so neither side could
+    /// independently verify the resource identity the authorization was
+    /// meant for -- the contract silently relied on DServer having already
+    /// filtered by binding when the context was served. The agent now
+    /// verifies this against its own bootstrap-resolved `resource_id`
+    /// before any mutation (`BLOCKED_WRONG_RESOURCE_IDENTITY`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
     pub authorized_by: String,
     pub authorized_at_utc: String,
     pub allow_host_mutation: bool,
@@ -86,6 +112,132 @@ pub struct OperationalReconciliationAuthorization {
     pub persistence_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_utc: Option<String>,
+    /// Per-desired-service artifact binding (Stage 107A, ADR-0011 §2 / D-7a):
+    /// the exact `{artifact_id, execution_generation,
+    /// execution_projection_digest}` this authorization's immutable snapshot
+    /// grants. Empty for an authorization issued before Stage 107A (or before
+    /// artifacts could be resolved) -- such an authorization is never valid
+    /// for a governed host mutation (`artifact_bindings_cover` returns
+    /// false), only for non-mutating uses.
+    #[serde(default)]
+    pub artifact_bindings: Vec<ArtifactBindingV1>,
+    /// `execution_pinning_mode` bound at issuance (Stage 107A, N-2). Empty
+    /// only for a pre-Stage-107A authorization.
+    #[serde(default)]
+    pub execution_pinning_mode: String,
+    /// THE IMMUTABLE SNAPSHOT (review finding P0-1). The exact resolved
+    /// artifact assignments for every desired service on this node, AS THEY
+    /// EXISTED at the instant this authorization was issued. This is what
+    /// makes Option A's "one exact immutable execution snapshot" claim
+    /// (ADR-0012) actually true: while this authorization is attached and
+    /// valid, the reconciliation context MUST be built from THIS field, not
+    /// by re-resolving the (possibly since-mutated) current artifact
+    /// registry. A later content-changing PUT to any of these artifacts
+    /// changes their `execution_generation` / registry content, but does not
+    /// retroactively alter this already-issued snapshot -- it only makes a
+    /// *new* context fetch or *new* authorization see the new content.
+    /// Empty for a pre-Stage-107A authorization (never sufficient to serve a
+    /// snapshot-backed context; callers fall back to current-registry
+    /// resolution, matching the pre-Stage-107A/"proposal preview" behaviour).
+    #[serde(default)]
+    pub snapshot: Vec<crate::core::artifact_reconciliation_context::ArtifactReconciliationAssignment>,
+}
+
+/// One service's exact `{artifact_id, execution_generation,
+/// execution_projection_digest}` binding within an
+/// `OperationalReconciliationAuthorization`'s immutable snapshot (Stage 107A,
+/// ADR-0011 §2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactBindingV1 {
+    pub service_id: String,
+    pub artifact_id: String,
+    pub execution_generation: u64,
+    pub execution_projection_digest: String,
+}
+
+/// DC-4 (ADR-0011 §3, review finding P0-2 [v4]): `required` mode refuses a
+/// **durable** authorization unless the artifact registry and the durable
+/// operational-authorization state are backed by the exact same control-state
+/// SQLite database file. A `process`-scope authorization never touches
+/// durable storage, so this check does not apply to it (always eligible).
+/// `legacy_partial` is unaffected by this function -- callers only invoke it
+/// for `required`.
+///
+/// PREVIOUS BUG (v3 review, fixed here): this used to be a hardcoded `false`
+/// for every durable authorization, justified by a comment claiming the
+/// operational-authorization domain is "ALWAYS a separate JSON file". That
+/// claim was wrong: `dserver/src/core/operational_dgraph_persistence.rs`
+/// (`load_operational_dgraph_persisted_state` /
+/// `persist_operational_dgraph_state`, via `load_domain_json` /
+/// `persist_domain_json(..., DOMAIN_OPERATIONAL_DGRAPH, ...)`) uses
+/// `configured_control_state_db_path()` -- the SAME env-var-resolved path
+/// `ServiceArtifactRegistry::load`'s `default_control_state_db_path()` uses
+/// -- whenever `DATUM_CONTROL_STATE_DB_PATH` is set, and only falls back to
+/// the legacy JSON file when it is not. A deployment with that variable set
+/// therefore DOES share one control-state SQLite database across both
+/// domains today, and a hardcoded `false` refused it incorrectly.
+///
+/// This function is now a pure comparison of the two domains' ACTUALLY
+/// RESOLVED backend identities, so it reflects reality regardless of how
+/// either domain is configured: eligible only when both paths are known
+/// (`Some`) and identical. Two `None`s (both JSON-backed, or an in-memory
+/// test registry) and two different `Some` paths are both ineligible, along
+/// with a `Some`/`None` mix (SQLite one side, JSON the other).
+pub fn required_mode_persistence_eligible(
+    persistence_scope: &str,
+    artifact_registry_backend_path: Option<&std::path::Path>,
+    operational_authorization_backend_path: Option<&std::path::Path>,
+) -> bool {
+    if persistence_scope != AUTHORIZATION_SCOPE_DURABLE {
+        return true;
+    }
+    matches!(
+        (artifact_registry_backend_path, operational_authorization_backend_path),
+        (Some(a), Some(b)) if a == b
+    )
+}
+
+pub const BLOCKED_REQUIRED_PERSISTENCE: &str = "blocked_required_persistence";
+
+/// Governed host mutation (M1-M8, ADR-0012 point 9) requires a **finite**
+/// lease (ADR-0012, design-review correction 1 / "point 3"): a process-scope
+/// authorization (`expires_at_utc = None`) can never satisfy the Option-A
+/// bounded-lease guarantee, because an executing agent has no way to observe
+/// that its originating DServer process has ended. This is deliberately
+/// distinct from `authorization_is_valid_for_context`, which still accepts a
+/// live process-scope authorization for non-mutating purposes.
+pub fn authorization_has_finite_lease(authorization: &OperationalReconciliationAuthorization) -> bool {
+    authorization.expires_at_utc.is_some()
+}
+
+/// Does `authorization.artifact_bindings` bind every `(service_id,
+/// artifact_id, execution_generation, execution_projection_digest)` in
+/// `assignments`, with no extra or missing bindings? Stage 107A generation /
+/// projection-digest gate (ADR-0011 §2), evaluated identically by DServer
+/// (for authorize-time / context-time defense in depth) and the agent (at
+/// each governed mutation boundary, against its own recomputed digest).
+pub fn artifact_bindings_match<'a>(
+    authorization: &OperationalReconciliationAuthorization,
+    expected: impl Iterator<Item = (&'a str, &'a str, u64, &'a str)>,
+) -> bool {
+    let mut remaining: std::collections::BTreeMap<&str, &ArtifactBindingV1> = authorization
+        .artifact_bindings
+        .iter()
+        .map(|binding| (binding.service_id.as_str(), binding))
+        .collect();
+    let mut count = 0usize;
+    for (service_id, artifact_id, generation, digest) in expected {
+        count += 1;
+        match remaining.remove(service_id) {
+            Some(binding)
+                if crate::core::jcs::is_canonical_digest_format(digest)
+                    && binding.artifact_id == artifact_id
+                    && binding.execution_generation == generation
+                    && binding.execution_projection_digest == digest => {}
+            _ => return false,
+        }
+    }
+    remaining.is_empty() && count == authorization.artifact_bindings.len()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,13 +353,33 @@ pub fn build_operational_slice(
     })
 }
 
+/// Builds and binds the Stage 107A immutable execution snapshot (ADR-0011 §2,
+/// ADR-0012 Option A). `artifact_bindings` and `execution_pinning_mode` are
+/// resolved by the caller (`authorize_operational_reconciliation`, which has
+/// access to the artifact registry) from the current desired-service/artifact
+/// join for `node_id`, using the same resolution rules as
+/// `build_artifact_reconciliation_context`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_reconciliation_authorization(
     graph: &OperationalDGraph,
     node_id: &str,
     binding_id: &str,
+    resource_id: &str,
     request: &OperationalReconciliationAuthorizationRequest,
     now: DateTime<Utc>,
+    artifact_bindings: Vec<ArtifactBindingV1>,
+    execution_pinning_mode: &str,
+    snapshot: Vec<crate::core::artifact_reconciliation_context::ArtifactReconciliationAssignment>,
 ) -> Result<OperationalReconciliationAuthorization, String> {
+    if !matches!(
+        execution_pinning_mode,
+        EXECUTION_PINNING_MODE_LEGACY_PARTIAL | EXECUTION_PINNING_MODE_REQUIRED
+    ) {
+        return Err(format!(
+            "unsupported execution_pinning_mode '{}'; expected '{}' or '{}'",
+            execution_pinning_mode, EXECUTION_PINNING_MODE_LEGACY_PARTIAL, EXECUTION_PINNING_MODE_REQUIRED
+        ));
+    }
     validate_operational_dgraph(graph)?;
     let node_id = node_id.trim();
     let binding_id = binding_id.trim();
@@ -291,12 +463,16 @@ pub fn build_reconciliation_authorization(
         dgraph_revision: graph.revision,
         node_id: node_id.to_string(),
         binding_id: Some(binding_id.to_string()),
+        resource_id: Some(resource_id.to_string()),
         authorized_by: request.authorized_by.trim().to_string(),
         authorized_at_utc: now.to_rfc3339(),
         allow_host_mutation: true,
         operation: operation.to_string(),
         persistence_scope: persistence_scope.to_string(),
         expires_at_utc,
+        artifact_bindings,
+        execution_pinning_mode: execution_pinning_mode.to_string(),
+        snapshot,
     })
 }
 
@@ -439,8 +615,12 @@ mod tests {
             &graph,
             "fog-01",
             "binding:test",
+            "resource:test",
             &request,
             now,
+            Vec::new(),
+            EXECUTION_PINNING_MODE_REQUIRED,
+            Vec::new(),
         )
         .unwrap();
         assert!(authorization_is_valid_for_context(
@@ -476,8 +656,12 @@ mod tests {
             &graph,
             "fog-01",
             "binding:test",
+            "resource:test",
             &request,
             now,
+            Vec::new(),
+            EXECUTION_PINNING_MODE_REQUIRED,
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(auth.persistence_scope, AUTHORIZATION_SCOPE_DURABLE);
@@ -521,4 +705,156 @@ mod tests {
         assert!(validate_operational_dgraph(&invalid).is_err());
     }
 
+    // ---- Stage 107A: finite lease + artifact bindings --------------------- //
+
+    fn binding(service_id: &str, artifact_id: &str, generation: u64, digest: &str) -> ArtifactBindingV1 {
+        ArtifactBindingV1 {
+            service_id: service_id.to_string(),
+            artifact_id: artifact_id.to_string(),
+            execution_generation: generation,
+            execution_projection_digest: digest.to_string(),
+        }
+    }
+
+    fn base_auth() -> OperationalReconciliationAuthorization {
+        OperationalReconciliationAuthorization {
+            authorization_id: "opauth:test".to_string(),
+            project_id: "p".to_string(),
+            dgraph_id: "d".to_string(),
+            dgraph_revision: 1,
+            node_id: "n".to_string(),
+            binding_id: None,
+            resource_id: None,
+            authorized_by: "operator".to_string(),
+            authorized_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            allow_host_mutation: true,
+            operation: "reconcile".to_string(),
+            persistence_scope: AUTHORIZATION_SCOPE_PROCESS.to_string(),
+            expires_at_utc: None,
+            artifact_bindings: vec![binding("mqtt", "mqtt", 3, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+            execution_pinning_mode: "required".to_string(),
+            snapshot: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn process_scope_authorization_never_has_a_finite_lease() {
+        assert!(!authorization_has_finite_lease(&base_auth()));
+    }
+
+    #[test]
+    fn durable_authorization_with_expiry_has_a_finite_lease() {
+        let mut auth = base_auth();
+        auth.persistence_scope = AUTHORIZATION_SCOPE_DURABLE.to_string();
+        auth.expires_at_utc = Some("2026-01-01T01:00:00Z".to_string());
+        assert!(authorization_has_finite_lease(&auth));
+    }
+
+    #[test]
+    fn artifact_bindings_match_exact_set() {
+        let auth = base_auth();
+        assert!(artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 3u64, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")].into_iter()
+        ));
+    }
+
+    #[test]
+    fn artifact_bindings_reject_generation_mismatch() {
+        let auth = base_auth();
+        assert!(!artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 4u64, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")].into_iter()
+        ));
+    }
+
+    #[test]
+    fn artifact_bindings_reject_digest_mismatch() {
+        let auth = base_auth();
+        assert!(!artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 3u64, "different")].into_iter()
+        ));
+    }
+
+    #[test]
+    fn artifact_bindings_reject_missing_service() {
+        let auth = base_auth();
+        assert!(!artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 3u64, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), ("api", "api", 1u64, "x")].into_iter()
+        ));
+    }
+
+    #[test]
+    fn artifact_bindings_reject_extra_binding_not_expected() {
+        let mut auth = base_auth();
+        auth.artifact_bindings.push(binding("api", "api", 1, "x"));
+        assert!(!artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 3u64, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")].into_iter()
+        ));
+    }
+
+    #[test]
+    fn empty_artifact_bindings_never_match_any_expectation() {
+        let mut auth = base_auth();
+        auth.artifact_bindings.clear();
+        assert!(!artifact_bindings_match(
+            &auth,
+            [("mqtt", "mqtt", 3u64, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")].into_iter()
+        ));
+    }
+
+    // ---- P0-2 (v4 review): required-mode split-persistence refusal --------
+    // -- (DC-4), now a pure comparison of resolved backend paths ---------- //
+    #[test]
+    fn required_mode_refuses_durable_authorization_when_backends_are_both_json() {
+        // Two `None`s: both domains fell back to their legacy JSON file.
+        assert!(!required_mode_persistence_eligible(
+            AUTHORIZATION_SCOPE_DURABLE,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn required_mode_refuses_durable_authorization_when_backends_differ() {
+        let registry_path = std::path::PathBuf::from("/data/control-state-a.sqlite");
+        let operational_path = std::path::PathBuf::from("/data/control-state-b.sqlite");
+        assert!(!required_mode_persistence_eligible(
+            AUTHORIZATION_SCOPE_DURABLE,
+            Some(&registry_path),
+            Some(&operational_path),
+        ));
+    }
+
+    #[test]
+    fn required_mode_refuses_durable_authorization_when_only_one_side_is_sqlite() {
+        let registry_path = std::path::PathBuf::from("/data/control-state.sqlite");
+        assert!(!required_mode_persistence_eligible(
+            AUTHORIZATION_SCOPE_DURABLE,
+            Some(&registry_path),
+            None,
+        ));
+    }
+
+    #[test]
+    fn required_mode_accepts_durable_authorization_when_backends_are_the_same_sqlite_file() {
+        let shared_path = std::path::PathBuf::from("/data/control-state.sqlite");
+        assert!(required_mode_persistence_eligible(
+            AUTHORIZATION_SCOPE_DURABLE,
+            Some(&shared_path),
+            Some(&shared_path),
+        ));
+    }
+
+    #[test]
+    fn required_mode_check_does_not_apply_to_process_scope() {
+        assert!(required_mode_persistence_eligible(
+            AUTHORIZATION_SCOPE_PROCESS,
+            None,
+            None,
+        ));
+    }
 }

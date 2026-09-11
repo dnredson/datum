@@ -337,12 +337,16 @@ mod tests {
             dgraph_revision: 3,
             node_id: "fog-01".to_string(),
             binding_id: Some("binding:test".to_string()),
+            resource_id: Some("resource:test".to_string()),
             authorized_by: "operator:test".to_string(),
             authorized_at_utc: now.to_rfc3339(),
             allow_host_mutation: true,
             operation: "reconcile".to_string(),
             persistence_scope: AUTHORIZATION_SCOPE_DURABLE.to_string(),
             expires_at_utc: Some((now + Duration::minutes(10)).to_rfc3339()),
+            artifact_bindings: Vec::new(),
+            execution_pinning_mode: "required".to_string(),
+            snapshot: Vec::new(),
         }
     }
 

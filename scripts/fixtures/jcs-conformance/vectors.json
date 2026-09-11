@@ -1,0 +1,29 @@
+{
+  "_purpose": "Stage 107A (Section E). Shared RFC-8785-scoped JCS canonicalization + SHA-256 test vectors, consumed identically by dserver/src/core/jcs.rs and DATUM/src/agent/jcs.rs to prove cross-crate digest stability, per the design-review requirement that DServer and SmartSentinel independently reconstruct and recompute the same digest. Each `sha256` value was computed independently of both Rust implementations via the system `sha256sum` over the exact `canonical` byte string, so this file is not circular verification against either crate.",
+  "vectors": [
+    {
+      "name": "simple_sorted",
+      "value": {"a": 1, "b": 2},
+      "canonical": "{\"a\":1,\"b\":2}",
+      "sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "name": "simple_unsorted_input_same_digest",
+      "value": {"b": 2, "a": 1},
+      "canonical": "{\"a\":1,\"b\":2}",
+      "sha256": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    },
+    {
+      "name": "nested_unicode_array",
+      "value": {"z": [1, 2, 3], "name": "café"},
+      "canonical": "{\"name\":\"café\",\"z\":[1,2,3]}",
+      "sha256": "360a217a5db4c05d539796d00eee9a0a5ed2ffbcb634f77e04c954e05dd89787"
+    },
+    {
+      "name": "max_safe_integer",
+      "value": {"n": 9007199254740991},
+      "canonical": "{\"n\":9007199254740991}",
+      "sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41"
+    }
+  ]
+}

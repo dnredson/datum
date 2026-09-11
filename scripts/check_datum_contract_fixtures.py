@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -35,6 +36,26 @@ ADR_DIR = DOC_DIR / "adr"
 
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+MAPPER_FIXTURE = "execution-projection.cross-crate-mapper.mqtt-broker.json"
+
+
+def mapper_fixture_digest_valid(obj: dict) -> bool:
+    """Check the actual-mapper fixture's recorded JCS bytes and digest carriers.
+
+    Both Rust mapper tests independently assert these exact bytes. This check
+    does not replace JCS implementation conformance tests.
+    """
+    try:
+        canonical = obj["expected_canonical_json"]
+        digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return (
+            json.loads(canonical) == obj["expected_projection"]
+            and obj["expected_projection_digest_sha256"] == digest
+            and obj["agent_operational_artifact_assignment"]["execution_projection_digest"] == digest
+            and obj["dserver_service_artifact"]["control_plane"]["execution_projection_digest"] == digest
+        )
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
 
 CANONICAL_TERMS = [
     "D-Application", "D-Script", "D-Function", "D-Compile", "D-Graph", "D-Serv",
@@ -495,7 +516,7 @@ def v_projection(obj: dict) -> list[dict]:
         e.append(F("projection_kind_invalid",
                    "projection must be datum.artifact-execution-projection/1"))
     for sb in obj.get("secret_bindings") or []:
-        extra = set(sb) - {"secret_ref", "target_environment_variable"}
+        extra = set(sb) - {"secret_ref", "target_environment_variable", "version"}
         if extra:
             e.append(F("secret_binding_extra_keys",
                        f"secret_bindings entry has unexpected keys {sorted(extra)} "
@@ -536,9 +557,15 @@ def check_fixtures(rep: Report) -> None:
 
     # placeholder-digest guard (positives only)
     for path, obj in loaded.items():
+        mapper_digest = None
+        if path.name == MAPPER_FIXTURE:
+            if mapper_fixture_digest_valid(obj):
+                mapper_digest = obj["expected_projection_digest_sha256"]
+            else:
+                rep.fail(path.name, "Stage 107A mapper fixture canonical bytes/digest carriers disagree")
         for node in walk(obj):
             for v in node.values():
-                if isinstance(v, str) and SHA256_RE.match(v) and v != PLACEHOLDER_DIGEST:
+                if isinstance(v, str) and SHA256_RE.match(v) and v not in (PLACEHOLDER_DIGEST, mapper_digest):
                     rep.fail(path.name, f"unexpected real-looking digest '{v}' in a Stage 107 fixture")
 
     unreachable = KNOWN_REJECT_CODES - EMITTABLE_CODES

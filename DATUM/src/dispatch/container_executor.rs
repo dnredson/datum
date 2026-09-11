@@ -358,6 +358,8 @@ mod tests {
                 configuration_root: None,
                 secret_bindings: Vec::new(),
                 container_mappings: Vec::new(),
+                authorization_clock_skew_seconds: None,
+                minimum_execution_pinning_mode: None,
             }),
             assisted_execution: None,
             collectors: None,

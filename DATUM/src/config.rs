@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -133,7 +133,7 @@ impl Default for AssistedExecutionConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct DispatchConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -154,15 +154,28 @@ pub struct DispatchConfig {
     pub container_mappings: Vec<DispatchContainerMapping>,
     #[serde(default)]
     pub secret_bindings: Vec<DispatchSecretBinding>,
+    /// Stage 107A (ADR-0012 design-review finding 2). The deployment
+    /// operator's attested maximum absolute clock difference between this
+    /// agent and DServer. `required`-effective mode refuses to gate any host
+    /// mutation unless this is explicitly set -- there is no implicit zero,
+    /// because an unconfigured skew is indistinguishable from assuming
+    /// perfect clock synchronization.
+    #[serde(default)]
+    pub authorization_clock_skew_seconds: Option<u64>,
+    /// Stage 107A (N-2). The agent's own floor for `execution_pinning_mode`.
+    /// May only make enforcement stricter than the project/authorization,
+    /// never weaker. Defaults to `"required"` when unset.
+    #[serde(default)]
+    pub minimum_execution_pinning_mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct DispatchSecretBinding {
     pub secret_ref: String,
     pub environment_variable: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct DispatchContainerMapping {
     pub module_id: Option<String>,
     pub service_name: Option<String>,
@@ -172,7 +185,7 @@ pub struct DispatchContainerMapping {
     pub ports: Vec<DispatchContainerPortMapping>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct DispatchContainerPortMapping {
     pub host_port: u16,
     pub container_port: u16,

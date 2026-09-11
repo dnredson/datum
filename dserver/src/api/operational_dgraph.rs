@@ -6,7 +6,7 @@ use std::{
 };
 
 use axum::{
-    extract::{Json, Path},
+    extract::{Json, Path, State},
     http::{HeaderMap, StatusCode},
     Json as JsonResponse,
 };
@@ -17,13 +17,19 @@ use serde_json::{json, Value};
 use crate::{
     api::resource_registry::active_resource_binding_for_node,
     core::{
+        artifact_reconciliation_context::{
+            build_artifact_reconciliation_context, required_completeness_gaps,
+        },
         operational_dgraph::{
             authorization_is_valid_for_context, build_operational_slice,
-            build_reconciliation_authorization, validate_operational_dgraph, OperationalDGraph,
+            build_reconciliation_authorization, required_mode_persistence_eligible,
+            validate_operational_dgraph, ArtifactBindingV1, OperationalDGraph,
             OperationalDGraphSlice, OperationalReconciliationAuthorization,
             OperationalReconciliationAuthorizationRequest, AUTHORIZATION_OPERATION_RECONCILE,
             AUTHORIZATION_OPERATION_ROLLBACK, AUTHORIZATION_SCOPE_DURABLE,
+            AUTHORIZATION_SCOPE_PROCESS, BLOCKED_REQUIRED_PERSISTENCE,
         },
+        service_artifact_registry::{pinning_mode_from_state, EXECUTION_PINNING_MODE_REQUIRED},
         operational_dgraph_persistence::{
             authorization_key, persist_operational_dgraph_state, OperationalDGraphPersistedState,
             OPERATIONAL_DGRAPH_PERSISTENCE_VERSION,
@@ -32,6 +38,7 @@ use crate::{
             load_configured_operational_dgraph_state, OperationalDGraphRecoveryPolicy,
         },
     },
+    AppState,
 };
 
 type ApiError = (StatusCode, JsonResponse<Value>);
@@ -339,6 +346,7 @@ pub fn operational_dgraph_slice_snapshot(
 }
 
 pub async fn post_operational_reconciliation_authorization(
+    State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<OperationalReconciliationAuthorizationRequest>,
@@ -349,10 +357,11 @@ pub async fn post_operational_reconciliation_authorization(
             AUTHORIZATION_OPERATION_RECONCILE
         )));
     }
-    authorize_operational_reconciliation(node_id, headers, request).await
+    authorize_operational_reconciliation(state, node_id, headers, request).await
 }
 
 pub async fn post_operational_reconciliation_rollback_authorization(
+    State(state): State<AppState>,
     Path(node_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<OperationalReconciliationAuthorizationRequest>,
@@ -363,10 +372,11 @@ pub async fn post_operational_reconciliation_rollback_authorization(
             AUTHORIZATION_OPERATION_ROLLBACK
         )));
     }
-    authorize_operational_reconciliation(node_id, headers, request).await
+    authorize_operational_reconciliation(state, node_id, headers, request).await
 }
 
 async fn authorize_operational_reconciliation(
+    state: AppState,
     node_id: String,
     headers: HeaderMap,
     request: OperationalReconciliationAuthorizationRequest,
@@ -374,6 +384,30 @@ async fn authorize_operational_reconciliation(
     ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
     let project_id = extract_project_id(&headers)?;
     let node_id = node_id.trim();
+
+    // P1-4 (v4 review): this endpoint issues authorizations for `reconcile`
+    // and `rollback` -- both mean "gate a real host mutation". A
+    // `process`-scope authorization NEVER has a finite lease
+    // (`build_reconciliation_authorization` rejects `valid_for_seconds` for
+    // `process`, so `expires_at_utc` is always `None`), and
+    // `authorization_has_finite_lease` / `LeaseGuard::from_authorization`
+    // refuse any mutation attempt against a non-finite lease
+    // (`blocked_authorization_not_leased`). Issuing one from this endpoint
+    // therefore only produces an authorization that is unusable for its own
+    // stated purpose and fails opaquely later, at mutation time, instead of
+    // clearly, at issuance time. Refuse it outright here.
+    let requested_persistence_scope_for_shape_check = request
+        .persistence_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(AUTHORIZATION_SCOPE_PROCESS);
+    if !reconciliation_authorization_scope_is_acceptable(requested_persistence_scope_for_shape_check) {
+        return Err(bad_request(format!(
+            "operational reconciliation/rollback authorization requires persistence_scope='{AUTHORIZATION_SCOPE_DURABLE}' with a valid_for_seconds lease; '{requested_persistence_scope_for_shape_check}' can never satisfy a governed host mutation's finite-lease requirement (it would only be discovered later, as blocked_authorization_not_leased, at mutation time)"
+        )));
+    }
+
     let binding = active_resource_binding_for_node(&project_id, node_id)
         .map_err(internal_error)?.ok_or_else(|| conflict(format!("cannot authorize operational reconciliation for node '{}': no active Resource Registry binding exists", node_id)))?;
     // Hold the transaction from the graph read through authorization commit.
@@ -381,22 +415,153 @@ async fn authorize_operational_reconciliation(
     let _transaction = state_transaction().lock().map_err(lock_error)?;
     let graph = graph_store().read().map_err(lock_error)?.get(&project_id).cloned()
         .ok_or_else(|| missing_graph(&project_id))?;
-    let authorization = build_reconciliation_authorization(&graph, node_id, &binding.binding_id, &request, Utc::now())
-        .map_err(bad_request)?;
-    let key = authorization_key(&project_id, node_id);
-    let existing_durable = authorization_store().read().map_err(lock_error)?.get(&key)
-        .is_some_and(|current| current.persistence_scope == AUTHORIZATION_SCOPE_DURABLE);
-    if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE || existing_durable {
-        let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
-        if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
-            candidate.authorizations.insert(key.clone(), authorization.clone());
-        } else {
-            candidate.authorizations.remove(&key);
-        }
-        persist_candidate(&candidate).map_err(internal_error)?;
-    }
-    authorization_store().write().map_err(lock_error)?.insert(key, authorization.clone());
+
+    let slice_for_binding = build_operational_slice(&graph, node_id, None).map_err(bad_request)?;
+    let requested_persistence_scope = request
+        .persistence_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(AUTHORIZATION_SCOPE_PROCESS)
+        .to_string();
+    // P0-2 (v4 review, DC-4): the operational-authorization domain's actual
+    // resolved backend path, read once here (this lock is independent of the
+    // registry lock taken below -- no ordering interaction).
+    let operational_authorization_backend_path =
+        persistence_db_path_store().read().map_err(lock_error)?.clone();
+
+    // P0-1 (v4 review): resolve, gap-check, persistence-eligibility-check,
+    // snapshot, build, AND commit the authorization all under the SAME held
+    // registry read lock (`with_stable_view`). `state_transaction()` (`_transaction`,
+    // held above) only serializes this handler against other operational-graph
+    // writers -- it does NOT block a concurrent
+    // `ServiceArtifactRegistry::create`/`update`/`delete`/`set_pinning_mode`,
+    // none of which touch `state_transaction()`. Without holding the registry
+    // lock across the whole sequence, a PUT could commit strictly between the
+    // artifact snapshot resolved here and the authorization commit below,
+    // binding a snapshot that was already stale the instant it was issued.
+    // Under `RwLock` semantics, `ServiceArtifactRegistry::mutate` (used by
+    // every registry write) cannot acquire its write lock while this closure
+    // still holds the read lock, so the resolved artifacts are provably the
+    // same artifacts still current when the authorization below is committed.
+    let authorization = state
+        .service_artifacts
+        .with_stable_view(|registry_state| -> Result<OperationalReconciliationAuthorization, ApiError> {
+            // Stage 107A (ADR-0011 §2, D-7a): resolve the exact artifact
+            // content this authorization will bind, using the SAME join
+            // rules `get_operational_reconciliation_context` uses, so the
+            // snapshot bound here is exactly what the agent will later be
+            // served. A join failure (no matching artifact, multiple
+            // matches, missing container runtime, or an unsafe/incomplete
+            // assignment) refuses authorization outright -- content that
+            // cannot be resolved cannot be bound.
+            let artifacts = registry_state
+                .artifacts_by_project
+                .get(&project_id)
+                .cloned()
+                .unwrap_or_default();
+            let resolved_context = build_artifact_reconciliation_context(&slice_for_binding, &artifacts)
+                .map_err(|error| bad_request(format!(
+                    "cannot authorize: artifact join failed for node '{node_id}': {error}"
+                )))?;
+            let artifact_bindings: Vec<ArtifactBindingV1> = resolved_context
+                .artifacts
+                .iter()
+                .map(|assignment| ArtifactBindingV1 {
+                    service_id: assignment.service_id.clone(),
+                    artifact_id: assignment.artifact_id.clone(),
+                    execution_generation: assignment.execution_generation,
+                    execution_projection_digest: assignment.execution_projection_digest.clone(),
+                })
+                .collect();
+            let pinning_mode = pinning_mode_from_state(registry_state, &project_id);
+
+            // P0-3 (ADR-0011 N-2): a `required` authorization must be
+            // resolved against a required-COMPLETE snapshot -- refuse
+            // outright otherwise, rather than issuing a "required"
+            // authorization the agent can only partially honour.
+            // `legacy_partial` proceeds regardless (its gaps are recorded as
+            // unpinned inputs downstream, not refused here).
+            if pinning_mode == EXECUTION_PINNING_MODE_REQUIRED {
+                let incomplete: Vec<(String, Vec<String>)> = resolved_context
+                    .artifacts
+                    .iter()
+                    .filter_map(|assignment| {
+                        let gaps = required_completeness_gaps(assignment);
+                        (!gaps.is_empty()).then(|| (assignment.service_id.clone(), gaps))
+                    })
+                    .collect();
+                if !incomplete.is_empty() {
+                    return Err(bad_request(format!(
+                        "blocked_required_incomplete: execution_pinning_mode=required but the resolved snapshot is not required-complete for node '{node_id}': {incomplete:?}"
+                    )));
+                }
+            }
+
+            // P0-2 (DC-4, ADR-0011 §3): `required` refuses a durable
+            // authorization unless the artifact registry and the durable
+            // operational-authorization state are backed by the exact same
+            // control-state SQLite database file.
+            if pinning_mode == EXECUTION_PINNING_MODE_REQUIRED
+                && !required_mode_persistence_eligible(
+                    &requested_persistence_scope,
+                    state.service_artifacts.backend_path().as_deref(),
+                    operational_authorization_backend_path.as_deref(),
+                )
+            {
+                return Err(bad_request(format!(
+                    "{BLOCKED_REQUIRED_PERSISTENCE}: execution_pinning_mode=required refuses a '{requested_persistence_scope}'-scope authorization because the artifact registry and the durable operational-authorization state are not backed by the same control-state SQLite database"
+                )));
+            }
+
+            // P0-1: the authorization stores the EXACT resolved assignments
+            // as the immutable snapshot. A later artifact PUT changes the
+            // mutable registry (and future resolutions), but never this
+            // already-captured Vec -- and, per the locking above, cannot
+            // even commit until this closure returns.
+            let snapshot = resolved_context.artifacts.clone();
+            let authorization = build_reconciliation_authorization(
+                &graph,
+                node_id,
+                &binding.binding_id,
+                &binding.resource_id,
+                &request,
+                Utc::now(),
+                artifact_bindings,
+                &pinning_mode,
+                snapshot,
+            )
+                .map_err(bad_request)?;
+            let key = authorization_key(&project_id, node_id);
+            let existing_durable = authorization_store().read().map_err(lock_error)?.get(&key)
+                .is_some_and(|current| current.persistence_scope == AUTHORIZATION_SCOPE_DURABLE);
+            if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE || existing_durable {
+                let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
+                if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
+                    candidate.authorizations.insert(key.clone(), authorization.clone());
+                } else {
+                    candidate.authorizations.remove(&key);
+                }
+                persist_candidate(&candidate).map_err(internal_error)?;
+            }
+            authorization_store().write().map_err(lock_error)?.insert(key, authorization.clone());
+            Ok(authorization)
+        })
+        .map_err(internal_error)??;
     Ok(JsonResponse(authorization))
+}
+
+/// P1-4 (v4 review): true when `requested_persistence_scope` is acceptable
+/// for `authorize_operational_reconciliation` (issuing `reconcile` /
+/// `rollback` authorizations). Only `durable` is -- `process`-scope never
+/// carries a finite lease (`build_reconciliation_authorization` rejects
+/// `valid_for_seconds` for it), and every governed host mutation refuses a
+/// non-finite lease anyway (`blocked_authorization_not_leased`), so a
+/// `process`-scope authorization from this endpoint can never legally gate a
+/// mutation. Extracted as a small pure function so it is directly
+/// unit-testable: this handler has no HTTP-level test harness in this crate.
+fn reconciliation_authorization_scope_is_acceptable(requested_persistence_scope: &str) -> bool {
+    requested_persistence_scope == AUTHORIZATION_SCOPE_DURABLE
 }
 
 fn persisted_candidate_from_memory() -> Result<OperationalDGraphPersistedState, String> {
@@ -486,5 +651,28 @@ mod tests {
             if node == "cloud-01" { Err("registry unavailable".to_string()) } else { Ok(None) }
         });
         assert!(result.unwrap_err().contains("registry unavailable"));
+    }
+
+    // ---- P1-4: reconcile/rollback authorization endpoint refuses --------
+    // ---- `process` scope outright ---------------------------------------
+
+    #[test]
+    fn reconciliation_authorization_scope_accepts_durable() {
+        assert!(reconciliation_authorization_scope_is_acceptable(
+            AUTHORIZATION_SCOPE_DURABLE
+        ));
+    }
+
+    #[test]
+    fn reconciliation_authorization_scope_rejects_process() {
+        assert!(!reconciliation_authorization_scope_is_acceptable(
+            AUTHORIZATION_SCOPE_PROCESS
+        ));
+    }
+
+    #[test]
+    fn reconciliation_authorization_scope_rejects_unknown_values() {
+        assert!(!reconciliation_authorization_scope_is_acceptable("bogus"));
+        assert!(!reconciliation_authorization_scope_is_acceptable(""));
     }
 }

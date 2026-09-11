@@ -156,16 +156,32 @@ class Td1StatusParsing(unittest.TestCase):
 
 
 class Td1RepoState(unittest.TestCase):
-    """The real repo must be in the Deferred state and pass cleanly."""
+    """Stage 107A resolves TD-1: the real ADR-0012 is Accepted / Option A,
+    passes the lifecycle checker cleanly, and still rejects an
+    immediate-revocation claim injected into any other document."""
 
-    def test_real_adr_0012_and_repo_docs_are_clean(self):
+    def _adr_text(self) -> str:
         toctou = chk.ADR_DIR / "ADR-0012-toctou-authorization-validity.md"
         self.assertTrue(toctou.exists())
-        result = chk.evaluate_td1(toctou.read_text(encoding="utf-8"),
-                                  chk._td1_scan_targets())
+        return toctou.read_text(encoding="utf-8")
+
+    def test_real_adr_0012_and_repo_docs_are_clean(self):
+        result = chk.evaluate_td1(self._adr_text(), chk._td1_scan_targets())
         self.assertEqual(where_msgs(result), [])
-        self.assertEqual(chk.adr_status(toctou.read_text(encoding="utf-8")),
-                         "deferred / open")
+
+    def test_real_adr_0012_is_accepted_option_a(self):
+        text = self._adr_text()
+        self.assertEqual(chk.adr_status(text), "accepted")
+        self.assertRegex(text, r"(?im)^\s*[-*]\s*TD-1 resolution:\s*Option A\b")
+        self.assertIn("test obligations", text.lower())
+
+    def test_real_option_a_still_rejects_immediate_revocation_claim(self):
+        # K.27: Option A accepted, but an assertive immediate-revocation claim in
+        # any scanned doc/fixture is still a checker failure.
+        result = chk.evaluate_td1(self._adr_text(),
+                                  {"injected.md": CLAIM, "injected2.md": CLAIM2})
+        self.assertTrue(any("does not permit" in m for _, m in result), result)
+        self.assertEqual(len(result), 2, result)
 
 
 # --- negative-fixture code matching (correction 9) ------------------------- #
@@ -265,6 +281,23 @@ def _load_positive_index() -> dict:
         elif s == "datum.dserv-artifact/1":
             idx["dserv_artifact"][obj.get("artifact_id")] = obj
     return idx
+
+
+class Stage107AMapperDigest(unittest.TestCase):
+    def fixture(self):
+        import json
+        return json.loads((chk.FIXTURE_DIR / chk.MAPPER_FIXTURE).read_text(encoding="utf-8"))
+
+    def test_actual_mapper_fixture_has_matching_canonical_digest_carriers(self):
+        self.assertTrue(chk.mapper_fixture_digest_valid(self.fixture()))
+
+    def test_bare_digest_or_changed_canonical_bytes_are_rejected(self):
+        fixture = self.fixture()
+        fixture["expected_projection_digest_sha256"] = fixture["expected_projection_digest_sha256"][7:]
+        self.assertFalse(chk.mapper_fixture_digest_valid(fixture))
+        fixture = self.fixture()
+        fixture["expected_canonical_json"] += " "
+        self.assertFalse(chk.mapper_fixture_digest_valid(fixture))
 
 
 if __name__ == "__main__":
