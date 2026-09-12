@@ -34,6 +34,26 @@ pub const BLOCKED_PINNING_MODE_INSUFFICIENT: &str = "blocked_pinning_mode_insuff
 pub const BLOCKED_MISSING_CLOCK_SKEW_CONFIG: &str = "blocked_missing_clock_skew_config";
 pub const BLOCKED_REQUIRED_INCOMPLETE: &str = "blocked_required_incomplete";
 pub const BLOCKED_WRONG_RESOURCE_IDENTITY: &str = "blocked_wrong_resource_identity";
+/// Stage 107B-B (ADR-0014): a trustworthy pin (`resolved_image_identity`)
+/// exists, but runtime verification against the actual local Docker state
+/// could not be completed with confidence -- no matching/unambiguous local
+/// daemon platform, the Docker daemon could not be queried for identity
+/// purposes (distinct from `docker_unavailable`, which covers the daemon
+/// being entirely unreachable for ordinary container observation), or a
+/// pull reported success but the image still could not be found afterward.
+/// This is "we don't know," never "we know, and it's wrong" -- see
+/// `BLOCKED_IMAGE_IDENTITY_MISMATCH` for that. In `required` mode this always
+/// blocks; in `legacy_partial` it may continue (existing N-2 semantics
+/// permitting), but must record `verified=false` evidence -- never silent.
+pub const BLOCKED_IMAGE_IDENTITY_UNVERIFIED: &str = "blocked_image_identity_unverified";
+/// Stage 107B-B (ADR-0014): a trustworthy pin exists AND runtime evidence was
+/// successfully gathered, but it actively CONTRADICTS the authorized identity
+/// (wrong manifest, wrong config/image ID, wrong platform, or a
+/// running/stopped container bound to different image content than the one
+/// verified). This is a known mismatch, not partial hardening -- it blocks in
+/// BOTH `required` and `legacy_partial`. `legacy_partial` never means
+/// "execute the wrong content anyway."
+pub const BLOCKED_IMAGE_IDENTITY_MISMATCH: &str = "blocked_image_identity_mismatch";
 
 pub const EXECUTION_PINNING_MODE_LEGACY_PARTIAL: &str = "legacy_partial";
 pub const EXECUTION_PINNING_MODE_REQUIRED: &str = "required";
@@ -316,7 +336,11 @@ pub fn check_resource_identity(
 /// v5 review P1-5: `sha256:` followed by exactly 64 lowercase hex chars.
 /// Mirrors `dserver::core::oci_registry_resolver::is_oci_digest_format`
 /// exactly (separate, hand-written -- no shared crate).
-fn is_oci_digest_format(s: &str) -> bool {
+/// Stage 107B-B (ADR-0014): made `pub(crate)` so
+/// `image_identity_verification` can validate a `manifest_digest`/`config_digest`
+/// (already-OCI-digest-shaped fields) before comparing them against Docker's
+/// own reported values, without duplicating this validator.
+pub(crate) fn is_oci_digest_format(s: &str) -> bool {
     match s.strip_prefix("sha256:") {
         Some(hex) => hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
         None => false,
@@ -351,7 +375,11 @@ fn declared_digest_selector(image: &str) -> Option<String> {
     }
 }
 
-fn structurally_valid_resolved_image_identity(
+/// Stage 107B-B (ADR-0014): made `pub(crate)` so
+/// `operational_reconciliation`'s runtime-image-identity orchestration can
+/// gate on the exact same structural-validity check `required_completeness_gaps`
+/// already uses, rather than re-deriving an equivalent check.
+pub(crate) fn structurally_valid_resolved_image_identity(
     image: &str,
     resolved: &crate::agent::operational_reconciliation::OperationalResolvedImageIdentity,
 ) -> bool {

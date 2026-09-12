@@ -35,6 +35,7 @@ work belongs to Stages 107A and 107B.
 | [ADR-0011](ADR-0011-f2-execution-content-authorization.md) | F2: execution-content-bound authorization (Stages 107A/107B) | Accepted (specified, not implemented) | D-7, correction 2, D-7a, N-1, N-2, N-3 |
 | [ADR-0012](ADR-0012-toctou-authorization-validity.md) | Authorization validity during execution (TOCTOU) | **Deferred** | TD-1 |
 | [ADR-0013](ADR-0013-oci-catalog-image-identity-resolution.md) | OCI catalog image identity resolution (Stage 107B-A) | Accepted and implemented | ADR-0006, ADR-0011, ADR-0012 |
+| [ADR-0014](ADR-0014-runtime-image-identity-verification.md) | Runtime image identity verification (Stage 107B-B) | Accepted and implemented | ADR-0011, ADR-0012, ADR-0013 |
 
 ## Relationship to closed phases
 

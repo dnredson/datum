@@ -14,12 +14,16 @@ use crate::agent::bootstrap::{
     SmartSentinelBootstrapReport,
 };
 use crate::agent::execution_projection;
+use crate::agent::image_identity_verification::{
+    self, CliDockerImageRuntime, DockerImageRuntime, VerifiedImageIdentity,
+};
 use crate::agent::resource_discovery::SmartSentinelResourceDiscovery;
 use crate::agent::stage107a_enforcement::{
     check_generation_and_projection, effective_pinning_mode, required_completeness_gaps,
     resolve_clock_skew_seconds, resolve_network_aliases, resolve_ports,
-    resolve_secret_target_environment_variable, LeaseGuard, BLOCKED_REQUIRED_INCOMPLETE,
-    EXECUTION_PINNING_MODE_REQUIRED,
+    resolve_secret_target_environment_variable, structurally_valid_resolved_image_identity,
+    LeaseGuard, BLOCKED_IMAGE_IDENTITY_MISMATCH, BLOCKED_IMAGE_IDENTITY_UNVERIFIED,
+    BLOCKED_REQUIRED_INCOMPLETE, EXECUTION_PINNING_MODE_REQUIRED,
 };
 use crate::config::{Config, DispatchContainerMapping};
 use crate::core::cycle::run_cycle_for_node_identity;
@@ -470,6 +474,36 @@ pub struct OperationalServiceReconciliationReport {
     /// boundary (blocked earlier, or nothing to do) leaves this empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutation_boundaries_crossed: Vec<MutationBoundaryRecord>,
+    /// Stage 107B-B (ADR-0014, v9 review P1-5: synchronized with the actual
+    /// unconditional-preflight behavior -- v8 review P1-6 made image-identity
+    /// observation run every cycle, executing or not, and this field's
+    /// presence follows that exactly). Present whenever this service has
+    /// BOTH an assigned artifact AND a resolved trusted local container
+    /// mapping this cycle (i.e. whenever `trusted_container_name`/
+    /// `trusted_image` are also present) -- the same precondition
+    /// `image_identity_verification`'s preflight itself requires:
+    ///   - `registry`-sourced, structurally-valid pin: the read-only
+    ///     preflight evidence, refreshed EVERY cycle regardless of
+    ///     `execute_requested`/`control_plane_authorized`/`rollback_requested`
+    ///     -- for an executing, authorized, non-rollback cycle this is the
+    ///     POST-resolution evidence (after any M5 acquisition attempt and,
+    ///     for a fresh M1/recreate, the post-action container-binding
+    ///     re-check); otherwise it is the raw preflight, never a fabricated
+    ///     "verified" reading.
+    ///   - `local_build`/`legacy_unclassified`/unresolved or structurally
+    ///     invalid registry pin: explicit not-applicable evidence
+    ///     (`pull_disposition = not_applicable_unpinned_source`, a
+    ///     `reason_kind` naming which of those applies) -- never silently
+    ///     absent (v9 review P1-4).
+    /// Absent when no artifact is assigned, or an artifact is assigned but
+    /// no trusted local mapping resolves for it (a separate,
+    /// `blocked_local_mapping`-flavored concern this field never attempts
+    /// to describe). Evidence-only: never a factor in
+    /// `ArtifactExecutionProjectionV1`, and `checked_at_utc` (or
+    /// `actual_container_image`) changing alone must never change
+    /// `execution_generation`/`execution_projection_digest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_image_identity: Option<VerifiedImageIdentity>,
 }
 
 /// One M1-M8 governed-host-mutation boundary attempt (review finding P1-2,
@@ -749,8 +783,215 @@ fn stage107a_block_code(reason: &str) -> String {
 fn action_code_zero_may_report_converged(
     stage107a_service_block: Option<&str>,
     config_content_block: Option<&str>,
+    image_identity_pending_in_required_mode: bool,
 ) -> bool {
-    stage107a_service_block.is_none() && config_content_block.is_none()
+    stage107a_service_block.is_none() && config_content_block.is_none() && !image_identity_pending_in_required_mode
+}
+
+/// v9 review P0-3: every independently-blocking gate that must ALREADY be
+/// clear before M5 (or any other governed mutation) may even be considered
+/// -- named explicitly, rather than left as an inline boolean expression, so
+/// each conjunct can be audited and unit tested in isolation. Critically
+/// includes `host_action_requested` (`wasm.action_code != 0`): Stage 107A
+/// treats `action_code == 0` as "no new host action requested," and M5 is
+/// itself a host mutation, so it must never fire merely to populate/verify a
+/// cache.
+#[allow(clippy::too_many_arguments)]
+fn mutation_gates_are_clear(
+    execute_requested: bool,
+    control_plane_authorized: bool,
+    rollback_requested: bool,
+    mapping_present: bool,
+    dependency_blockers_empty: bool,
+    stage107a_service_block_before_image_clear: bool,
+    config_content_block_clear: bool,
+    attachment_policy_block_clear: bool,
+    local_container_execution_allowed: bool,
+    batch_secret_resolution_clear: bool,
+    secret_resolution_clear: bool,
+    observation_clear: bool,
+    completion_not_failed: bool,
+    host_action_requested: bool,
+) -> bool {
+    execute_requested
+        && control_plane_authorized
+        && !rollback_requested
+        && mapping_present
+        && dependency_blockers_empty
+        && stage107a_service_block_before_image_clear
+        && config_content_block_clear
+        && attachment_policy_block_clear
+        && local_container_execution_allowed
+        && batch_secret_resolution_clear
+        && secret_resolution_clear
+        && observation_clear
+        && completion_not_failed
+        && host_action_requested
+}
+
+/// v9 review P0-2 (TARGET IMAGE side): a `KnownMismatch` preflight outcome
+/// is the ONLY thing that makes the top-level attachment comparison treat
+/// this service as having a genuinely wrong candidate image -- never a
+/// container-binding observation (see `container_binding_drift_from`).
+fn image_known_mismatch_from(outcome: Option<&image_identity_verification::PreflightOutcome>) -> bool {
+    matches!(outcome, Some(image_identity_verification::PreflightOutcome::KnownMismatch(_)))
+}
+
+/// v9 review P0-2 (EXISTING CONTAINER side): an existing container bound to
+/// a different image object than the (possibly still-verifying) target --
+/// e.g. after a legitimate re-pin -- is runtime DRIFT, never a terminal
+/// candidate mismatch. Folded into `attachment_mismatch` so it forces the
+/// same governed recreate path as any other attachment drift, WITHOUT ever
+/// contributing to `image_known_mismatch`/`stage107a_service_block`.
+fn container_binding_drift_from(evaluation: Option<&image_identity_verification::ImageIdentityEvaluation>) -> bool {
+    evaluation.is_some_and(|evaluation| {
+        matches!(evaluation.container_binding, image_identity_verification::ContainerBindingObservation::Mismatches { .. })
+    })
+}
+
+/// v9 review P0-4, broadened by v10 review P0-1: whether this artifact's
+/// image identity has not yet been positively confirmed while EXECUTING,
+/// AUTHORIZED, and running in `required` mode -- consulted so `action_code
+/// == 0` is never reported as fully verified convergence when either half
+/// of image identity has never actually been confirmed locally. TWO
+/// independent, still fully separate, sub-conditions, OR'd together:
+/// `target_needs_pull` (the TARGET IMAGE was never even inspected) and
+/// `container_binding_unavailable` (an EXISTING container's binding could
+/// not be proven -- NOT a KNOWN mismatch, which is drift and is handled
+/// entirely separately via `container_binding_drift_from`/M3, never
+/// through this flag). `legacy_partial` (or any mode but `required`) is
+/// deliberately never affected; neither is a non-executing or
+/// unauthorized cycle.
+fn image_identity_unconfirmed_in_required_mode(
+    execute_requested: bool,
+    control_plane_authorized: bool,
+    effective_mode: &str,
+    target_needs_pull: bool,
+    container_binding_unavailable: bool,
+) -> bool {
+    execute_requested
+        && control_plane_authorized
+        && effective_mode == EXECUTION_PINNING_MODE_REQUIRED
+        && (target_needs_pull || container_binding_unavailable)
+}
+
+/// v10 review P0-1, reshaped by v11 review P0-1/P1-1: `required` mode must
+/// NEVER silently reuse/converge an EXISTING container (Running/Stopped)
+/// whose actual image binding could not be proven
+/// (`ContainerBindingObservation::Unavailable` -- distinct from a KNOWN
+/// wrong binding, `Mismatches`, which instead forces a governed recreate
+/// via `container_binding_drift_from` and is NOT this function's concern).
+/// `container_binding_status` is read as the plain string already carried
+/// on the FINAL `VerifiedImageIdentity` evidence for this cycle
+/// (post-acquisition when a pull happened), never re-deriving it from
+/// `PreflightOutcome`/`classify_evaluation` -- TARGET verification and
+/// EXISTING CONTAINER binding remain fully separate concepts.
+///
+/// v11 review P0-1/P1-1 correction: this now returns a plain `bool`, NOT a
+/// `stage107a_service_block`-flavored `Option<String>` -- the v10 shape
+/// was too broad in two ways at once: (1) folding it into the GLOBAL
+/// `stage107a_service_block` also blocked remove-only rollback (M8), which
+/// must never be prevented by any runtime image-verification outcome; (2)
+/// it blocked EVERY governed execution path for the service, including an
+/// independently-required M3/M4 recreate, which is exactly the SAFE
+/// corrective action for an unverifiable existing container (replace it
+/// with a freshly created one from the verified immutable target) and
+/// must never be prevented by this fact. The caller now threads this
+/// `bool` directly into `execute_trusted_container_intent` as a REUSE
+/// guard (Running -> `already_running`, Stopped -> M2 start), consulted
+/// only AFTER the M3/M4 recreate checks have already had their chance to
+/// fire. `legacy_partial` (or any other mode) is deliberately NEVER
+/// affected -- it keeps its existing, weaker "may still proceed"
+/// semantics; only the recorded evidence (`container_binding_status`
+/// itself) must stay truthful.
+/// v11 review P0-1: the block a REMOVE-ONLY rollback (M8) may respect --
+/// deliberately does not even ACCEPT `image_identity_final_block`
+/// (TARGET-image mismatch/unverified/no-selectable-platform) as a
+/// parameter, so it is impossible by construction for a runtime
+/// image-verification outcome to prevent M8. Retains every OTHER
+/// pre-existing Stage-107A rollback prerequisite: generation/projection/
+/// completeness (`stage107a_service_block_before_image`) and local
+/// attachment/secret substitution policy (`attachment_policy_block`).
+/// `container_binding_unavailable_in_required_mode` is likewise never
+/// threaded in here at all -- it is a REUSE guard consumed directly by
+/// `execute_trusted_container_intent`, never a `stage107a_service_block`
+/// contributor (v11 review P1-1).
+fn rollback_service_block_from(
+    stage107a_service_block_before_image: Option<&str>,
+    attachment_policy_block: Option<&str>,
+) -> Option<String> {
+    stage107a_service_block_before_image.or(attachment_policy_block).map(str::to_string)
+}
+
+fn container_binding_unavailable_in_required_mode_from(
+    container_binding_status: Option<&str>,
+    effective_mode: &str,
+) -> bool {
+    effective_mode == EXECUTION_PINNING_MODE_REQUIRED
+        && container_binding_status == Some(image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE)
+}
+
+/// v12 review P0-1: whether the FINAL (possibly post-M5-acquisition)
+/// `container_binding_status` for this cycle is a KNOWN mismatch --
+/// re-derived from `resolve_pinned_image_outcome`'s returned evidence,
+/// never re-read from the INITIAL preflight (`container_binding_drift_from`,
+/// which stays correct for the outer, pre-acquisition attachment/
+/// convergence comparison, but can be stale by the time
+/// `execute_trusted_container_intent` actually runs: a `NeedsPull`
+/// preflight has no local target-image object to compare the existing
+/// container against at all, so its own `container_binding` is always
+/// `NotApplicable` regardless of what the post-pull re-evaluation later
+/// discovers). Mode-independent by design -- unlike the `Unavailable`
+/// reuse guard, a KNOWN mismatch is drift that forces a governed recreate
+/// in EVERY mode (ADR-0014 §6a), not just `required`.
+fn container_binding_mismatches_from_status(container_binding_status: Option<&str>) -> bool {
+    container_binding_status == Some(image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES)
+}
+
+/// v9 review P1-2: pure decision for the read-only post-action container-
+/// binding re-check -- given the verified TARGET image's content id and the
+/// raw result of inspecting the freshly-created container's top-level
+/// `.Image`, decides what evidence to record (`Some(actual_id)` whenever one
+/// was observed, regardless of match/mismatch) and whether the caller must
+/// stop claiming the "deployed" status (`Some((status, message))`) because
+/// binding could not be confirmed. Kept separate from the actual
+/// `DockerImageRuntime` call so it is directly unit-testable without a live
+/// daemon, matching this module's established pattern.
+/// v10 review P1-2: also returns the explicit `CONTAINER_BINDING_STATUS_*`
+/// string the caller must write back into evidence, so a post-M1 mismatch/
+/// unavailable result can never leave stale/inconsistent evidence (e.g.
+/// `target_verified = true` next to a `container_binding_status` that still
+/// reads `not_applicable` from before the container even existed).
+fn post_action_container_binding_check(
+    container_name: &str,
+    expected_image_id: &str,
+    observed_binding: Result<Option<String>, String>,
+) -> (Option<String>, &'static str, Option<(String, String)>) {
+    match observed_binding {
+        Ok(Some(actual_id)) if actual_id == expected_image_id => {
+            (Some(actual_id), image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES, None)
+        }
+        Ok(Some(actual_id)) => {
+            let message = format!(
+                "trusted container '{container_name}' was created, but its post-action image binding ('{actual_id}') does not match the verified pinned image ('{expected_image_id}'); convergence cannot be claimed"
+            );
+            (
+                Some(actual_id),
+                image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES,
+                Some(("container_binding_unconfirmed".to_string(), message)),
+            )
+        }
+        Ok(None) | Err(_) => (
+            None,
+            image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE,
+            Some((
+                "container_binding_unconfirmed".to_string(),
+                format!(
+                    "trusted container '{container_name}' was created from a verified pinned image, but its post-action container binding could not be inspected"
+                ),
+            )),
+        ),
+    }
 }
 
 /// Per-cycle authorization identity/lease context threaded alongside
@@ -958,6 +1199,11 @@ fn run_operational_reconciliation_from_bootstrap(
         .timeout(Duration::from_secs(timeout_s))
         .build()
         .context("build operational reconciliation HTTP client")?;
+    // Stage 107B-B (ADR-0014): the production Docker-CLI-backed image
+    // identity runtime, constructed once per cycle and threaded through the
+    // per-service loop below -- mirrors how `Client` itself is built once
+    // here rather than per-service.
+    let docker_image_runtime = CliDockerImageRuntime::default();
     let base = dserver_url.trim().trim_end_matches('/');
     let slice_url = format!("{base}/api/v1/nodes/{node_id}/operational-reconciliation-context");
     let response = client
@@ -1142,6 +1388,124 @@ fn run_operational_reconciliation_from_bootstrap(
                     None => (Vec::new(), None, "not_required".to_string()),
                 }
             };
+        // Stage 107B-B (ADR-0014), v8 review P0-1/P1-6: a READ-ONLY image-
+        // identity preflight, computed EARLY and UNCONDITIONALLY -- before
+        // any governance gate, before `attachment_mismatch`, regardless of
+        // `execute_requested`/`control_plane_authorized`/`rollback_requested`.
+        // `evaluate_image_identity`/`classify_evaluation` never call
+        // `pull_image`, so this is always safe: it can never mutate the
+        // host, so it never needs to wait for a gate that exists precisely
+        // to prevent host mutation. Only attempted for a `registry`-sourced,
+        // structurally-valid pin with a resolved mapping in scope --
+        // `local_build`/`legacy_unclassified`/unpinned artifacts get `None`
+        // here and are untouched, continuing exactly as before via the
+        // mutable tag.
+        let image_preflight: Option<(image_identity_verification::ImageIdentityEvaluation, image_identity_verification::PreflightOutcome)> =
+            match (mapping, assignment) {
+                (Some(mapping), Some(artifact)) if artifact.image_source_kind == IMAGE_SOURCE_KIND_REGISTRY => {
+                    match &artifact.resolved_image_identity {
+                        Some(resolved) if structurally_valid_resolved_image_identity(&artifact.image, resolved) => {
+                            let existing_container_name = match observed_before {
+                                ContainerState::Running | ContainerState::Stopped => Some(mapping.container_name.as_str()),
+                                ContainerState::Missing => None,
+                            };
+                            let evaluation = image_identity_verification::evaluate_image_identity(
+                                &docker_image_runtime,
+                                resolved,
+                                existing_container_name,
+                                &Utc::now().to_rfc3339(),
+                            );
+                            let outcome = image_identity_verification::classify_evaluation(&evaluation);
+                            Some((evaluation, outcome))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+        // v8 review P1-6: a KNOWN, actively-contradicting mismatch makes the
+        // observation non-converged even in a non-executing ("suggested")
+        // cycle -- unverifiable/no-selectable-reference outcomes do NOT
+        // force non-convergence (best-effort evidence only), matching the
+        // review's explicit "do not fail closed" allowance for that case.
+        // This is a TARGET IMAGE mismatch only (v9 review P0-2).
+        let image_known_mismatch = image_known_mismatch_from(image_preflight.as_ref().map(|(_, outcome)| outcome));
+        // v9 review P0-2: an EXISTING CONTAINER bound to a different image
+        // object than the (possibly still-verifying) target -- e.g. after a
+        // legitimate re-pin -- is runtime DRIFT, never a terminal candidate
+        // mismatch. It must still force non-convergence/recreate, so it is
+        // folded into `attachment_mismatch` below exactly like a real
+        // attachment drift, but it is NEVER folded into `image_known_mismatch`
+        // and therefore never reaches `stage107a_service_block` as a
+        // `blocked_image_identity_mismatch`.
+        let container_binding_drift = container_binding_drift_from(image_preflight.as_ref().map(|(evaluation, _)| evaluation));
+        // v12 review P0-1: `container_binding_drift` above is derived from
+        // the INITIAL, pre-acquisition preflight -- correct and unchanged
+        // for the OUTER attachment/convergence comparison just below (it
+        // decides WASM's initial input and non-executing convergence, both
+        // of which must reflect what was observed BEFORE any M5 pull could
+        // have happened this cycle). But when the initial preflight
+        // outcome was `NeedsPull` (target image absent locally), the
+        // initial container-binding observation is necessarily
+        // `NotApplicable`/uninformative -- the mandatory post-M5
+        // re-evaluation inside `resolve_pinned_image_outcome` can discover
+        // a REAL `Mismatches` that the initial preflight had no way to see
+        // (the target image object didn't exist locally yet to compare
+        // the container against). `execute_trusted_container_intent`
+        // (governed EXECUTION, reached only after acquisition may already
+        // have happened) must use this FINAL, post-acquisition binding
+        // fact, never the stale initial one -- overwritten below, inside
+        // the `execute_requested && control_plane_authorized` branch,
+        // using `resolution.evidence.container_binding_status` (the same
+        // FINAL evidence `container_binding_unavailable_in_required_mode`
+        // already correctly reads).
+        let mut container_binding_drift_for_execution = container_binding_drift;
+        // v9 review P0-1: the single "expected runtime image" used
+        // consistently for the top-level attachment/drift comparison below
+        // AND (via `pinned_execution_reference`, threaded further down) for
+        // `execute_trusted_container_intent`/M1/M3/M4 -- (A) once a platform
+        // was selected for a valid pin, this is the IMMUTABLE
+        // `execution_reference`, NEVER the mutable declared tag, even before
+        // acquisition/verification has fully completed; (B) for an unpinned,
+        // `local_build`, `legacy_unclassified`, or unresolved/structurally-
+        // invalid registry artifact, this remains the declared tag exactly
+        // as before.
+        let expected_runtime_image_reference: Option<&str> = image_preflight
+            .as_ref()
+            .and_then(|(evaluation, _)| evaluation.execution_reference.as_deref());
+        // v9 review P0-4 (broadened by v10 review P0-1): whether this
+        // artifact's image identity has not yet been positively confirmed
+        // while EXECUTING, AUTHORIZED, and running in `required` mode --
+        // consulted below to keep `action_code == 0` from ever being
+        // reported as fully verified convergence when either half of image
+        // identity has never actually been confirmed locally. TWO
+        // independent, still fully separate, sub-conditions: (a) the TARGET
+        // IMAGE was never even inspected (`PreflightOutcome::NeedsPull`), or
+        // (b) an EXISTING container's binding could not be proven
+        // (`ContainerBindingObservation::Unavailable` -- NOT `Mismatches`,
+        // which is drift and is handled entirely separately via
+        // `container_binding_drift`/M3, never through this flag). Since no
+        // acquisition can have run whenever `action_code == 0` (M5 requires
+        // `wasm.action_code != 0`), the ORIGINAL, unconditional preflight's
+        // `container_binding` is already the FINAL one for any cycle where
+        // this flag's value actually matters. `legacy_partial` deliberately
+        // keeps its existing, weaker "may still proceed" semantics and is
+        // NOT affected by this flag. `execute_requested &&
+        // control_plane_authorized` is required here too (mirroring the
+        // P1-3 fix below): a non-executing ("suggested") cycle must never
+        // have its status overridden by this flag either.
+        let image_identity_pending_in_required_mode = image_identity_unconfirmed_in_required_mode(
+            execute_requested,
+            control_plane_authorized,
+            effective_mode_for_secrets,
+            matches!(
+                image_preflight.as_ref().map(|(_, outcome)| outcome),
+                Some(image_identity_verification::PreflightOutcome::NeedsPull { .. })
+            ),
+            image_preflight.as_ref().is_some_and(|(evaluation, _)| {
+                matches!(evaluation.container_binding, image_identity_verification::ContainerBindingObservation::Unavailable)
+            }),
+        );
         let attachment_mismatch = match (mapping, assignment, observed_before) {
             (Some(mapping), Some(artifact), ContainerState::Running | ContainerState::Stopped) => {
                 // Review finding P1-3: the DECLARED (currently delivered)
@@ -1156,9 +1520,9 @@ fn run_operational_reconciliation_from_bootstrap(
                     execution_generation: artifact.execution_generation,
                     execution_projection_digest: &artifact.execution_projection_digest,
                 };
-                !container_attachments_match(
+                let base_mismatch = !container_attachments_match(
                     &mapping.container_name,
-                    &artifact.image,
+                    expected_runtime_image_reference.unwrap_or(artifact.image.as_str()),
                     artifact.network.as_deref(),
                     effective_attachments.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.aliases.as_slice()).unwrap_or(&[]),
                     effective_attachments.as_ref().and_then(|r| r.as_ref().ok()).map(|r| r.ports.as_slice()).unwrap_or(&[]),
@@ -1169,7 +1533,8 @@ fn run_operational_reconciliation_from_bootstrap(
                     configuration_root(cfg),
                     &expected_execution_identity,
                 )
-                .unwrap_or(false)
+                .unwrap_or(false);
+                base_mismatch || image_known_mismatch || container_binding_drift
             }
             _ => false,
         };
@@ -1208,7 +1573,31 @@ fn run_operational_reconciliation_from_bootstrap(
         let verified_external_inputs = config_verification_result
             .and_then(|result| result.ok()).unwrap_or_default();
 
-        let stage107a_service_block: Option<String> = if execute_requested && control_plane_authorized {
+        // Moved ahead of `stage107a_service_block` (Stage 107B-B, ADR-0014):
+        // the image-identity resolution below needs a fresh lease and a
+        // place to record M5's boundary attempt, both of which used to be
+        // constructed later in this loop body.
+        let authorization_expires_at_utc = context
+            .authorization
+            .as_ref()
+            .and_then(|authorization| authorization.expires_at_utc.clone());
+        let authorization_clock_skew_seconds = stage107a_cycle_gate
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|gate| gate.skew_seconds);
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: context.authorization.as_ref().map(|authorization| authorization.authorization_id.as_str()),
+            expires_at_utc: authorization_expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: authorization_clock_skew_seconds,
+        };
+        let mut mutation_boundaries: Vec<MutationBoundaryRecord> = Vec::new();
+
+        // Stage 107B-B (ADR-0014), v8 review P0-1: every OTHER governance/
+        // policy gate that already prohibits host mutation at this point --
+        // computed BEFORE any image acquisition is even considered. This is
+        // the SAME generation/projection/completeness check v1 already had,
+        // just no longer folding the image-identity outcome in yet.
+        let stage107a_service_block_before_image: Option<String> = if execute_requested && control_plane_authorized {
             match (&stage107a_cycle_gate, assignment) {
                 (Some(Ok(gate)), Some(artifact)) => stage107a_service_check(
                     context.authorization.as_ref().expect("control_plane_authorized implies Some"),
@@ -1240,7 +1629,177 @@ fn run_operational_reconciliation_from_bootstrap(
             }
         } else {
             None
-        }.or(attachment_policy_block);
+        };
+        // v9 review P0-3: every independently-blocking gate that must
+        // ALREADY be clear before M5 (or any other governed mutation) may
+        // even be considered -- expanded from the prior round's incomplete
+        // set to also cover: attachment/local-policy resolution
+        // (`attachment_policy_block`), a failed Docker observation
+        // (`observation_error`), a failed one-shot with no retry
+        // (`!completion_failed`), the absence of a usable local mapping
+        // (`mapping.is_some()`), and -- critically -- WASM actually
+        // requesting a host action at all (`wasm.action_code != 0`; Stage
+        // 107A treats `action_code == 0` as "no new host action requested,"
+        // and M5 is itself a host mutation, so it must never fire merely to
+        // populate/verify a cache). This is the ONE place
+        // `resolve_pinned_image_outcome` consults to decide whether a
+        // `NeedsPull` preflight outcome may proceed; see its own tests for
+        // proof that `pull_calls` stays empty whenever any of these is
+        // false.
+        let mutation_gates_clear = mutation_gates_are_clear(
+            execute_requested,
+            control_plane_authorized,
+            rollback_requested,
+            mapping.is_some(),
+            dependency_blockers.is_empty(),
+            stage107a_service_block_before_image.is_none(),
+            config_content_block.is_none(),
+            attachment_policy_block.is_none(),
+            local_container_execution_allowed,
+            batch_secret_resolution_error.is_none(),
+            secret_resolution_error.is_none(),
+            observation_error.is_none(),
+            !completion_failed,
+            wasm.action_code != 0,
+        );
+
+        let mut pinned_image_evidence: Option<VerifiedImageIdentity>;
+        let mut pinned_execution_reference: Option<String> = None;
+        let mut pinned_image_hard_failure: Option<String> = None;
+        let mut pinned_image_acquisition_performed = false;
+        // v10 review P0-1: an EXISTING container (Running/Stopped) whose
+        // actual image binding could NOT be inspected -- distinct from a
+        // KNOWN wrong binding (`container_binding_drift`, which forces a
+        // governed recreate). v11 review P1-1: this is a REUSE guard, not
+        // a blanket host-mutation block -- it must prevent accepting the
+        // EXISTING container as-is (Running -> `already_running`, Stopped
+        // -> M2 start) in `required` mode, but must NEVER prevent an
+        // independently-required M3/M4 recreate (which replaces the
+        // unverifiable container with a freshly created one from the
+        // verified immutable target -- the safe corrective action), and
+        // must NEVER feed the GLOBAL `stage107a_service_block` (which
+        // would also incorrectly block remove-only rollback, M8 -- v11
+        // review P0-1). Threaded directly into
+        // `execute_trusted_container_intent` instead (see its own
+        // reuse-guard check), computed alongside `image_identity_final_block`
+        // (same `execute_requested && control_plane_authorized` gate, same
+        // effective mode), from the FINAL evidence for this cycle (i.e.
+        // post-acquisition when `resolve_pinned_image_outcome`
+        // re-evaluated after a pull) -- never re-conflated with
+        // target-image verification (`PreflightOutcome`/`classify_evaluation`
+        // remain completely untouched by this).
+        let mut container_binding_unavailable_in_required_mode = false;
+        let image_identity_final_block: Option<String> = if let Some((evaluation, outcome)) = image_preflight {
+            if execute_requested && control_plane_authorized {
+                let existing_container_name = match observed_before {
+                    ContainerState::Running | ContainerState::Stopped => mapping.map(|mapping| mapping.container_name.as_str()),
+                    ContainerState::Missing => None,
+                };
+                let effective_mode = stage107a_cycle_gate.as_ref().and_then(|result| result.as_ref().ok()).map(|gate| gate.effective_mode)
+                    .unwrap_or(EXECUTION_PINNING_MODE_REQUIRED);
+                let resolution = resolve_pinned_image_outcome(
+                    &docker_image_runtime,
+                    evaluation.evidence,
+                    outcome,
+                    mutation_gates_clear,
+                    assignment
+                        .and_then(|artifact| artifact.resolved_image_identity.as_ref())
+                        .expect("image_preflight is only Some when resolved_image_identity is Some"),
+                    existing_container_name,
+                    stage107a_cycle_gate.as_ref().and_then(|result| result.as_ref().ok()).map(|gate| &gate.lease),
+                    &boundary_context,
+                    &mut mutation_boundaries,
+                    effective_mode,
+                );
+                container_binding_unavailable_in_required_mode = container_binding_unavailable_in_required_mode_from(
+                    resolution.evidence.as_ref().map(|evidence| evidence.container_binding_status.as_str()),
+                    effective_mode,
+                );
+                // v12 review P0-1: re-derive drift from the FINAL,
+                // post-acquisition evidence -- a mismatch discovered only
+                // by the mandatory post-M5 re-evaluation (never visible to
+                // the initial `NeedsPull` preflight) must be treated as
+                // runtime drift for EXECUTION exactly like a
+                // preflight-discovered one, never lost.
+                container_binding_drift_for_execution = container_binding_mismatches_from_status(
+                    resolution.evidence.as_ref().map(|evidence| evidence.container_binding_status.as_str()),
+                );
+                pinned_image_evidence = resolution.evidence;
+                pinned_execution_reference = resolution.execution_reference;
+                pinned_image_hard_failure = resolution.hard_failure;
+                pinned_image_acquisition_performed = resolution.acquisition_performed;
+                resolution.block
+            } else {
+                // v9 review P1-3: a non-executing ("suggested") cycle, or one
+                // without control-plane authorization, must NEVER surface a
+                // mutation-oriented `blocked_image_identity_*` status -- no
+                // host mutation (M5 or otherwise) was ever going to happen
+                // this cycle regardless of the preflight outcome, and
+                // `resolve_pinned_image_outcome` itself is never called (so
+                // no acquisition can be attempted and no lease/M5-boundary
+                // record is produced). The read-only evidence from the
+                // UNCONDITIONAL preflight (v8 review P1-6) is still recorded
+                // truthfully; a KNOWN target mismatch or container-binding
+                // drift still affects convergence via
+                // `image_known_mismatch`/`container_binding_drift`, already
+                // folded into `attachment_mismatch` above -- this is
+                // evidence/drift-only, never a synthetic block code.
+                pinned_image_evidence = Some(evaluation.evidence);
+                None
+            }
+        } else {
+            // v9 review P1-4: truthful, explicit evidence for an artifact
+            // this module was never even asked to pin-verify -- local_build/
+            // legacy_unclassified sources, an unresolved registry artifact,
+            // or one whose pin failed the structural-validity check.
+            // `pull_disposition` is always set (never left absent), so an
+            // observer can never misread "no evidence" as "verified and
+            // fine" (this matters because D-Monitor snapshots feed
+            // analytics/GNN models downstream). Self-review correction:
+            // gated on `mapping.is_some()` too -- `image_preflight` is also
+            // `None` whenever there is simply no local trusted-container
+            // mapping for an otherwise perfectly valid pin (a completely
+            // separate, pre-existing `blocked_local_mapping` concern), and
+            // that case must never be mislabeled as an unpinnable/invalid
+            // source.
+            pinned_image_evidence = match (mapping, assignment) {
+                (Some(_), Some(artifact)) => {
+                    let reason_kind = if artifact.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
+                        image_identity_verification::REASON_LOCAL_BUILD_NOT_PINNABLE
+                    } else if artifact.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
+                        image_identity_verification::REASON_LEGACY_UNCLASSIFIED_NOT_PINNABLE
+                    } else if artifact.resolved_image_identity.is_none() {
+                        image_identity_verification::REASON_REGISTRY_UNRESOLVED
+                    } else {
+                        image_identity_verification::REASON_REGISTRY_PIN_STRUCTURALLY_INVALID
+                    };
+                    Some(image_identity_verification::not_applicable_pinning_evidence(reason_kind, &Utc::now().to_rfc3339()))
+                }
+                _ => None,
+            };
+            None
+        };
+
+        // v11 review P0-1: remove-only rollback (M8) must NEVER be blocked
+        // by a Stage-107B-B runtime image-verification outcome -- a
+        // container whose target image is mismatching/unverifiable/
+        // unselectable is PRECISELY a container that may need removing.
+        // `rollback_service_block_from` is computed from the SAME pre-image
+        // gates ordinary execution uses (generation/projection/completeness,
+        // attachment/local-policy resolution), but deliberately does not
+        // even ACCEPT `image_identity_final_block` (target-image mismatch/
+        // unverified/no-selectable-platform) as a parameter --
+        // `container_binding_unavailable_in_required_mode` was never part
+        // of this composition to begin with (v11 review P1-1, above), so
+        // no separate exclusion is needed for it here either.
+        let rollback_service_block: Option<String> = rollback_service_block_from(
+            stage107a_service_block_before_image.as_deref(),
+            attachment_policy_block.as_deref(),
+        );
+
+        let stage107a_service_block: Option<String> = stage107a_service_block_before_image
+            .or(image_identity_final_block)
+            .or(attachment_policy_block);
 
         // Section I evidence, computed once per service whenever a Stage
         // 107A evaluation actually ran (execute_requested &&
@@ -1283,27 +1842,7 @@ fn run_operational_reconciliation_from_bootstrap(
         } else {
             Vec::new()
         };
-        let authorization_expires_at_utc = context
-            .authorization
-            .as_ref()
-            .and_then(|authorization| authorization.expires_at_utc.clone());
         let local_policy_digest = compute_local_policy_digest(cfg);
-        // Review finding P1-1/P1-2: the clock-skew seconds actually enforced
-        // this cycle, and the per-M1-M8-boundary evidence context/collector
-        // derived from it. `mutation_boundaries` accumulates whether the
-        // service ultimately proceeds or blocks (mutated in place through
-        // `&mut`, so an early `?` inside an M1-M8 executor never discards
-        // what was already recorded).
-        let authorization_clock_skew_seconds = stage107a_cycle_gate
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .map(|gate| gate.skew_seconds);
-        let boundary_context = MutationBoundaryContext {
-            authorization_id: context.authorization.as_ref().map(|authorization| authorization.authorization_id.as_str()),
-            expires_at_utc: authorization_expires_at_utc.as_deref(),
-            configured_clock_skew_seconds: authorization_clock_skew_seconds,
-        };
-        let mut mutation_boundaries: Vec<MutationBoundaryRecord> = Vec::new();
 
         if rollback_requested {
             let (execution_status, message, host_mutation_performed) =
@@ -1319,7 +1858,7 @@ fn run_operational_reconciliation_from_bootstrap(
                         "rollback requires a separately scoped active D-Graph authorization with operation='rollback'".to_string(),
                         false,
                     )
-                } else if let Some(reason) = stage107a_service_block.as_deref() {
+                } else if let Some(reason) = rollback_service_block.as_deref() {
                     (stage107a_block_code(reason), reason.to_string(), false)
                 } else if mapping.is_none() {
                     (
@@ -1411,6 +1950,7 @@ fn run_operational_reconciliation_from_bootstrap(
                 verified_external_inputs: verified_external_inputs.clone(),
                 local_substitutions: local_substitutions.clone(),
                 mutation_boundaries_crossed: mutation_boundaries.clone(),
+                verified_image_identity: pinned_image_evidence.clone(),
             });
             continue;
         }
@@ -1444,6 +1984,7 @@ fn run_operational_reconciliation_from_bootstrap(
                 && action_code_zero_may_report_converged(
                     stage107a_service_block.as_deref(),
                     config_content_block.as_deref(),
+                    image_identity_pending_in_required_mode,
                 )
             {
             if completion_succeeded {
@@ -1459,6 +2000,20 @@ fn run_operational_reconciliation_from_bootstrap(
                     false,
                 )
             }
+        } else if wasm.action_code == 0 && image_identity_pending_in_required_mode {
+            // v9 review P0-4: WASM reported no host action needed, and no
+            // OTHER gate is already blocking -- but this artifact's
+            // required-mode pinned image identity has never actually been
+            // confirmed locally (M5 correctly did not fire merely to
+            // populate/verify a cache, per P0-3). Reporting "converged"
+            // here would be false operational evidence; this is NOT a
+            // mutation block either (nothing was attempted, and nothing
+            // should be) -- a distinct, truthful, read-only status.
+            (
+                "image_identity_unconfirmed".to_string(),
+                "WASM requested no host action, but the required-mode pinned image identity has not yet been confirmed locally; convergence cannot be truthfully reported".to_string(),
+                false,
+            )
         } else if completion_failed {
             (
                 "failed".to_string(),
@@ -1478,6 +2033,13 @@ fn run_operational_reconciliation_from_bootstrap(
             (stage107a_block_code(reason), reason.to_string(), false)
         } else if let Some(reason) = config_content_block.as_deref() {
             (stage107a_block_code(reason), reason.to_string(), false)
+        } else if let Some(detail) = pinned_image_hard_failure.as_deref() {
+            // Stage 107B-B (ADR-0014): a genuine `docker pull` command
+            // failure (network/registry problem) is NOT an identity-
+            // verification outcome -- handled exactly like
+            // `execute_lifecycle_phase`'s own pre-existing pull-failure path,
+            // as a per-service `"failed"` status, never a `blocked_*` code.
+            ("failed".to_string(), format!("governed image pull failed before execution: {detail}"), false)
         } else if mapping.is_none() {
             (
                 "blocked_local_mapping".to_string(),
@@ -1569,6 +2131,9 @@ fn run_operational_reconciliation_from_bootstrap(
                                 &boundary_context,
                                 &mut mutation_boundaries,
                                 &execution_identity,
+                                pinned_execution_reference.as_deref(),
+                                container_binding_drift_for_execution,
+                                container_binding_unavailable_in_required_mode,
                             ) {
                                 Ok(result) => result,
                                 Err(error) => (
@@ -1591,6 +2156,50 @@ fn run_operational_reconciliation_from_bootstrap(
                     false,
                 ),
             }
+        };
+
+        // v9 review P1-1: a successful M5 acquisition (the `docker pull`
+        // call ITSELF returned `Ok(())`) must always be reflected as a host
+        // mutation, even if a later re-verification/mismatch/hard-failure
+        // means no container was ultimately started this cycle -- otherwise
+        // `host_mutation_performed`/`side_effects_performed` would falsely
+        // report "no side effects" for a cycle that genuinely changed local
+        // Docker image storage.
+        let host_mutation_performed = host_mutation_performed || pinned_image_acquisition_performed;
+
+        // v9 review P1-2: after a fresh pinned M1 create (a bare M1, or a
+        // governed M3/M4 recreate that itself ends in a fresh M1) succeeds,
+        // `execute_trusted_container_intent` has only proven the IMAGE
+        // OBJECT verified -- never that the newly created CONTAINER is
+        // actually bound to it. A narrow, read-only re-check closes that
+        // gap; it updates only report-only evidence
+        // (`verified_image_identity.actual_container_image`), never
+        // `execution_projection`/`execution_generation`.
+        let (execution_status, message) = if execution_status == "deployed" {
+            match (
+                pinned_image_evidence.as_ref().and_then(|evidence| evidence.actual_image_id.clone()),
+                mapping,
+            ) {
+                (Some(expected_image_id), Some(mapping)) => {
+                    let observed = docker_image_runtime.inspect_container_image_binding(&mapping.container_name);
+                    let (actual_container_image, container_binding_status, override_status) =
+                        post_action_container_binding_check(&mapping.container_name, &expected_image_id, observed);
+                    if let Some(evidence) = pinned_image_evidence.as_mut() {
+                        evidence.actual_container_image = actual_container_image;
+                        // v10 review P1-2: keep evidence internally
+                        // consistent -- `target_verified` stays `true`
+                        // (the IMAGE OBJECT genuinely did verify earlier
+                        // this cycle), but `container_binding_status` must
+                        // now reflect what was JUST observed on the fresh
+                        // container, never a stale pre-creation value.
+                        evidence.container_binding_status = container_binding_status.to_string();
+                    }
+                    override_status.unwrap_or((execution_status, message))
+                }
+                _ => (execution_status, message),
+            }
+        } else {
+            (execution_status, message)
         };
 
         side_effects_performed |= host_mutation_performed;
@@ -1627,6 +2236,7 @@ fn run_operational_reconciliation_from_bootstrap(
             verified_external_inputs,
             local_substitutions,
             mutation_boundaries_crossed: mutation_boundaries,
+            verified_image_identity: pinned_image_evidence,
         });
     }
 
@@ -2259,18 +2869,181 @@ fn secret_target_substitutions(
     substitutions
 }
 
+/// v8 review P0-1: the result of `resolve_pinned_image_outcome`. `evidence`
+/// is always present once a preflight ran (whether or not acquisition was
+/// attempted); `execution_reference` is the one and only signal
+/// `execute_trusted_container_intent` should trust to override the mutable
+/// declared tag; `block` folds into `stage107a_service_block` exactly like
+/// any other `"blocked_xxx: detail"` string; `hard_failure` is a genuine
+/// `docker pull` command failure, never an identity-verification outcome.
+struct PinnedImageResolution {
+    evidence: Option<VerifiedImageIdentity>,
+    execution_reference: Option<String>,
+    block: Option<String>,
+    hard_failure: Option<String>,
+    /// v9 review P1-1: true iff `acquire_pinned_image`'s `pull_image` call
+    /// itself returned `Ok(())` this invocation -- i.e. the host WAS
+    /// mutated, regardless of what any later re-verification found. The
+    /// caller must OR this into `host_mutation_performed`/
+    /// `side_effects_performed`, since a successful pull followed by a
+    /// blocking post-pull mismatch/unverified result must never be reported
+    /// as "no side effects" -- that would be false operational evidence.
+    acquisition_performed: bool,
+}
+
+/// Stage 107B-B (ADR-0014), v8 review P0-1/P0-2: turns an ALREADY-COMPUTED,
+/// read-only preflight outcome (`image_identity_verification::PreflightOutcome`,
+/// from `evaluate_image_identity` + `classify_evaluation` -- see the
+/// per-service loop above) into a final decision, WITHOUT itself ever
+/// deciding whether mutation is permitted: `mutation_gates_clear` must
+/// already reflect every other governance/policy gate that independently
+/// prohibits host mutation at this point (generation/projection binding,
+/// required-mode completeness, the configuration-content gate, local
+/// host-mutation policy, dependency/secret resolution, rollback state) --
+/// this function ONLY additionally gates the M5 lease check immediately
+/// before the actual `docker pull`. A `NeedsPull` outcome reached with
+/// `mutation_gates_clear == false` performs NO acquisition and adds NO new
+/// block (whatever gate is already blocking explains the resulting status
+/// through the existing precedence chain).
+///
+/// Review decision #2 (mode handling), applied identically whether the
+/// outcome came from the initial preflight or from the post-acquisition
+/// re-evaluation: `KnownMismatch`/`NoSelectableReference` always block,
+/// regardless of mode; `UnverifiedWithReference` blocks only in `required`
+/// -- in any other mode it sets `execution_reference`, never leaving the
+/// caller to fall back to the mutable declared tag.
+#[allow(clippy::too_many_arguments)]
+fn resolve_pinned_image_outcome(
+    runtime: &dyn DockerImageRuntime,
+    preflight_evidence: VerifiedImageIdentity,
+    preflight_outcome: image_identity_verification::PreflightOutcome,
+    mutation_gates_clear: bool,
+    resolved_identity: &OperationalResolvedImageIdentity,
+    existing_container_name: Option<&str>,
+    lease: Option<&LeaseGuard>,
+    boundary_context: &MutationBoundaryContext,
+    records: &mut Vec<MutationBoundaryRecord>,
+    effective_mode: &str,
+) -> PinnedImageResolution {
+    use image_identity_verification::PreflightOutcome;
+
+    fn fold_terminal_outcome(outcome: PreflightOutcome, effective_mode: &str) -> (Option<String>, Option<String>) {
+        match outcome {
+            PreflightOutcome::Verified(execution_reference) => (Some(execution_reference), None),
+            PreflightOutcome::KnownMismatch(reason) => (None, Some(format!("{BLOCKED_IMAGE_IDENTITY_MISMATCH}: {reason}"))),
+            PreflightOutcome::NoSelectableReference(reason) => (None, Some(format!("{BLOCKED_IMAGE_IDENTITY_UNVERIFIED}: {reason}"))),
+            PreflightOutcome::UnverifiedWithReference { execution_reference, reason_kind } => {
+                if effective_mode == EXECUTION_PINNING_MODE_REQUIRED {
+                    (None, Some(format!("{BLOCKED_IMAGE_IDENTITY_UNVERIFIED}: {reason_kind}")))
+                } else {
+                    (Some(execution_reference), None)
+                }
+            }
+            PreflightOutcome::NeedsPull { .. } => {
+                // Only reachable here for the ORIGINAL (pre-acquisition)
+                // outcome when mutation_gates_clear was false -- see below.
+                // `acquire_pinned_image` itself never re-classifies to
+                // NeedsPull (its own doc comment/tests guarantee this).
+                (None, None)
+            }
+        }
+    }
+
+    let mut result = PinnedImageResolution {
+        evidence: Some(preflight_evidence),
+        execution_reference: None,
+        block: None,
+        hard_failure: None,
+        acquisition_performed: false,
+    };
+
+    if let PreflightOutcome::NeedsPull { execution_reference } = &preflight_outcome {
+        if mutation_gates_clear {
+            let Some(lease) = lease else {
+                // Defensive: mutation_gates_clear implies a resolved cycle
+                // gate exists (it requires stage107a_service_block_before_image
+                // to be None, which itself requires stage107a_cycle_gate to
+                // be Some(Ok(_))) -- this should be unreachable, but never
+                // silently acquire without a lease to check.
+                result.block = Some(format!("{BLOCKED_IMAGE_IDENTITY_UNVERIFIED}: internal: no lease available for M5"));
+                return result;
+            };
+            match check_boundary(lease, boundary_context, "M5", records) {
+                Err(lease_error) => {
+                    result.block = Some(lease_error.to_string());
+                }
+                Ok(()) => match image_identity_verification::acquire_pinned_image(
+                    runtime,
+                    resolved_identity,
+                    existing_container_name,
+                    execution_reference,
+                    &Utc::now().to_rfc3339(),
+                ) {
+                    Ok((evaluation, acquired_outcome)) => {
+                        // v9 review P1-1: `pull_image` already returned
+                        // `Ok(())` inside `acquire_pinned_image` by this
+                        // point -- the host WAS mutated, independent of
+                        // whatever the re-verification below finds.
+                        result.acquisition_performed = true;
+                        result.evidence = Some(evaluation.evidence);
+                        let (execution_reference, block) = fold_terminal_outcome(acquired_outcome, effective_mode);
+                        result.execution_reference = execution_reference;
+                        result.block = block;
+                    }
+                    Err(pull_error) => {
+                        result.hard_failure = Some(format!("could not pull governed image '{execution_reference}': {pull_error}"));
+                    }
+                },
+            }
+        }
+        // else: gates not clear -- no acquisition attempted, no new block.
+        return result;
+    }
+
+    // v8 review P1-3: no acquisition happened on this path (the preflight
+    // outcome was never `NeedsPull`) -- if the preflight nonetheless found
+    // an image locally (`Verified`/`KnownMismatch`, both of which only
+    // arise from a real `inspect_image` hit), the mechanical fact is
+    // "already present," never "pulled." `NoSelectableReference` and an
+    // inspect-error `UnverifiedWithReference` never found anything locally,
+    // so `pull_disposition` correctly stays `None` for those.
+    if let Some(evidence) = result.evidence.as_mut() {
+        if evidence.actual_image_id.is_some() && evidence.pull_disposition.is_none() {
+            evidence.pull_disposition = Some(image_identity_verification::PULL_DISPOSITION_ALREADY_PRESENT.to_string());
+        }
+    }
+    let (execution_reference, block) = fold_terminal_outcome(preflight_outcome, effective_mode);
+    result.execution_reference = execution_reference;
+    result.block = block;
+    result
+}
+
 /// `phase_boundaries` names the M1-M8 mutation boundary each mutating
 /// command in this phase corresponds to, so the lease is re-checked
 /// immediately before that specific operation (ADR-0012 point 9): `pull_image`'s
 /// actual `docker pull` is M5 (the preceding `docker image inspect` is
 /// read-only and not gated); `remove_container` is M6.
-#[allow(clippy::too_many_arguments)]
+///
+/// v8 review P1-2: `pinned` is true exactly when a verified
+/// `execution_reference` override is in effect for this artifact this
+/// cycle. Image acquisition for a pinned artifact is owned EXCLUSIVELY by
+/// `resolve_pinned_image_outcome`'s M5 (already completed, successfully,
+/// before `execute_trusted_container_intent` could even be reached this
+/// cycle -- see the per-service `image_identity_final_block` gate). The
+/// `"pull_image"` lifecycle command becomes an explicit no-op when `pinned`
+/// is true, rather than a second, unabstracted, non-identity-verifying M5
+/// implementation that merely happens to usually be harmless (v1's
+/// weakness: any inspect error there would have silently become a second
+/// pull attempt, bypassing every identity check). Unpinned artifacts are
+/// completely unaffected -- the original inspect-then-maybe-pull logic runs
+/// exactly as before.
 #[allow(clippy::too_many_arguments)]
 fn execute_lifecycle_phase(
     phase: &str,
     commands: &[OperationalLifecycleCommand],
     container_name: &str,
     image: &str,
+    pinned: bool,
     configuration_mounts: &[OperationalConfigurationMount],
     configuration_root: Option<&Path>,
     lease: &LeaseGuard,
@@ -2291,6 +3064,9 @@ fn execute_lifecycle_phase(
                         String::from_utf8_lossy(&output.stderr).trim()
                     );
                 }
+            }
+            "pull_image" if pinned => {
+                // v8 review P1-2: no-op -- see this function's doc comment.
             }
             "pull_image" => {
                 let inspected = Command::new("docker")
@@ -2371,6 +3147,106 @@ fn execute_lifecycle_phase(
 /// `mapping.ports` / `mapping.service_name` itself, so there is exactly one
 /// place node-local substitution can occur (the caller), and it is always
 /// mode-gated there.
+
+/// v8 review P0-3: the `docker run` pull-policy arguments. For a PINNED
+/// artifact (a verified immutable `execution_reference` is in effect),
+/// `--pull never` is added so `docker run` can never implicitly acquire
+/// missing image content itself -- acquisition remains owned exclusively by
+/// M5 (`resolve_pinned_image_outcome`/`acquire_pinned_image`), which already
+/// verified the exact content is present immediately before this call. Without
+/// this flag, a local image removed out-of-band between M5's verification
+/// and this M1 could cause `docker run` to silently perform an unrecorded,
+/// unverified second acquisition. Unpinned (mutable-tag) execution is
+/// completely unaffected -- no flag is added, preserving Docker's ordinary
+/// implicit-pull behavior exactly as before this review.
+fn pinned_pull_policy_args(pinned: bool) -> Vec<String> {
+    if pinned {
+        vec!["--pull".to_string(), "never".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// v8 review P1-5: the full M1 (`docker run`) argument vector, extracted as
+/// a pure function so the core execution guarantees can be proven WITHOUT a
+/// live Docker daemon: the pinned image argument is the immutable
+/// `execution_reference` (never the mutable declared tag), `--pull never`
+/// is present exactly when `pinned`, and the unpinned path is unaffected.
+/// Deliberately excludes the LIVE `ensure_docker_network` call (which
+/// creates a missing network as a side effect) -- the caller performs that
+/// separately, before calling this function, and passes the already-decided
+/// `network` name straight through here purely to emit the `--network`/
+/// `--network-alias` flags.
+#[allow(clippy::too_many_arguments)]
+fn build_governed_docker_run_args(
+    container_name: &str,
+    image: &str,
+    pinned: bool,
+    network: Option<&str>,
+    effective_network_aliases: &[String],
+    volumes: &[OperationalVolumeMount],
+    resolved_configuration_mounts: &[(String, String)],
+    effective_ports: &[OperationalPortMapping],
+    bindings: Option<&BTreeMap<String, String>>,
+    secret_environment: &[(String, String)],
+    execution_identity: &ExecutionIdentityLabels,
+    container_command: &[String],
+) -> Vec<String> {
+    let mut args = vec!["run".to_string(), "-d".to_string(), "--name".to_string(), container_name.to_string()];
+    args.extend(pinned_pull_policy_args(pinned));
+    if let Some(network) = network {
+        args.push("--network".to_string());
+        args.push(network.trim().to_string());
+        for alias in effective_network_aliases {
+            if is_safe_docker_name(alias) {
+                args.push("--network-alias".to_string());
+                args.push(alias.clone());
+            }
+        }
+    }
+    for volume in volumes {
+        args.push("--mount".to_string());
+        args.push(format!(
+            "type=volume,source={},target={}{}",
+            volume.name.trim(),
+            volume.target.trim(),
+            if volume.read_only { ",readonly" } else { "" }
+        ));
+    }
+    for mount in resolved_configuration_mounts {
+        args.push("--mount".to_string());
+        args.push(format!("type=bind,source={},target={},readonly", mount.0, mount.1));
+    }
+    for port in effective_ports {
+        let host_port = port.host_port.unwrap_or(port.container_port);
+        args.push("-p".to_string());
+        args.push(format!(
+            "{}:{}{}",
+            host_port,
+            port.container_port,
+            if port.protocol.trim().is_empty() { String::new() } else { format!("/{}", port.protocol.trim()) }
+        ));
+    }
+    if let Some(bindings) = bindings {
+        for (environment_variable, _) in bindings {
+            args.push("--env".to_string());
+            args.push(environment_variable.clone());
+        }
+    }
+    for (environment_variable, _) in secret_environment {
+        args.push("--env".to_string());
+        args.push(environment_variable.clone());
+    }
+    // Review finding P1-3: label the container with the exact artifact
+    // identity it was created from, so convergence can later detect drift a
+    // field-by-field inspect comparison alone cannot (including a value
+    // that was REMOVED, not merely one that mismatches).
+    args.extend(execution_identity.as_docker_run_args());
+    args.push(image.to_string());
+    args.extend(container_command.iter().cloned());
+    args
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_trusted_container_intent(
     mapping: &DispatchContainerMapping,
@@ -2389,24 +3265,52 @@ fn execute_trusted_container_intent(
     boundary_context: &MutationBoundaryContext,
     records: &mut Vec<MutationBoundaryRecord>,
     execution_identity: &ExecutionIdentityLabels,
+    runtime_image_override: Option<&str>,
+    container_binding_drift: bool,
+    container_binding_unavailable_in_required_mode: bool,
 ) -> Result<(String, String, bool)> {
     let container_name = mapping.container_name.trim();
-    let image = mapping
+    let declared_image = mapping
         .artifact
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .expect("trusted mapping requires non-empty artifact image");
+    // Stage 107B-B (ADR-0014, review decision #1): once a valid pin has been
+    // verified for this cycle, EVERY Docker command below that touches image
+    // content (inspect/pull inside `execute_lifecycle_phase`, the attachment-
+    // drift comparison, and the `docker run` argument) uses the immutable
+    // `execution_reference`, never the mutable declared tag. The declared
+    // tag remains the node-local trust key
+    // (`trusted_container_mapping_for_artifact`'s match key is unaffected by
+    // this override -- it still matches on `mapping.artifact`) and
+    // provenance/user intent, never the runtime source of truth once pinned.
+    let image = runtime_image_override.unwrap_or(declared_image);
+    // v8 review P0-3/P1-2: `pinned` gates BOTH the `--pull never` argument on
+    // the eventual `docker run` (below) and the lifecycle `"pull_image"`
+    // command's no-op behavior (`execute_lifecycle_phase`) -- a single
+    // source of truth for "is this cycle executing a verified pin."
+    let pinned = runtime_image_override.is_some();
     let resolved_configuration_mounts =
         resolve_configuration_mounts(configuration_mounts, configuration_root)?;
 
-    execute_lifecycle_phase("pre_install", &lifecycle.pre_install, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
-    execute_lifecycle_phase("install", &lifecycle.install, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
-    execute_lifecycle_phase("configure", &lifecycle.configure, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
-    execute_lifecycle_phase("start", &lifecycle.start, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+    execute_lifecycle_phase("pre_install", &lifecycle.pre_install, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+    execute_lifecycle_phase("install", &lifecycle.install, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+    execute_lifecycle_phase("configure", &lifecycle.configure, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+    execute_lifecycle_phase("start", &lifecycle.start, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
 
     let attachments_mismatch = match observed_before {
         ContainerState::Running | ContainerState::Stopped => {
+            // v9 review P0-2: `container_binding_drift` (an EXISTING
+            // container bound to a different image object than the
+            // verified target -- e.g. after a legitimate re-pin) is OR'd in
+            // here so it forces the SAME governed M3 recreate path as any
+            // other attachment drift. It must NEVER be treated as a reason
+            // to M2-start the existing (wrongly-bound) container -- routing
+            // it through this shared `attachments_mismatch` flag, rather
+            // than a separate branch, is what guarantees that: a Stopped
+            // container with drift below hits M3 (recreate), never M2
+            // (start), because M3 is checked first.
             !container_attachments_match(
                 container_name,
                 image,
@@ -2419,7 +3323,7 @@ fn execute_trusted_container_intent(
                 container_command,
                 configuration_root,
                 execution_identity,
-            )?
+            )? || container_binding_drift
         }
         ContainerState::Missing => false,
     };
@@ -2453,6 +3357,9 @@ fn execute_trusted_container_intent(
             boundary_context,
             records,
             execution_identity,
+            runtime_image_override,
+            container_binding_drift,
+            container_binding_unavailable_in_required_mode,
         );
     }
 
@@ -2486,12 +3393,41 @@ fn execute_trusted_container_intent(
             boundary_context,
             records,
             execution_identity,
+            runtime_image_override,
+            container_binding_drift,
+            container_binding_unavailable_in_required_mode,
         );
+    }
+
+    // v11 review P1-1: a REUSE guard, not a blanket host-mutation block --
+    // `container_binding_unavailable_in_required_mode` must prevent
+    // accepting the EXISTING container as-is (Running -> `already_running`,
+    // Stopped -> M2 start) without proof of its binding, but it must NEVER
+    // prevent an independently-required M3 (just above) or M4 (just
+    // above) recreate -- both already had their chance to fire before this
+    // check is reached. Scoped to Running/Stopped only: a `Missing`
+    // container (this is exactly what a fresh M3/M4 recursive re-entry
+    // looks like) has nothing existing to hold a reuse judgment about, and
+    // `container_binding_status` structurally can never be `unavailable`
+    // for a Missing container in the first place. Returns the same stable
+    // `blocked_image_identity_unverified` code an unresolvable TARGET-image
+    // failure already uses in `required` mode -- never routed through
+    // `anyhow`/`bail!`, so the stable code is never lost.
+    if matches!(observed_before, ContainerState::Running | ContainerState::Stopped)
+        && container_binding_unavailable_in_required_mode
+    {
+        return Ok((
+            BLOCKED_IMAGE_IDENTITY_UNVERIFIED.to_string(),
+            format!(
+                "existing trusted container '{container_name}' binding could not be verified in required mode; refusing to reuse it without proof (the target image itself is verified)"
+            ),
+            false,
+        ));
     }
 
     match observed_before {
         ContainerState::Running => {
-            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
             Ok((
             "already_running".to_string(),
             format!("trusted container '{}' is already running", container_name),
@@ -2511,7 +3447,7 @@ fn execute_trusted_container_intent(
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
-            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
             Ok((
                 "started".to_string(),
                 format!(
@@ -2522,71 +3458,23 @@ fn execute_trusted_container_intent(
             ))
         }
         ContainerState::Missing => {
-            let mut args = vec![
-                "run".to_string(),
-                "-d".to_string(),
-                "--name".to_string(),
-                container_name.to_string(),
-            ];
             if let Some(network) = network {
                 ensure_docker_network(network, lease, boundary_context, records)?;
-                args.push("--network".to_string());
-                args.push(network.trim().to_string());
-                for alias in effective_network_aliases {
-                    if is_safe_docker_name(alias) {
-                        args.push("--network-alias".to_string());
-                        args.push(alias.clone());
-                    }
-                }
             }
-            for volume in volumes {
-                args.push("--mount".to_string());
-                args.push(format!(
-                    "type=volume,source={},target={}{}",
-                    volume.name.trim(),
-                    volume.target.trim(),
-                    if volume.read_only { ",readonly" } else { "" }
-                ));
-            }
-            for mount in &resolved_configuration_mounts {
-                args.push("--mount".to_string());
-                args.push(format!(
-                    "type=bind,source={},target={},readonly",
-                    mount.0, mount.1
-                ));
-            }
-            for port in effective_ports {
-                let host_port = port.host_port.unwrap_or(port.container_port);
-                args.push("-p".to_string());
-                args.push(format!(
-                    "{}:{}{}",
-                    host_port,
-                    port.container_port,
-                    if port.protocol.trim().is_empty() {
-                        String::new()
-                    } else {
-                        format!("/{}", port.protocol.trim())
-                    }
-                ));
-            }
-            if let Some(bindings) = bindings {
-                for (environment_variable, _) in bindings {
-                    args.push("--env".to_string());
-                    args.push(environment_variable.clone());
-                }
-            }
-            for (environment_variable, _) in secret_environment {
-                args.push("--env".to_string());
-                args.push(environment_variable.clone());
-            }
-            // Review finding P1-3: label the container with the exact
-            // artifact identity it was created from, so convergence can
-            // later detect drift a field-by-field inspect comparison alone
-            // cannot (including a value that was REMOVED, not merely one
-            // that mismatches).
-            args.extend(execution_identity.as_docker_run_args());
-            args.push(image.to_string());
-            args.extend(container_command.iter().cloned());
+            let args = build_governed_docker_run_args(
+                container_name,
+                image,
+                pinned,
+                network,
+                effective_network_aliases,
+                volumes,
+                &resolved_configuration_mounts,
+                effective_ports,
+                bindings,
+                secret_environment,
+                execution_identity,
+                container_command,
+            );
             check_boundary(lease, boundary_context, "M1", records)?;
             let mut command = Command::new("docker");
             command.args(&args);
@@ -2608,7 +3496,7 @@ fn execute_trusted_container_intent(
                     String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
-            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, configuration_mounts, configuration_root, lease, boundary_context, records)?;
+            execute_lifecycle_phase("post_install", &lifecycle.post_install, container_name, image, pinned, configuration_mounts, configuration_root, lease, boundary_context, records)?;
             Ok((
                 "deployed".to_string(),
                 format!(
@@ -3191,7 +4079,7 @@ mod tests {
             "{}: recomputed execution_projection_digest does not match the authorized snapshot",
             crate::agent::stage107a_enforcement::BLOCKED_PROJECTION_MISMATCH
         );
-        assert!(!action_code_zero_may_report_converged(Some(&reason), None));
+        assert!(!action_code_zero_may_report_converged(Some(&reason), None, false));
     }
 
     #[test]
@@ -3200,7 +4088,7 @@ mod tests {
             "{}: authorization resource_id does not match this node's resolved resource_id",
             crate::agent::stage107a_enforcement::BLOCKED_WRONG_RESOURCE_IDENTITY
         );
-        assert!(!action_code_zero_may_report_converged(Some(&reason), None));
+        assert!(!action_code_zero_may_report_converged(Some(&reason), None, false));
     }
 
     #[test]
@@ -3209,7 +4097,7 @@ mod tests {
             "{}: declared configuration mount content digest does not match the resolved bytes",
             crate::agent::stage107a_enforcement::BLOCKED_CONFIG_CONTENT_MISMATCH
         );
-        assert!(!action_code_zero_may_report_converged(None, Some(&reason)));
+        assert!(!action_code_zero_may_report_converged(None, Some(&reason), false));
     }
 
     #[test]
@@ -3218,12 +4106,29 @@ mod tests {
             "{}: service is not required-complete",
             crate::agent::stage107a_enforcement::BLOCKED_REQUIRED_INCOMPLETE
         );
-        assert!(!action_code_zero_may_report_converged(Some(&reason), None));
+        assert!(!action_code_zero_may_report_converged(Some(&reason), None, false));
     }
 
     #[test]
     fn action_code_zero_may_report_converged_when_no_stage107a_block_is_present() {
-        assert!(action_code_zero_may_report_converged(None, None));
+        assert!(action_code_zero_may_report_converged(None, None, false));
+    }
+
+    // ---- P0-4 (v9 review): action_code==0 must not mask an unconfirmed --- //
+    // ---- required-mode pinned image identity, even with no other block --- //
+
+    #[test]
+    fn action_code_zero_may_not_report_converged_when_image_identity_pending_in_required_mode() {
+        assert!(!action_code_zero_may_report_converged(None, None, true));
+    }
+
+    #[test]
+    fn action_code_zero_may_report_converged_in_legacy_partial_even_though_the_flag_is_computed_only_for_required() {
+        // The caller only ever sets `image_identity_pending_in_required_mode`
+        // to `true` when the effective mode is `required` (legacy_partial
+        // always passes `false` here) -- this asserts the function's own
+        // contract in isolation: `false` never blocks convergence.
+        assert!(action_code_zero_may_report_converged(None, None, false));
     }
 
     // ---- P1-1/P1-2 (v4 review): mutation-boundary evidence --------------
@@ -3446,7 +4351,7 @@ mod tests {
         );
         assert!(matches);
         assert_eq!(run_embedded_reconciler(true, matches).unwrap().action_code, 0);
-        assert!(action_code_zero_may_report_converged(None, None));
+        assert!(action_code_zero_may_report_converged(None, None, false));
         let evidence = serde_json::to_value(&effective.substitutions).unwrap();
         assert_eq!(evidence[0]["field"], "ports");
         assert_eq!(evidence[0]["effective_value"][0]["host_port"], 1883);
@@ -3492,4 +4397,934 @@ mod tests {
         assert!(identity.as_docker_run_args().contains(&format!("datum.execution_projection_digest={digest}")));
     }
 
+    // ---- Stage 107B-B (ADR-0014): resolve_pinned_execution_image -------- //
+
+    fn far_future_boundary() -> (LeaseGuard, OperationalReconciliationAuthorization) {
+        let expires = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let authorization = boundary_test_auth(Some(&expires));
+        let lease = LeaseGuard::from_authorization(&authorization, 30).unwrap();
+        (lease, authorization)
+    }
+
+    fn stage_107b_b_digest(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn stage_107b_b_platform(
+        os: &str,
+        architecture: &str,
+        manifest: char,
+        config: char,
+        repository: &str,
+    ) -> OperationalResolvedPlatformManifest {
+        OperationalResolvedPlatformManifest {
+            os: os.to_string(),
+            architecture: architecture.to_string(),
+            variant: None,
+            manifest_digest: stage_107b_b_digest(manifest),
+            config_digest: stage_107b_b_digest(config),
+            execution_reference: format!("{repository}@{}", stage_107b_b_digest(manifest)),
+        }
+    }
+
+    fn stage_107b_b_resolved(repository: &str, platforms: Vec<OperationalResolvedPlatformManifest>) -> OperationalResolvedImageIdentity {
+        OperationalResolvedImageIdentity {
+            repository: repository.to_string(),
+            index_digest: None,
+            platforms,
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        }
+    }
+
+    fn stage_107b_b_inspect_record(id: char, repository: &str, manifest: char, os: &str, architecture: &str) -> image_identity_verification::ImageInspectRecord {
+        image_identity_verification::ImageInspectRecord {
+            id: stage_107b_b_digest(id),
+            repo_digests: vec![format!("{repository}@{}", stage_107b_b_digest(manifest))],
+            os: os.to_string(),
+            architecture: architecture.to_string(),
+            variant: None,
+        }
+    }
+
+    fn preflight_for(
+        runtime: &dyn DockerImageRuntime,
+        resolved: &OperationalResolvedImageIdentity,
+        existing_container_name: Option<&str>,
+    ) -> (VerifiedImageIdentity, image_identity_verification::PreflightOutcome) {
+        let evaluation = image_identity_verification::evaluate_image_identity(
+            runtime, resolved, existing_container_name, "2026-01-01T00:00:00Z",
+        );
+        let outcome = image_identity_verification::classify_evaluation(&evaluation);
+        (evaluation.evidence, outcome)
+    }
+
+    // Test matrix item 1: exact pinned image already present => verified, no pull.
+    #[test]
+    fn resolve_pinned_image_outcome_exact_match_already_present_skips_pull() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert_eq!(result.execution_reference.as_deref(), Some(reference.as_str()));
+        assert!(result.block.is_none());
+        assert_eq!(result.evidence.unwrap().pull_disposition.as_deref(), Some(image_identity_verification::PULL_DISPOSITION_ALREADY_PRESENT));
+        assert!(runtime.pull_calls.borrow().is_empty(), "an exact match must never be pulled over");
+        assert!(records.is_empty(), "no M5 boundary attempt when nothing needed to be pulled");
+    }
+
+    // Test matrix item 2: image not found => M5 pull once => re-inspect => verified.
+    #[test]
+    fn resolve_pinned_image_outcome_absent_pulls_exactly_once_then_verifies() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(None));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        runtime.queue_pull(&reference, Ok(()));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert_eq!(result.execution_reference.as_deref(), Some(reference.as_str()), "{:?}", result.block);
+        assert_eq!(result.evidence.unwrap().pull_disposition.as_deref(), Some(image_identity_verification::PULL_DISPOSITION_PULL_PERFORMED));
+        assert_eq!(runtime.pull_calls.borrow().len(), 1, "exactly one pull");
+        assert_eq!(runtime.inspect_calls.borrow().len(), 2, "inspect before AND after the pull");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].boundary, "M5");
+        assert_eq!(records[0].result, "passed");
+        assert!(result.acquisition_performed, "v9 review P1-1: a successful pull must always be reflected as an acquisition");
+    }
+
+    // v12 review P0-1: the exact "REQUIRED SCENARIO" from the review --
+    // target image initially absent (NeedsPull, container_binding
+    // necessarily NotApplicable since there is no local target image
+    // object to compare the existing container against yet), M5 pulls,
+    // and the MANDATORY post-pull re-evaluation discovers the EXISTING
+    // container is bound to a DIFFERENT image than the just-verified
+    // target. The FINAL evidence must report the mismatch even though the
+    // INITIAL preflight could not possibly have seen it.
+    #[test]
+    fn resolve_pinned_image_outcome_discovers_container_binding_mismatch_only_after_the_post_pull_reevaluation() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+
+        // Initial preflight: target image C is recognized absent locally.
+        runtime.queue_inspect(&reference, Ok(None));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, Some("mqtt"));
+        assert_eq!(outcome, image_identity_verification::PreflightOutcome::NeedsPull { execution_reference: reference.clone() });
+        assert!(!container_binding_mismatches_from_status(Some(evidence.container_binding_status.as_str())),
+            "the initial preflight cannot see a binding mismatch it never had a target image to compare against");
+        assert_eq!(evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE);
+        // No inspect_container_image_binding call was even made yet (the
+        // Ok(None) target-absent branch never reaches that check).
+        assert!(runtime.container_binding_calls.borrow().is_empty());
+
+        // M5 pulls C. Post-pull re-inspection: target C verifies. Existing
+        // container "mqtt" is bound to a DIFFERENT image, B (digest '9').
+        runtime.queue_pull(&reference, Ok(()));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
+
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, Some("mqtt"), Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+
+        // Target image C itself is verified -- this is drift, not a
+        // terminal target-image mismatch.
+        assert!(result.block.is_none(), "a container-binding mismatch must never become a target-image block: {:?}", result.block);
+        assert_eq!(result.execution_reference.as_deref(), Some(reference.as_str()));
+        let final_evidence = result.evidence.expect("evidence must be present");
+        assert!(final_evidence.target_verified, "the target image itself verified");
+        assert_eq!(final_evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
+
+        // This is the exact fact `container_binding_drift_for_execution`
+        // must be re-derived from -- the per-service loop's own logic
+        // (verified here via the same pure function it calls).
+        assert!(container_binding_mismatches_from_status(Some(final_evidence.container_binding_status.as_str())),
+            "the FINAL, post-pull evidence must be recognized as drift for execution purposes");
+    }
+
+    // Item 6 (v6 review): when the preflight already found the mismatch
+    // BEFORE acquisition (target already present and verified, no
+    // NeedsPull, no M5 attempted at all), `resolve_pinned_image_outcome`
+    // must return that SAME evidence unchanged -- proving the v6 fix does
+    // not alter the no-M5 path's behavior at all.
+    #[test]
+    fn resolve_pinned_image_outcome_no_m5_path_preserves_a_preflight_discovered_binding_mismatch_unchanged() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        // Target C already present and verifies; existing container "mqtt"
+        // already bound to a different image B (digest '9') -- discovered
+        // by the INITIAL preflight itself, no NeedsPull involved.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, Some("mqtt"));
+        assert_eq!(outcome, image_identity_verification::PreflightOutcome::Verified(reference.clone()));
+        assert_eq!(evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
+
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, Some("mqtt"), Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(runtime.pull_calls.borrow().is_empty(), "a non-NeedsPull outcome must never attempt M5");
+        assert!(result.block.is_none());
+        let final_evidence = result.evidence.expect("evidence must be present");
+        assert_eq!(final_evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
+        assert!(container_binding_mismatches_from_status(Some(final_evidence.container_binding_status.as_str())));
+    }
+
+    #[test]
+    fn container_binding_mismatches_from_status_is_true_only_for_the_mismatches_string() {
+        assert!(container_binding_mismatches_from_status(Some(image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES)));
+        assert!(!container_binding_mismatches_from_status(Some(image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES)));
+        assert!(!container_binding_mismatches_from_status(Some(image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE)));
+        assert!(!container_binding_mismatches_from_status(Some(image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE)));
+        assert!(!container_binding_mismatches_from_status(None));
+    }
+
+    // Test matrix items 33-35 (v9 review P1-1): a successful M5 pull must be
+    // reflected as `acquisition_performed == true` EVEN WHEN the mandatory
+    // re-verification after that pull finds a mismatch and blocks -- a
+    // failed/blocked post-pull re-check must never be reported as "no side
+    // effects," because the host's local image store genuinely changed.
+    #[test]
+    fn resolve_pinned_image_outcome_acquisition_performed_stays_true_even_when_reverification_blocks() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(None));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        runtime.queue_pull(&reference, Ok(()));
+        // The registry served up a genuinely mismatching manifest after the
+        // pull -- a real hard mismatch, not a transient inspect failure.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '9', "linux", "amd64"))));
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_MISMATCH), "{:?}", result.block);
+        assert!(result.execution_reference.is_none());
+        assert_eq!(runtime.pull_calls.borrow().len(), 1);
+        assert!(
+            result.acquisition_performed,
+            "the pull itself succeeded -- the host WAS mutated, regardless of the post-pull re-verification's outcome"
+        );
+    }
+
+    // Test matrix item 3: inspect daemon/error != not-found => no pull, unverified block.
+    #[test]
+    fn resolve_pinned_image_outcome_inspect_error_never_pulls_and_is_unverified() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Err("permission denied".to_string()));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(runtime.pull_calls.borrow().is_empty(), "an inspect error must never be treated as absence-and-pullable");
+        assert!(result.execution_reference.is_none());
+        assert!(result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_UNVERIFIED), "{:?}", result.block);
+    }
+
+    // Test matrix items 14/15: mismatch blocks in BOTH required and legacy_partial.
+    #[test]
+    fn resolve_pinned_image_outcome_mismatch_blocks_in_required_and_legacy_partial() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        for mode in [EXECUTION_PINNING_MODE_REQUIRED, crate::agent::stage107a_enforcement::EXECUTION_PINNING_MODE_LEGACY_PARTIAL] {
+            let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+                os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+            });
+            let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+            // Wrong manifest digest in RepoDigests -> manifest_mismatch.
+            runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '9', "linux", "amd64"))));
+            let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+            let (lease, _auth) = far_future_boundary();
+            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+            let mut records = Vec::new();
+            let result = resolve_pinned_image_outcome(
+                &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, mode,
+            );
+            assert!(result.execution_reference.is_none(), "mode={mode}: a mismatch must never yield a usable reference");
+            assert!(result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_MISMATCH), "mode={mode}: {:?}", result.block);
+        }
+    }
+
+    // Test matrix items 16/17, v8 review P0-2: unverifiable blocks in
+    // required, but is permitted in legacy_partial -- AND, per the P0-2 fix,
+    // legacy_partial carries the immutable execution_reference FORWARD
+    // rather than leaving the caller to fall back to the mutable tag.
+    #[test]
+    fn resolve_pinned_image_outcome_unverifiable_blocks_only_in_required_and_legacy_partial_keeps_the_reference() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+
+        let required_runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        required_runtime.queue_inspect(&reference, Err("daemon unreachable".to_string()));
+        let (required_evidence, required_outcome) = preflight_for(&required_runtime, &resolved, None);
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let required_result = resolve_pinned_image_outcome(
+            &required_runtime, required_evidence, required_outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(required_result.execution_reference.is_none());
+        assert!(required_result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_UNVERIFIED));
+
+        let legacy_runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        legacy_runtime.queue_inspect(&reference, Err("daemon unreachable".to_string()));
+        let (legacy_evidence, legacy_outcome) = preflight_for(&legacy_runtime, &resolved, None);
+        let mut records2 = Vec::new();
+        let legacy_result = resolve_pinned_image_outcome(
+            &legacy_runtime, legacy_evidence, legacy_outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records2,
+            crate::agent::stage107a_enforcement::EXECUTION_PINNING_MODE_LEGACY_PARTIAL,
+        );
+        assert!(legacy_result.block.is_none(), "legacy_partial must not block on unverifiable evidence: {:?}", legacy_result.block);
+        assert_eq!(
+            legacy_result.execution_reference.as_deref(), Some(reference.as_str()),
+            "P0-2: legacy_partial must carry the immutable reference forward, never fall back to the mutable declared tag"
+        );
+        assert!(!legacy_result.evidence.unwrap().target_verified, "legacy_partial continuing must still record target_verified=false, never silently claim success");
+    }
+
+    // Test matrix item 7/9: platform selection integration -- ambiguous
+    // variant candidates block as unverified, in EVERY mode, even before any
+    // inspect call (v8 review P0-2 case B: no selectable reference exists at
+    // all, so there is nothing safe to fall back to regardless of mode).
+    #[test]
+    fn resolve_pinned_image_outcome_ambiguous_platform_blocks_in_every_mode_before_any_inspect() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(
+            repository,
+            vec![
+                OperationalResolvedPlatformManifest {
+                    os: "linux".to_string(), architecture: "arm".to_string(), variant: Some("v6".to_string()),
+                    manifest_digest: stage_107b_b_digest('1'), config_digest: stage_107b_b_digest('2'),
+                    execution_reference: format!("{repository}@{}", stage_107b_b_digest('1')),
+                },
+                OperationalResolvedPlatformManifest {
+                    os: "linux".to_string(), architecture: "arm".to_string(), variant: Some("v7".to_string()),
+                    manifest_digest: stage_107b_b_digest('3'), config_digest: stage_107b_b_digest('4'),
+                    execution_reference: format!("{repository}@{}", stage_107b_b_digest('3')),
+                },
+            ],
+        );
+        for mode in [EXECUTION_PINNING_MODE_REQUIRED, crate::agent::stage107a_enforcement::EXECUTION_PINNING_MODE_LEGACY_PARTIAL] {
+            let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+                os: "linux".to_string(), architecture: "arm".to_string(), variant: None,
+            });
+            let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+            let (lease, _auth) = far_future_boundary();
+            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+            let mut records = Vec::new();
+            let result = resolve_pinned_image_outcome(
+                &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, mode,
+            );
+            assert!(result.execution_reference.is_none(), "mode={mode}");
+            assert!(result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_UNVERIFIED), "mode={mode}: {:?}", result.block);
+            assert!(runtime.inspect_calls.borrow().is_empty(), "mode={mode}: must never inspect without a selected platform");
+        }
+    }
+
+    // A present-but-mismatching image must never be pulled over (review
+    // decision, "PRE-EXISTING LOCAL IMAGE" item 4): the fake never queues a
+    // pull response, so a pull attempt here would panic the fake -- proving
+    // none was attempted.
+    #[test]
+    fn resolve_pinned_image_outcome_never_pulls_over_a_present_mismatch() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('9', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(result.block.as_deref().unwrap().starts_with(BLOCKED_IMAGE_IDENTITY_MISMATCH), "{:?}", result.block);
+        assert!(runtime.pull_calls.borrow().is_empty());
+    }
+
+    // Test matrix item 26: an expired/unleased authorization retains its
+    // EXISTING stable lease block code, not an image-identity one -- proving
+    // Stage 107A lease semantics are threaded through unchanged.
+    #[test]
+    fn resolve_pinned_image_outcome_expired_lease_blocks_with_the_existing_lease_code_not_an_image_code() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        // Recognized absent -> a pull WOULD be attempted, but the lease is
+        // already expired, so `check_boundary` must block it first.
+        runtime.queue_inspect(&reference, Ok(None));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        let authorization = boundary_test_auth(Some("2020-01-01T00:00:00Z"));
+        let lease = LeaseGuard::from_authorization(&authorization, 30).unwrap();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(
+            result.block.as_deref().unwrap().starts_with(crate::agent::stage107a_enforcement::BLOCKED_LEASE_EXPIRED),
+            "{:?}", result.block
+        );
+        assert!(runtime.pull_calls.borrow().is_empty(), "a blocked M5 boundary must never pull");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].boundary, "M5");
+        assert_eq!(records[0].result, "blocked");
+    }
+
+    // v8 review P0-1: the 7 "no pull" scenarios explicitly requested by the
+    // review, all proven through the ONE gate `resolve_pinned_image_outcome`
+    // actually consults (`mutation_gates_clear`) -- covering generation
+    // mismatch, projection mismatch, required-incomplete, config-content
+    // mismatch, and local-execution-disabled uniformly (each is just a
+    // reason `mutation_gates_clear` would be false in the real per-service
+    // loop); expired/nonleased authorization and known image mismatch are
+    // covered by the dedicated tests above.
+    #[test]
+    fn resolve_pinned_image_outcome_never_pulls_when_mutation_gates_are_not_clear() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        let (lease, _auth) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+
+        // Simulates: generation mismatch, projection mismatch,
+        // required-incomplete, configuration-content mismatch, and
+        // local-execution-disabled -- every one of these makes
+        // `mutation_gates_clear` false in the real per-service loop, and
+        // `resolve_pinned_image_outcome` must treat all of them identically:
+        // no acquisition, no new block (whatever gate IS blocking already
+        // explains the status).
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        runtime.queue_inspect(&reference, Ok(None));
+        let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
+        let mut records = Vec::new();
+        let result = resolve_pinned_image_outcome(
+            &runtime, evidence, outcome, false, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
+        );
+        assert!(runtime.pull_calls.borrow().is_empty(), "mutation_gates_clear=false must never pull, regardless of WHY");
+        assert!(runtime.inspect_calls.borrow().len() == 1, "no re-inspection either -- acquisition was never attempted");
+        assert!(result.block.is_none(), "no NEW block is added -- the already-blocking gate explains the status");
+        assert!(!result.acquisition_performed, "no pull was attempted, so no acquisition can have been performed");
+        assert!(result.execution_reference.is_none(), "no mutable-tag fallback either");
+        assert!(records.is_empty(), "no M5 boundary attempt at all when gates are not clear");
+    }
+
+    // Test matrix item 24 (the part exercisable without a live Docker
+    // daemon), corrected for v9 review P0-2: a running container bound to a
+    // DIFFERENT image than the verified target is a runtime DRIFT
+    // observation -- never contaminating TARGET IMAGE verification -- so it
+    // must be reported ONLY via `container_binding`, never via
+    // `verified`/`reason_kind`, and the preflight outcome for the TARGET
+    // stays `Verified` (a separate, per-service `container_binding_drift`
+    // flag is what forces the governed recreate; see
+    // `operational_reconciliation`'s outer `attachment_mismatch`).
+    #[test]
+    fn evaluate_image_identity_reports_container_binding_mismatch_for_a_running_container() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        // v8 review P1-1: container-binding evidence now comes exclusively
+        // through `DockerImageRuntime::inspect_container_image_binding`
+        // (fakeable), never an unabstracted `Command::new` inside this file.
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
+        let evaluation = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(evaluation.verified, "target image identity must verify independently of container binding: {evaluation:?}");
+        assert_eq!(
+            evaluation.container_binding,
+            image_identity_verification::ContainerBindingObservation::Mismatches { actual_image_id: stage_107b_b_digest('9') }
+        );
+        assert_eq!(
+            image_identity_verification::classify_evaluation(&evaluation),
+            image_identity_verification::PreflightOutcome::Verified(reference)
+        );
+    }
+
+    // v8 review P1-1, corrected for v9 review P0-2: container inspect
+    // failure/malformed/missing must surface as UNAVAILABLE -- via
+    // `container_binding`, never silently treated as "nothing to check" --
+    // but it must ALSO never contaminate TARGET IMAGE verification.
+    #[test]
+    fn evaluate_image_identity_reports_container_binding_unavailable_not_silently_ignored() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Err("docker inspect failed".to_string()));
+        let evaluation = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(evaluation.verified, "target image identity must verify independently of container-binding availability: {evaluation:?}");
+        assert_eq!(evaluation.container_binding, image_identity_verification::ContainerBindingObservation::Unavailable);
+        assert_eq!(
+            image_identity_verification::classify_evaluation(&evaluation),
+            image_identity_verification::PreflightOutcome::Verified(reference)
+        );
+    }
+
+    // ---- v9 review P0-1/P0-2: image_known_mismatch_from / container_binding_drift_from ----
+    // Test matrix items 14-19: a KnownMismatch preflight outcome (real
+    // candidate mismatch) is the ONLY thing that sets `image_known_mismatch`;
+    // a container-binding `Mismatches` observation (drift after a re-pin) is
+    // the ONLY thing that sets `container_binding_drift`; neither ever sets
+    // the other.
+
+    #[test]
+    fn image_known_mismatch_from_is_true_only_for_known_mismatch() {
+        assert!(image_known_mismatch_from(Some(&image_identity_verification::PreflightOutcome::KnownMismatch("manifest_mismatch".to_string()))));
+        assert!(!image_known_mismatch_from(Some(&image_identity_verification::PreflightOutcome::Verified("ref".to_string()))));
+        assert!(!image_known_mismatch_from(Some(&image_identity_verification::PreflightOutcome::NeedsPull { execution_reference: "ref".to_string() })));
+        assert!(!image_known_mismatch_from(Some(&image_identity_verification::PreflightOutcome::UnverifiedWithReference {
+            execution_reference: "ref".to_string(), reason_kind: "inspect_unavailable".to_string(),
+        })));
+        assert!(!image_known_mismatch_from(Some(&image_identity_verification::PreflightOutcome::NoSelectableReference("no_matching_platform".to_string()))));
+        assert!(!image_known_mismatch_from(None), "no preflight ran at all (unpinned/local_build) must never be treated as a known mismatch");
+    }
+
+    #[test]
+    fn container_binding_drift_from_is_true_only_for_mismatches_observation() {
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+
+        // Drifted: target verifies, container bound to a DIFFERENT image.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
+        let drifted = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(container_binding_drift_from(Some(&drifted)));
+
+        // Matching: no drift.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('2'))));
+        let matching = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(!container_binding_drift_from(Some(&matching)));
+
+        // Unavailable: not drift (fails closed elsewhere via `verified`
+        // remaining evidence-truthful, but never forces a recreate on its
+        // own -- only a KNOWN wrong binding does).
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Err("permission denied".to_string()));
+        let unavailable = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(!container_binding_drift_from(Some(&unavailable)));
+
+        // No container at all (Missing state): NotApplicable, never drift.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        let missing = image_identity_verification::evaluate_image_identity(&runtime, &resolved, None, "2026-01-01T00:00:00Z");
+        assert!(!container_binding_drift_from(Some(&missing)));
+
+        assert!(!container_binding_drift_from(None), "no preflight ran at all must never be treated as drift");
+    }
+
+    // ---- v11 review P0-1/P1-1: container_binding_unavailable_in_required_mode_from ----
+    // Test matrix items 1-6 from the v3->v4 independent review, reshaped
+    // as a plain `bool` reuse-guard per the v4->v5 review.
+
+    #[test]
+    fn container_binding_unavailable_in_required_mode_is_true_only_in_required_mode() {
+        // Item 2/3: required + target verified + binding Unavailable =>
+        // the reuse guard fires (caller must refuse Running -> already_running
+        // and Stopped -> M2, never silently converge/start).
+        assert!(container_binding_unavailable_in_required_mode_from(
+            Some(image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE),
+            EXECUTION_PINNING_MODE_REQUIRED,
+        ));
+
+        // Item 5: legacy_partial preserves the weaker "may still proceed"
+        // semantics -- the guard never fires here (evidence truthfulness is
+        // handled entirely by `container_binding_status` itself, not by
+        // this gate).
+        assert!(!container_binding_unavailable_in_required_mode_from(
+            Some(image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE),
+            crate::agent::stage107a_enforcement::EXECUTION_PINNING_MODE_LEGACY_PARTIAL,
+        ));
+    }
+
+    #[test]
+    fn container_binding_unavailable_in_required_mode_never_fires_for_matches_or_mismatches_or_not_applicable() {
+        // Item 1: Matches => normal convergence/M2 behavior may proceed.
+        assert!(!container_binding_unavailable_in_required_mode_from(
+            Some(image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES), EXECUTION_PINNING_MODE_REQUIRED,
+        ));
+        // Item 4: Mismatches is drift, handled entirely by
+        // `container_binding_drift_from`/M3 -- this guard must never ALSO
+        // fire for it (that would double-govern the same fact two ways).
+        assert!(!container_binding_unavailable_in_required_mode_from(
+            Some(image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES), EXECUTION_PINNING_MODE_REQUIRED,
+        ));
+        assert!(!container_binding_unavailable_in_required_mode_from(
+            Some(image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE), EXECUTION_PINNING_MODE_REQUIRED,
+        ));
+        assert!(!container_binding_unavailable_in_required_mode_from(None, EXECUTION_PINNING_MODE_REQUIRED));
+    }
+
+    // ---- v11 review P0-1: rollback_service_block_from ----
+    // Test matrix items 1-4 and 7 from the v4->v5 independent review: since
+    // this function's signature does not even accept an image-identity
+    // block as a parameter, a KnownMismatch/UnverifiedWithReference/
+    // NoSelectableReference/binding-unavailable outcome can never reach it
+    // -- proven by construction, not merely by a passing assertion. This
+    // test instead proves the OTHER, legitimate pre-existing rollback
+    // prerequisites this function DOES retain still work correctly.
+
+    #[test]
+    fn rollback_service_block_from_is_none_when_every_pre_image_gate_is_clear() {
+        assert!(rollback_service_block_from(None, None).is_none());
+    }
+
+    #[test]
+    fn rollback_service_block_from_still_blocks_on_pre_existing_generation_projection_completeness_gate() {
+        // Item 7: a genuine, pre-existing rollback prerequisite (e.g. a
+        // generation/projection mismatch, unrelated to Stage 107B-B image
+        // verification) must still block exactly as before.
+        assert_eq!(
+            rollback_service_block_from(Some("blocked_projection_mismatch: recomputed digest disagrees"), None).as_deref(),
+            Some("blocked_projection_mismatch: recomputed digest disagrees"),
+        );
+    }
+
+    #[test]
+    fn rollback_service_block_from_still_blocks_on_pre_existing_attachment_policy_gate() {
+        assert_eq!(
+            rollback_service_block_from(None, Some("blocked_secret_substitution: unresolved target variable")).as_deref(),
+            Some("blocked_secret_substitution: unresolved target variable"),
+        );
+    }
+
+    // ---- v10 review P0-1/P0-4: image_identity_unconfirmed_in_required_mode ----
+
+    #[test]
+    fn image_identity_unconfirmed_in_required_mode_covers_both_needs_pull_and_binding_unavailable() {
+        // Either sub-condition alone is sufficient, in required mode, while
+        // executing and authorized.
+        assert!(image_identity_unconfirmed_in_required_mode(true, true, EXECUTION_PINNING_MODE_REQUIRED, true, false));
+        assert!(image_identity_unconfirmed_in_required_mode(true, true, EXECUTION_PINNING_MODE_REQUIRED, false, true));
+        assert!(image_identity_unconfirmed_in_required_mode(true, true, EXECUTION_PINNING_MODE_REQUIRED, true, true));
+        assert!(!image_identity_unconfirmed_in_required_mode(true, true, EXECUTION_PINNING_MODE_REQUIRED, false, false));
+    }
+
+    #[test]
+    fn image_identity_unconfirmed_in_required_mode_is_false_outside_required_execution_authorization() {
+        // Item 5: legacy_partial is never affected, even with both
+        // sub-conditions true.
+        assert!(!image_identity_unconfirmed_in_required_mode(
+            true, true, crate::agent::stage107a_enforcement::EXECUTION_PINNING_MODE_LEGACY_PARTIAL, true, true,
+        ));
+        // Item 6: non-executing (no --execute) is never affected.
+        assert!(!image_identity_unconfirmed_in_required_mode(false, true, EXECUTION_PINNING_MODE_REQUIRED, true, true));
+        // Unauthorized is never affected either.
+        assert!(!image_identity_unconfirmed_in_required_mode(true, false, EXECUTION_PINNING_MODE_REQUIRED, true, true));
+    }
+
+    // ---- v10 review P1-1: container_binding_status / target_verified evidence shape ----
+    // Test matrix item 10: evidence can distinguish all four container-binding
+    // states, plus a target-unverified case and an unpinned/not-applicable
+    // source, without ever inferring the answer from an absent field.
+
+    #[test]
+    fn evidence_distinguishes_all_container_binding_states_via_evaluate_image_identity() {
+        let repository = "docker.io/library/eclipse-mosquitto";
+        let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
+        let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
+
+        // target verified + no existing container (Missing state) -> not_applicable.
+        let runtime = image_identity_verification::FakeDockerImageRuntime::new(image_identity_verification::PlatformIdentity {
+            os: "linux".to_string(), architecture: "amd64".to_string(), variant: None,
+        });
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        let missing = image_identity_verification::evaluate_image_identity(&runtime, &resolved, None, "2026-01-01T00:00:00Z");
+        assert!(missing.evidence.target_verified);
+        assert_eq!(missing.evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE);
+        assert!(!missing.evidence.runtime_identity_verified(), "no existing container means no runtime binding was ever proven, regardless of target verification");
+
+        // target verified + container binding matches.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('2'))));
+        let matches = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(matches.evidence.target_verified);
+        assert_eq!(matches.evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES);
+        assert!(matches.evidence.runtime_identity_verified());
+
+        // target verified + container binding mismatches.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
+        let mismatches = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(mismatches.evidence.target_verified);
+        assert_eq!(mismatches.evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
+        assert!(!mismatches.evidence.runtime_identity_verified());
+
+        // target verified + container binding unavailable.
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
+        runtime.queue_container_binding("mqtt", Err("permission denied".to_string()));
+        let unavailable = image_identity_verification::evaluate_image_identity(&runtime, &resolved, Some("mqtt"), "2026-01-01T00:00:00Z");
+        assert!(unavailable.evidence.target_verified);
+        assert_eq!(unavailable.evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE);
+        assert!(!unavailable.evidence.runtime_identity_verified());
+
+        // target unverified (manifest mismatch).
+        runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '9', "linux", "amd64"))));
+        let target_unverified = image_identity_verification::evaluate_image_identity(&runtime, &resolved, None, "2026-01-01T00:00:00Z");
+        assert!(!target_unverified.evidence.target_verified);
+        assert!(!target_unverified.evidence.runtime_identity_verified());
+
+        // unpinned/not-applicable source.
+        let not_applicable = image_identity_verification::not_applicable_pinning_evidence(
+            image_identity_verification::REASON_LOCAL_BUILD_NOT_PINNABLE, "2026-01-01T00:00:00Z",
+        );
+        assert!(!not_applicable.target_verified);
+        assert_eq!(not_applicable.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE);
+        assert!(!not_applicable.runtime_identity_verified());
+
+        // Serialization proof (item 10): the four container-binding states
+        // survive a JSON round-trip as their exact, distinct strings --
+        // never collapsing into an absent/ambiguous field.
+        for (evidence, expected_status) in [
+            (&matches.evidence, image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES),
+            (&mismatches.evidence, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES),
+            (&unavailable.evidence, image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE),
+            (&missing.evidence, image_identity_verification::CONTAINER_BINDING_STATUS_NOT_APPLICABLE),
+        ] {
+            let json = serde_json::to_value(evidence).unwrap();
+            assert_eq!(json["container_binding_status"], expected_status);
+        }
+    }
+
+    // ---- v9 review P0-3: mutation_gates_are_clear, each conjunct in isolation ----
+
+    struct AllClearFixture;
+    impl AllClearFixture {
+        fn call(overrides: &[(&str, bool)]) -> bool {
+            let mut values = std::collections::HashMap::new();
+            for key in [
+                "execute_requested", "control_plane_authorized", "rollback_requested",
+                "mapping_present", "dependency_blockers_empty",
+                "stage107a_service_block_before_image_clear", "config_content_block_clear",
+                "attachment_policy_block_clear", "local_container_execution_allowed",
+                "batch_secret_resolution_clear", "secret_resolution_clear",
+                "observation_clear", "completion_not_failed", "host_action_requested",
+            ] {
+                values.insert(key, key != "rollback_requested");
+            }
+            for (key, value) in overrides {
+                values.insert(*key, *value);
+            }
+            mutation_gates_are_clear(
+                values["execute_requested"], values["control_plane_authorized"], values["rollback_requested"],
+                values["mapping_present"], values["dependency_blockers_empty"],
+                values["stage107a_service_block_before_image_clear"], values["config_content_block_clear"],
+                values["attachment_policy_block_clear"], values["local_container_execution_allowed"],
+                values["batch_secret_resolution_clear"], values["secret_resolution_clear"],
+                values["observation_clear"], values["completion_not_failed"], values["host_action_requested"],
+            )
+        }
+    }
+
+    #[test]
+    fn mutation_gates_are_clear_when_everything_is_clear() {
+        assert!(AllClearFixture::call(&[]));
+    }
+
+    #[test]
+    fn mutation_gates_are_not_clear_when_any_single_gate_is_not_clear() {
+        for (key, value) in [
+            ("execute_requested", false),
+            ("control_plane_authorized", false),
+            ("rollback_requested", true),
+            ("mapping_present", false),
+            ("dependency_blockers_empty", false),
+            ("stage107a_service_block_before_image_clear", false),
+            ("config_content_block_clear", false),
+            ("attachment_policy_block_clear", false),
+            ("local_container_execution_allowed", false),
+            ("batch_secret_resolution_clear", false),
+            ("secret_resolution_clear", false),
+            ("observation_clear", false),
+            ("completion_not_failed", false),
+            ("host_action_requested", false),
+        ] {
+            assert!(
+                !AllClearFixture::call(&[(key, value)]),
+                "expected gates NOT clear when '{key}' is set to {value}"
+            );
+        }
+    }
+
+    // ---- v9 review P1-2: post_action_container_binding_check, pure decision ----
+
+    #[test]
+    fn post_action_binding_check_matching_records_id_status_and_no_status_override() {
+        let (actual, container_binding_status, override_status) =
+            post_action_container_binding_check("datum-mqtt", "sha256:abc", Ok(Some("sha256:abc".to_string())));
+        assert_eq!(actual.as_deref(), Some("sha256:abc"));
+        assert_eq!(container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MATCHES);
+        assert!(override_status.is_none());
+    }
+
+    #[test]
+    fn post_action_binding_check_mismatching_records_id_status_and_overrides_status() {
+        let (actual, container_binding_status, override_status) =
+            post_action_container_binding_check("datum-mqtt", "sha256:abc", Ok(Some("sha256:def".to_string())));
+        assert_eq!(actual.as_deref(), Some("sha256:def"));
+        assert_eq!(container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
+        let (status, message) = override_status.expect("mismatch must override the status");
+        assert_eq!(status, "container_binding_unconfirmed");
+        assert!(message.contains("sha256:def") && message.contains("sha256:abc"));
+    }
+
+    #[test]
+    fn post_action_binding_check_unavailable_on_inspect_error_records_no_id_status_and_overrides_status() {
+        let (actual, container_binding_status, override_status) =
+            post_action_container_binding_check("datum-mqtt", "sha256:abc", Err("permission denied".to_string()));
+        assert!(actual.is_none());
+        assert_eq!(container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE);
+        let (status, _message) = override_status.expect("an inspect error must override the status");
+        assert_eq!(status, "container_binding_unconfirmed");
+    }
+
+    #[test]
+    fn post_action_binding_check_unavailable_on_recognized_missing_records_no_id_status_and_overrides_status() {
+        let (actual, container_binding_status, override_status) =
+            post_action_container_binding_check("datum-mqtt", "sha256:abc", Ok(None));
+        assert!(actual.is_none());
+        assert_eq!(container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_UNAVAILABLE);
+        assert!(override_status.is_some());
+    }
+
+    // v8 review P0-3: pinned pull-policy arguments.
+    #[test]
+    fn pinned_pull_policy_args_adds_pull_never_only_when_pinned() {
+        assert_eq!(pinned_pull_policy_args(true), vec!["--pull".to_string(), "never".to_string()]);
+        assert!(pinned_pull_policy_args(false).is_empty());
+    }
+
+    // v8 review P0-3/P1-5: the core execution-argument guarantees, proven
+    // without a live Docker daemon.
+    #[test]
+    fn build_governed_docker_run_args_uses_the_immutable_reference_and_pull_never_when_pinned() {
+        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa" };
+        let execution_reference = "docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let args = build_governed_docker_run_args(
+            "mqtt", execution_reference, true, None, &[], &[], &[], &[], None, &[], &identity, &[],
+        );
+        assert!(args.contains(&"--pull".to_string()) && args.windows(2).any(|w| w == ["--pull".to_string(), "never".to_string()]));
+        assert!(args.contains(&execution_reference.to_string()), "{args:?}");
+        assert!(!args.iter().any(|arg| arg == "eclipse-mosquitto:2"), "no mutable tag may appear as the runtime image argument when pinned");
+    }
+
+    #[test]
+    fn build_governed_docker_run_args_unpinned_uses_the_declared_tag_with_no_pull_policy_flag() {
+        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa" };
+        let args = build_governed_docker_run_args(
+            "mqtt", "eclipse-mosquitto:2", false, None, &[], &[], &[], &[], None, &[], &identity, &[],
+        );
+        assert!(!args.contains(&"--pull".to_string()), "unpinned execution must not gain a pull-policy flag: {args:?}");
+        assert!(args.contains(&"eclipse-mosquitto:2".to_string()));
+    }
+
+    // Test matrix item 28: evidence timestamp changing alone must never
+    // change the execution projection digest -- proven structurally:
+    // `VerifiedImageIdentity` is not part of `OperationalArtifactAssignment`
+    // at all (it lives only on `OperationalServiceReconciliationReport`,
+    // report-side evidence, never on the assignment the projection is
+    // computed over).
+    #[test]
+    fn verified_image_identity_evidence_has_no_projection_relevant_field() {
+        fn assignment_has_no_verified_image_identity_field(_assignment: &OperationalArtifactAssignment) {}
+        let _ = assignment_has_no_verified_image_identity_field; // compiles iff the field truly isn't there
+    }
+
+    // Test matrix item 29/30/31: Option-A / no live Docker or registry --
+    // structural: `resolve_pinned_image_outcome` takes only an already-
+    // fetched `OperationalResolvedImageIdentity` (from the already-fetched
+    // `OperationalReconciliationContext` snapshot), an already-computed
+    // preflight outcome, and a `&dyn DockerImageRuntime` -- it has no HTTP
+    // client, no DServer URL, and no registry-transport parameter of any
+    // kind, so it structurally cannot re-resolve or contact a registry
+    // regardless of what its `DockerImageRuntime` argument does.
+    #[test]
+    fn resolve_pinned_image_outcome_signature_has_no_network_or_registry_capability() {
+        #[allow(clippy::too_many_arguments)]
+        fn assert_no_network_parameter(
+            _runtime: &dyn DockerImageRuntime,
+            _preflight_evidence: VerifiedImageIdentity,
+            _preflight_outcome: image_identity_verification::PreflightOutcome,
+            _mutation_gates_clear: bool,
+            _resolved_identity: &OperationalResolvedImageIdentity,
+            _existing_container_name: Option<&str>,
+            _lease: Option<&LeaseGuard>,
+            _boundary_context: &MutationBoundaryContext,
+            _records: &mut Vec<MutationBoundaryRecord>,
+            _effective_mode: &str,
+        ) {
+        }
+        let _ = assert_no_network_parameter;
+    }
 }

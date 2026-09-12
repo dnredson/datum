@@ -2,6 +2,7 @@ pub mod bootstrap;
 pub mod discovery;
 pub mod discovery_collectors;
 pub mod execution_projection;
+pub mod image_identity_verification;
 pub mod integrated_service_evidence;
 pub mod jcs;
 pub mod operational_evidence;
