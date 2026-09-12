@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "magistrala-fluxmq-node3",
   "service_id": "magistrala-fluxmq-node3",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-magistrala-fluxmq-node3",
       "image": "ghcr.io/absmach/fluxmq:v1.0.0",
+      "image_source_kind": "registry",
       "ports": [
         {
           "container_port": 8082,

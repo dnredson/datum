@@ -68,9 +68,40 @@ pub struct ArtifactExecutionProjectionV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImageIdentityV1 {
+    /// v5 review P0-6: safety-relevant (mirrors dserver's field-for-field)
+    /// -- must participate in the digest/generation.
+    pub source_kind: String,
     pub reference: String,
     #[serde(default)]
     pub declared_digest: Option<String>,
+    /// Stage 107B-A (ADR-0013). Mirrors `dserver`'s `ImageIdentityV1.resolved`
+    /// field-for-field. Absence serializes as JSON `null`, never omitted
+    /// (ADR-0006 point 2). Deliberately carries only the execution-relevant
+    /// subset -- administrative/provenance fields on
+    /// `OperationalResolvedImageIdentity` (`resolved_at_utc`,
+    /// `resolver_tool_version`, `registry_host`) are NOT mirrored here.
+    #[serde(default)]
+    pub resolved: Option<ResolvedImageIdentityProjectionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedImageIdentityProjectionV1 {
+    pub repository: String,
+    /// v6 review P1-5: deliberately excluded from the projection -- mirrors
+    /// dserver's field-for-field. See that crate's own doc comment on this
+    /// field.
+    pub platforms: Vec<ResolvedPlatformManifestProjectionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedPlatformManifestProjectionV1 {
+    pub os: String,
+    pub architecture: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    pub manifest_digest: String,
+    pub config_digest: String,
+    pub execution_reference: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -154,8 +185,26 @@ pub fn compute_projection(assignment: &OperationalArtifactAssignment) -> Artifac
         runtime_kind: assignment.runtime_kind.clone(),
         container_name: assignment.container_name.clone(),
         image_identity: ImageIdentityV1 {
+            source_kind: assignment.image_source_kind.clone(),
             reference: assignment.image.clone(),
             declared_digest: None,
+            resolved: assignment.resolved_image_identity.as_ref().map(|resolved| {
+                ResolvedImageIdentityProjectionV1 {
+                    repository: resolved.repository.clone(),
+                    platforms: resolved
+                        .platforms
+                        .iter()
+                        .map(|platform| ResolvedPlatformManifestProjectionV1 {
+                            os: platform.os.clone(),
+                            architecture: platform.architecture.clone(),
+                            variant: platform.variant.clone(),
+                            manifest_digest: platform.manifest_digest.clone(),
+                            config_digest: platform.config_digest.clone(),
+                            execution_reference: platform.execution_reference.clone(),
+                        })
+                        .collect(),
+                }
+            }),
         },
         command: assignment.command.clone(),
         network: assignment.network.clone(),
@@ -260,6 +309,8 @@ mod tests {
             runtime_kind: "container".to_string(),
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
+            image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+            resolved_image_identity: None,
             target_node: "fog-01".to_string(),
             lifecycle: OperationalLifecycle::default(),
             network: Some("datum-net".to_string()),
@@ -323,6 +374,20 @@ mod tests {
         let mut b = assignment();
         b.command = vec!["-v".to_string()];
         assert_ne!(recompute_digest(&a).unwrap(), recompute_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn p0_6_digest_changes_with_image_source_kind() {
+        use crate::agent::operational_reconciliation::{IMAGE_SOURCE_KIND_LOCAL_BUILD, IMAGE_SOURCE_KIND_REGISTRY};
+        let mut a = assignment();
+        a.image_source_kind = IMAGE_SOURCE_KIND_REGISTRY.to_string();
+        let mut b = assignment();
+        b.image_source_kind = IMAGE_SOURCE_KIND_LOCAL_BUILD.to_string();
+        assert_ne!(
+            recompute_digest(&a).unwrap(),
+            recompute_digest(&b).unwrap(),
+            "image_source_kind is safety-relevant (v5 review P0-6) and must participate in the digest"
+        );
     }
 
     #[test]
@@ -479,6 +544,47 @@ mod tests {
         // The artifact's OWN canonical service_id, never the alias -- P0-6.
         assert_eq!(projection.service_id, "mqtt-broker");
     }
+
+    /// Stage 107B-A (ADR-0013), test #7 (design plan): DATUM-side half of
+    /// `oci_resolved_cross_crate_fixture_produces_the_expected_projection_and_digest`
+    /// (dserver). Proves a resolved multi-platform OCI identity projects
+    /// identically through this crate's REAL `compute_projection` too.
+    #[test]
+    fn dserver_oci_resolved_cross_crate_fixture_produces_the_expected_projection_and_digest() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("fixtures")
+            .join("datum-contracts")
+            .join("vs1")
+            .join("execution-projection.cross-crate-mapper.oci-resolved.json");
+        let text = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+
+        let assignment: OperationalArtifactAssignment =
+            serde_json::from_value(fixture["agent_operational_artifact_assignment"].clone())
+                .expect("fixture agent_operational_artifact_assignment must deserialize as OperationalArtifactAssignment");
+
+        let projection = compute_projection(&assignment);
+        assert!(
+            projection.image_identity.resolved.is_some(),
+            "this fixture must actually exercise a populated resolved_image_identity"
+        );
+
+        let expected_projection: ArtifactExecutionProjectionV1 =
+            serde_json::from_value(fixture["expected_projection"].clone())
+                .expect("fixture expected_projection must deserialize as this crate's ArtifactExecutionProjectionV1");
+        assert_eq!(projection, expected_projection);
+
+        let serialized = serde_json::to_value(&projection).unwrap();
+        assert_eq!(serialized, fixture["expected_projection"], "serialized optional nulls must agree");
+        assert_eq!(jcs::canonicalize(&serialized).unwrap(), fixture["expected_canonical_json"].as_str().unwrap());
+        let expected_digest = fixture["expected_projection_digest_sha256"].as_str().unwrap();
+        assert_eq!(projection_digest(&projection).unwrap(), expected_digest);
+        assert_eq!(recompute_digest(&assignment).unwrap(), expected_digest);
+    }
+
     #[test]
     fn absent_optionals_are_explicit_null_and_digest_is_canonical() {
         let mut a = assignment();
@@ -487,7 +593,7 @@ mod tests {
         a.configuration_mounts[0].declared_content_sha256 = None;
         a.secret_bindings[0].version = None;
         let value = serde_json::to_value(compute_projection(&a)).unwrap();
-        for pointer in ["/network", "/image_identity/declared_digest", "/ports/0/host_port",
+        for pointer in ["/network", "/image_identity/declared_digest", "/image_identity/resolved", "/ports/0/host_port",
                         "/configuration_mounts/0/declared_content_sha256", "/secret_bindings/0/version"] {
             assert_eq!(value.pointer(pointer), Some(&Value::Null), "{pointer}");
         }

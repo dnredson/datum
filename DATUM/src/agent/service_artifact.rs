@@ -12,7 +12,14 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const SERVICE_ARTIFACT_SCHEMA_VERSION: &str = "0.1.0";
+/// Stage 107B-A (ADR-0013): bumped in lockstep with
+/// `dserver::core::service_artifact_registry::SERVICE_ARTIFACT_SCHEMA_VERSION`
+/// -- both validate the SAME `artifacts/catalog/*.json` files' `schema_version`
+/// field, independently. This type has no `control_plane`/OCI fields of its
+/// own and is not on the execution-projection/digest path (see that module's
+/// doc comment); it only needs to keep recognizing the catalog's current
+/// per-artifact schema version.
+pub const SERVICE_ARTIFACT_SCHEMA_VERSION: &str = "0.2.0";
 pub const SERVICE_ASSESSMENT_SCHEMA_VERSION: &str = "0.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

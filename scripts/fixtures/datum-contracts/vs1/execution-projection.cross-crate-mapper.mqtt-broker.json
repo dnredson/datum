@@ -23,8 +23,9 @@
       "postgres"
     ],
     "execution_generation": 1,
-    "execution_projection_digest": "sha256:e70c329f3a910f95860d68c1ea2ee7990f6bd96963bc9c648e53d244cdafac12",
+    "execution_projection_digest": "sha256:acd6e01bf365e590f5a9234c9026e06ee9fb47b1122824468da984c3c7d8e991",
     "image": "eclipse-mosquitto:2.0.18",
+    "image_source_kind": "registry",
     "lifecycle": {
       "configure": [
         {
@@ -117,7 +118,7 @@
       "dependencies": [
         "postgres"
       ],
-      "execution_projection_digest": "sha256:e70c329f3a910f95860d68c1ea2ee7990f6bd96963bc9c648e53d244cdafac12",
+      "execution_projection_digest": "sha256:acd6e01bf365e590f5a9234c9026e06ee9fb47b1122824468da984c3c7d8e991",
       "lifecycle": {
         "configure": [
           {
@@ -203,6 +204,7 @@
         ],
         "container_name": "datum-mqtt-broker",
         "image": "eclipse-mosquitto:2.0.18",
+        "image_source_kind": "registry",
         "network": "datum-fog-net",
         "network_aliases": [
           "mqtt",
@@ -232,7 +234,7 @@
     "schema_version": "0.1.0",
     "service_id": "mqtt-broker"
   },
-  "expected_canonical_json": "{\"artifact_id\":\"mqtt-broker\",\"artifact_kind\":\"container\",\"bindings\":{\"MODE\":\"prod\"},\"command\":[\"-c\",\"/mosquitto/config/mosquitto.conf\"],\"configuration_mounts\":[{\"declared_content_sha256\":\"3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dc\",\"read_only\":true,\"source\":\"mosquitto/mosquitto.conf\",\"target\":\"/mosquitto/config/mosquitto.conf\"}],\"container_name\":\"datum-mqtt-broker\",\"dependencies\":[\"postgres\"],\"image_identity\":{\"declared_digest\":null,\"reference\":\"eclipse-mosquitto:2.0.18\"},\"lifecycle\":{\"configure\":[{\"program\":\"verify_configuration_mounts\"}],\"install\":[{\"program\":\"pull_image\"}],\"post_install\":[{\"program\":\"verify_container_running\"}],\"pre_install\":[{\"program\":\"verify_docker\"}],\"rollback\":[{\"program\":\"remove_container\"}],\"start\":[{\"program\":\"start_container\"}],\"stop\":[]},\"network\":\"datum-fog-net\",\"network_aliases\":[\"mqtt\",\"broker\"],\"ports\":[{\"container_port\":1883,\"host_port\":1883,\"protocol\":\"tcp\"},{\"container_port\":9001,\"host_port\":null,\"protocol\":\"tcp\"}],\"projection\":\"datum.artifact-execution-projection/1\",\"runtime_kind\":\"container\",\"secret_bindings\":[{\"secret_ref\":\"mqtt_token\",\"target_environment_variable\":\"MQTT_TOKEN\",\"version\":\"v1\"}],\"secret_refs\":[\"mqtt_token\"],\"service_id\":\"mqtt-broker\",\"volumes\":[{\"name\":\"mqtt-data\",\"read_only\":false,\"target\":\"/mosquitto/data\"}],\"wasm_safety\":{\"explicit_invocation_required\":true,\"host_imports_allowed\":false,\"safe_to_auto_execute\":false,\"side_effects_allowed\":false}}",
+  "expected_canonical_json": "{\"artifact_id\":\"mqtt-broker\",\"artifact_kind\":\"container\",\"bindings\":{\"MODE\":\"prod\"},\"command\":[\"-c\",\"/mosquitto/config/mosquitto.conf\"],\"configuration_mounts\":[{\"declared_content_sha256\":\"3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dc\",\"read_only\":true,\"source\":\"mosquitto/mosquitto.conf\",\"target\":\"/mosquitto/config/mosquitto.conf\"}],\"container_name\":\"datum-mqtt-broker\",\"dependencies\":[\"postgres\"],\"image_identity\":{\"declared_digest\":null,\"reference\":\"eclipse-mosquitto:2.0.18\",\"resolved\":null,\"source_kind\":\"registry\"},\"lifecycle\":{\"configure\":[{\"program\":\"verify_configuration_mounts\"}],\"install\":[{\"program\":\"pull_image\"}],\"post_install\":[{\"program\":\"verify_container_running\"}],\"pre_install\":[{\"program\":\"verify_docker\"}],\"rollback\":[{\"program\":\"remove_container\"}],\"start\":[{\"program\":\"start_container\"}],\"stop\":[]},\"network\":\"datum-fog-net\",\"network_aliases\":[\"mqtt\",\"broker\"],\"ports\":[{\"container_port\":1883,\"host_port\":1883,\"protocol\":\"tcp\"},{\"container_port\":9001,\"host_port\":null,\"protocol\":\"tcp\"}],\"projection\":\"datum.artifact-execution-projection/1\",\"runtime_kind\":\"container\",\"secret_bindings\":[{\"secret_ref\":\"mqtt_token\",\"target_environment_variable\":\"MQTT_TOKEN\",\"version\":\"v1\"}],\"secret_refs\":[\"mqtt_token\"],\"service_id\":\"mqtt-broker\",\"volumes\":[{\"name\":\"mqtt-data\",\"read_only\":false,\"target\":\"/mosquitto/data\"}],\"wasm_safety\":{\"explicit_invocation_required\":true,\"host_imports_allowed\":false,\"safe_to_auto_execute\":false,\"side_effects_allowed\":false}}",
   "expected_projection": {
     "artifact_id": "mqtt-broker",
     "artifact_kind": "container",
@@ -257,7 +259,9 @@
     ],
     "image_identity": {
       "declared_digest": null,
-      "reference": "eclipse-mosquitto:2.0.18"
+      "reference": "eclipse-mosquitto:2.0.18",
+      "resolved": null,
+      "source_kind": "registry"
     },
     "lifecycle": {
       "configure": [
@@ -336,7 +340,7 @@
       "side_effects_allowed": false
     }
   },
-  "expected_projection_digest_sha256": "sha256:e70c329f3a910f95860d68c1ea2ee7990f6bd96963bc9c648e53d244cdafac12",
+  "expected_projection_digest_sha256": "sha256:acd6e01bf365e590f5a9234c9026e06ee9fb47b1122824468da984c3c7d8e991",
   "schema": "datum.x-fixture.execution-projection-cross-crate-mapper/1",
   "x_alias_case": "agent_operational_artifact_assignment.service_id ('broker-alias') deliberately differs from agent_operational_artifact_assignment.artifact_service_id ('mqtt-broker', matching dserver_service_artifact.service_id). Both real mappers must still produce expected_projection.service_id = 'mqtt-broker' -- the canonical id, never the alias (review finding P0-6).",
   "x_note": "Review finding P1-5 (Stage 107A v4 review). A REAL shared cross-crate fixture: dserver_service_artifact is deserialized into dserver::core::service_artifact_registry::ServiceArtifact and run through the REAL dserver::core::execution_projection::compute_projection; agent_operational_artifact_assignment is deserialized into DATUM::agent::operational_reconciliation::OperationalArtifactAssignment and run through the REAL DATUM::agent::execution_projection::compute_projection. Both real mapper functions must produce a projection that canonicalizes (JCS) to expected_projection, with SHA-256 digest expected_projection_digest_sha256. This is distinct from artifact-execution-projection.mosquitto.{legacy,required}.json in this same directory, which illustrate the ADR-0011 spec shape for the Python stdlib checker and are not deserialized into either crate's real struct."

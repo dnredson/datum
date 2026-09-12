@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "magistrala-timescale-writer",
   "service_id": "magistrala-timescale-writer",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-magistrala-timescale-writer",
       "image": "ghcr.io/absmach/magistrala/timescale-writer:v1.0.0",
+      "image_source_kind": "registry",
       "ports": [
         {
           "container_port": 9012,

@@ -35,7 +35,7 @@ use api::secret_preflight::get_secret_preflight;
 use api::secret_resolver_contract::get_secret_resolver_contract;
 use api::service_artifacts::{
     delete_service_artifact, get_service_artifact, list_service_artifacts,
-    post_service_artifact, put_service_artifact,
+    post_resolve_image_identity, post_service_artifact, put_service_artifact,
 };
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
@@ -248,6 +248,10 @@ async fn main() {
             get(get_service_artifact)
                 .put(put_service_artifact)
                 .delete(delete_service_artifact),
+        )
+        .route(
+            "/api/v1/service-artifacts/:artifact_id/image-identity/resolve",
+            post(post_resolve_image_identity),
         )
         .route("/api/v1/resources", get(list_resources))
         .route("/api/v1/resource-bindings", get(list_resource_bindings))

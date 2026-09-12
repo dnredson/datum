@@ -232,7 +232,10 @@ mod tests {
                 ArtifactReconciliationAssignment {
                     artifact_id: "db".to_string(), service_id: "db".to_string(), artifact_service_id: "db".to_string(), version: "1".to_string(),
                     artifact_kind: "container".to_string(), runtime_kind: "container".to_string(),
-                    container_name: "db".to_string(), image: "postgres:16".to_string(), target_node: "cloud-01".to_string(),
+                    container_name: "db".to_string(), image: "postgres:16".to_string(),
+                    image_source_kind: crate::core::service_artifact_registry::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+                    resolved_image_identity: None,
+                    target_node: "cloud-01".to_string(),
                     network: None, network_aliases: vec![], ports: vec![], volumes: vec![], configuration_mounts: vec![], command: vec![],
                     lifecycle: Default::default(),
                     dependencies: vec![], wasm_decision: policy.clone(), bindings: BTreeMap::new(), secret_refs: vec![],
@@ -241,7 +244,10 @@ mod tests {
                 ArtifactReconciliationAssignment {
                     artifact_id: "api".to_string(), service_id: "api".to_string(), artifact_service_id: "api".to_string(), version: "1".to_string(),
                     artifact_kind: "container".to_string(), runtime_kind: "container".to_string(),
-                    container_name: "api".to_string(), image: "api:1".to_string(), target_node: "cloud-01".to_string(),
+                    container_name: "api".to_string(), image: "api:1".to_string(),
+                    image_source_kind: crate::core::service_artifact_registry::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+                    resolved_image_identity: None,
+                    target_node: "cloud-01".to_string(),
                     network: None, network_aliases: vec![], ports: vec![], volumes: vec![], configuration_mounts: vec![], command: vec![],
                     lifecycle: Default::default(),
                     dependencies: vec!["db".to_string()], wasm_decision: policy, bindings: BTreeMap::new(), secret_refs: vec!["api_secret".to_string()],

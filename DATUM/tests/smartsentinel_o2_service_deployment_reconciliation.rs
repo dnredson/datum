@@ -6,7 +6,7 @@ use serde_json::json;
 
 fn mqtt_artifact() -> ServiceArtifact {
     serde_json::from_value(json!({
-        "schema_version": "0.1.0",
+        "schema_version": "0.2.0",
         "artifact_id": "service:mqtt:mosquitto-2",
         "service_id": "mqtt",
         "runtime": {

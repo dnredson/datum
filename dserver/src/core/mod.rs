@@ -46,6 +46,8 @@ pub mod local_mapping_preflight;
 pub mod local_mapping_recommendations;
 pub mod model;
 pub mod multinode_dgraph;
+pub mod oci_image_pinning;
+pub mod oci_registry_resolver;
 pub mod operational_analysis_context;
 pub mod operational_dgraph;
 pub mod operational_dgraph_acquisition;

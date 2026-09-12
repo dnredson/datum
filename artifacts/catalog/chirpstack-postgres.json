@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "chirpstack-postgres",
   "service_id": "chirpstack-postgres",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-chirpstack-postgres",
       "image": "postgres:14-alpine",
+      "image_source_kind": "registry",
       "ports": [],
       "network": "datum-fog-net",
       "volumes": [

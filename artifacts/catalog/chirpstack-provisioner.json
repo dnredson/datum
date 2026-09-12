@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "chirpstack-provisioner",
   "service_id": "chirpstack-provisioner",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-chirpstack-provisioner",
       "image": "ghcr.io/dnredson/chirpstack-provisioner:main",
+      "image_source_kind": "registry",
       "ports": [
         {
           "host_port": 18082,

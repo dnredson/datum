@@ -313,10 +313,145 @@ pub fn check_resource_identity(
 /// or the assignment was tampered with in transit (the digest check catches
 /// tampering; this catches "digest matches, but the content it matches was
 /// never required-complete to begin with").
+/// v5 review P1-5: `sha256:` followed by exactly 64 lowercase hex chars.
+/// Mirrors `dserver::core::oci_registry_resolver::is_oci_digest_format`
+/// exactly (separate, hand-written -- no shared crate).
+fn is_oci_digest_format(s: &str) -> bool {
+    match s.strip_prefix("sha256:") {
+        Some(hex) => hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        None => false,
+    }
+}
+
+/// v5 review P1-5: agent-side defense-in-depth structural validation of a
+/// `resolved_image_identity` BEFORE declaring the image portion
+/// required-complete -- not merely `Option::is_some()`. Unlike the
+/// server side (`oci_registry_resolver::validate_resolved_image_identity`),
+/// this has no reference parser available (DATUM never resolves images
+/// itself), so it cannot cross-check `resolved.repository` against the
+/// declared `image` string; it checks internal structural consistency
+/// only: platform set non-empty and free of duplicate
+/// `(os, architecture, variant)` entries, all digests are valid OCI
+/// digests, and every platform's `execution_reference` is exactly
+/// `"{repository}@{manifest_digest}"`.
+/// v6 review P1-3: extracts a `@sha256:<64hex>` digest selector from the
+/// tail of a declared image reference, if present -- a lightweight,
+/// parser-free mirror of `oci_registry_resolver::ReferenceSelector::Digest`
+/// on the dserver side. DATUM has no full OCI reference parser (it never
+/// resolves images itself), so this only recognizes the exact
+/// `@sha256:<64hex>` suffix shape, which is sufficient to fail closed on an
+/// internally-inconsistent authorized assignment without reimplementing the
+/// server's full reference grammar.
+fn declared_digest_selector(image: &str) -> Option<String> {
+    let (_, candidate) = image.rsplit_once('@')?;
+    if is_oci_digest_format(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+fn structurally_valid_resolved_image_identity(
+    image: &str,
+    resolved: &crate::agent::operational_reconciliation::OperationalResolvedImageIdentity,
+) -> bool {
+    if let Some(index_digest) = &resolved.index_digest {
+        if !is_oci_digest_format(index_digest) {
+            return false;
+        }
+    }
+    if resolved.platforms.is_empty() {
+        return false;
+    }
+    // v7 review P2-3: mirrors the same hardening applied to dserver's
+    // `oci_registry_resolver::validate_resolved_image_identity` -- reject an
+    // empty os/architecture, an explicitly-empty variant, and a
+    // non-canonically-ordered platform set, rather than relying solely on
+    // the server side to have produced a well-formed value.
+    let keys: Vec<(String, String, Option<String>)> = resolved
+        .platforms
+        .iter()
+        .map(|platform| (platform.os.clone(), platform.architecture.clone(), platform.variant.clone()))
+        .collect();
+    let mut sorted_keys = keys.clone();
+    sorted_keys.sort();
+    if keys != sorted_keys {
+        return false;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for platform in &resolved.platforms {
+        if platform.os.trim().is_empty() || platform.architecture.trim().is_empty() {
+            return false;
+        }
+        if let Some(variant) = &platform.variant {
+            if variant.trim().is_empty() {
+                return false;
+            }
+        }
+        let key = (platform.os.clone(), platform.architecture.clone(), platform.variant.clone());
+        if !seen.insert(key) {
+            return false;
+        }
+        if !is_oci_digest_format(&platform.manifest_digest) || !is_oci_digest_format(&platform.config_digest) {
+            return false;
+        }
+        let expected_reference = format!("{}@{}", resolved.repository, platform.manifest_digest);
+        if platform.execution_reference != expected_reference {
+            return false;
+        }
+    }
+    // v6 review P1-3: mirror of dserver's digest-selector consistency check.
+    if let Some(declared) = declared_digest_selector(image) {
+        match &resolved.index_digest {
+            Some(index_digest) => {
+                if &declared != index_digest {
+                    return false;
+                }
+            }
+            None => {
+                if resolved.platforms.len() != 1 || resolved.platforms[0].manifest_digest != declared {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 pub fn required_completeness_gaps(assignment: &crate::agent::operational_reconciliation::OperationalArtifactAssignment) -> Vec<String> {
+    use crate::agent::operational_reconciliation::{IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED, IMAGE_SOURCE_KIND_LOCAL_BUILD};
     let mut gaps = Vec::new();
-    if !assignment.image.trim().is_empty() {
-        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+    // Stage 107B-A (ADR-0013), mirroring
+    // dserver::core::artifact_reconciliation_context::required_completeness_gaps
+    // exactly: a local_build image is permanently unpinned here -- no
+    // docker-image-inspect-based local trust is invented (Amendment 2). A
+    // registry-sourced image is unpinned until explicitly resolved AND
+    // structurally validated; once resolved_image_identity is present and
+    // valid it is required-complete.
+    if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
+        if !assignment.image.trim().is_empty() {
+            gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
+        }
+    } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
+        // v5 review P0-5: never required-eligible until an operator
+        // explicitly classifies it as registry or local_build.
+        if !assignment.image.trim().is_empty() {
+            gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
+        }
+    } else {
+        match &assignment.resolved_image_identity {
+            None => {
+                if !assignment.image.trim().is_empty() {
+                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                }
+            }
+            Some(resolved) => {
+                // v5 review P1-5: validate, don't merely check Option::is_some().
+                if !structurally_valid_resolved_image_identity(&assignment.image, resolved) {
+                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                }
+            }
+        }
     }
     // P1-3 (TOCTOU / "actual bytes used" gap), Option B, mirroring
     // dserver::core::artifact_reconciliation_context::required_completeness_gaps
@@ -686,6 +821,8 @@ mod tests {
             runtime_kind: "container".to_string(),
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
+            image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+            resolved_image_identity: None,
             target_node: "fog-01".to_string(),
             lifecycle: OperationalLifecycle::default(),
             network: None,
@@ -723,6 +860,222 @@ mod tests {
     #[test]
     fn agent_side_bare_image_is_always_a_gap() {
         let gaps = required_completeness_gaps(&complete_assignment());
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    #[test]
+    fn agent_side_resolved_registry_image_emits_no_image_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let mut assignment = complete_assignment();
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "linux".to_string(),
+                architecture: "amd64".to_string(),
+                variant: None,
+                manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                execution_reference: format!("docker.io/library/eclipse-mosquitto@sha256:{}", "1".repeat(64)),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(
+            !gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:") || gap.starts_with("unpinned_image_local_build:")),
+            "{gaps:?}"
+        );
+    }
+
+    #[test]
+    fn agent_side_local_build_image_is_always_gated_with_a_distinct_message() {
+        use crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_LOCAL_BUILD;
+        let mut assignment = complete_assignment();
+        assignment.image_source_kind = IMAGE_SOURCE_KIND_LOCAL_BUILD.to_string();
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_local_build:")), "{gaps:?}");
+        assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    // ---- v5 review P0-5: legacy_unclassified is always gated ----------- //
+    #[test]
+    fn agent_side_legacy_unclassified_image_is_always_gated_with_a_distinct_message() {
+        use crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED;
+        let mut assignment = complete_assignment();
+        assignment.image_source_kind = IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED.to_string();
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_legacy_unclassified:")), "{gaps:?}");
+        assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    // ---- v5 review P1-5: structural validation, not Option::is_some() -- //
+    #[test]
+    fn agent_side_structurally_inconsistent_resolved_identity_is_still_a_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let mut assignment = complete_assignment();
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "linux".to_string(),
+                architecture: "amd64".to_string(),
+                variant: None,
+                manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                // Deliberately inconsistent: does not match
+                // "{repository}@{manifest_digest}".
+                execution_reference: "docker.io/library/eclipse-mosquitto@sha256:not-the-manifest-digest".to_string(),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(
+            gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")),
+            "a structurally-inconsistent resolved identity must still be a gap: {gaps:?}"
+        );
+    }
+
+    // ---- v6 review P1-3: digest-selector consistency mirror ------------ //
+    #[test]
+    fn agent_side_digest_selector_matching_the_single_manifest_digest_is_accepted() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let manifest_digest = format!("sha256:{}", "1".repeat(64));
+        let mut assignment = complete_assignment();
+        assignment.image = format!("eclipse-mosquitto@{manifest_digest}");
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "linux".to_string(),
+                architecture: "amd64".to_string(),
+                variant: None,
+                manifest_digest: manifest_digest.clone(),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                execution_reference: format!("docker.io/library/eclipse-mosquitto@{manifest_digest}"),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    #[test]
+    fn agent_side_digest_selector_not_matching_the_single_manifest_digest_is_a_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let mut assignment = complete_assignment();
+        // The declared image's digest selector ('9') disagrees with the
+        // resolved platform's own manifest_digest ('1').
+        assignment.image = format!("eclipse-mosquitto@sha256:{}", "9".repeat(64));
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "linux".to_string(),
+                architecture: "amd64".to_string(),
+                variant: None,
+                manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                execution_reference: format!("docker.io/library/eclipse-mosquitto@sha256:{}", "1".repeat(64)),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    // ---- v7 review P2-3: hardened structural validator mirror ---------- //
+    #[test]
+    fn agent_side_empty_platform_os_is_still_a_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let mut assignment = complete_assignment();
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "".to_string(),
+                architecture: "amd64".to_string(),
+                variant: None,
+                manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                execution_reference: format!("docker.io/library/eclipse-mosquitto@sha256:{}", "1".repeat(64)),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    #[test]
+    fn agent_side_explicitly_empty_variant_is_still_a_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let mut assignment = complete_assignment();
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: "docker.io/library/eclipse-mosquitto".to_string(),
+            index_digest: None,
+            platforms: vec![OperationalResolvedPlatformManifest {
+                os: "linux".to_string(),
+                architecture: "arm64".to_string(),
+                variant: Some("".to_string()),
+                manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                config_digest: format!("sha256:{}", "2".repeat(64)),
+                execution_reference: format!("docker.io/library/eclipse-mosquitto@sha256:{}", "1".repeat(64)),
+            }],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
+        assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+    }
+
+    #[test]
+    fn agent_side_non_canonically_ordered_platforms_is_still_a_gap() {
+        use crate::agent::operational_reconciliation::{OperationalResolvedImageIdentity, OperationalResolvedPlatformManifest};
+        let repository = "docker.io/library/eclipse-mosquitto".to_string();
+        let mut assignment = complete_assignment();
+        assignment.resolved_image_identity = Some(OperationalResolvedImageIdentity {
+            repository: repository.clone(),
+            index_digest: None,
+            platforms: vec![
+                OperationalResolvedPlatformManifest {
+                    os: "linux".to_string(),
+                    architecture: "arm64".to_string(),
+                    variant: None,
+                    manifest_digest: format!("sha256:{}", "1".repeat(64)),
+                    config_digest: format!("sha256:{}", "2".repeat(64)),
+                    execution_reference: format!("{repository}@sha256:{}", "1".repeat(64)),
+                },
+                OperationalResolvedPlatformManifest {
+                    os: "linux".to_string(),
+                    architecture: "amd64".to_string(),
+                    variant: None,
+                    manifest_digest: format!("sha256:{}", "3".repeat(64)),
+                    config_digest: format!("sha256:{}", "4".repeat(64)),
+                    execution_reference: format!("{repository}@sha256:{}", "3".repeat(64)),
+                },
+            ],
+            resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            resolver_tool_version: "test/0.1.0".to_string(),
+            resolved_by: "operator:test".to_string(),
+            registry_host: "registry-1.docker.io".to_string(),
+        });
+        let gaps = required_completeness_gaps(&assignment);
         assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
     }
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "magistrala-timescale",
   "service_id": "magistrala-timescale",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-magistrala-timescale",
       "image": "timescale/timescaledb:2.29.0-pg16-oss",
+      "image_source_kind": "registry",
       "ports": [
         {
           "container_port": 5432,

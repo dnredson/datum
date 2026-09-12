@@ -284,9 +284,9 @@ def _load_positive_index() -> dict:
 
 
 class Stage107AMapperDigest(unittest.TestCase):
-    def fixture(self):
+    def fixture(self, name=None):
         import json
-        return json.loads((chk.FIXTURE_DIR / chk.MAPPER_FIXTURE).read_text(encoding="utf-8"))
+        return json.loads((chk.FIXTURE_DIR / (name or chk.MAPPER_FIXTURE)).read_text(encoding="utf-8"))
 
     def test_actual_mapper_fixture_has_matching_canonical_digest_carriers(self):
         self.assertTrue(chk.mapper_fixture_digest_valid(self.fixture()))
@@ -298,6 +298,61 @@ class Stage107AMapperDigest(unittest.TestCase):
         fixture = self.fixture()
         fixture["expected_canonical_json"] += " "
         self.assertFalse(chk.mapper_fixture_digest_valid(fixture))
+
+    def test_stage_107b_a_oci_resolved_mapper_fixture_also_has_matching_digest_carriers(self):
+        # Stage 107B-A (ADR-0013): the second real cross-crate mapper
+        # fixture (populated resolved_image_identity) must independently
+        # self-verify the same way the original mqtt-broker one does.
+        self.assertTrue(chk.mapper_fixture_digest_valid(self.fixture(chk.MAPPER_FIXTURE_OCI)))
+
+
+class Stage107BMapperExemptionIsNarrowlyScoped(unittest.TestCase):
+    """Stage 107B-A follow-up (v5 review P1): proves the MAPPER_FIXTURES
+    exemption in `check_fixtures()` cannot accidentally allow a real
+    (non-placeholder) digest in an UNRELATED, ordinary Stage 107 v2 fixture --
+    exercises `check_fixtures()` itself, not just `mapper_fixture_digest_valid()`
+    in isolation, closing the gap the v5 review flagged as untested."""
+
+    def test_an_ordinary_fixture_with_a_real_digest_still_fails_the_placeholder_guard(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            neg_dir = tmp_path / "negative"
+            neg_dir.mkdir()
+            ordinary_fixture = tmp_path / "datum.dgraph-1.not-a-mapper-fixture.json"
+            ordinary_fixture.write_text(
+                json.dumps({
+                    "schema": "datum.dgraph/1",
+                    "dgraph_id": "dgraph:not-exempt",
+                    "revision": 1,
+                    "a_real_looking_digest": "sha256:" + ("ab" * 32),
+                }),
+                encoding="utf-8",
+            )
+
+            original_fixture_dir, original_neg_dir = chk.FIXTURE_DIR, chk.NEG_DIR
+            try:
+                chk.FIXTURE_DIR = tmp_path
+                chk.NEG_DIR = neg_dir
+                rep = chk.Report()
+                chk.check_fixtures(rep)
+            finally:
+                chk.FIXTURE_DIR, chk.NEG_DIR = original_fixture_dir, original_neg_dir
+
+            self.assertTrue(
+                any("unexpected real-looking digest" in failure for failure in rep.failures),
+                f"an ordinary, non-exempted fixture with a real digest must still be rejected; failures={rep.failures}",
+            )
+
+    def test_the_two_exempted_filenames_are_exact_not_a_prefix_or_substring_match(self):
+        # A filename that merely CONTAINS one of the exempted names as a
+        # substring must not be exempted -- membership is exact-string, not
+        # startswith/in.
+        decoy_name = "not-" + chk.MAPPER_FIXTURE
+        self.assertNotIn(decoy_name, chk.MAPPER_FIXTURES)
+        self.assertNotIn(chk.MAPPER_FIXTURE + ".bak", chk.MAPPER_FIXTURES)
 
 
 if __name__ == "__main__":

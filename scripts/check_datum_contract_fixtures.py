@@ -37,6 +37,13 @@ ADR_DIR = DOC_DIR / "adr"
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAPPER_FIXTURE = "execution-projection.cross-crate-mapper.mqtt-broker.json"
+# Stage 107B-A (ADR-0013): a second real cross-crate mapper fixture, exercising
+# a populated resolved_image_identity (index_digest + one platform manifest).
+# Exact-filename-matched, same as MAPPER_FIXTURE -- see the narrow-scoping note
+# on the guard loop in check_fixtures() below. Never widen this to a prefix,
+# substring, or directory-wide match.
+MAPPER_FIXTURE_OCI = "execution-projection.cross-crate-mapper.oci-resolved.json"
+MAPPER_FIXTURES = {MAPPER_FIXTURE, MAPPER_FIXTURE_OCI}
 
 
 def mapper_fixture_digest_valid(obj: dict) -> bool:
@@ -555,17 +562,25 @@ def check_fixtures(rep: Report) -> None:
         elif schema == "datum.dserv-artifact/1":
             idx["dserv_artifact"][obj.get("artifact_id")] = obj
 
-    # placeholder-digest guard (positives only)
+    # placeholder-digest guard (positives only). Exact-filename-scoped
+    # exemption ONLY for the two known real cross-crate mapper fixtures
+    # (MAPPER_FIXTURES): `mapper_exempt` is reset to False for every file in
+    # this loop, and only ever becomes True for a file whose name is exactly
+    # one of MAPPER_FIXTURES AND whose recorded JCS bytes/digest carriers
+    # independently self-verify via mapper_fixture_digest_valid(). An
+    # ordinary Stage 107 v2 fixture -- any name outside MAPPER_FIXTURES --
+    # can never satisfy this, so a real-looking digest anywhere in it still
+    # fails below. Do not widen this to a prefix/substring/glob match.
     for path, obj in loaded.items():
-        mapper_digest = None
-        if path.name == MAPPER_FIXTURE:
+        mapper_exempt = False
+        if path.name in MAPPER_FIXTURES:
             if mapper_fixture_digest_valid(obj):
-                mapper_digest = obj["expected_projection_digest_sha256"]
+                mapper_exempt = True
             else:
-                rep.fail(path.name, "Stage 107A mapper fixture canonical bytes/digest carriers disagree")
+                rep.fail(path.name, "Stage 107 mapper fixture canonical bytes/digest carriers disagree")
         for node in walk(obj):
             for v in node.values():
-                if isinstance(v, str) and SHA256_RE.match(v) and v not in (PLACEHOLDER_DIGEST, mapper_digest):
+                if isinstance(v, str) and SHA256_RE.match(v) and v != PLACEHOLDER_DIGEST and not mapper_exempt:
                     rep.fail(path.name, f"unexpected real-looking digest '{v}' in a Stage 107 fixture")
 
     unreachable = KNOWN_REJECT_CODES - EMITTABLE_CODES

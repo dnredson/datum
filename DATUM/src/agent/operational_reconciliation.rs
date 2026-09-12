@@ -204,6 +204,16 @@ pub struct OperationalArtifactAssignment {
     pub runtime_kind: String,
     pub container_name: String,
     pub image: String,
+    /// Stage 107B-A (ADR-0013). Mirrors `ContainerDeploymentSpec.image_source_kind`
+    /// (dserver): `"registry"`, `"local_build"`, or `"legacy_unclassified"`.
+    /// v7 review P2-2: the safe default for a record missing this field is
+    /// `"legacy_unclassified"` (`default_operational_image_source_kind`),
+    /// never `"registry"`.
+    #[serde(default = "default_operational_image_source_kind")]
+    pub image_source_kind: String,
+    /// Stage 107B-A (ADR-0013). Mirrors `ContainerDeploymentSpec.resolved_image_identity`.
+    #[serde(default)]
+    pub resolved_image_identity: Option<OperationalResolvedImageIdentity>,
     pub target_node: String,
     #[serde(default)]
     pub lifecycle: OperationalLifecycle,
@@ -248,6 +258,46 @@ pub struct OperationalArtifactAssignment {
     /// (`blocked_projection_mismatch`).
     #[serde(default)]
     pub execution_projection_digest: String,
+}
+
+pub const IMAGE_SOURCE_KIND_REGISTRY: &str = "registry";
+pub const IMAGE_SOURCE_KIND_LOCAL_BUILD: &str = "local_build";
+/// v5 review P0-5. Mirrors `dserver`'s `IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED`
+/// -- see that constant's doc comment for the full rationale.
+pub const IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED: &str = "legacy_unclassified";
+
+fn default_operational_image_source_kind() -> String {
+    // v5 review P0-5: never silently default to "registry" -- see
+    // dserver's `default_image_source_kind` for the full rationale.
+    IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED.to_string()
+}
+
+/// Stage 107B-A (ADR-0013). Mirrors `dserver::core::service_artifact_registry::ResolvedImageIdentityV1`
+/// field-for-field (separate, hand-written type -- no shared crate).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalResolvedImageIdentity {
+    pub repository: String,
+    #[serde(default)]
+    pub index_digest: Option<String>,
+    pub platforms: Vec<OperationalResolvedPlatformManifest>,
+    pub resolved_at_utc: String,
+    pub resolver_tool_version: String,
+    /// v5 review P1-1. Administrative/audit metadata, excluded from the
+    /// projection -- mirrors dserver's field.
+    #[serde(default)]
+    pub resolved_by: String,
+    pub registry_host: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalResolvedPlatformManifest {
+    pub os: String,
+    pub architecture: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    pub manifest_digest: String,
+    pub config_digest: String,
+    pub execution_reference: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -7,14 +7,19 @@ use crate::core::{
         OperationalReconciliationAuthorization, OperationalReconcilerDescriptor,
     },
     service_artifact_registry::{
-        ContainerPortMapping, ServiceArtifact, ServiceArtifactLifecycle,
-        ServiceArtifactSecretBinding, ServiceArtifactWasmDecision,
+        ContainerPortMapping, ResolvedImageIdentityV1, ServiceArtifact, ServiceArtifactLifecycle,
+        ServiceArtifactSecretBinding, ServiceArtifactWasmDecision, IMAGE_SOURCE_KIND_REGISTRY,
+        IMAGE_SOURCE_KIND_LOCAL_BUILD, IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED,
     },
 };
 
 pub const ARTIFACT_RECONCILIATION_CONTEXT_SCHEMA_VERSION: &str = "0.1.0";
 pub const ARTIFACT_RECONCILIATION_CONTEXT_KIND: &str =
     "datum_artifact_reconciliation_context";
+
+fn default_assignment_image_source_kind() -> String {
+    IMAGE_SOURCE_KIND_REGISTRY.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArtifactReconciliationAssignment {
@@ -41,6 +46,12 @@ pub struct ArtifactReconciliationAssignment {
     pub runtime_kind: String,
     pub container_name: String,
     pub image: String,
+    /// Stage 107B-A (ADR-0013). See `ContainerDeploymentSpec.image_source_kind`.
+    #[serde(default = "default_assignment_image_source_kind")]
+    pub image_source_kind: String,
+    /// Stage 107B-A (ADR-0013). See `ContainerDeploymentSpec.resolved_image_identity`.
+    #[serde(default)]
+    pub resolved_image_identity: Option<ResolvedImageIdentityV1>,
     pub target_node: String,
     #[serde(default)]
     pub network: Option<String>,
@@ -207,6 +218,8 @@ pub fn resolve_assignments_from_registry(
             runtime_kind: artifact.runtime.kind.clone(),
             container_name: container.container_name.clone(),
             image: container.image.clone(),
+            image_source_kind: container.image_source_kind.clone(),
+            resolved_image_identity: container.resolved_image_identity.clone(),
             command: container.command.clone(),
             target_node: slice.node_id.clone(),
             network: container.network.clone(),
@@ -265,19 +278,54 @@ pub fn resolve_assignments_from_registry(
 /// it will not be (expected, ADR-0011 N-3 / spec section N: `required`
 /// authorization on today's catalog is refused, not silently downgraded).
 ///
-/// - Image: 107A has no mechanism to declare a verifiable image digest at
-///   all (`ImageIdentityV1.declared_digest` exists only as the interface
-///   Stage 107B fills in), so every image is unconditionally unpinned here.
+/// - Image (Stage 107B-A, ADR-0013): a `local_build` image is permanently
+///   unpinned here -- no `docker image inspect`-based local trust is invented
+///   (Amendment 2). A `registry`-sourced image is unpinned until explicitly
+///   resolved via `oci_image_pinning::pin_image_identity`; once
+///   `resolved_image_identity` is present it is required-complete.
 /// - Configuration mounts: ALWAYS unpinned (review finding P1-3, TOCTOU):
 ///   an ordinary mutable bind-mounted file is never required-complete in
 ///   107A even with a declared, verified `declared_content_sha256` -- see
-///   the function body for the full rationale.
+///   the function body for the full rationale. Unaffected by Stage 107B-A
+///   (config-content materialization is Stage 107B-C, not this slice).
 /// - Secrets: every env-var-backed secret is unpinned, including declarations
-///   with a version string. No actual secret identity verification exists in 107A.
+///   with a version string. No actual secret identity verification exists yet
+///   (unaffected by Stage 107B-A).
 pub fn required_completeness_gaps(assignment: &ArtifactReconciliationAssignment) -> Vec<String> {
     let mut gaps = Vec::new();
-    if !assignment.image.trim().is_empty() {
-        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+    if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
+        // Amendment 2: never required-eligible in this slice -- distinct
+        // message from the ordinary unresolved-registry-image case below, so
+        // an operator can tell the two apart.
+        if !assignment.image.trim().is_empty() {
+            gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
+        }
+    } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
+        // v5 review P0-5: never required-eligible until an operator
+        // explicitly classifies it as registry or local_build -- never
+        // silently inferred.
+        if !assignment.image.trim().is_empty() {
+            gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
+        }
+    } else {
+        match &assignment.resolved_image_identity {
+            None => {
+                if !assignment.image.trim().is_empty() {
+                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                }
+            }
+            Some(resolved) => {
+                // v5 review P1-5: VALIDATE the resolved identity, not merely
+                // check Option::is_some() -- defense in depth against a bug
+                // in the server-owned write path (P0-1) or a tampered wire
+                // assignment.
+                if crate::core::oci_registry_resolver::validate_resolved_image_identity(&assignment.image, resolved).is_err()
+                {
+                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                }
+                // else: required-complete for the image portion.
+            }
+        }
     }
     // Review finding P1-3 (TOCTOU / "actual bytes used" gap), Option B: an
     // ordinary mutable bind-mounted configuration file is NEVER
@@ -500,7 +548,7 @@ mod tests {
 
     fn artifact(node_id: &str) -> ServiceArtifact {
         ServiceArtifact {
-            schema_version: "0.1.0".to_string(),
+            schema_version: crate::core::service_artifact_registry::SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id: "mqtt".to_string(),
             service_id: "mqtt".to_string(),
             runtime: ServiceRuntimeSpec {
@@ -518,6 +566,8 @@ mod tests {
                     }],
                     configuration_mounts: Vec::new(),
                     command: Vec::new(),
+                    image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+                    resolved_image_identity: None,
                 }),
             },
             probes: ServiceProbeSet { execution: ServiceProbeSpec { kind: "docker_container_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) }, health: None, availability: None },
@@ -769,6 +819,191 @@ mod tests {
             assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")));
         }
 
+        // ---- Stage 107B-A (ADR-0013): OCI image pinning ------------------ //
+
+        fn resolved_with_digest(fill: char) -> ResolvedImageIdentityV1 {
+            let manifest_digest = format!("sha256:{}", fill.to_string().repeat(64));
+            ResolvedImageIdentityV1 {
+                repository: "docker.io/library/eclipse-mosquitto".to_string(),
+                index_digest: None,
+                platforms: vec![crate::core::service_artifact_registry::ResolvedPlatformManifestV1 {
+                    os: "linux".to_string(),
+                    architecture: "amd64".to_string(),
+                    variant: None,
+                    manifest_digest: manifest_digest.clone(),
+                    config_digest: format!("sha256:{}", "c".repeat(64)),
+                    execution_reference: format!("docker.io/library/eclipse-mosquitto@{manifest_digest}"),
+                }],
+                resolved_at_utc: "2026-01-01T00:00:00Z".to_string(),
+                resolver_tool_version: "test-resolver/0.1.0".to_string(),
+                resolved_by: "operator:test".to_string(),
+                registry_host: "registry-1.docker.io".to_string(),
+            }
+        }
+
+        /// v5 review P0-1: a test can no longer simulate "already pinned" by
+        /// setting `resolved_image_identity` on an ordinary `update()` body
+        /// -- that is now correctly rejected. This mirrors the real,
+        /// server-owned pin path: capture the artifact's current state,
+        /// then call `apply_resolved_image_identity` directly (same
+        /// internal method `oci_image_pinning::pin_image_identity` uses).
+        fn pin_via_registry(
+            registry: &ServiceArtifactRegistry,
+            project_id: &str,
+            artifact_id: &str,
+            resolved: ResolvedImageIdentityV1,
+        ) -> ServiceArtifact {
+            let current = registry.get(project_id, artifact_id).unwrap();
+            let container = current.runtime.container.as_ref().unwrap();
+            let expected = crate::core::service_artifact_registry::ImageResolutionExpectedState {
+                execution_generation: current.control_plane.execution_generation,
+                execution_projection_digest: current.control_plane.execution_projection_digest.clone(),
+                image: container.image.clone(),
+                image_source_kind: container.image_source_kind.clone(),
+            };
+            registry.apply_resolved_image_identity(project_id, artifact_id, &expected, resolved).unwrap()
+        }
+
+        #[test]
+        fn resolved_registry_image_emits_no_image_gap() {
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            registry.create("project-a", artifact("fog-01")).unwrap();
+            pin_via_registry(&registry, "project-a", "mqtt", resolved_with_digest('1'));
+
+            let authorization = issue_authorization(&registry);
+            let gaps = required_completeness_gaps(&authorization.snapshot[0]);
+            assert!(
+                !gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:") || gap.starts_with("unpinned_image_local_build:")),
+                "a resolved registry image must not report an image gap: {gaps:?}"
+            );
+        }
+
+        #[test]
+        fn local_build_image_is_always_gated_with_a_distinct_message() {
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            let mut local_build_artifact = artifact("fog-01");
+            local_build_artifact.runtime.container.as_mut().unwrap().image_source_kind =
+                IMAGE_SOURCE_KIND_LOCAL_BUILD.to_string();
+            registry.create("project-a", local_build_artifact).unwrap();
+
+            let authorization = issue_authorization(&registry);
+            let gaps = required_completeness_gaps(&authorization.snapshot[0]);
+            assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_local_build:")), "{gaps:?}");
+            assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+        }
+
+        // ---- v5 review P0-5: legacy_unclassified is always gated -------- //
+        #[test]
+        fn legacy_unclassified_image_is_always_gated_with_a_distinct_message() {
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            let mut unclassified_artifact = artifact("fog-01");
+            unclassified_artifact.runtime.container.as_mut().unwrap().image_source_kind =
+                IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED.to_string();
+            registry.create("project-a", unclassified_artifact).unwrap();
+
+            let authorization = issue_authorization(&registry);
+            let gaps = required_completeness_gaps(&authorization.snapshot[0]);
+            assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_image_legacy_unclassified:")), "{gaps:?}");
+            assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")), "{gaps:?}");
+        }
+
+        // ---- v5 review P1-5: structural validation, not Option::is_some() //
+        #[test]
+        fn structurally_inconsistent_resolved_identity_is_still_a_gap() {
+            // v6 review follow-up: `apply_resolved_image_identity` now
+            // defensively validates (P1-2), so a broken identity can no
+            // longer reach the registry through the normal pin path at all
+            // -- proven separately by
+            // `service_artifact_registry::tests::apply_resolved_image_identity_rejects_a_structurally_inconsistent_candidate`.
+            // This test instead proves required_completeness_gaps is STILL
+            // independently defensive: it mutates an already-legitimately-
+            // issued snapshot directly, in memory, bypassing the registry's
+            // write-path validation entirely, to simulate "an inconsistent
+            // value reached this function for whatever reason" (a tampered
+            // wire assignment, or a future bug upstream).
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            registry.create("project-a", artifact("fog-01")).unwrap();
+            pin_via_registry(&registry, "project-a", "mqtt", resolved_with_digest('1'));
+
+            let mut authorization = issue_authorization(&registry);
+            // Deliberately break internal consistency post-hoc: repository
+            // disagrees with the declared image's actual repository.
+            authorization.snapshot[0].resolved_image_identity.as_mut().unwrap().repository = "ghcr.io/absmach/atom".to_string();
+
+            let gaps = required_completeness_gaps(&authorization.snapshot[0]);
+            assert!(
+                gaps.iter().any(|gap| gap.starts_with("unpinned_image_reference:")),
+                "a structurally-inconsistent resolved identity must still be a gap: {gaps:?}"
+            );
+        }
+
+        #[test]
+        fn configuration_mount_and_secret_gaps_are_unaffected_by_the_image_logic_change() {
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            let mut with_mount_and_secret = artifact("fog-01");
+            with_mount_and_secret
+                .runtime
+                .container
+                .as_mut()
+                .unwrap()
+                .configuration_mounts
+                .push(crate::core::service_artifact_registry::ContainerConfigurationMount {
+                    source: "mosquitto/mosquitto.conf".to_string(),
+                    target: "/mosquitto/config/mosquitto.conf".to_string(),
+                    read_only: true,
+                    declared_content_sha256: Some("a".repeat(64)),
+                });
+            with_mount_and_secret.control_plane.secret_refs = vec!["token".to_string()];
+            registry.create("project-a", with_mount_and_secret).unwrap();
+
+            let authorization = issue_authorization(&registry);
+            let gaps = required_completeness_gaps(&authorization.snapshot[0]);
+            assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_configuration_mount:")), "{gaps:?}");
+            assert!(gaps.iter().any(|gap| gap.starts_with("unpinned_secret_reference:")), "{gaps:?}");
+        }
+
+        #[test]
+        fn authorization_binds_the_exact_resolved_identity_in_its_snapshot() {
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            registry.create("project-a", artifact("fog-01")).unwrap();
+            let resolved = resolved_with_digest('1');
+            pin_via_registry(&registry, "project-a", "mqtt", resolved.clone());
+
+            let authorization = issue_authorization(&registry);
+            assert_eq!(authorization.snapshot[0].resolved_image_identity.as_ref(), Some(&resolved));
+        }
+
+        #[test]
+        fn a_later_re_pin_does_not_retroactively_alter_an_already_issued_snapshot() {
+            // ADR-0011 Option A: no retroactive generation invalidation of an
+            // issued finite snapshot lease -- a re-pin after issuance must
+            // not reach back and alter the old authorization's own snapshot.
+            let registry = ServiceArtifactRegistry::from_state(Default::default());
+            registry.create("project-a", artifact("fog-01")).unwrap();
+            pin_via_registry(&registry, "project-a", "mqtt", resolved_with_digest('1'));
+
+            let old_authorization = issue_authorization(&registry);
+            let old_digest = format!("sha256:{}", "1".repeat(64));
+            assert_eq!(
+                old_authorization.snapshot[0].resolved_image_identity.as_ref().unwrap().platforms[0].manifest_digest,
+                old_digest
+            );
+
+            pin_via_registry(&registry, "project-a", "mqtt", resolved_with_digest('9'));
+
+            assert_eq!(
+                old_authorization.snapshot[0].resolved_image_identity.as_ref().unwrap().platforms[0].manifest_digest,
+                old_digest,
+                "the old authorization's own snapshot must remain exactly what it was at issuance"
+            );
+
+            let new_authorization = issue_authorization(&registry);
+            assert_eq!(
+                new_authorization.snapshot[0].resolved_image_identity.as_ref().unwrap().platforms[0].manifest_digest,
+                format!("sha256:{}", "9".repeat(64))
+            );
+        }
+
         #[test]
         fn pinning_mode_change_is_prospective_not_retroactive() {
             // P1-7: an already-issued authorization keeps the mode it was
@@ -974,6 +1209,8 @@ mod tests {
             runtime_kind: "container".to_string(),
             container_name: "x".to_string(),
             image: String::new(),
+            image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+            resolved_image_identity: None,
             target_node: "n".to_string(),
             network: None,
             network_aliases: Vec::new(),

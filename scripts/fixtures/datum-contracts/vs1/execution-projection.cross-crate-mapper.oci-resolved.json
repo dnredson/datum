@@ -1,0 +1,290 @@
+{
+  "agent_operational_artifact_assignment": {
+    "artifact_id": "mqtt",
+    "service_id": "mqtt",
+    "artifact_service_id": "mqtt",
+    "version": "2",
+    "artifact_kind": "container",
+    "runtime_kind": "container",
+    "container_name": "datum-mqtt",
+    "image": "eclipse-mosquitto:2",
+    "image_source_kind": "registry",
+    "resolved_image_identity": {
+      "repository": "docker.io/library/eclipse-mosquitto",
+      "index_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "platforms": [
+        {
+          "os": "linux",
+          "architecture": "amd64",
+          "variant": null,
+          "manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "config_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "execution_reference": "docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "resolved_at_utc": "2026-01-01T00:00:00Z",
+      "resolver_tool_version": "test-resolver/0.1.0",
+      "registry_host": "registry-1.docker.io"
+    },
+    "target_node": "fog-01",
+    "lifecycle": {
+      "pre_install": [],
+      "install": [],
+      "configure": [],
+      "start": [],
+      "stop": [],
+      "post_install": [],
+      "rollback": []
+    },
+    "network": "datum-net",
+    "network_aliases": [
+      "mqtt"
+    ],
+    "ports": [
+      {
+        "container_port": 1883,
+        "host_port": 1883,
+        "protocol": "tcp"
+      }
+    ],
+    "volumes": [
+      {
+        "name": "mqtt-data",
+        "target": "/mosquitto/data",
+        "read_only": false
+      }
+    ],
+    "configuration_mounts": [
+      {
+        "source": "mosquitto/mosquitto.conf",
+        "target": "/mosquitto/config/mosquitto.conf",
+        "read_only": true,
+        "declared_content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "command": [],
+    "dependencies": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "module_id": "reconcile_service",
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "side_effects_allowed": false,
+      "safe_to_auto_execute": false
+    },
+    "bindings": {},
+    "secret_refs": [],
+    "secret_bindings": [
+      {
+        "secret_ref": "mqtt_token",
+        "target_environment_variable": "MQTT_TOKEN",
+        "version": "v1"
+      }
+    ],
+    "execution_generation": 1,
+    "execution_projection_digest": "sha256:a190adcc10041adfa7021088a57e1f71e2ff20a67dc115435d583c26f777419d"
+  },
+  "dserver_service_artifact": {
+    "schema_version": "0.2.0",
+    "artifact_id": "mqtt",
+    "service_id": "mqtt",
+    "runtime": {
+      "kind": "container",
+      "container": {
+        "container_name": "datum-mqtt",
+        "image": "eclipse-mosquitto:2",
+        "ports": [
+          {
+            "container_port": 1883,
+            "host_port": 1883,
+            "protocol": "tcp"
+          }
+        ],
+        "network": "datum-net",
+        "network_aliases": [
+          "mqtt"
+        ],
+        "volumes": [
+          {
+            "name": "mqtt-data",
+            "target": "/mosquitto/data",
+            "read_only": false
+          }
+        ],
+        "configuration_mounts": [
+          {
+            "source": "mosquitto/mosquitto.conf",
+            "target": "/mosquitto/config/mosquitto.conf",
+            "read_only": true,
+            "declared_content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "command": [],
+        "image_source_kind": "registry",
+        "resolved_image_identity": {
+          "repository": "docker.io/library/eclipse-mosquitto",
+          "index_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "platforms": [
+            {
+              "os": "linux",
+              "architecture": "amd64",
+              "variant": null,
+              "manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "config_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "execution_reference": "docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "resolved_at_utc": "2026-01-01T00:00:00Z",
+          "resolver_tool_version": "test-resolver/0.1.0",
+          "registry_host": "registry-1.docker.io"
+        }
+      }
+    },
+    "probes": {
+      "execution": {
+        "kind": "docker_container_running",
+        "params": {},
+        "vantage_point": null
+      },
+      "health": null,
+      "availability": null
+    },
+    "metadata": {
+      "service_aliases": [
+        "mq"
+      ]
+    },
+    "control_plane": {
+      "project_id": "project:cross-crate-fixture",
+      "name": "MQTT",
+      "version": "2",
+      "artifact_kind": "container",
+      "target_nodes": [
+        "fog-01"
+      ],
+      "target_stages": [],
+      "dependencies": [],
+      "acquisition": {
+        "kind": "image",
+        "source": null,
+        "revision": null,
+        "sha256": null
+      },
+      "lifecycle": {
+        "pre_install": [],
+        "install": [],
+        "configure": [],
+        "start": [],
+        "stop": [],
+        "post_install": [],
+        "rollback": []
+      },
+      "health_checks": [],
+      "wasm_decision": {
+        "explicit_invocation_required": true,
+        "module_id": "reconcile_service",
+        "function_name": "decide",
+        "host_imports_allowed": false,
+        "side_effects_allowed": false,
+        "safe_to_auto_execute": false,
+        "max_fuel": 1000,
+        "timeout_ms": 500
+      },
+      "bindings": {},
+      "secret_refs": [],
+      "secret_bindings": [
+        {
+          "secret_ref": "mqtt_token",
+          "target_environment_variable": "MQTT_TOKEN",
+          "version": "v1"
+        }
+      ],
+      "created_at_utc": "",
+      "updated_at_utc": "",
+      "execution_generation": 1,
+      "execution_projection_digest": "sha256:a190adcc10041adfa7021088a57e1f71e2ff20a67dc115435d583c26f777419d"
+    }
+  },
+  "expected_canonical_json": "{\"artifact_id\":\"mqtt\",\"artifact_kind\":\"container\",\"bindings\":{},\"command\":[],\"configuration_mounts\":[{\"declared_content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"read_only\":true,\"source\":\"mosquitto/mosquitto.conf\",\"target\":\"/mosquitto/config/mosquitto.conf\"}],\"container_name\":\"datum-mqtt\",\"dependencies\":[],\"image_identity\":{\"declared_digest\":null,\"reference\":\"eclipse-mosquitto:2\",\"resolved\":{\"platforms\":[{\"architecture\":\"amd64\",\"config_digest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"execution_reference\":\"docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"manifest_digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"os\":\"linux\",\"variant\":null}],\"repository\":\"docker.io/library/eclipse-mosquitto\"},\"source_kind\":\"registry\"},\"lifecycle\":{\"configure\":[],\"install\":[],\"post_install\":[],\"pre_install\":[],\"rollback\":[],\"start\":[],\"stop\":[]},\"network\":\"datum-net\",\"network_aliases\":[\"mqtt\"],\"ports\":[{\"container_port\":1883,\"host_port\":1883,\"protocol\":\"tcp\"}],\"projection\":\"datum.artifact-execution-projection/1\",\"runtime_kind\":\"container\",\"secret_bindings\":[{\"secret_ref\":\"mqtt_token\",\"target_environment_variable\":\"MQTT_TOKEN\",\"version\":\"v1\"}],\"secret_refs\":[],\"service_id\":\"mqtt\",\"volumes\":[{\"name\":\"mqtt-data\",\"read_only\":false,\"target\":\"/mosquitto/data\"}],\"wasm_safety\":{\"explicit_invocation_required\":true,\"host_imports_allowed\":false,\"safe_to_auto_execute\":false,\"side_effects_allowed\":false}}",
+  "expected_projection": {
+    "artifact_id": "mqtt",
+    "artifact_kind": "container",
+    "bindings": {},
+    "command": [],
+    "configuration_mounts": [
+      {
+        "declared_content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "read_only": true,
+        "source": "mosquitto/mosquitto.conf",
+        "target": "/mosquitto/config/mosquitto.conf"
+      }
+    ],
+    "container_name": "datum-mqtt",
+    "dependencies": [],
+    "image_identity": {
+      "declared_digest": null,
+      "reference": "eclipse-mosquitto:2",
+      "resolved": {
+        "platforms": [
+          {
+            "architecture": "amd64",
+            "config_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "execution_reference": "docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "os": "linux",
+            "variant": null
+          }
+        ],
+        "repository": "docker.io/library/eclipse-mosquitto"
+      },
+      "source_kind": "registry"
+    },
+    "lifecycle": {
+      "configure": [],
+      "install": [],
+      "post_install": [],
+      "pre_install": [],
+      "rollback": [],
+      "start": [],
+      "stop": []
+    },
+    "network": "datum-net",
+    "network_aliases": [
+      "mqtt"
+    ],
+    "ports": [
+      {
+        "container_port": 1883,
+        "host_port": 1883,
+        "protocol": "tcp"
+      }
+    ],
+    "projection": "datum.artifact-execution-projection/1",
+    "runtime_kind": "container",
+    "secret_bindings": [
+      {
+        "secret_ref": "mqtt_token",
+        "target_environment_variable": "MQTT_TOKEN",
+        "version": "v1"
+      }
+    ],
+    "secret_refs": [],
+    "service_id": "mqtt",
+    "volumes": [
+      {
+        "name": "mqtt-data",
+        "read_only": false,
+        "target": "/mosquitto/data"
+      }
+    ],
+    "wasm_safety": {
+      "explicit_invocation_required": true,
+      "host_imports_allowed": false,
+      "safe_to_auto_execute": false,
+      "side_effects_allowed": false
+    }
+  },
+  "expected_projection_digest_sha256": "sha256:a190adcc10041adfa7021088a57e1f71e2ff20a67dc115435d583c26f777419d",
+  "schema": "datum.x-fixture.execution-projection-cross-crate-mapper/1",
+  "x_note": "Stage 107B-A (ADR-0013). A REAL shared cross-crate fixture, mirroring execution-projection.cross-crate-mapper.mqtt-broker.json's structure and purpose, but with a POPULATED resolved_image_identity (both an index_digest and one platform manifest), proving the OCI identity fields project identically through both crates' REAL compute_projection functions -- dserver_service_artifact is deserialized into dserver::core::service_artifact_registry::ServiceArtifact and run through dserver::core::execution_projection::compute_projection; agent_operational_artifact_assignment is deserialized into DATUM::agent::operational_reconciliation::OperationalArtifactAssignment and run through DATUM::agent::execution_projection::compute_projection. Both real mapper functions must produce a projection that canonicalizes (JCS) to expected_projection, with SHA-256 digest expected_projection_digest_sha256. No alias case here (unlike the mqtt-broker fixture) -- this fixture's sole purpose is OCI-identity projection parity, not the alias-id distinction."
+}

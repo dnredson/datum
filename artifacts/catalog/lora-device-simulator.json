@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "artifact_id": "lora-device-simulator",
   "service_id": "lora-device-simulator",
   "runtime": {
@@ -7,6 +7,7 @@
     "container": {
       "container_name": "datum-lora-device-simulator",
       "image": "local/datum-lora-device-simulator:stage78",
+      "image_source_kind": "local_build",
       "ports": []
     }
   },

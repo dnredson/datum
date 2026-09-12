@@ -111,18 +111,71 @@ pub struct ArtifactExecutionProjectionV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImageIdentityV1 {
+    /// v5 review P0-6: `image_source_kind` is safety-relevant (a
+    /// `registry` image may become `required`-complete once resolved;
+    /// `local_build`/`legacy_unclassified` never can, regardless of
+    /// `resolved`'s content) and therefore MUST participate in the
+    /// canonical projection digest / `execution_generation` -- changing
+    /// `registry` -> `local_build` (or -> `legacy_unclassified`) with the
+    /// same `reference`/`resolved` values changes a safety decision and
+    /// must change the digest.
+    pub source_kind: String,
     /// The declared image reference string (e.g. `eclipse-mosquitto:2`). A
     /// bare tag alone is NOT a content pin -- see `declared_digest`.
     pub reference: String,
-    /// A declared, verifiable digest for the image, when known (Stage 107B
-    /// completes this to the full canonical OCI multi-platform identity).
-    /// Absent means the image is an unpinned external input under
-    /// `legacy_partial`; `required` mode refuses to treat a bare tag as
-    /// sufficient. ADR-0006 point 2 (v5 review, P0-1): absence serializes as
-    /// JSON `null`, never omitted -- see the module-level note on
+    /// A declared, verifiable digest for the image, when known. Absent means
+    /// the image is an unpinned external input under `legacy_partial`;
+    /// `required` mode refuses to treat a bare tag as sufficient. ADR-0006
+    /// point 2 (v5 review, P0-1): absence serializes as JSON `null`, never
+    /// omitted -- see the module-level note on
     /// `ArtifactExecutionProjectionV1.network`.
     #[serde(default)]
     pub declared_digest: Option<String>,
+    /// Stage 107B-A (ADR-0013). The server-resolved, immutable, multi-platform
+    /// OCI identity, when the image has been explicitly pinned (see
+    /// `oci_image_pinning::pin_image_identity`). Absence means the image
+    /// remains unpinned -- `required_completeness_gaps` still reports
+    /// `unpinned_image_reference` for it. ADR-0006 point 2: absence
+    /// serializes as JSON `null`, never omitted. Deliberately carries only
+    /// the execution-relevant subset of `ResolvedImageIdentityV1` --
+    /// `resolved_at_utc` / `resolver_tool_version` / `registry_host` are
+    /// administrative/provenance metadata and are NOT mirrored here, so
+    /// re-resolving identical registry content at a different wall-clock
+    /// time does not perturb `execution_generation` (Amendment 3).
+    #[serde(default)]
+    pub resolved: Option<ResolvedImageIdentityProjectionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedImageIdentityProjectionV1 {
+    pub repository: String,
+    /// v6 review P1-5: `index_digest` is DELIBERATELY EXCLUDED from the
+    /// execution projection (unlike the persisted `ResolvedImageIdentityV1`,
+    /// which keeps it as provenance). ADR-0013 states binding happens on
+    /// the platform-specific `manifest_digest`, never `index_digest` alone
+    /// -- an index can change for a reason unrelated to this artifact's own
+    /// selected platforms (e.g. a new architecture added elsewhere in the
+    /// same index), while every platform actually selected here continues
+    /// to reference the exact same manifest/config digests. Including
+    /// `index_digest` in the projection would make `execution_generation`
+    /// increment on a change that is not, by ADR-0013's own definition,
+    /// execution-relevant. The persisted/evidence copy still carries it.
+    pub platforms: Vec<ResolvedPlatformManifestProjectionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedPlatformManifestProjectionV1 {
+    pub os: String,
+    pub architecture: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    /// The binding identity for this platform -- OCI-digest domain, never
+    /// the ADR-0006 canonical DATUM contract digest domain (Amendment 3:
+    /// bound on the platform-specific manifest digest, never `index_digest`
+    /// alone).
+    pub manifest_digest: String,
+    pub config_digest: String,
+    pub execution_reference: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -249,8 +302,26 @@ pub fn compute_projection(artifact: &ServiceArtifact) -> Result<ArtifactExecutio
         runtime_kind: artifact.runtime.kind.clone(),
         container_name: container.container_name.clone(),
         image_identity: ImageIdentityV1 {
+            source_kind: container.image_source_kind.clone(),
             reference: container.image.clone(),
             declared_digest: None,
+            resolved: container.resolved_image_identity.as_ref().map(|resolved| {
+                ResolvedImageIdentityProjectionV1 {
+                    repository: resolved.repository.clone(),
+                    platforms: resolved
+                        .platforms
+                        .iter()
+                        .map(|platform| ResolvedPlatformManifestProjectionV1 {
+                            os: platform.os.clone(),
+                            architecture: platform.architecture.clone(),
+                            variant: platform.variant.clone(),
+                            manifest_digest: platform.manifest_digest.clone(),
+                            config_digest: platform.config_digest.clone(),
+                            execution_reference: platform.execution_reference.clone(),
+                        })
+                        .collect(),
+                }
+            }),
         },
         command: container.command.clone(),
         network: container.network.clone(),
@@ -348,7 +419,7 @@ mod tests {
 
     fn artifact() -> ServiceArtifact {
         ServiceArtifact {
-            schema_version: "0.1.0".to_string(),
+            schema_version: crate::core::service_artifact_registry::SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
             artifact_id: "mqtt".to_string(),
             service_id: "mqtt".to_string(),
             runtime: ServiceRuntimeSpec {
@@ -375,6 +446,8 @@ mod tests {
                         declared_content_sha256: Some("a".repeat(64)),
                     }],
                     command: vec![],
+                    image_source_kind: crate::core::service_artifact_registry::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+                    resolved_image_identity: None,
                 }),
             },
             probes: ServiceProbeSet {
@@ -582,11 +655,21 @@ mod tests {
         assert!(obj.contains_key("network"), "network must be present in the serialized object");
         assert!(obj["network"].is_null(), "network must serialize as null, not be omitted: {value}");
 
-        // `image_identity.declared_digest` -- always None today (Stage 107B
-        // closes it), so this is exercised by the default fixture already.
+        // `image_identity.declared_digest` -- always None today.
         let image_identity = obj["image_identity"].as_object().unwrap();
         assert!(image_identity.contains_key("declared_digest"));
         assert!(image_identity["declared_digest"].is_null(), "{value}");
+
+        // `image_identity.resolved` (Stage 107B-A) -- None until the image
+        // is explicitly pinned.
+        assert!(image_identity.contains_key("resolved"));
+        assert!(image_identity["resolved"].is_null(), "{value}");
+
+        // `image_identity.source_kind` (v5 review P0-6) -- mandatory, never
+        // absent or null; present as a plain string alongside the two
+        // Option fields above.
+        assert!(image_identity.contains_key("source_kind"));
+        assert!(image_identity["source_kind"].is_string(), "{value}");
 
         // `ports[0].host_port`.
         let ports = obj["ports"].as_array().unwrap();
@@ -640,5 +723,44 @@ mod tests {
         assert_ne!(canonical, bare, "projection_digest must never equal the unprefixed bare-hex digest");
         assert!(!jcs::is_canonical_digest_format(&bare), "a bare-hex string alone must not pass the canonical-digest-format check");
         assert_eq!(canonical, format!("sha256:{bare}"));
+    }
+
+    /// Stage 107B-A (ADR-0013), test #7 (design plan): proves a resolved
+    /// multi-platform OCI identity projects identically through both crates'
+    /// REAL `compute_projection`, mirroring
+    /// `cross_crate_fixture_produces_the_expected_projection_and_digest`'s
+    /// shape but against a fixture with a POPULATED `resolved_image_identity`.
+    #[test]
+    fn oci_resolved_cross_crate_fixture_produces_the_expected_projection_and_digest() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("fixtures")
+            .join("datum-contracts")
+            .join("vs1")
+            .join("execution-projection.cross-crate-mapper.oci-resolved.json");
+        let text = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+
+        let artifact: ServiceArtifact = serde_json::from_value(fixture["dserver_service_artifact"].clone())
+            .expect("fixture dserver_service_artifact must deserialize as ServiceArtifact");
+        let (projection, digest) = compute_projection_and_digest(&artifact).unwrap();
+
+        let expected_projection: ArtifactExecutionProjectionV1 =
+            serde_json::from_value(fixture["expected_projection"].clone())
+                .expect("fixture expected_projection must deserialize as ArtifactExecutionProjectionV1");
+        assert_eq!(projection, expected_projection);
+        assert!(
+            projection.image_identity.resolved.is_some(),
+            "this fixture must actually exercise a populated resolved_image_identity"
+        );
+
+        let serialized = serde_json::to_value(&projection).unwrap();
+        assert_eq!(serialized, fixture["expected_projection"], "serialized optional nulls must agree");
+        assert_eq!(jcs::canonicalize(&serialized).unwrap(), fixture["expected_canonical_json"].as_str().unwrap());
+        let expected_digest = fixture["expected_projection_digest_sha256"].as_str().unwrap();
+        assert_eq!(digest, expected_digest);
+        assert!(jcs::is_canonical_digest_format(&digest));
     }
 }
