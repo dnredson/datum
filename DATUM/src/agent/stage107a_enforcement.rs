@@ -849,6 +849,7 @@ mod tests {
             runtime_kind: "container".to_string(),
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
+            native_process: None,
             image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             target_node: "fog-01".to_string(),

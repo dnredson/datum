@@ -503,9 +503,15 @@ pub fn authorization_is_valid_for_context(
 
 fn validate_desired_service(service: &OperationalDesiredService) -> Result<(), String> {
     required("service_id", &service.service_id)?;
-    if !service.runtime.trim().eq_ignore_ascii_case("container") {
+    // Stage 108 (ADR-0015, P0-4 correction): this was previously the third
+    // independent `== "container"` gate found in this codebase (the other
+    // two live in `DATUM/src/agent/operational_reconciliation.rs`), hard-
+    // coded to accept only `"container"`. Runtime-kind parsing now
+    // recognises both canonical wire values; anything else still fails
+    // closed, exactly as before.
+    if crate::core::runtime_kind::RuntimeKind::parse(&service.runtime).is_err() {
         return Err(format!(
-            "operational service '{}' uses unsupported runtime '{}'; O2 vertical slice supports only container",
+            "operational service '{}' uses unsupported runtime '{}'; expected 'container' or 'native_process'",
             service.service_id, service.runtime
         ));
     }

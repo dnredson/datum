@@ -172,6 +172,7 @@ mod tests {
             service_id: "mqtt".to_string(),
             runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
+                native_process: None,
                 container: Some(ContainerDeploymentSpec {
                     container_name: "datum-mqtt".to_string(),
                     image: image.to_string(),

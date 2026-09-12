@@ -305,6 +305,12 @@ class Stage107AMapperDigest(unittest.TestCase):
         # self-verify the same way the original mqtt-broker one does.
         self.assertTrue(chk.mapper_fixture_digest_valid(self.fixture(chk.MAPPER_FIXTURE_OCI)))
 
+    def test_stage_108_native_process_mapper_fixture_also_has_matching_digest_carriers(self):
+        # Stage 108 (ADR-0015): the third real cross-crate mapper fixture
+        # (RuntimeKind::NativeProcess) must independently self-verify the
+        # same way the original mqtt-broker one does.
+        self.assertTrue(chk.mapper_fixture_digest_valid(self.fixture(chk.MAPPER_FIXTURE_NATIVE_PROCESS)))
+
 
 class Stage107BMapperExemptionIsNarrowlyScoped(unittest.TestCase):
     """Stage 107B-A follow-up (v5 review P1): proves the MAPPER_FIXTURES
@@ -346,13 +352,21 @@ class Stage107BMapperExemptionIsNarrowlyScoped(unittest.TestCase):
                 f"an ordinary, non-exempted fixture with a real digest must still be rejected; failures={rep.failures}",
             )
 
-    def test_the_two_exempted_filenames_are_exact_not_a_prefix_or_substring_match(self):
+    def test_the_exempted_filenames_are_exact_not_a_prefix_or_substring_match(self):
         # A filename that merely CONTAINS one of the exempted names as a
         # substring must not be exempted -- membership is exact-string, not
-        # startswith/in.
+        # startswith/in. Stage 108 (ADR-0015) added a third exempted
+        # filename (MAPPER_FIXTURE_NATIVE_PROCESS); this guard applies to it
+        # exactly as it already applied to the first two.
         decoy_name = "not-" + chk.MAPPER_FIXTURE
         self.assertNotIn(decoy_name, chk.MAPPER_FIXTURES)
         self.assertNotIn(chk.MAPPER_FIXTURE + ".bak", chk.MAPPER_FIXTURES)
+        self.assertNotIn("not-" + chk.MAPPER_FIXTURE_NATIVE_PROCESS, chk.MAPPER_FIXTURES)
+        self.assertNotIn(chk.MAPPER_FIXTURE_NATIVE_PROCESS + ".bak", chk.MAPPER_FIXTURES)
+        self.assertEqual(
+            chk.MAPPER_FIXTURES,
+            {chk.MAPPER_FIXTURE, chk.MAPPER_FIXTURE_OCI, chk.MAPPER_FIXTURE_NATIVE_PROCESS},
+        )
 
 
 if __name__ == "__main__":

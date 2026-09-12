@@ -1,0 +1,171 @@
+{
+  "agent_operational_artifact_assignment": {
+    "artifact_id": "native-svc",
+    "artifact_kind": "command_bundle",
+    "artifact_service_id": "native-svc",
+    "bindings": {
+      "MODE": "prod"
+    },
+    "command": [],
+    "configuration_mounts": [],
+    "container_name": "",
+    "dependencies": [
+      "postgres"
+    ],
+    "execution_generation": 1,
+    "execution_projection_digest": "sha256:cb5f5ef89883de1209c7468fa7664eb9d5936fa57ba6434ec7e886eb17750639",
+    "image": "",
+    "image_source_kind": "legacy_unclassified",
+    "lifecycle": {
+      "configure": [],
+      "install": [],
+      "post_install": [],
+      "pre_install": [],
+      "rollback": [],
+      "start": [],
+      "stop": []
+    },
+    "native_process": {
+      "args": [
+        "--config",
+        "/opt/datum/native-svc/config.toml"
+      ],
+      "entrypoint": "/opt/datum/native-svc/bin/run",
+      "process_name": "datum-native-svc",
+      "working_directory": "/opt/datum/native-svc"
+    },
+    "network": null,
+    "network_aliases": [],
+    "ports": [],
+    "runtime_kind": "native_process",
+    "secret_bindings": [
+      {
+        "secret_ref": "svc_token",
+        "target_environment_variable": "SVC_TOKEN",
+        "version": "v1"
+      }
+    ],
+    "secret_refs": [
+      "svc_token"
+    ],
+    "service_id": "native-svc-alias",
+    "target_node": "fog-01",
+    "version": "1.0.0",
+    "volumes": [],
+    "wasm_decision": {
+      "explicit_invocation_required": true,
+      "function_name": "decide",
+      "host_imports_allowed": false,
+      "module_id": "reconcile_service",
+      "safe_to_auto_execute": false,
+      "side_effects_allowed": false
+    }
+  },
+  "dserver_service_artifact": {
+    "artifact_id": "native-svc",
+    "control_plane": {
+      "acquisition": {
+        "kind": "command_bundle"
+      },
+      "artifact_kind": "command_bundle",
+      "bindings": {
+        "MODE": "prod"
+      },
+      "dependencies": [
+        "postgres"
+      ],
+      "execution_projection_digest": "sha256:cb5f5ef89883de1209c7468fa7664eb9d5936fa57ba6434ec7e886eb17750639",
+      "name": "Native Svc",
+      "project_id": "project:cross-crate-fixture",
+      "secret_bindings": [
+        {
+          "secret_ref": "svc_token",
+          "target_environment_variable": "SVC_TOKEN",
+          "version": "v1"
+        }
+      ],
+      "secret_refs": [
+        "svc_token"
+      ],
+      "target_nodes": [
+        "fog-01"
+      ],
+      "version": "1.0.0",
+      "wasm_decision": {
+        "explicit_invocation_required": true,
+        "function_name": "decide",
+        "host_imports_allowed": false,
+        "max_fuel": 1000000,
+        "module_id": "reconcile_service",
+        "safe_to_auto_execute": false,
+        "side_effects_allowed": false,
+        "timeout_ms": 1000
+      }
+    },
+    "metadata": {
+      "service_aliases": [
+        "native-svc-alias"
+      ]
+    },
+    "probes": {
+      "execution": {
+        "kind": "process_running"
+      }
+    },
+    "runtime": {
+      "kind": "native_process",
+      "native_process": {
+        "args": [
+          "--config",
+          "/opt/datum/native-svc/config.toml"
+        ],
+        "entrypoint": "/opt/datum/native-svc/bin/run",
+        "process_name": "datum-native-svc",
+        "working_directory": "/opt/datum/native-svc"
+      }
+    },
+    "schema_version": "0.2.0",
+    "service_id": "native-svc"
+  },
+  "expected_canonical_json": "{\"args\":[\"--config\",\"/opt/datum/native-svc/config.toml\"],\"artifact_id\":\"native-svc\",\"artifact_kind\":\"command_bundle\",\"bindings\":{\"MODE\":\"prod\"},\"dependencies\":[\"postgres\"],\"entrypoint\":\"/opt/datum/native-svc/bin/run\",\"process_name\":\"datum-native-svc\",\"projection\":\"datum.native-process-execution-projection/1\",\"runtime_kind\":\"native_process\",\"secret_bindings\":[{\"secret_ref\":\"svc_token\",\"target_environment_variable\":\"SVC_TOKEN\",\"version\":\"v1\"}],\"secret_refs\":[\"svc_token\"],\"service_id\":\"native-svc\",\"wasm_safety\":{\"explicit_invocation_required\":true,\"host_imports_allowed\":false,\"safe_to_auto_execute\":false,\"side_effects_allowed\":false},\"working_directory\":\"/opt/datum/native-svc\"}",
+  "expected_projection": {
+    "args": [
+      "--config",
+      "/opt/datum/native-svc/config.toml"
+    ],
+    "artifact_id": "native-svc",
+    "artifact_kind": "command_bundle",
+    "bindings": {
+      "MODE": "prod"
+    },
+    "dependencies": [
+      "postgres"
+    ],
+    "entrypoint": "/opt/datum/native-svc/bin/run",
+    "process_name": "datum-native-svc",
+    "projection": "datum.native-process-execution-projection/1",
+    "runtime_kind": "native_process",
+    "secret_bindings": [
+      {
+        "secret_ref": "svc_token",
+        "target_environment_variable": "SVC_TOKEN",
+        "version": "v1"
+      }
+    ],
+    "secret_refs": [
+      "svc_token"
+    ],
+    "service_id": "native-svc",
+    "wasm_safety": {
+      "explicit_invocation_required": true,
+      "host_imports_allowed": false,
+      "safe_to_auto_execute": false,
+      "side_effects_allowed": false
+    },
+    "working_directory": "/opt/datum/native-svc"
+  },
+  "expected_projection_digest_sha256": "sha256:cb5f5ef89883de1209c7468fa7664eb9d5936fa57ba6434ec7e886eb17750639",
+  "schema": "datum.x-fixture.execution-projection-cross-crate-mapper/1",
+  "x_alias_case": "agent_operational_artifact_assignment.service_id ('native-svc-alias') deliberately differs from agent_operational_artifact_assignment.artifact_service_id ('native-svc', matching dserver_service_artifact.service_id). Both real mappers must still produce expected_projection.service_id = 'native-svc' -- the canonical id, never the alias (review finding P0-6, applied identically to the Stage 108 native-process projection).",
+  "x_note": "Stage 108 (ADR-0015). A REAL shared cross-crate fixture, mirroring execution-projection.cross-crate-mapper.mqtt-broker.json's own pattern and note: dserver_service_artifact is deserialized into dserver::core::service_artifact_registry::ServiceArtifact and run through the REAL dserver::core::execution_projection::compute_native_projection; agent_operational_artifact_assignment is deserialized into DATUM::agent::operational_reconciliation::OperationalArtifactAssignment and run through the REAL DATUM::agent::execution_projection::compute_native_projection. Both real mapper functions must produce a projection that canonicalizes (JCS) to expected_projection, with SHA-256 digest expected_projection_digest_sha256. Proves cross-crate wire-vocabulary/projection parity for RuntimeKind::NativeProcess (Stage 108 test item 33), not merely container parity."
+}

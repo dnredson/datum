@@ -18,6 +18,7 @@ use crate::agent::image_identity_verification::{
     self, CliDockerImageRuntime, DockerImageRuntime, VerifiedImageIdentity,
 };
 use crate::agent::resource_discovery::SmartSentinelResourceDiscovery;
+use crate::agent::runtime_kind::RuntimeKind;
 use crate::agent::stage107a_enforcement::{
     check_generation_and_projection, effective_pinning_mode, required_completeness_gaps,
     resolve_clock_skew_seconds, resolve_network_aliases, resolve_ports,
@@ -208,6 +209,12 @@ pub struct OperationalArtifactAssignment {
     pub runtime_kind: String,
     pub container_name: String,
     pub image: String,
+    /// Stage 108 (ADR-0015). Mirrors `dserver`'s `ArtifactReconciliationAssignment.native_process`.
+    /// Populated if and only if `runtime_kind == "native_process"`; `None`
+    /// for `Container`. DESIRED STATE ONLY -- never PID/process-start-time/
+    /// observed state (see `runtime_kind`'s module doc comment).
+    #[serde(default)]
+    pub native_process: Option<NativeProcessDeploymentSpecV1>,
     /// Stage 107B-A (ADR-0013). Mirrors `ContainerDeploymentSpec.image_source_kind`
     /// (dserver): `"registry"`, `"local_build"`, or `"legacy_unclassified"`.
     /// v7 review P2-2: the safe default for a record missing this field is
@@ -324,6 +331,21 @@ pub struct OperationalSecretBinding {
     pub target_environment_variable: String,
     #[serde(default)]
     pub version: Option<String>,
+}
+
+/// Stage 108 (ADR-0015). Mirrors
+/// `dserver::core::service_artifact_registry::NativeProcessDeploymentSpecV1`
+/// field-for-field. DESIRED STATE ONLY -- see that type's doc comment for
+/// the desired/observed boundary. No process lifecycle exists yet in Stage
+/// 108.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeProcessDeploymentSpecV1 {
+    pub process_name: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1287,6 +1309,39 @@ fn run_operational_reconciliation_from_bootstrap(
         let assignment = context.artifacts.iter().find(|artifact| {
             artifact.service_id.eq_ignore_ascii_case(&service.service_id)
         });
+
+        // Stage 108 (ADR-0015, "CRITICAL IMPLEMENTATION AMENDMENT A"): the
+        // runtime-kind dispatch MUST be resolved here, before
+        // `trusted_container_mapping_for_artifact`/`inspect_container` (the
+        // very next lines below) or any other Docker-specific observation,
+        // mapping, image-identity, attachment, lifecycle, convergence, or
+        // mutation logic. A `NativeProcess` desired service must never reach
+        // any of that -- it is diverted to a stable stub report and the loop
+        // moves to the next service. `classify_service_runtime_dispatch` is a
+        // pure function (no `Config`/no I/O) precisely so this decision is
+        // directly unit-testable in isolation from the HTTP/Docker-backed
+        // rest of this function -- see its own tests for the deterministic
+        // proof that a `NativeProcess` input can never yield `Container`.
+        // This is a dispatch seam (P1-1 correction), not a `RuntimeDriver`
+        // trait: the existing Container path below is retained intact,
+        // unrefactored.
+        match classify_service_runtime_dispatch(service, assignment) {
+            ServiceRuntimeDispatch::Error(error) => {
+                services.push(build_runtime_dispatch_error_report(service, assignment, error));
+                continue;
+            }
+            ServiceRuntimeDispatch::NativeProcess => {
+                // Stage 108: contract understood, runtime dispatched
+                // correctly, no native runtime implementation exists yet, no
+                // mutation occurred. Never Docker, never ActionExecutorPlugin,
+                // never a silent "converged"/no-op.
+                services.push(build_native_process_stub_report(service, assignment));
+                continue;
+            }
+            ServiceRuntimeDispatch::Container => {}
+        }
+
+        // ---- Container path below is UNCHANGED from pre-Stage-108 behaviour. ----
         let mapping = assignment.and_then(|artifact| {
             trusted_container_mapping_for_artifact(
                 cfg,
@@ -2322,6 +2377,195 @@ pub fn run_embedded_reconciler(
     })
 }
 
+/// Stage 108 (ADR-0015). The runtime-kind dispatch decision for one desired
+/// service, computed BEFORE any Docker-specific observation. A pure function
+/// of `(service, assignment)` -- no `Config`, no I/O -- specifically so the
+/// property "a NativeProcess-desired service can never reach the Container
+/// path" is directly unit-testable (see the tests below), rather than only
+/// provable by source inspection.
+#[derive(Debug, PartialEq, Eq)]
+enum ServiceRuntimeDispatch {
+    /// Unknown runtime, or a desired/assigned runtime-kind mismatch.
+    Error(String),
+    NativeProcess,
+    Container,
+}
+
+fn classify_service_runtime_dispatch(
+    service: &OperationalDesiredService,
+    assignment: Option<&OperationalArtifactAssignment>,
+) -> ServiceRuntimeDispatch {
+    let desired_runtime_kind = RuntimeKind::parse(&service.runtime);
+    let assignment_runtime_kind = assignment.map(|artifact| RuntimeKind::parse(&artifact.runtime_kind));
+
+    match (&desired_runtime_kind, &assignment_runtime_kind) {
+        (Err(error), _) => {
+            return ServiceRuntimeDispatch::Error(format!(
+                "unsupported operational runtime '{}': {error}",
+                service.runtime
+            ));
+        }
+        (Ok(_), Some(Err(error))) => {
+            return ServiceRuntimeDispatch::Error(format!(
+                "service '{}' artifact assignment has {error}",
+                service.service_id
+            ));
+        }
+        (Ok(desired), Some(Ok(assigned))) if desired != assigned => {
+            return ServiceRuntimeDispatch::Error(format!(
+                "service '{}' desired runtime '{}' does not match assigned artifact runtime_kind '{}'",
+                service.service_id,
+                service.runtime,
+                assignment.expect("assignment_runtime_kind is Some").runtime_kind
+            ));
+        }
+        _ => {}
+    }
+
+    match desired_runtime_kind {
+        Ok(RuntimeKind::NativeProcess) => ServiceRuntimeDispatch::NativeProcess,
+        _ => ServiceRuntimeDispatch::Container,
+    }
+}
+
+/// Stage 108 (ADR-0015). A neutral, truthful "no WASM decision was made"
+/// value -- used by both the dispatch-error and native-process-stub report
+/// builders below, neither of which invokes the reconciler WASM module at
+/// all (there is nothing to decide: no mutation is possible in either case).
+fn no_wasm_decision(status: &str) -> WasmReconciliationDecision {
+    WasmReconciliationDecision {
+        module_id: String::new(),
+        function_name: String::new(),
+        status: status.to_string(),
+        action_code: 0,
+        host_imports_allowed: false,
+        guest_side_effects_performed: false,
+        fuel_configured: 0,
+        fuel_consumed: None,
+    }
+}
+
+/// Stage 108 (ADR-0015). Built when runtime-kind parsing/parity fails for a
+/// desired service, BEFORE any Docker-specific observation is attempted for
+/// either runtime kind. Truthful: no observation happened, no mutation
+/// happened, and the reported status names the exact contract defect.
+fn build_runtime_dispatch_error_report(
+    service: &OperationalDesiredService,
+    assignment: Option<&OperationalArtifactAssignment>,
+    error: String,
+) -> OperationalServiceReconciliationReport {
+    OperationalServiceReconciliationReport {
+        service_id: service.service_id.clone(),
+        artifact_id: assignment.map(|artifact| artifact.artifact_id.clone()),
+        artifact_version: assignment.map(|artifact| artifact.version.clone()),
+        desired_state: service.desired_state.clone(),
+        trusted_container_name: None,
+        trusted_image: None,
+        observed_before_running: false,
+        observation_error: None,
+        secret_resolution_status: "not_checked".to_string(),
+        wasm: no_wasm_decision("not_applicable_runtime_dispatch_error"),
+        execution_status: "blocked_runtime_kind_contract_error".to_string(),
+        message: error,
+        observed_after_running: false,
+        host_mutation_performed: false,
+        execution_semantics: None,
+        authorization_id: None,
+        authorization_expires_at_utc: None,
+        execution_generation: assignment.map(|artifact| artifact.execution_generation),
+        expected_execution_projection_digest: assignment.map(|artifact| artifact.execution_projection_digest.clone()),
+        recomputed_execution_projection_digest: None,
+        execution_pinning_mode: None,
+        f2_status: None,
+        local_policy_digest: None,
+        unpinned_inputs: Vec::new(),
+        authorization_clock_skew_seconds: None,
+        verified_external_inputs: Vec::new(),
+        local_substitutions: Vec::new(),
+        mutation_boundaries_crossed: Vec::new(),
+        verified_image_identity: None,
+    }
+}
+
+/// Stage 108 (ADR-0015). The stable, truthful NativeProcess stub outcome:
+/// contract understood, runtime dispatched correctly, no native runtime
+/// implementation exists yet, no mutation occurred. Independently
+/// reconstructs the SAME native-process execution projection DServer
+/// computed (`execution_projection::compute_native_projection`/
+/// `native_projection_digest`) and records both the expected (wire) and
+/// recomputed digest as evidence -- parity between the two is asserted by
+/// tests, not gated here (no mutation is possible either way in Stage 108).
+/// Absolutely no Docker call, no `ActionExecutorPlugin`, no silent fallback
+/// to Container, no manufactured container evidence.
+fn build_native_process_stub_report(
+    service: &OperationalDesiredService,
+    assignment: Option<&OperationalArtifactAssignment>,
+) -> OperationalServiceReconciliationReport {
+    let recomputed_execution_projection_digest = assignment.and_then(|artifact| {
+        execution_projection::recompute_native_digest(artifact).ok()
+    });
+    OperationalServiceReconciliationReport {
+        service_id: service.service_id.clone(),
+        artifact_id: assignment.map(|artifact| artifact.artifact_id.clone()),
+        artifact_version: assignment.map(|artifact| artifact.version.clone()),
+        desired_state: service.desired_state.clone(),
+        trusted_container_name: None,
+        trusted_image: None,
+        observed_before_running: false,
+        observation_error: None,
+        secret_resolution_status: "not_applicable_native_process_stage108".to_string(),
+        wasm: no_wasm_decision("not_applicable_native_process_stage108"),
+        execution_status: "not_implemented_native_process_runtime".to_string(),
+        message: "runtime_kind=native_process is understood and dispatched correctly; no native process runtime execution exists in Stage 108".to_string(),
+        observed_after_running: false,
+        host_mutation_performed: false,
+        execution_semantics: None,
+        authorization_id: None,
+        authorization_expires_at_utc: None,
+        execution_generation: assignment.map(|artifact| artifact.execution_generation),
+        expected_execution_projection_digest: assignment.map(|artifact| artifact.execution_projection_digest.clone()),
+        recomputed_execution_projection_digest,
+        execution_pinning_mode: None,
+        f2_status: None,
+        local_policy_digest: None,
+        unpinned_inputs: Vec::new(),
+        authorization_clock_skew_seconds: None,
+        verified_external_inputs: Vec::new(),
+        local_substitutions: Vec::new(),
+        mutation_boundaries_crossed: Vec::new(),
+        verified_image_identity: None,
+    }
+}
+
+/// Stage 108 v2 (independent review, P1-2). Mirrors
+/// `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`'s
+/// exact bounds -- independently hand-written (no shared crate), but the
+/// SAME limits, so a native_process payload cannot pass this crate's wire
+/// validation while failing the registry's, or vice versa. Returns the
+/// first violated bound's message on failure.
+fn native_process_deployment_spec_within_stage108_bounds(
+    spec: &NativeProcessDeploymentSpecV1,
+) -> std::result::Result<(), String> {
+    if spec.process_name.trim().is_empty() || spec.process_name.len() > 256 || spec.process_name.contains('\0') {
+        return Err("native_process.process_name must be non-empty, NUL-free, and at most 256 characters".to_string());
+    }
+    if spec.entrypoint.trim().is_empty() || spec.entrypoint.len() > 4096 || spec.entrypoint.contains('\0') {
+        return Err("native_process.entrypoint must be non-empty, NUL-free, and at most 4096 characters".to_string());
+    }
+    if spec.args.len() > 64 || spec.args.iter().any(|arg| arg.len() > 4096 || arg.contains('\0')) {
+        return Err("native_process.args must have at most 64 entries, each NUL-free and at most 4096 characters".to_string());
+    }
+    if let Some(dir) = &spec.working_directory {
+        if dir.trim().is_empty() || dir.len() > 4096 || dir.contains('\0') {
+            return Err(
+                "native_process.working_directory, when present, must be non-empty after trim, NUL-free, and at most 4096 characters"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_context(
     context: &OperationalReconciliationContext,
     project_id: &str,
@@ -2375,8 +2619,15 @@ fn validate_context(
         if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
             bail!("operational context contains duplicate desired service '{}'", service.service_id);
         }
-        if !service.runtime.eq_ignore_ascii_case("container") {
-            bail!("unsupported operational runtime '{}': expected container", service.runtime);
+        // Stage 108 (ADR-0015, P0-4 correction): this was previously a
+        // container-only `eq_ignore_ascii_case("container")` gate. Runtime-
+        // kind parsing now recognises both canonical wire values; anything
+        // else still fails closed, exactly as before.
+        if RuntimeKind::parse(&service.runtime).is_err() {
+            bail!(
+                "unsupported operational runtime '{}': expected container or native_process",
+                service.runtime
+            );
         }
         if !matches!(
             service.desired_state.trim().to_ascii_lowercase().as_str(),
@@ -2394,29 +2645,9 @@ fn validate_context(
         if artifact.service_id.trim().is_empty()
             || artifact.artifact_id.trim().is_empty()
             || artifact.version.trim().is_empty()
-            || artifact.container_name.trim().is_empty()
-            || artifact.image.trim().is_empty()
             || artifact.target_node != context.node_id
-            || artifact.runtime_kind != "container"
             || artifact.command.len() > 64
             || artifact.command.iter().any(|arg| arg.len() > 4096 || arg.contains('\0'))
-            || artifact
-                .network
-                .as_deref()
-                .is_some_and(|network| !is_safe_docker_name(network))
-            || artifact.volumes.iter().any(|volume| {
-                !is_safe_docker_name(&volume.name)
-                    || !volume.target.starts_with('/')
-                    || volume.target.chars().any(char::is_whitespace)
-                    || volume.target.contains(',')
-            })
-            || artifact.configuration_mounts.iter().any(|mount| {
-                !is_safe_configuration_source(&mount.source)
-                    || !mount.target.starts_with('/')
-                    || mount.target.chars().any(char::is_whitespace)
-                    || mount.target.contains(',')
-                    || !mount.read_only
-            })
             || !policy.explicit_invocation_required
             || policy.host_imports_allowed
             || policy.side_effects_allowed
@@ -2425,6 +2656,69 @@ fn validate_context(
             || policy.function_name.trim().is_empty()
         {
             bail!("artifact reconciliation context contains an unsafe or incomplete assignment");
+        }
+
+        // Stage 108 (ADR-0015, P0-4 correction): runtime-discriminated.
+        // Container-specific field requirements apply ONLY under
+        // RuntimeKind::Container; NativeProcess requires its own minimal
+        // payload instead and is never checked against Docker-shaped
+        // requirements (container_name/image/network/volumes/
+        // configuration_mounts).
+        match RuntimeKind::parse(&artifact.runtime_kind) {
+            Ok(RuntimeKind::Container) => {
+                if artifact.native_process.is_some() {
+                    bail!(
+                        "artifact reconciliation context assignment '{}' declares runtime_kind=container but also carries a native_process payload",
+                        artifact.artifact_id
+                    );
+                }
+                if artifact.container_name.trim().is_empty()
+                    || artifact.image.trim().is_empty()
+                    || artifact
+                        .network
+                        .as_deref()
+                        .is_some_and(|network| !is_safe_docker_name(network))
+                    || artifact.volumes.iter().any(|volume| {
+                        !is_safe_docker_name(&volume.name)
+                            || !volume.target.starts_with('/')
+                            || volume.target.chars().any(char::is_whitespace)
+                            || volume.target.contains(',')
+                    })
+                    || artifact.configuration_mounts.iter().any(|mount| {
+                        !is_safe_configuration_source(&mount.source)
+                            || !mount.target.starts_with('/')
+                            || mount.target.chars().any(char::is_whitespace)
+                            || mount.target.contains(',')
+                            || !mount.read_only
+                    })
+                {
+                    bail!("artifact reconciliation context contains an unsafe or incomplete container assignment");
+                }
+            }
+            Ok(RuntimeKind::NativeProcess) => {
+                let native = artifact.native_process.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "artifact reconciliation context assignment '{}' declares runtime_kind=native_process but carries no native_process payload",
+                        artifact.artifact_id
+                    )
+                })?;
+                // Stage 108 v2 (independent review, P1-2): mirrors the exact
+                // same bounds `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`
+                // enforces -- this downstream wire validator must not accept
+                // a weaker payload than the registry itself would have.
+                if let Err(reason) = native_process_deployment_spec_within_stage108_bounds(native) {
+                    bail!(
+                        "artifact reconciliation context contains an unsafe or incomplete native_process assignment: {reason}"
+                    );
+                }
+            }
+            Err(_) => {
+                bail!(
+                    "artifact reconciliation context assignment '{}' has unsupported runtime_kind '{}'",
+                    artifact.artifact_id,
+                    artifact.runtime_kind
+                );
+            }
         }
     }
 
@@ -3676,6 +3970,326 @@ pub fn publish_operational_role_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Stage 108 (ADR-0015): runtime-kind dispatch, contract, and ------ //
+    // ---- stub-report tests. -------------------------------------------- //
+
+    fn desired_service(runtime: &str) -> OperationalDesiredService {
+        OperationalDesiredService {
+            service_id: "svc".to_string(),
+            runtime: runtime.to_string(),
+            desired_state: "running".to_string(),
+        }
+    }
+
+    fn wasm_policy() -> ArtifactWasmDecisionPolicy {
+        ArtifactWasmDecisionPolicy {
+            explicit_invocation_required: true,
+            module_id: "reconcile_service".to_string(),
+            function_name: "decide".to_string(),
+            host_imports_allowed: false,
+            side_effects_allowed: false,
+            safe_to_auto_execute: false,
+        }
+    }
+
+    fn container_assignment() -> OperationalArtifactAssignment {
+        OperationalArtifactAssignment {
+            artifact_id: "svc".to_string(),
+            service_id: "svc".to_string(),
+            artifact_service_id: "svc".to_string(),
+            version: "1".to_string(),
+            artifact_kind: "container".to_string(),
+            runtime_kind: "container".to_string(),
+            container_name: "datum-svc".to_string(),
+            image: "example/svc:1".to_string(),
+            native_process: None,
+            image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+            resolved_image_identity: None,
+            target_node: "fog-01".to_string(),
+            lifecycle: OperationalLifecycle::default(),
+            network: None,
+            network_aliases: Vec::new(),
+            ports: Vec::new(),
+            volumes: Vec::new(),
+            configuration_mounts: Vec::new(),
+            command: Vec::new(),
+            dependencies: Vec::new(),
+            wasm_decision: wasm_policy(),
+            bindings: BTreeMap::new(),
+            secret_refs: Vec::new(),
+            secret_bindings: Vec::new(),
+            execution_generation: 1,
+            execution_projection_digest: String::new(),
+        }
+    }
+
+    fn native_process_assignment() -> OperationalArtifactAssignment {
+        let mut assignment = container_assignment();
+        assignment.runtime_kind = "native_process".to_string();
+        assignment.container_name = String::new();
+        assignment.image = String::new();
+        assignment.native_process = Some(NativeProcessDeploymentSpecV1 {
+            process_name: "datum-native-svc".to_string(),
+            entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+            args: vec!["--config".to_string(), "cfg.toml".to_string()],
+            working_directory: Some("/opt/datum/native-svc".to_string()),
+        });
+        assignment
+    }
+
+    #[test]
+    fn dispatch_classifies_matching_container_pair_as_container() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("container"), Some(&container_assignment()));
+        assert_eq!(dispatch, ServiceRuntimeDispatch::Container);
+    }
+
+    #[test]
+    fn dispatch_classifies_matching_native_process_pair_as_native_process() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), Some(&native_process_assignment()));
+        assert_eq!(dispatch, ServiceRuntimeDispatch::NativeProcess);
+    }
+
+    #[test]
+    fn dispatch_classifies_unknown_desired_runtime_as_error() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("vm"), Some(&container_assignment()));
+        assert!(matches!(dispatch, ServiceRuntimeDispatch::Error(_)));
+    }
+
+    #[test]
+    fn dispatch_classifies_unknown_assignment_runtime_as_error() {
+        let mut assignment = container_assignment();
+        assignment.runtime_kind = "vm".to_string();
+        let dispatch = classify_service_runtime_dispatch(&desired_service("container"), Some(&assignment));
+        assert!(matches!(dispatch, ServiceRuntimeDispatch::Error(_)));
+    }
+
+    #[test]
+    fn dispatch_classifies_container_desired_with_native_assignment_as_error() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("container"), Some(&native_process_assignment()));
+        assert!(matches!(dispatch, ServiceRuntimeDispatch::Error(_)));
+    }
+
+    #[test]
+    fn dispatch_classifies_native_desired_with_container_assignment_as_error() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), Some(&container_assignment()));
+        assert!(matches!(dispatch, ServiceRuntimeDispatch::Error(_)));
+    }
+
+    #[test]
+    fn dispatch_never_yields_container_for_a_native_process_desired_service_regardless_of_assignment() {
+        // The deterministic proof the "zero Docker calls" requirement rests
+        // on: for every possible assignment (matching, mismatched, absent,
+        // unknown), a NativeProcess-desired service NEVER classifies as
+        // Container -- i.e. it can never reach `trusted_container_mapping_for_artifact`/
+        // `inspect_container` (both live only in the Container branch of the
+        // caller, gated on this exact classification).
+        let candidates: Vec<Option<OperationalArtifactAssignment>> = vec![
+            None,
+            Some(native_process_assignment()),
+            Some(container_assignment()),
+            {
+                let mut a = container_assignment();
+                a.runtime_kind = "vm".to_string();
+                Some(a)
+            },
+        ];
+        for assignment in &candidates {
+            let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), assignment.as_ref());
+            assert_ne!(dispatch, ServiceRuntimeDispatch::Container);
+        }
+    }
+
+    #[test]
+    fn dispatch_with_no_assignment_and_native_process_desired_is_native_process() {
+        let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), None);
+        assert_eq!(dispatch, ServiceRuntimeDispatch::NativeProcess);
+    }
+
+    #[test]
+    fn native_process_stub_report_is_stable_and_truthful() {
+        let report = build_native_process_stub_report(&desired_service("native_process"), Some(&native_process_assignment()));
+        assert_eq!(report.execution_status, "not_implemented_native_process_runtime");
+        assert!(!report.host_mutation_performed);
+        assert!(!report.observed_before_running);
+        assert!(!report.observed_after_running);
+        assert!(report.trusted_container_name.is_none());
+        assert!(report.trusted_image.is_none());
+        assert!(report.verified_image_identity.is_none());
+    }
+
+    #[test]
+    fn native_process_stub_report_recomputes_a_matching_native_projection_digest() {
+        let mut assignment = native_process_assignment();
+        assignment.execution_projection_digest =
+            execution_projection::recompute_native_digest(&assignment).unwrap();
+        let report = build_native_process_stub_report(&desired_service("native_process"), Some(&assignment));
+        assert_eq!(
+            report.recomputed_execution_projection_digest.as_deref(),
+            Some(assignment.execution_projection_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn runtime_dispatch_error_report_never_reports_container_evidence() {
+        let report = build_runtime_dispatch_error_report(&desired_service("vm"), None, "unsupported".to_string());
+        assert_eq!(report.execution_status, "blocked_runtime_kind_contract_error");
+        assert!(!report.host_mutation_performed);
+        assert!(report.trusted_container_name.is_none());
+        assert!(report.trusted_image.is_none());
+    }
+
+    #[test]
+    fn validate_context_accepts_a_well_formed_native_process_service() {
+        let context = OperationalReconciliationContext {
+            schema_version: "0.1.0".to_string(),
+            contract_kind: "datum_artifact_reconciliation_context".to_string(),
+            project_id: "proj".to_string(),
+            dgraph_id: "dgraph:test".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            desired_services: vec![desired_service("native_process")],
+            artifacts: vec![native_process_assignment()],
+            authorization: None,
+            reconciler: OperationalReconcilerDescriptor {
+                module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
+                function_name: OPERATIONAL_RECONCILER_FUNCTION.to_string(),
+                abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
+                host_imports_allowed: false,
+            },
+            execution_policy: ArtifactExecutionPolicy {
+                mode: "proposal_only".to_string(),
+                explicit_invocation_required: true,
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            side_effects_performed: false,
+        };
+        validate_context(&context, "proj", "fog-01").unwrap();
+    }
+
+    #[test]
+    fn validate_context_rejects_native_process_assignment_missing_its_payload() {
+        let mut assignment = native_process_assignment();
+        assignment.native_process = None;
+        let context = OperationalReconciliationContext {
+            schema_version: "0.1.0".to_string(),
+            contract_kind: "datum_artifact_reconciliation_context".to_string(),
+            project_id: "proj".to_string(),
+            dgraph_id: "dgraph:test".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            desired_services: vec![desired_service("native_process")],
+            artifacts: vec![assignment],
+            authorization: None,
+            reconciler: OperationalReconcilerDescriptor {
+                module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
+                function_name: OPERATIONAL_RECONCILER_FUNCTION.to_string(),
+                abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
+                host_imports_allowed: false,
+            },
+            execution_policy: ArtifactExecutionPolicy {
+                mode: "proposal_only".to_string(),
+                explicit_invocation_required: true,
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            side_effects_performed: false,
+        };
+        assert!(validate_context(&context, "proj", "fog-01").is_err());
+    }
+
+    // ---- Stage 108 v2 (independent review, P1-2): downstream (wire) ----- //
+    // ---- native_process payload validation must match the registry's ---- //
+    // ---- exact bounds, not a weaker subset. ------------------------------//
+
+    fn native_context(assignment: OperationalArtifactAssignment) -> OperationalReconciliationContext {
+        OperationalReconciliationContext {
+            schema_version: "0.1.0".to_string(),
+            contract_kind: "datum_artifact_reconciliation_context".to_string(),
+            project_id: "proj".to_string(),
+            dgraph_id: "dgraph:test".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            desired_services: vec![desired_service("native_process")],
+            artifacts: vec![assignment],
+            authorization: None,
+            reconciler: OperationalReconcilerDescriptor {
+                module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
+                function_name: OPERATIONAL_RECONCILER_FUNCTION.to_string(),
+                abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
+                host_imports_allowed: false,
+            },
+            execution_policy: ArtifactExecutionPolicy {
+                mode: "proposal_only".to_string(),
+                explicit_invocation_required: true,
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            side_effects_performed: false,
+        }
+    }
+
+    #[test]
+    fn wire_valid_native_payload_still_passes() {
+        let context = native_context(native_process_assignment());
+        validate_context(&context, "proj", "fog-01").unwrap();
+    }
+
+    #[test]
+    fn wire_native_payload_bound_violations_are_all_rejected() {
+        let cases: Vec<(&str, NativeProcessDeploymentSpecV1)> = vec![
+            ("process_name containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "bad\0name".to_string(), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+            }),
+            ("process_name > 256 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "a".repeat(257), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+            }),
+            ("entrypoint containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/bad\0path".to_string(), args: vec![], working_directory: None,
+            }),
+            ("entrypoint > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "a".repeat(4097), args: vec![], working_directory: None,
+            }),
+            ("args > 64 entries", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: (0..65).map(|i| i.to_string()).collect(), working_directory: None,
+            }),
+            ("one arg > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec!["a".repeat(4097)], working_directory: None,
+            }),
+            ("arg containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec!["bad\0arg".to_string()], working_directory: None,
+            }),
+            ("working_directory blank Some", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("   ".to_string()),
+            }),
+            ("working_directory containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("/bad\0dir".to_string()),
+            }),
+            ("working_directory > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("a".repeat(4097)),
+            }),
+        ];
+
+        for (label, native) in cases {
+            let mut assignment = native_process_assignment();
+            assignment.native_process = Some(native);
+            let context = native_context(assignment);
+            assert!(
+                validate_context(&context, "proj", "fog-01").is_err(),
+                "expected rejection for case: {label}"
+            );
+        }
+    }
 
     // ---- P1-2: deep convergence comparison (pure, no Docker needed) ----- //
 

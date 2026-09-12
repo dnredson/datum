@@ -43,7 +43,13 @@ MAPPER_FIXTURE = "execution-projection.cross-crate-mapper.mqtt-broker.json"
 # on the guard loop in check_fixtures() below. Never widen this to a prefix,
 # substring, or directory-wide match.
 MAPPER_FIXTURE_OCI = "execution-projection.cross-crate-mapper.oci-resolved.json"
-MAPPER_FIXTURES = {MAPPER_FIXTURE, MAPPER_FIXTURE_OCI}
+# Stage 108 (ADR-0015): a third real cross-crate mapper fixture, proving
+# `RuntimeKind::NativeProcess` execution-projection parity between dserver's
+# and DATUM's independently computed digests -- exact-filename-matched, same
+# discipline as the two fixtures above. Never widen this to a prefix,
+# substring, or directory-wide match.
+MAPPER_FIXTURE_NATIVE_PROCESS = "execution-projection.cross-crate-mapper.native-process-stub.json"
+MAPPER_FIXTURES = {MAPPER_FIXTURE, MAPPER_FIXTURE_OCI, MAPPER_FIXTURE_NATIVE_PROCESS}
 
 
 def mapper_fixture_digest_valid(obj: dict) -> bool:

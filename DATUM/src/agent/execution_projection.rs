@@ -291,13 +291,226 @@ pub fn recompute_digest(assignment: &OperationalArtifactAssignment) -> Result<St
     projection_digest(&compute_projection(assignment))
 }
 
+// ---------------------------------------------------------------------
+// Stage 108 (ADR-0015): `NativeProcessExecutionProjectionV1` -- agent side.
+//
+// Mirrors `dserver::core::execution_projection::NativeProcessExecutionProjectionV1`
+// field-for-field. A SEPARATE projection type from `ArtifactExecutionProjectionV1`
+// above, not a `native_process: null` sibling on it -- see that crate's own
+// module note on why an added, always-null sibling key would perturb every
+// existing container artifact's digest for no genuine content change.
+// `ArtifactExecutionProjectionV1`/`compute_projection`/`projection_digest`/
+// `recompute_digest` above are therefore left byte-for-byte untouched by
+// Stage 108.
+pub const NATIVE_PROCESS_EXECUTION_PROJECTION_KIND: &str = "datum.native-process-execution-projection/1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NativeProcessExecutionProjectionV1 {
+    pub projection: String,
+    pub artifact_id: String,
+    pub service_id: String,
+    pub artifact_kind: String,
+    pub runtime_kind: String,
+    pub process_name: String,
+    pub entrypoint: String,
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_refs: Vec<String>,
+    #[serde(default)]
+    pub secret_bindings: Vec<SecretBindingV1>,
+    pub wasm_safety: WasmSafetyFlagsV1,
+}
+
+/// Reconstruct the native-process projection from the delivered assignment.
+/// Mirrors `compute_projection`'s identity rules (canonical `service_id`,
+/// never an alias -- P0-6 applies identically here).
+pub fn compute_native_projection(assignment: &OperationalArtifactAssignment) -> Result<NativeProcessExecutionProjectionV1, String> {
+    let native = assignment
+        .native_process
+        .as_ref()
+        .ok_or_else(|| format!("assignment '{}' has no native_process payload", assignment.artifact_id))?;
+    let wasm: &ArtifactWasmDecisionPolicy = &assignment.wasm_decision;
+
+    Ok(NativeProcessExecutionProjectionV1 {
+        projection: NATIVE_PROCESS_EXECUTION_PROJECTION_KIND.to_string(),
+        artifact_id: assignment.artifact_id.clone(),
+        service_id: assignment.artifact_service_id.clone(),
+        artifact_kind: assignment.artifact_kind.clone(),
+        runtime_kind: assignment.runtime_kind.clone(),
+        process_name: native.process_name.clone(),
+        entrypoint: native.entrypoint.clone(),
+        args: native.args.clone(),
+        working_directory: native.working_directory.clone(),
+        dependencies: assignment.dependencies.clone(),
+        bindings: assignment.bindings.clone(),
+        secret_refs: assignment.secret_refs.clone(),
+        secret_bindings: assignment
+            .secret_bindings
+            .iter()
+            .map(|binding| SecretBindingV1 {
+                secret_ref: binding.secret_ref.clone(),
+                target_environment_variable: binding.target_environment_variable.clone(),
+                version: binding.version.clone(),
+            })
+            .collect(),
+        wasm_safety: WasmSafetyFlagsV1 {
+            explicit_invocation_required: wasm.explicit_invocation_required,
+            host_imports_allowed: wasm.host_imports_allowed,
+            side_effects_allowed: wasm.side_effects_allowed,
+            safe_to_auto_execute: wasm.safe_to_auto_execute,
+        },
+    })
+}
+
+/// SHA-256 (hex) of the RFC 8785 JCS serialization of `projection`.
+pub fn native_projection_digest(projection: &NativeProcessExecutionProjectionV1) -> Result<String, String> {
+    let value: Value = serde_json::to_value(projection)
+        .map_err(|error| format!("serialize NativeProcessExecutionProjectionV1: {error}"))?;
+    jcs::canonical_digest_sha256_hex(&value).map_err(|error| error.to_string())
+}
+
+/// Recompute the native-process projection digest directly from the
+/// delivered assignment.
+pub fn recompute_native_digest(assignment: &OperationalArtifactAssignment) -> Result<String, String> {
+    native_projection_digest(&compute_native_projection(assignment)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::operational_reconciliation::{
-        ArtifactWasmDecisionPolicy, OperationalConfigurationMount, OperationalLifecycle,
-        OperationalPortMapping, OperationalSecretBinding, OperationalVolumeMount,
+        ArtifactWasmDecisionPolicy, NativeProcessDeploymentSpecV1, OperationalConfigurationMount,
+        OperationalLifecycle, OperationalPortMapping, OperationalSecretBinding, OperationalVolumeMount,
     };
+
+    // ---- Stage 108 (ADR-0015): native-process projection tests ---------- //
+
+    fn native_assignment() -> OperationalArtifactAssignment {
+        OperationalArtifactAssignment {
+            artifact_id: "native-svc".to_string(),
+            service_id: "native-svc".to_string(),
+            artifact_service_id: "native-svc".to_string(),
+            version: "1".to_string(),
+            artifact_kind: "command_bundle".to_string(),
+            runtime_kind: "native_process".to_string(),
+            container_name: String::new(),
+            image: String::new(),
+            native_process: Some(NativeProcessDeploymentSpecV1 {
+                process_name: "datum-native-svc".to_string(),
+                entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+                args: vec!["--config".to_string(), "cfg.toml".to_string()],
+                working_directory: Some("/opt/datum/native-svc".to_string()),
+            }),
+            image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
+            resolved_image_identity: None,
+            target_node: "fog-01".to_string(),
+            lifecycle: OperationalLifecycle::default(),
+            network: None,
+            network_aliases: Vec::new(),
+            ports: Vec::new(),
+            volumes: Vec::new(),
+            configuration_mounts: Vec::new(),
+            command: Vec::new(),
+            dependencies: vec!["postgres".to_string()],
+            wasm_decision: ArtifactWasmDecisionPolicy {
+                explicit_invocation_required: true,
+                module_id: "reconcile_service".to_string(),
+                function_name: "decide".to_string(),
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            bindings: BTreeMap::new(),
+            secret_refs: Vec::new(),
+            secret_bindings: Vec::new(),
+            execution_generation: 1,
+            execution_projection_digest: String::new(),
+        }
+    }
+
+    #[test]
+    fn native_projection_round_trips_the_desired_fields() {
+        let projection = compute_native_projection(&native_assignment()).unwrap();
+        assert_eq!(projection.process_name, "datum-native-svc");
+        assert_eq!(projection.entrypoint, "/opt/datum/native-svc/bin/run");
+        assert_eq!(projection.args, vec!["--config".to_string(), "cfg.toml".to_string()]);
+        assert_eq!(projection.working_directory.as_deref(), Some("/opt/datum/native-svc"));
+        assert_eq!(projection.runtime_kind, "native_process");
+    }
+
+    #[test]
+    fn native_projection_fails_without_a_native_process_payload() {
+        let mut assignment = native_assignment();
+        assignment.native_process = None;
+        assert!(compute_native_projection(&assignment).is_err());
+    }
+
+    #[test]
+    fn native_projection_digest_is_stable_across_recomputation() {
+        let d1 = recompute_native_digest(&native_assignment()).unwrap();
+        let d2 = recompute_native_digest(&native_assignment()).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn native_projection_digest_changes_when_process_name_changes() {
+        let a = native_assignment();
+        let mut b = native_assignment();
+        b.native_process.as_mut().unwrap().process_name = "different-name".to_string();
+        assert_ne!(recompute_native_digest(&a).unwrap(), recompute_native_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn native_projection_digest_changes_when_entrypoint_changes() {
+        let a = native_assignment();
+        let mut b = native_assignment();
+        b.native_process.as_mut().unwrap().entrypoint = "/opt/datum/native-svc/bin/run-v2".to_string();
+        assert_ne!(recompute_native_digest(&a).unwrap(), recompute_native_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn native_projection_digest_changes_when_args_change() {
+        let a = native_assignment();
+        let mut b = native_assignment();
+        b.native_process.as_mut().unwrap().args = vec!["--config".to_string(), "different.toml".to_string()];
+        assert_ne!(recompute_native_digest(&a).unwrap(), recompute_native_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn native_projection_digest_changes_when_working_directory_changes() {
+        let a = native_assignment();
+        let mut b = native_assignment();
+        b.native_process.as_mut().unwrap().working_directory = Some("/opt/datum/native-svc-v2".to_string());
+        assert_ne!(recompute_native_digest(&a).unwrap(), recompute_native_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn native_projection_digest_is_prefixed_canonical_sha256() {
+        let digest = recompute_native_digest(&native_assignment()).unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(digest.len(), 7 + 64);
+    }
+
+    #[test]
+    fn native_projection_never_serializes_observed_runtime_state_fields() {
+        // Stage 108 (ADR-0015, P0-4 desired/observed correction): the
+        // projection must never carry pid/proc_start_time/observed-state --
+        // there is no such field on `NativeProcessExecutionProjectionV1` at
+        // all, so this asserts the serialized JSON has no such key, as a
+        // regression guard against ever adding one here by mistake.
+        let projection = compute_native_projection(&native_assignment()).unwrap();
+        let value = serde_json::to_value(&projection).unwrap();
+        let object = value.as_object().unwrap();
+        for forbidden in ["pid", "proc_start_time_ticks", "observed_executable", "state", "started_at_utc"] {
+            assert!(!object.contains_key(forbidden), "projection must not contain '{forbidden}'");
+        }
+    }
 
     fn assignment() -> OperationalArtifactAssignment {
         OperationalArtifactAssignment {
@@ -309,6 +522,7 @@ mod tests {
             runtime_kind: "container".to_string(),
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
+            native_process: None,
             image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             target_node: "fog-01".to_string(),
@@ -543,6 +757,51 @@ mod tests {
 
         // The artifact's OWN canonical service_id, never the alias -- P0-6.
         assert_eq!(projection.service_id, "mqtt-broker");
+    }
+
+    /// Stage 108 (ADR-0015). The `NativeProcessExecutionProjectionV1`
+    /// analogue of `dserver_cross_crate_fixture_produces_the_expected_projection_and_digest`
+    /// above -- proves cross-crate parity for `RuntimeKind::NativeProcess`
+    /// (Stage 108 test item 33: dserver's and this crate's independently
+    /// computed native digests must be identical for equivalent content).
+    #[test]
+    fn dserver_native_process_cross_crate_fixture_produces_the_expected_projection_and_digest() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("fixtures")
+            .join("datum-contracts")
+            .join("vs1")
+            .join("execution-projection.cross-crate-mapper.native-process-stub.json");
+        let text = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+
+        let assignment: OperationalArtifactAssignment =
+            serde_json::from_value(fixture["agent_operational_artifact_assignment"].clone())
+                .expect("fixture agent_operational_artifact_assignment must deserialize as OperationalArtifactAssignment");
+        assert_ne!(
+            assignment.service_id, assignment.artifact_service_id,
+            "fixture must actually exercise the alias case (P0-6)"
+        );
+
+        let projection = compute_native_projection(&assignment)
+            .expect("compute_native_projection must succeed on the fixture assignment");
+
+        let expected_projection: NativeProcessExecutionProjectionV1 =
+            serde_json::from_value(fixture["expected_projection"].clone())
+                .expect("fixture expected_projection must deserialize as this crate's NativeProcessExecutionProjectionV1");
+        assert_eq!(projection, expected_projection, "real compute_native_projection output must equal the fixture's expected_projection");
+
+        let serialized = serde_json::to_value(&projection).unwrap();
+        assert_eq!(serialized, fixture["expected_projection"], "serialized optional nulls must agree");
+        assert_eq!(jcs::canonicalize(&serialized).unwrap(), fixture["expected_canonical_json"].as_str().unwrap());
+        let expected_digest = fixture["expected_projection_digest_sha256"].as_str().unwrap();
+        assert_eq!(native_projection_digest(&projection).unwrap(), expected_digest);
+        assert_eq!(recompute_native_digest(&assignment).unwrap(), expected_digest);
+
+        // The artifact's OWN canonical service_id, never the alias -- P0-6.
+        assert_eq!(projection.service_id, "native-svc");
     }
 
     /// Stage 107B-A (ADR-0013), test #7 (design plan): DATUM-side half of

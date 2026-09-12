@@ -406,6 +406,131 @@ pub fn compute_projection_and_digest(artifact: &ServiceArtifact) -> Result<(Arti
     Ok((projection, digest))
 }
 
+// ---------------------------------------------------------------------
+// Stage 108 (ADR-0015): `NativeProcessExecutionProjectionV1`.
+//
+// A SEPARATE projection type for `RuntimeKind::NativeProcess`, not a
+// `native_process: null` sibling bolted onto `ArtifactExecutionProjectionV1`
+// -- ADR-0006 point 2 makes an added, always-null sibling key
+// digest-significant, which would perturb EVERY existing container
+// artifact's `execution_projection_digest` (and therefore
+// `execution_generation`) the moment Stage 108 lands, with no genuine
+// content change behind it. `ArtifactExecutionProjectionV1` /
+// `compute_projection` / `projection_digest` / `compute_projection_and_digest`
+// above are therefore left byte-for-byte untouched by Stage 108.
+//
+// Carries only the native-process desired-state fields
+// (`NativeProcessDeploymentSpecV1`) plus the same common execution-relevant
+// fields the container projection already carries (dependencies, bindings,
+// secret_refs, secret_bindings, wasm_safety) -- these apply identically
+// regardless of runtime kind. Deliberately excludes any observed/runtime
+// state (PID, process start time, current state): Stage 108 introduces no
+// such type at all (see ADR-0015's desired-vs-observed section), so there is
+// nothing to exclude by name yet, but this projection is not the place a
+// future `ManagedProcessRuntimeState` would ever be added.
+pub const NATIVE_PROCESS_EXECUTION_PROJECTION_KIND: &str = "datum.native-process-execution-projection/1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NativeProcessExecutionProjectionV1 {
+    pub projection: String,
+    pub artifact_id: String,
+    pub service_id: String,
+    pub artifact_kind: String,
+    pub runtime_kind: String,
+    pub process_name: String,
+    pub entrypoint: String,
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_refs: Vec<String>,
+    #[serde(default)]
+    pub secret_bindings: Vec<SecretBindingV1>,
+    pub wasm_safety: WasmSafetyFlagsV1,
+}
+
+/// Build the authoritative native-process projection for `artifact`. Mirrors
+/// `compute_projection`'s identity rules exactly (canonical `service_id`,
+/// never an alias -- P0-6 applies identically here).
+pub fn compute_native_projection(artifact: &ServiceArtifact) -> Result<NativeProcessExecutionProjectionV1, String> {
+    let native = artifact.runtime.native_process.as_ref().ok_or_else(|| {
+        format!("artifact '{}' has no native_process runtime definition", artifact.artifact_id)
+    })?;
+
+    let secret_bindings = artifact
+        .control_plane
+        .secret_bindings
+        .iter()
+        .map(|binding| SecretBindingV1 {
+            secret_ref: binding.secret_ref.clone(),
+            target_environment_variable: binding.target_environment_variable.clone(),
+            version: binding.version.clone(),
+        })
+        .collect();
+
+    let wasm = &artifact.control_plane.wasm_decision;
+
+    Ok(NativeProcessExecutionProjectionV1 {
+        projection: NATIVE_PROCESS_EXECUTION_PROJECTION_KIND.to_string(),
+        artifact_id: artifact.artifact_id.clone(),
+        service_id: artifact.service_id.clone(),
+        artifact_kind: artifact.control_plane.artifact_kind.clone(),
+        runtime_kind: artifact.runtime.kind.clone(),
+        process_name: native.process_name.clone(),
+        entrypoint: native.entrypoint.clone(),
+        args: native.args.clone(),
+        working_directory: native.working_directory.clone(),
+        dependencies: artifact.control_plane.dependencies.clone(),
+        bindings: artifact.control_plane.bindings.clone(),
+        secret_refs: artifact.control_plane.secret_refs.clone(),
+        secret_bindings,
+        wasm_safety: WasmSafetyFlagsV1 {
+            explicit_invocation_required: wasm.explicit_invocation_required,
+            host_imports_allowed: wasm.host_imports_allowed,
+            side_effects_allowed: wasm.side_effects_allowed,
+            safe_to_auto_execute: wasm.safe_to_auto_execute,
+        },
+    })
+}
+
+/// SHA-256 (hex) of the RFC 8785 JCS serialization of `projection`.
+pub fn native_projection_digest(projection: &NativeProcessExecutionProjectionV1) -> Result<String, String> {
+    let value: Value = serde_json::to_value(projection)
+        .map_err(|error| format!("serialize NativeProcessExecutionProjectionV1: {error}"))?;
+    jcs::canonical_digest_sha256_hex(&value).map_err(|error| error.to_string())
+}
+
+pub fn compute_native_projection_and_digest(artifact: &ServiceArtifact) -> Result<(NativeProcessExecutionProjectionV1, String), String> {
+    let projection = compute_native_projection(artifact)?;
+    let digest = native_projection_digest(&projection)?;
+    Ok((projection, digest))
+}
+
+/// Stage 108 (ADR-0015) dispatcher: the ONE entry point registry generation
+/// bookkeeping should call from now on, so a `NativeProcess` artifact gets a
+/// deterministic `execution_projection_digest` from the RIGHT projection
+/// shape instead of failing (or worse, being coerced through the
+/// container-only `compute_projection`). `Container` behaviour through this
+/// dispatcher is byte-for-byte identical to calling
+/// `compute_projection_and_digest` directly.
+pub fn compute_execution_projection_digest(artifact: &ServiceArtifact) -> Result<String, String> {
+    match crate::core::runtime_kind::RuntimeKind::parse(&artifact.runtime.kind) {
+        Ok(crate::core::runtime_kind::RuntimeKind::Container) => {
+            let (_, digest) = compute_projection_and_digest(artifact)?;
+            Ok(digest)
+        }
+        Ok(crate::core::runtime_kind::RuntimeKind::NativeProcess) => {
+            let (_, digest) = compute_native_projection_and_digest(artifact)?;
+            Ok(digest)
+        }
+        Err(error) => Err(format!("artifact '{}' has {error}", artifact.artifact_id)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +549,7 @@ mod tests {
             service_id: "mqtt".to_string(),
             runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
+                native_process: None,
                 container: Some(ContainerDeploymentSpec {
                     container_name: "datum-mqtt".to_string(),
                     image: "eclipse-mosquitto:2".to_string(),
@@ -627,6 +753,44 @@ mod tests {
         // The artifact's OWN canonical service_id, never the alias
         // (`x_alias_case` in the fixture) -- P0-6.
         assert_eq!(projection.service_id, "mqtt-broker");
+    }
+
+    /// Stage 108 (ADR-0015). The `NativeProcessExecutionProjectionV1` analogue
+    /// of `cross_crate_fixture_produces_the_expected_projection_and_digest`
+    /// above -- same pattern, same fixture-sharing discipline, proving
+    /// cross-crate parity for `RuntimeKind::NativeProcess`, not merely
+    /// `Container`.
+    #[test]
+    fn native_process_cross_crate_fixture_produces_the_expected_projection_and_digest() {
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("fixtures")
+            .join("datum-contracts")
+            .join("vs1")
+            .join("execution-projection.cross-crate-mapper.native-process-stub.json");
+        let text = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
+        let fixture: Value = serde_json::from_str(&text).unwrap();
+
+        let artifact: ServiceArtifact = serde_json::from_value(fixture["dserver_service_artifact"].clone())
+            .expect("fixture dserver_service_artifact must deserialize as ServiceArtifact");
+        let projection = compute_native_projection(&artifact)
+            .expect("compute_native_projection must succeed on the fixture artifact");
+
+        let expected_projection: NativeProcessExecutionProjectionV1 =
+            serde_json::from_value(fixture["expected_projection"].clone())
+                .expect("fixture expected_projection must deserialize as NativeProcessExecutionProjectionV1");
+        assert_eq!(projection, expected_projection, "real compute_native_projection output must equal the fixture's expected_projection");
+
+        let serialized = serde_json::to_value(&projection).unwrap();
+        assert_eq!(serialized, fixture["expected_projection"], "serialized optional nulls must agree");
+        assert_eq!(jcs::canonicalize(&serialized).unwrap(), fixture["expected_canonical_json"].as_str().unwrap());
+        let expected_digest = fixture["expected_projection_digest_sha256"].as_str().unwrap();
+        assert_eq!(native_projection_digest(&projection).unwrap(), expected_digest);
+
+        // The artifact's OWN canonical service_id, never the alias -- P0-6.
+        assert_eq!(projection.service_id, "native-svc");
     }
 
     // ---- v5 review P0-1: ADR-0006 null-encoding + canonical digest ------ //

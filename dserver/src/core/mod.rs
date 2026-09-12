@@ -59,6 +59,7 @@ pub mod resource_binding;
 pub mod resource_observation;
 pub mod resource_registry;
 pub mod resource_registry_persistence;
+pub mod runtime_kind;
 pub mod sentinel_registration;
 pub mod sentinel_telemetry;
 pub mod service_artifact_registry;

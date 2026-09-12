@@ -96,6 +96,32 @@ pub struct ServiceRuntimeSpec {
     pub kind: String,
     #[serde(default)]
     pub container: Option<ContainerDeploymentSpec>,
+    /// Stage 108 (ADR-0015). The minimal, DESIRED-STATE-ONLY declarative
+    /// payload for a `runtime_kind::RuntimeKind::NativeProcess` artifact.
+    /// Populated if and only if `kind == "native_process"`; `container` and
+    /// `native_process` are never both `Some` nor both `None` for a valid
+    /// artifact (`validate_artifact` enforces this). Deliberately carries no
+    /// content hash (see `ServiceArtifactAcquisition`, the single owner of
+    /// native executable content identity -- Stage 109) and no observed
+    /// runtime state (PID, process start time, current state -- those belong
+    /// to a future D-Node-local `ManagedProcessRuntimeState`, never here).
+    #[serde(default)]
+    pub native_process: Option<NativeProcessDeploymentSpecV1>,
+}
+
+/// Stage 108 (ADR-0015). See `ServiceRuntimeSpec.native_process`'s doc
+/// comment for the desired/observed boundary this type sits on the DESIRED
+/// side of. No process lifecycle exists yet in Stage 108 -- this type exists
+/// solely so a native-process artifact can round-trip honestly through
+/// validation, the execution projection, and the wire assignment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeProcessDeploymentSpecV1 {
+    pub process_name: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -707,8 +733,10 @@ impl ServiceArtifactRegistry {
     ) -> Result<ServiceArtifact, ServiceArtifactRegistryError> {
         let mut artifact = normalize_artifact(project_id, artifact)?;
         // Server-owned (D-7a, DC-5): any client-supplied generation/digest is
-        // ignored, never trusted.
-        let (_, digest) = crate::core::execution_projection::compute_projection_and_digest(&artifact)
+        // ignored, never trusted. Stage 108 (ADR-0015): runtime-dispatched so
+        // a native_process artifact gets its own projection shape, never the
+        // container-only one.
+        let digest = crate::core::execution_projection::compute_execution_projection_digest(&artifact)
             .map_err(ServiceArtifactRegistryError::Invalid)?;
         self.mutate(|state| {
             let items = state
@@ -817,8 +845,8 @@ impl ServiceArtifactRegistry {
             // projection digest -- now that any pin-preservation/clearing
             // decision above has already been folded into `updated` -- and
             // decide increment vs. no-op from whether IT changed relative
-            // to the stored artifact.
-            let (_, new_digest) = crate::core::execution_projection::compute_projection_and_digest(&updated)
+            // to the stored artifact. Stage 108 (ADR-0015): runtime-dispatched.
+            let new_digest = crate::core::execution_projection::compute_execution_projection_digest(&updated)
                 .map_err(ServiceArtifactRegistryError::Invalid)?;
 
             if new_digest == existing_digest && existing_generation > 0 {
@@ -1100,8 +1128,8 @@ fn migrate_legacy_registry_state(
 
     for (project_id, artifacts) in artifacts_by_project.iter_mut() {
         for artifact in artifacts.iter_mut() {
-            let (_, digest) =
-                crate::core::execution_projection::compute_projection_and_digest(artifact)?;
+            let digest =
+                crate::core::execution_projection::compute_execution_projection_digest(artifact)?;
             let project_high_water = execution_generation_high_water
                 .entry(project_id.clone())
                 .or_default();
@@ -1146,7 +1174,7 @@ fn migrate_legacy_artifact_schema_versions(
         for artifact in artifacts.iter_mut() {
             if artifact.schema_version == LEGACY_SERVICE_ARTIFACT_SCHEMA_VERSION {
                 artifact.schema_version = SERVICE_ARTIFACT_SCHEMA_VERSION.to_string();
-                let (_, digest) = crate::core::execution_projection::compute_projection_and_digest(artifact)?;
+                let digest = crate::core::execution_projection::compute_execution_projection_digest(artifact)?;
                 let project_high_water = execution_generation_high_water.entry(project_id.clone()).or_default();
                 let generation = checked_next_generation(
                     project_high_water
@@ -1215,7 +1243,7 @@ fn validate_registry_state(
                 )));
             }
             let stored_digest = &artifact.control_plane.execution_projection_digest;
-            let (_, recomputed_digest) = crate::core::execution_projection::compute_projection_and_digest(artifact)
+            let recomputed_digest = crate::core::execution_projection::compute_execution_projection_digest(artifact)
                 .map_err(ServiceArtifactRegistryError::Invalid)?;
             if !crate::core::jcs::is_canonical_digest_format(stored_digest) || *stored_digest != recomputed_digest {
                 return invalid("execution_projection_digest must be a matching canonical sha256:<64 lowercase hex> object digest");
@@ -1274,74 +1302,106 @@ fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRe
         return invalid("artifact cannot depend on itself");
     }
 
-    let container = artifact
-        .runtime
-        .container
-        .as_ref()
-        .ok_or_else(|| ServiceArtifactRegistryError::Invalid(
-            "container runtime requires runtime.container".to_string(),
-        ))?;
-    if container.container_name.trim().is_empty() || container.image.trim().is_empty() {
-        return invalid("runtime.container requires container_name and image");
-    }
-    for port in &container.ports {
-        if port.container_port == 0 || port.host_port == Some(0) {
-            return invalid("runtime container ports must be non-zero");
-        }
-        if !matches!(port.protocol.as_str(), "tcp" | "udp") {
-            return invalid("runtime container port protocol must be tcp or udp");
-        }
-    }
+    // Stage 108 (ADR-0015, P0-4 correction): runtime-discriminated
+    // validation. Container-specific requirements apply ONLY under
+    // RuntimeKind::Container; a native_process artifact must never be
+    // required to satisfy them, and must never be validated as "a container
+    // with an empty image" (P0-4 point E).
+    match crate::core::runtime_kind::RuntimeKind::parse(&artifact.runtime.kind) {
+        Ok(crate::core::runtime_kind::RuntimeKind::Container) => {
+            if artifact.runtime.native_process.is_some() {
+                return invalid("runtime.kind='container' must not populate runtime.native_process");
+            }
+            let container = artifact
+                .runtime
+                .container
+                .as_ref()
+                .ok_or_else(|| ServiceArtifactRegistryError::Invalid(
+                    "container runtime requires runtime.container".to_string(),
+                ))?;
+            if container.container_name.trim().is_empty() || container.image.trim().is_empty() {
+                return invalid("runtime.container requires container_name and image");
+            }
+            for port in &container.ports {
+                if port.container_port == 0 || port.host_port == Some(0) {
+                    return invalid("runtime container ports must be non-zero");
+                }
+                if !matches!(port.protocol.as_str(), "tcp" | "udp") {
+                    return invalid("runtime container port protocol must be tcp or udp");
+                }
+            }
 
-    validate_container_attachments(container)?;
-    if !matches!(
-        container.image_source_kind.as_str(),
-        IMAGE_SOURCE_KIND_REGISTRY | IMAGE_SOURCE_KIND_LOCAL_BUILD | IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED
-    ) {
-        return invalid(format!(
-            "runtime.container.image_source_kind must be '{IMAGE_SOURCE_KIND_REGISTRY}', '{IMAGE_SOURCE_KIND_LOCAL_BUILD}', or '{IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED}'"
-        ));
-    }
-    if let Some(resolved) = &container.resolved_image_identity {
-        if resolved.repository.trim().is_empty() {
-            return invalid("runtime.container.resolved_image_identity.repository must not be empty");
-        }
-        if resolved.resolved_at_utc.trim().is_empty()
-            || resolved.resolver_tool_version.trim().is_empty()
-            || resolved.registry_host.trim().is_empty()
-        {
-            return invalid(
-                "runtime.container.resolved_image_identity requires resolved_at_utc, resolver_tool_version, and registry_host",
-            );
-        }
-        if let Some(index_digest) = &resolved.index_digest {
-            if !crate::core::oci_registry_resolver::is_oci_digest_format(index_digest) {
-                return invalid("runtime.container.resolved_image_identity.index_digest must be a valid OCI digest");
+            validate_container_attachments(container)?;
+            if !matches!(
+                container.image_source_kind.as_str(),
+                IMAGE_SOURCE_KIND_REGISTRY | IMAGE_SOURCE_KIND_LOCAL_BUILD | IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED
+            ) {
+                return invalid(format!(
+                    "runtime.container.image_source_kind must be '{IMAGE_SOURCE_KIND_REGISTRY}', '{IMAGE_SOURCE_KIND_LOCAL_BUILD}', or '{IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED}'"
+                ));
+            }
+            if let Some(resolved) = &container.resolved_image_identity {
+                if resolved.repository.trim().is_empty() {
+                    return invalid("runtime.container.resolved_image_identity.repository must not be empty");
+                }
+                if resolved.resolved_at_utc.trim().is_empty()
+                    || resolved.resolver_tool_version.trim().is_empty()
+                    || resolved.registry_host.trim().is_empty()
+                {
+                    return invalid(
+                        "runtime.container.resolved_image_identity requires resolved_at_utc, resolver_tool_version, and registry_host",
+                    );
+                }
+                if let Some(index_digest) = &resolved.index_digest {
+                    if !crate::core::oci_registry_resolver::is_oci_digest_format(index_digest) {
+                        return invalid("runtime.container.resolved_image_identity.index_digest must be a valid OCI digest");
+                    }
+                }
+                if resolved.platforms.is_empty() {
+                    return invalid("runtime.container.resolved_image_identity.platforms must not be empty");
+                }
+                for platform in &resolved.platforms {
+                    if platform.os.trim().is_empty() || platform.architecture.trim().is_empty() {
+                        return invalid("runtime.container.resolved_image_identity.platforms entries require os and architecture");
+                    }
+                    if !crate::core::oci_registry_resolver::is_oci_digest_format(&platform.manifest_digest)
+                        || !crate::core::oci_registry_resolver::is_oci_digest_format(&platform.config_digest)
+                    {
+                        return invalid(
+                            "runtime.container.resolved_image_identity.platforms entries require valid OCI manifest_digest and config_digest",
+                        );
+                    }
+                    let expected_reference = format!("{}@{}", resolved.repository, platform.manifest_digest);
+                    if platform.execution_reference != expected_reference {
+                        // Amendment 3: the execution_reference must bind on the
+                        // platform-specific manifest digest, never on index_digest
+                        // alone -- reject any candidate that doesn't match exactly.
+                        return invalid(
+                            "runtime.container.resolved_image_identity.platforms entries require execution_reference == '{repository}@{manifest_digest}'",
+                        );
+                    }
+                }
             }
         }
-        if resolved.platforms.is_empty() {
-            return invalid("runtime.container.resolved_image_identity.platforms must not be empty");
+        Ok(crate::core::runtime_kind::RuntimeKind::NativeProcess) => {
+            if artifact.runtime.container.is_some() {
+                return invalid("runtime.kind='native_process' must not populate runtime.container");
+            }
+            let native = artifact
+                .runtime
+                .native_process
+                .as_ref()
+                .ok_or_else(|| ServiceArtifactRegistryError::Invalid(
+                    "native_process runtime requires runtime.native_process".to_string(),
+                ))?;
+            validate_native_process_deployment_spec(native)?;
         }
-        for platform in &resolved.platforms {
-            if platform.os.trim().is_empty() || platform.architecture.trim().is_empty() {
-                return invalid("runtime.container.resolved_image_identity.platforms entries require os and architecture");
-            }
-            if !crate::core::oci_registry_resolver::is_oci_digest_format(&platform.manifest_digest)
-                || !crate::core::oci_registry_resolver::is_oci_digest_format(&platform.config_digest)
-            {
-                return invalid(
-                    "runtime.container.resolved_image_identity.platforms entries require valid OCI manifest_digest and config_digest",
-                );
-            }
-            let expected_reference = format!("{}@{}", resolved.repository, platform.manifest_digest);
-            if platform.execution_reference != expected_reference {
-                // Amendment 3: the execution_reference must bind on the
-                // platform-specific manifest digest, never on index_digest
-                // alone -- reject any candidate that doesn't match exactly.
-                return invalid(
-                    "runtime.container.resolved_image_identity.platforms entries require execution_reference == '{repository}@{manifest_digest}'",
-                );
-            }
+        Err(_) => {
+            return invalid(format!(
+                "runtime.kind must be '{}' or '{}'",
+                crate::core::runtime_kind::RUNTIME_KIND_CONTAINER,
+                crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS
+            ));
         }
     }
     validate_probe("execution", &artifact.probes.execution)?;
@@ -1477,6 +1537,45 @@ fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRe
             || value.contains('\0')
         {
             return invalid("bindings and secret_refs must be non-empty and NUL-free");
+        }
+    }
+    Ok(())
+}
+
+/// Stage 108 (ADR-0015). Bounded, non-overbuilt validation for the minimal
+/// desired-state-only native-process payload -- no filesystem access, no
+/// path-security modelling occurs in Stage 108 (that is Stage 109 scope,
+/// once real acquisition/spawn exists). Limits mirror this file's existing
+/// `validate_command`/`validate_assignments`-style bounds (NUL-free,
+/// bounded length/count), not invented fresh.
+///
+/// Stage 108 v2 (independent review, P1-2): `pub(crate)` so
+/// `artifact_reconciliation_context::validate_assignments` (the DOWNSTREAM,
+/// wire-assignment validator, evaluated after this registry-level
+/// validator already ran once at create/update time) can enforce the EXACT
+/// same bounds on the wire assignment, instead of independently
+/// reimplementing (and risking silently drifting from) a subset of them.
+/// This is intra-crate reuse only -- the agent side
+/// (`DATUM/src/agent/operational_reconciliation.rs`) still has its own,
+/// independently hand-written mirror of these same bounds, per this
+/// project's no-shared-crate wire-parity discipline.
+pub(crate) fn validate_native_process_deployment_spec(
+    spec: &NativeProcessDeploymentSpecV1,
+) -> Result<(), ServiceArtifactRegistryError> {
+    if spec.process_name.trim().is_empty() || spec.process_name.len() > 256 || spec.process_name.contains('\0') {
+        return invalid("runtime.native_process.process_name must be non-empty, NUL-free, and at most 256 characters");
+    }
+    if spec.entrypoint.trim().is_empty() || spec.entrypoint.len() > 4096 || spec.entrypoint.contains('\0') {
+        return invalid("runtime.native_process.entrypoint must be non-empty, NUL-free, and at most 4096 characters");
+    }
+    if spec.args.len() > 64 || spec.args.iter().any(|arg| arg.len() > 4096 || arg.contains('\0')) {
+        return invalid("runtime.native_process.args must have at most 64 entries, each NUL-free and at most 4096 characters");
+    }
+    if let Some(dir) = &spec.working_directory {
+        if dir.trim().is_empty() || dir.len() > 4096 || dir.contains('\0') {
+            return invalid(
+                "runtime.native_process.working_directory, when present, must be non-empty after trim, NUL-free, and at most 4096 characters",
+            );
         }
     }
     Ok(())
@@ -1649,6 +1748,7 @@ mod tests {
             service_id: "sma".to_string(),
             runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
+                native_process: None,
                 container: Some(ContainerDeploymentSpec {
                     container_name: "datum-sma".to_string(),
                     image: "datum/sma:dev".to_string(),
@@ -1709,6 +1809,122 @@ mod tests {
                 execution_projection_digest: String::new(),
             },
         }
+    }
+
+    // Stage 108 (ADR-0015) test fixtures/tests.
+
+    fn valid_native_process_artifact() -> ServiceArtifact {
+        let mut artifact = valid_artifact();
+        artifact.artifact_id = "native-svc".to_string();
+        artifact.service_id = "native-svc".to_string();
+        artifact.runtime = ServiceRuntimeSpec {
+            kind: crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string(),
+            container: None,
+            native_process: Some(NativeProcessDeploymentSpecV1 {
+                process_name: "datum-native-svc".to_string(),
+                entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+                args: vec!["--config".to_string(), "/opt/datum/native-svc/config.toml".to_string()],
+                working_directory: Some("/opt/datum/native-svc".to_string()),
+            }),
+        };
+        artifact.control_plane.artifact_kind = "command_bundle".to_string();
+        artifact
+    }
+
+    #[test]
+    fn validate_artifact_accepts_a_well_formed_native_process_artifact() {
+        validate_artifact(&valid_native_process_artifact()).unwrap();
+    }
+
+    #[test]
+    fn validate_artifact_rejects_native_process_kind_with_container_payload() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.container = valid_artifact().runtime.container;
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_native_process_kind_with_no_native_payload() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process = None;
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_container_kind_with_native_payload() {
+        let mut artifact = valid_artifact();
+        artifact.runtime.native_process = Some(NativeProcessDeploymentSpecV1 {
+            process_name: "x".to_string(),
+            entrypoint: "/bin/x".to_string(),
+            args: Vec::new(),
+            working_directory: None,
+        });
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_unknown_runtime_kind() {
+        let mut artifact = valid_artifact();
+        artifact.runtime.kind = "vm".to_string();
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_empty_native_process_name() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().process_name = String::new();
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_empty_native_entrypoint() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().entrypoint = String::new();
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_native_arg_containing_nul() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().args = vec!["bad\0arg".to_string()];
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_blank_native_working_directory() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().working_directory = Some("   ".to_string());
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn create_computes_a_deterministic_native_process_execution_projection_digest() {
+        let registry = empty_registry();
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.project_id = "project-native".to_string();
+        artifact.control_plane.target_nodes = vec!["fog-01".to_string()];
+        let created = registry.create("project-native", artifact).unwrap();
+        assert!(crate::core::jcs::is_canonical_digest_format(&created.control_plane.execution_projection_digest));
+        assert_eq!(created.control_plane.execution_generation, 1);
+    }
+
+    #[test]
+    fn native_process_execution_projection_digest_changes_when_entrypoint_changes() {
+        let registry = empty_registry();
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.project_id = "project-native".to_string();
+        artifact.control_plane.target_nodes = vec!["fog-01".to_string()];
+        let created = registry.create("project-native", artifact.clone()).unwrap();
+
+        let mut changed = artifact;
+        changed.runtime.native_process.as_mut().unwrap().entrypoint = "/opt/datum/native-svc/bin/run-v2".to_string();
+        let updated = registry.update("project-native", "native-svc", changed).unwrap();
+
+        assert_ne!(
+            updated.control_plane.execution_projection_digest,
+            created.control_plane.execution_projection_digest
+        );
+        assert_eq!(updated.control_plane.execution_generation, created.control_plane.execution_generation + 1);
     }
 
     fn empty_registry() -> ServiceArtifactRegistry {

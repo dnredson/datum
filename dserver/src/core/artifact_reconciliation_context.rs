@@ -6,10 +6,11 @@ use crate::core::{
         OperationalDGraphSlice, OperationalDesiredService,
         OperationalReconciliationAuthorization, OperationalReconcilerDescriptor,
     },
+    runtime_kind::RuntimeKind,
     service_artifact_registry::{
-        ContainerPortMapping, ResolvedImageIdentityV1, ServiceArtifact, ServiceArtifactLifecycle,
-        ServiceArtifactSecretBinding, ServiceArtifactWasmDecision, IMAGE_SOURCE_KIND_REGISTRY,
-        IMAGE_SOURCE_KIND_LOCAL_BUILD, IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED,
+        ContainerPortMapping, NativeProcessDeploymentSpecV1, ResolvedImageIdentityV1, ServiceArtifact,
+        ServiceArtifactLifecycle, ServiceArtifactSecretBinding, ServiceArtifactWasmDecision,
+        IMAGE_SOURCE_KIND_REGISTRY, IMAGE_SOURCE_KIND_LOCAL_BUILD, IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED,
     },
 };
 
@@ -46,6 +47,13 @@ pub struct ArtifactReconciliationAssignment {
     pub runtime_kind: String,
     pub container_name: String,
     pub image: String,
+    /// Stage 108 (ADR-0015). Populated if and only if `runtime_kind ==
+    /// "native_process"`; `None` for `Container`. See
+    /// `ServiceRuntimeSpec.native_process`'s doc comment for the desired/
+    /// observed boundary -- this carries ONLY declarative desired-state
+    /// fields, never PID/process-start-time/observed-state.
+    #[serde(default)]
+    pub native_process: Option<NativeProcessDeploymentSpecV1>,
     /// Stage 107B-A (ADR-0013). See `ContainerDeploymentSpec.image_source_kind`.
     #[serde(default = "default_assignment_image_source_kind")]
     pub image_source_kind: String,
@@ -202,57 +210,153 @@ pub fn resolve_assignments_from_registry(
             }
         };
 
-        let container = artifact.runtime.container.as_ref().ok_or_else(|| {
-            format!(
-                "service artifact '{}' has no container runtime definition",
-                artifact.artifact_id
-            )
-        })?;
+        // Stage 108 v2 (independent review, P1-1): enforce desired-service
+        // runtime vs. artifact runtime.kind parity server-side, BEFORE any
+        // assignment is constructed. Previously the agent alone detected a
+        // `service.runtime` / `assignment.runtime_kind` disagreement (via
+        // `classify_service_runtime_dispatch`); DServer could silently
+        // resolve+validate an internally contradictory context (e.g.
+        // desired "container" joined to a "native_process" artifact) and
+        // let it travel all the way to the agent before anything caught
+        // it. Fails closed on either side's runtime being unparseable.
+        match RuntimeKind::parse(&service.runtime) {
+            Ok(desired_kind) => match RuntimeKind::parse(&artifact.runtime.kind) {
+                Ok(assigned_kind) if assigned_kind == desired_kind => {}
+                Ok(assigned_kind) => {
+                    return Err(format!(
+                        "runtime_kind_mismatch: desired service '{}' runtime '{}' does not match artifact '{}' runtime.kind '{}'",
+                        service.service_id,
+                        desired_kind.wire(),
+                        artifact.artifact_id,
+                        assigned_kind.wire()
+                    ));
+                }
+                Err(error) => {
+                    return Err(format!("service artifact '{}' has {error}", artifact.artifact_id));
+                }
+            },
+            Err(error) => {
+                return Err(format!(
+                    "operational desired service '{}' has {error}",
+                    service.service_id
+                ));
+            }
+        }
 
-        assignments.push(ArtifactReconciliationAssignment {
-            artifact_id: artifact.artifact_id.clone(),
-            service_id: service.service_id.clone(),
-            artifact_service_id: artifact.service_id.clone(),
-            version: artifact.control_plane.version.clone(),
-            artifact_kind: artifact.control_plane.artifact_kind.clone(),
-            runtime_kind: artifact.runtime.kind.clone(),
-            container_name: container.container_name.clone(),
-            image: container.image.clone(),
-            image_source_kind: container.image_source_kind.clone(),
-            resolved_image_identity: container.resolved_image_identity.clone(),
-            command: container.command.clone(),
-            target_node: slice.node_id.clone(),
-            network: container.network.clone(),
-            network_aliases: container.network_aliases.clone(),
-            ports: container.ports.clone(),
-            volumes: container
-                .volumes
-                .iter()
-                .map(|volume| ArtifactVolumeMount {
-                    name: volume.name.clone(),
-                    target: volume.target.clone(),
-                    read_only: volume.read_only,
-                })
-                .collect(),
-            configuration_mounts: container
-                .configuration_mounts
-                .iter()
-                .map(|mount| ArtifactConfigurationMount {
-                    source: mount.source.clone(),
-                    target: mount.target.clone(),
-                    read_only: mount.read_only,
-                    declared_content_sha256: mount.declared_content_sha256.clone(),
-                })
-                .collect(),
-            lifecycle: artifact.control_plane.lifecycle.clone(),
-            dependencies: artifact.control_plane.dependencies.clone(),
-            wasm_decision: artifact.control_plane.wasm_decision.clone(),
-            bindings: artifact.control_plane.bindings.clone(),
-            secret_refs: artifact.control_plane.secret_refs.clone(),
-            secret_bindings: artifact.control_plane.secret_bindings.clone(),
-            execution_generation: artifact.control_plane.execution_generation,
-            execution_projection_digest: artifact.control_plane.execution_projection_digest.clone(),
-        });
+        // Stage 108 (ADR-0015, P0-4 correction): runtime-dispatched
+        // assignment construction, replacing the unconditional
+        // `artifact.runtime.container.as_ref().ok_or(...)` unwrap that made
+        // it impossible for a `native_process` artifact to produce ANY
+        // assignment. The `target_nodes` selection check above (lines
+        // 183-194) is UNCHANGED by this stage -- that transition belongs to
+        // the stage that makes an accepted `datum.dmap/1` authoritative, per
+        // ADR-0015's placement-authority-transition note.
+        let common = (
+            artifact.artifact_id.clone(),
+            service.service_id.clone(),
+            artifact.service_id.clone(),
+            artifact.control_plane.version.clone(),
+            artifact.control_plane.artifact_kind.clone(),
+            artifact.runtime.kind.clone(),
+        );
+        let (artifact_id, service_id, artifact_service_id, version, artifact_kind, runtime_kind_wire) = common;
+
+        let assignment = match RuntimeKind::parse(&runtime_kind_wire) {
+            Ok(RuntimeKind::Container) => {
+                let container = artifact.runtime.container.as_ref().ok_or_else(|| {
+                    format!(
+                        "service artifact '{}' has no container runtime definition",
+                        artifact.artifact_id
+                    )
+                })?;
+                ArtifactReconciliationAssignment {
+                    artifact_id,
+                    service_id,
+                    artifact_service_id,
+                    version,
+                    artifact_kind,
+                    runtime_kind: runtime_kind_wire,
+                    container_name: container.container_name.clone(),
+                    image: container.image.clone(),
+                    image_source_kind: container.image_source_kind.clone(),
+                    resolved_image_identity: container.resolved_image_identity.clone(),
+                    command: container.command.clone(),
+                    target_node: slice.node_id.clone(),
+                    network: container.network.clone(),
+                    network_aliases: container.network_aliases.clone(),
+                    ports: container.ports.clone(),
+                    volumes: container
+                        .volumes
+                        .iter()
+                        .map(|volume| ArtifactVolumeMount {
+                            name: volume.name.clone(),
+                            target: volume.target.clone(),
+                            read_only: volume.read_only,
+                        })
+                        .collect(),
+                    configuration_mounts: container
+                        .configuration_mounts
+                        .iter()
+                        .map(|mount| ArtifactConfigurationMount {
+                            source: mount.source.clone(),
+                            target: mount.target.clone(),
+                            read_only: mount.read_only,
+                            declared_content_sha256: mount.declared_content_sha256.clone(),
+                        })
+                        .collect(),
+                    native_process: None,
+                    lifecycle: artifact.control_plane.lifecycle.clone(),
+                    dependencies: artifact.control_plane.dependencies.clone(),
+                    wasm_decision: artifact.control_plane.wasm_decision.clone(),
+                    bindings: artifact.control_plane.bindings.clone(),
+                    secret_refs: artifact.control_plane.secret_refs.clone(),
+                    secret_bindings: artifact.control_plane.secret_bindings.clone(),
+                    execution_generation: artifact.control_plane.execution_generation,
+                    execution_projection_digest: artifact.control_plane.execution_projection_digest.clone(),
+                }
+            }
+            Ok(RuntimeKind::NativeProcess) => {
+                let native = artifact.runtime.native_process.as_ref().ok_or_else(|| {
+                    format!(
+                        "service artifact '{}' has no native_process runtime definition",
+                        artifact.artifact_id
+                    )
+                })?;
+                ArtifactReconciliationAssignment {
+                    artifact_id,
+                    service_id,
+                    artifact_service_id,
+                    version,
+                    artifact_kind,
+                    runtime_kind: runtime_kind_wire,
+                    container_name: String::new(),
+                    image: String::new(),
+                    image_source_kind: default_assignment_image_source_kind(),
+                    resolved_image_identity: None,
+                    command: Vec::new(),
+                    target_node: slice.node_id.clone(),
+                    network: None,
+                    network_aliases: Vec::new(),
+                    ports: Vec::new(),
+                    volumes: Vec::new(),
+                    configuration_mounts: Vec::new(),
+                    native_process: Some(native.clone()),
+                    lifecycle: artifact.control_plane.lifecycle.clone(),
+                    dependencies: artifact.control_plane.dependencies.clone(),
+                    wasm_decision: artifact.control_plane.wasm_decision.clone(),
+                    bindings: artifact.control_plane.bindings.clone(),
+                    secret_refs: artifact.control_plane.secret_refs.clone(),
+                    secret_bindings: artifact.control_plane.secret_bindings.clone(),
+                    execution_generation: artifact.control_plane.execution_generation,
+                    execution_projection_digest: artifact.control_plane.execution_projection_digest.clone(),
+                }
+            }
+            Err(error) => {
+                return Err(format!("service artifact '{}' has {error}", artifact.artifact_id));
+            }
+        };
+
+        assignments.push(assignment);
     }
 
     Ok(assignments)
@@ -293,37 +397,45 @@ pub fn resolve_assignments_from_registry(
 ///   (unaffected by Stage 107B-A).
 pub fn required_completeness_gaps(assignment: &ArtifactReconciliationAssignment) -> Vec<String> {
     let mut gaps = Vec::new();
-    if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
-        // Amendment 2: never required-eligible in this slice -- distinct
-        // message from the ordinary unresolved-registry-image case below, so
-        // an operator can tell the two apart.
-        if !assignment.image.trim().is_empty() {
-            gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
-        }
-    } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
-        // v5 review P0-5: never required-eligible until an operator
-        // explicitly classifies it as registry or local_build -- never
-        // silently inferred.
-        if !assignment.image.trim().is_empty() {
-            gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
-        }
-    } else {
-        match &assignment.resolved_image_identity {
-            None => {
-                if !assignment.image.trim().is_empty() {
-                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
-                }
+    // Stage 108 (ADR-0015, P0-4 correction): runtime-dispatched. A
+    // `native_process` assignment gets NO image-completeness logic at all --
+    // it is not "a container with an empty image", it simply has no
+    // acquisition-completeness model yet (Stage 109 introduces one, via
+    // `ServiceArtifactAcquisition.sha256` entering the NATIVE execution
+    // projection -- see ADR-0015's Stage 109 handoff note).
+    if matches!(RuntimeKind::parse(&assignment.runtime_kind), Ok(RuntimeKind::Container)) {
+        if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
+            // Amendment 2: never required-eligible in this slice -- distinct
+            // message from the ordinary unresolved-registry-image case below, so
+            // an operator can tell the two apart.
+            if !assignment.image.trim().is_empty() {
+                gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
             }
-            Some(resolved) => {
-                // v5 review P1-5: VALIDATE the resolved identity, not merely
-                // check Option::is_some() -- defense in depth against a bug
-                // in the server-owned write path (P0-1) or a tampered wire
-                // assignment.
-                if crate::core::oci_registry_resolver::validate_resolved_image_identity(&assignment.image, resolved).is_err()
-                {
-                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+        } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
+            // v5 review P0-5: never required-eligible until an operator
+            // explicitly classifies it as registry or local_build -- never
+            // silently inferred.
+            if !assignment.image.trim().is_empty() {
+                gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
+            }
+        } else {
+            match &assignment.resolved_image_identity {
+                None => {
+                    if !assignment.image.trim().is_empty() {
+                        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                    }
                 }
-                // else: required-complete for the image portion.
+                Some(resolved) => {
+                    // v5 review P1-5: VALIDATE the resolved identity, not merely
+                    // check Option::is_some() -- defense in depth against a bug
+                    // in the server-owned write path (P0-1) or a tampered wire
+                    // assignment.
+                    if crate::core::oci_registry_resolver::validate_resolved_image_identity(&assignment.image, resolved).is_err()
+                    {
+                        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                    }
+                    // else: required-complete for the image portion.
+                }
             }
         }
     }
@@ -425,14 +537,29 @@ pub fn validate_artifact_reconciliation_context(
     validate_assignments(&context.artifacts)?;
 
     for service in &context.desired_services {
-        if !context.artifacts.iter().any(|artifact| {
+        let matching_assignment = context.artifacts.iter().find(|artifact| {
             artifact.service_id == service.service_id
                 && artifact.target_node == context.node_id
-        }) {
+        });
+        let Some(assignment) = matching_assignment else {
             return Err(format!(
                 "desired service '{}' has no matching artifact assignment",
                 service.service_id
             ));
+        };
+        // Stage 108 v2 (independent review, P1-1): independently re-check
+        // runtime-kind parity here too, defense in depth -- this catches a
+        // malformed or tampered already-built context even if it somehow
+        // bypassed the parity check `resolve_assignments_from_registry`
+        // itself now performs at construction time.
+        match (RuntimeKind::parse(&service.runtime), RuntimeKind::parse(&assignment.runtime_kind)) {
+            (Ok(desired_kind), Ok(assigned_kind)) if desired_kind == assigned_kind => {}
+            _ => {
+                return Err(format!(
+                    "runtime_kind_mismatch: desired service '{}' runtime '{}' does not match assigned artifact runtime_kind '{}'",
+                    service.service_id, service.runtime, assignment.runtime_kind
+                ));
+            }
         }
     }
     Ok(())
@@ -474,48 +601,81 @@ fn validate_assignments(
             || assignment.service_id.trim().is_empty()
             || assignment.version.trim().is_empty()
             || assignment.runtime_kind.trim().is_empty()
-            || assignment.container_name.trim().is_empty()
-            || assignment.image.trim().is_empty()
             || assignment.target_node.trim().is_empty()
         {
             return Err("artifact reconciliation assignment has an empty required field".to_string());
         }
-        if assignment.runtime_kind != "container" {
-            return Err(format!(
-                "artifact '{}' has unsupported runtime kind '{}'",
-                assignment.artifact_id, assignment.runtime_kind
-            ));
-        }
-        if let Some(network) = assignment.network.as_deref() {
-            if !is_safe_docker_name(network) {
-                return Err(format!(
-                    "artifact '{}' has an invalid Docker network name",
-                    assignment.artifact_id
-                ));
+        // Stage 108 (ADR-0015, P0-4 correction): runtime-dispatched.
+        // Container-specific field requirements (container_name/image/
+        // network/volumes/configuration_mounts) apply ONLY under
+        // RuntimeKind::Container; NativeProcess requires its own minimal
+        // payload instead and must never be checked against Docker-shaped
+        // requirements.
+        match RuntimeKind::parse(&assignment.runtime_kind) {
+            Ok(RuntimeKind::Container) => {
+                if assignment.native_process.is_some() {
+                    return Err(format!(
+                        "artifact '{}' declares runtime_kind=container but also carries a native_process payload",
+                        assignment.artifact_id
+                    ));
+                }
+                if assignment.container_name.trim().is_empty() || assignment.image.trim().is_empty() {
+                    return Err("artifact reconciliation assignment has an empty required field".to_string());
+                }
+                if let Some(network) = assignment.network.as_deref() {
+                    if !is_safe_docker_name(network) {
+                        return Err(format!(
+                            "artifact '{}' has an invalid Docker network name",
+                            assignment.artifact_id
+                        ));
+                    }
+                }
+                for volume in &assignment.volumes {
+                    if !is_safe_docker_name(&volume.name)
+                        || !volume.target.starts_with('/')
+                        || volume.target.chars().any(char::is_whitespace)
+                        || volume.target.contains(',')
+                    {
+                        return Err(format!(
+                            "artifact '{}' has an invalid Docker volume mount",
+                            assignment.artifact_id
+                        ));
+                    }
+                }
+                for mount in &assignment.configuration_mounts {
+                    if !is_safe_configuration_source(&mount.source)
+                        || !mount.target.starts_with('/')
+                        || mount.target.chars().any(char::is_whitespace)
+                        || mount.target.contains(',')
+                        || !mount.read_only
+                    {
+                        return Err(format!(
+                            "artifact '{}' has an invalid governed configuration mount",
+                            assignment.artifact_id
+                        ));
+                    }
+                }
             }
-        }
-        for volume in &assignment.volumes {
-            if !is_safe_docker_name(&volume.name)
-                || !volume.target.starts_with('/')
-                || volume.target.chars().any(char::is_whitespace)
-                || volume.target.contains(',')
-            {
-                return Err(format!(
-                    "artifact '{}' has an invalid Docker volume mount",
-                    assignment.artifact_id
-                ));
+            Ok(RuntimeKind::NativeProcess) => {
+                let native = assignment.native_process.as_ref().ok_or_else(|| {
+                    format!(
+                        "artifact '{}' declares runtime_kind=native_process but carries no native_process payload",
+                        assignment.artifact_id
+                    )
+                })?;
+                // Stage 108 v2 (independent review, P1-2): reuse the exact
+                // same bounds `service_artifact_registry::validate_artifact`
+                // already enforces at create/update time, rather than a
+                // weaker subset -- this wire-level (downstream) validator
+                // must not accept a payload the registry itself would have
+                // rejected.
+                crate::core::service_artifact_registry::validate_native_process_deployment_spec(native)
+                    .map_err(|error| format!("artifact '{}' has an invalid native_process payload: {}", assignment.artifact_id, error.message()))?;
             }
-        }
-        for mount in &assignment.configuration_mounts {
-            if !is_safe_configuration_source(&mount.source)
-                || !mount.target.starts_with('/')
-                || mount.target.chars().any(char::is_whitespace)
-                || mount.target.contains(',')
-                || !mount.read_only
-            {
+            Err(_) => {
                 return Err(format!(
-                    "artifact '{}' has an invalid governed configuration mount",
-                    assignment.artifact_id
+                    "artifact '{}' has unsupported runtime kind '{}'",
+                    assignment.artifact_id, assignment.runtime_kind
                 ));
             }
         }
@@ -553,6 +713,7 @@ mod tests {
             service_id: "mqtt".to_string(),
             runtime: ServiceRuntimeSpec {
                 kind: "container".to_string(),
+                native_process: None,
                 container: Some(ContainerDeploymentSpec {
                     container_name: "datum-mqtt".to_string(),
                     image: "eclipse-mosquitto:2".to_string(),
@@ -598,6 +759,211 @@ mod tests {
                 },
                 ..Default::default()
             },
+        }
+    }
+
+    // Stage 108 (ADR-0015).
+    fn native_artifact(node_id: &str) -> ServiceArtifact {
+        let mut item = artifact(node_id);
+        item.artifact_id = "native-svc".to_string();
+        item.service_id = "native-svc".to_string();
+        item.runtime = ServiceRuntimeSpec {
+            kind: crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string(),
+            container: None,
+            native_process: Some(NativeProcessDeploymentSpecV1 {
+                process_name: "datum-native-svc".to_string(),
+                entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+                args: vec!["--config".to_string(), "/opt/datum/native-svc/config.toml".to_string()],
+                working_directory: Some("/opt/datum/native-svc".to_string()),
+            }),
+        };
+        item.control_plane.artifact_kind = "command_bundle".to_string();
+        item
+    }
+
+    fn native_slice() -> OperationalDGraphSlice {
+        let mut s = slice();
+        s.desired_services = vec![OperationalDesiredService {
+            service_id: "native-svc".to_string(),
+            runtime: crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string(),
+            desired_state: "running".to_string(),
+        }];
+        s
+    }
+
+    #[test]
+    fn native_process_artifact_resolves_through_reconciliation_context() {
+        let context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+            .expect("native artifact context should build");
+        assert_eq!(context.artifacts.len(), 1);
+        let assignment = &context.artifacts[0];
+        assert_eq!(assignment.runtime_kind, crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS);
+        let native = assignment.native_process.as_ref().expect("native_process payload must be present");
+        assert_eq!(native.process_name, "datum-native-svc");
+        assert_eq!(native.entrypoint, "/opt/datum/native-svc/bin/run");
+        assert!(assignment.container_name.is_empty());
+        assert!(assignment.image.is_empty());
+    }
+
+    #[test]
+    fn native_process_assignment_required_completeness_gaps_has_no_image_gaps() {
+        let context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+            .expect("native artifact context should build");
+        let gaps = required_completeness_gaps(&context.artifacts[0]);
+        assert!(!gaps.iter().any(|gap| gap.starts_with("unpinned_image")));
+    }
+
+    #[test]
+    fn native_process_assignment_with_container_payload_fails_validation() {
+        let context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+            .expect("native artifact context should build");
+        let mut poisoned = context;
+        poisoned.artifacts[0].container_name = "should-not-matter".to_string();
+        poisoned.artifacts[0].image = "should-not-matter".to_string();
+        // The runtime_kind stays native_process, but native_process itself is
+        // wiped out and replaced with nothing -- this must fail validation,
+        // not silently pass as "a container with an unused name".
+        poisoned.artifacts[0].native_process = None;
+        assert!(validate_artifact_reconciliation_context(&poisoned).is_err());
+    }
+
+    #[test]
+    fn target_nodes_selection_behaviour_is_unchanged_by_stage108() {
+        // P0-2/ADR-0015: Stage 108 must not alter target_nodes semantics.
+        // An artifact whose target_nodes does not include the slice's node
+        // must still fail resolution exactly as before.
+        let mut item = native_artifact("cloud-01");
+        item.control_plane.target_nodes = vec!["cloud-01".to_string()];
+        let result = build_artifact_reconciliation_context(&native_slice(), &[item]);
+        assert!(result.is_err(), "an artifact not targeting the slice's node must still fail to resolve");
+    }
+
+    // ---- Stage 108 v2 (independent review, P1-1): server-side runtime --- //
+    // ---- parity enforcement. ---------------------------------------------//
+
+    #[test]
+    fn matching_container_desired_and_container_assignment_resolves() {
+        let context = build_artifact_reconciliation_context(&slice(), &[artifact("fog-01")])
+            .expect("matching container desired/assignment must resolve");
+        assert_eq!(context.artifacts[0].runtime_kind, "container");
+    }
+
+    #[test]
+    fn matching_native_process_desired_and_native_process_assignment_resolves() {
+        let context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+            .expect("matching native_process desired/assignment must resolve");
+        assert_eq!(context.artifacts[0].runtime_kind, "native_process");
+    }
+
+    #[test]
+    fn desired_container_with_native_process_assignment_is_rejected_server_side() {
+        // Same service identity as `slice()`'s desired "mqtt"/"container"
+        // service, but a native_process-kind artifact underneath it.
+        let mut mismatched = native_artifact("fog-01");
+        mismatched.artifact_id = "mqtt".to_string();
+        mismatched.service_id = "mqtt".to_string();
+        mismatched.control_plane.target_nodes = vec!["fog-01".to_string()];
+        let result = build_artifact_reconciliation_context(&slice(), &[mismatched]);
+        let error = result.expect_err("desired=container/assignment=native_process must be rejected");
+        assert!(error.contains("runtime_kind_mismatch"), "error was: {error}");
+    }
+
+    #[test]
+    fn desired_native_process_with_container_assignment_is_rejected_server_side() {
+        // Same service identity as `native_slice()`'s desired
+        // "native-svc"/"native_process" service, but a container-kind
+        // artifact underneath it.
+        let mut mismatched = artifact("fog-01");
+        mismatched.artifact_id = "native-svc".to_string();
+        mismatched.service_id = "native-svc".to_string();
+        let result = build_artifact_reconciliation_context(&native_slice(), &[mismatched]);
+        let error = result.expect_err("desired=native_process/assignment=container must be rejected");
+        assert!(error.contains("runtime_kind_mismatch"), "error was: {error}");
+    }
+
+    #[test]
+    fn malformed_prebuilt_context_with_mismatched_runtime_is_rejected_by_the_context_validator() {
+        // Defense in depth (P1-1): even a context that somehow already got
+        // built with a matching service_id but a mismatched runtime_kind
+        // (e.g. tampered in transit, or built by a future caller that
+        // bypasses `resolve_assignments_from_registry`) must still be
+        // rejected by `validate_artifact_reconciliation_context` alone.
+        let mut context = build_artifact_reconciliation_context(&slice(), &[artifact("fog-01")])
+            .expect("baseline context should build");
+        context.artifacts[0].runtime_kind = crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string();
+        context.artifacts[0].native_process = Some(NativeProcessDeploymentSpecV1 {
+            process_name: "x".to_string(),
+            entrypoint: "/bin/x".to_string(),
+            args: Vec::new(),
+            working_directory: None,
+        });
+        context.artifacts[0].container_name = String::new();
+        context.artifacts[0].image = String::new();
+        let error = validate_artifact_reconciliation_context(&context)
+            .expect_err("a service_id-matching but runtime-kind-mismatched context must be rejected");
+        assert!(error.contains("runtime_kind_mismatch"), "error was: {error}");
+    }
+
+    // ---- Stage 108 v2 (independent review, P1-2): downstream (wire) ----- //
+    // ---- native_process payload validation must match the registry's ---- //
+    // ---- exact bounds, not a weaker subset. ------------------------------//
+
+    #[test]
+    fn wire_valid_native_payload_still_passes() {
+        let context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+            .expect("well-formed native artifact context should build");
+        validate_artifact_reconciliation_context(&context).unwrap();
+    }
+
+    #[test]
+    fn wire_native_payload_bound_violations_are_all_rejected() {
+        let cases: Vec<(&str, NativeProcessDeploymentSpecV1)> = vec![
+            ("process_name containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "bad\0name".to_string(), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+            }),
+            ("process_name > 256 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "a".repeat(257), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+            }),
+            ("entrypoint containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/bad\0path".to_string(), args: vec![], working_directory: None,
+            }),
+            ("entrypoint > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "a".repeat(4097), args: vec![], working_directory: None,
+            }),
+            ("args > 64 entries", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: (0..65).map(|i| i.to_string()).collect(), working_directory: None,
+            }),
+            ("one arg > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec!["a".repeat(4097)], working_directory: None,
+            }),
+            ("arg containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec!["bad\0arg".to_string()], working_directory: None,
+            }),
+            ("working_directory blank Some", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("   ".to_string()),
+            }),
+            ("working_directory containing NUL", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("/bad\0dir".to_string()),
+            }),
+            ("working_directory > 4096 chars", NativeProcessDeploymentSpecV1 {
+                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                args: vec![], working_directory: Some("a".repeat(4097)),
+            }),
+        ];
+
+        for (label, native) in cases {
+            let mut context = build_artifact_reconciliation_context(&native_slice(), &[native_artifact("fog-01")])
+                .expect("baseline native context should build");
+            context.artifacts[0].native_process = Some(native);
+            assert!(
+                validate_artifact_reconciliation_context(&context).is_err(),
+                "expected rejection for case: {label}"
+            );
         }
     }
 
@@ -1211,6 +1577,7 @@ mod tests {
             image: String::new(),
             image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
+            native_process: None,
             target_node: "n".to_string(),
             network: None,
             network_aliases: Vec::new(),
