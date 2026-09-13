@@ -316,6 +316,13 @@ pub struct NativeProcessExecutionProjectionV1 {
     pub args: Vec<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
+    /// Stage 109 (ADR-0016, Section C). Mirrors dserver's
+    /// `acquisition_sha256` field-for-field -- the single authoritative
+    /// executable content hash, execution-relevant exactly like a
+    /// container's image identity. ADR-0006 point 2: absence serializes as
+    /// JSON `null`, never omitted.
+    #[serde(default)]
+    pub acquisition_sha256: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
@@ -347,6 +354,7 @@ pub fn compute_native_projection(assignment: &OperationalArtifactAssignment) -> 
         entrypoint: native.entrypoint.clone(),
         args: native.args.clone(),
         working_directory: native.working_directory.clone(),
+        acquisition_sha256: assignment.acquisition.as_ref().and_then(|a| a.sha256.clone()),
         dependencies: assignment.dependencies.clone(),
         bindings: assignment.bindings.clone(),
         secret_refs: assignment.secret_refs.clone(),
@@ -406,6 +414,12 @@ mod tests {
                 entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
                 args: vec!["--config".to_string(), "cfg.toml".to_string()],
                 working_directory: Some("/opt/datum/native-svc".to_string()),
+            }),
+            acquisition: Some(crate::agent::operational_reconciliation::OperationalServiceArtifactAcquisition {
+                kind: "native_process_executable".to_string(),
+                source: Some("/opt/datum/sources/native-svc.bin".to_string()),
+                revision: None,
+                sha256: Some("b".repeat(64)),
             }),
             image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
@@ -491,6 +505,23 @@ mod tests {
     }
 
     #[test]
+    fn native_projection_digest_changes_when_acquisition_sha256_changes() {
+        // Stage 109 (ADR-0016, Section C): a SHA-only change (bytes changed,
+        // nothing else) must change the digest -- content identity is
+        // execution-relevant.
+        let a = native_assignment();
+        let mut b = native_assignment();
+        b.acquisition.as_mut().unwrap().sha256 = Some("c".repeat(64));
+        assert_ne!(recompute_native_digest(&a).unwrap(), recompute_native_digest(&b).unwrap());
+    }
+
+    #[test]
+    fn native_projection_binds_the_acquisition_sha256() {
+        let projection = compute_native_projection(&native_assignment()).unwrap();
+        assert_eq!(projection.acquisition_sha256.as_deref(), Some("b".repeat(64).as_str()));
+    }
+
+    #[test]
     fn native_projection_digest_is_prefixed_canonical_sha256() {
         let digest = recompute_native_digest(&native_assignment()).unwrap();
         assert!(digest.starts_with("sha256:"));
@@ -523,6 +554,7 @@ mod tests {
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
             native_process: None,
+            acquisition: None,
             image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             target_node: "fog-01".to_string(),

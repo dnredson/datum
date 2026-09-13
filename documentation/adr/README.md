@@ -37,6 +37,7 @@ work belongs to Stages 107A and 107B.
 | [ADR-0013](ADR-0013-oci-catalog-image-identity-resolution.md) | OCI catalog image identity resolution (Stage 107B-A) | Accepted and implemented | ADR-0006, ADR-0011, ADR-0012 |
 | [ADR-0014](ADR-0014-runtime-image-identity-verification.md) | Runtime image identity verification (Stage 107B-B) | Accepted and implemented | ADR-0011, ADR-0012, ADR-0013 |
 | [ADR-0015](ADR-0015-runtime-kind-dispatch-seam.md) | Runtime-kind dispatch seam (Stage 108) | Accepted and implemented | ADR-0002, ADR-0006, ADR-0011 |
+| [ADR-0016](ADR-0016-native-process-runtime-v0.1.md) | Native process runtime v0.1 (Stage 109) | Accepted and implemented | ADR-0015, ADR-0006, ADR-0011, ADR-0012 |
 
 ## Relationship to closed phases
 

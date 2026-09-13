@@ -442,6 +442,18 @@ pub struct NativeProcessExecutionProjectionV1 {
     pub args: Vec<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
+    /// Stage 109 (ADR-0016, Section C). `control_plane.acquisition.sha256` --
+    /// the single authoritative executable content hash. A HARD GATE: before
+    /// this field existed, authorized bytes could change (a new
+    /// `acquisition.sha256`) while the native projection digest stayed
+    /// identical, which is forbidden -- content identity is
+    /// execution-relevant for a native process exactly as image identity is
+    /// for a container. ADR-0006 point 2: absence serializes as JSON `null`,
+    /// never omitted (mirrors every other optional projection member in this
+    /// file). Never added to `ArtifactExecutionProjectionV1` (Container) --
+    /// that projection and its digest remain byte-for-byte unchanged.
+    #[serde(default)]
+    pub acquisition_sha256: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
@@ -484,6 +496,7 @@ pub fn compute_native_projection(artifact: &ServiceArtifact) -> Result<NativePro
         entrypoint: native.entrypoint.clone(),
         args: native.args.clone(),
         working_directory: native.working_directory.clone(),
+        acquisition_sha256: artifact.control_plane.acquisition.sha256.clone(),
         dependencies: artifact.control_plane.dependencies.clone(),
         bindings: artifact.control_plane.bindings.clone(),
         secret_refs: artifact.control_plane.secret_refs.clone(),
@@ -536,7 +549,7 @@ mod tests {
     use super::*;
     use crate::core::service_artifact_registry::{
         ContainerConfigurationMount, ContainerDeploymentSpec, ContainerPortMapping,
-        ContainerVolumeMount, ServiceArtifactAcquisition, ServiceArtifactControlPlane,
+        ContainerVolumeMount, NativeProcessDeploymentSpecV1, ServiceArtifactAcquisition, ServiceArtifactControlPlane,
         ServiceArtifactSecretBinding, ServiceArtifactWasmDecision, ServiceProbeSet,
         ServiceProbeSpec, ServiceRuntimeSpec,
     };
@@ -753,6 +766,25 @@ mod tests {
         // The artifact's OWN canonical service_id, never the alias
         // (`x_alias_case` in the fixture) -- P0-6.
         assert_eq!(projection.service_id, "mqtt-broker");
+    }
+
+    /// Stage 109 (ADR-0016, Section C): `acquisition.sha256` must be bound
+    /// into the native projection -- a hard gate, since content identity is
+    /// execution-relevant exactly like a container's image identity.
+    #[test]
+    fn native_projection_binds_the_acquisition_sha256() {
+        let mut artifact = artifact();
+        artifact.runtime.kind = crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string();
+        artifact.runtime.container = None;
+        artifact.runtime.native_process = Some(NativeProcessDeploymentSpecV1 {
+            process_name: "datum-svc".to_string(),
+            entrypoint: "/opt/datum/svc/bin/run".to_string(),
+            args: Vec::new(),
+            working_directory: None,
+        });
+        artifact.control_plane.acquisition.sha256 = Some("d".repeat(64));
+        let projection = compute_native_projection(&artifact).unwrap();
+        assert_eq!(projection.acquisition_sha256.as_deref(), Some("d".repeat(64).as_str()));
     }
 
     /// Stage 108 (ADR-0015). The `NativeProcessExecutionProjectionV1` analogue

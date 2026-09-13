@@ -26,3 +26,6 @@ wat = "1.219.1"
 sha2 = "0.10"
 ctrlc = "3"
 fs2 = "0.4"
+# Stage 109 (ADR-0016): explicit direct dependency for Linux signal handling
+# (SIGTERM/SIGKILL via libc::kill) -- never assumed available transitively.
+libc = "0.2"

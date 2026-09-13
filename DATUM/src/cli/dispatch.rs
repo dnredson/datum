@@ -375,6 +375,8 @@ mod tests {
             container_mappings: Vec::new(),
             authorization_clock_skew_seconds: None,
             minimum_execution_pinning_mode: None,
+                allow_native_process_execution: None,
+                native_process_root: None,
         };
 
         let url = dispatch_url_from_dispatch_config(&cfg, "fog-01")
@@ -402,6 +404,8 @@ mod tests {
             container_mappings: Vec::new(),
             authorization_clock_skew_seconds: None,
             minimum_execution_pinning_mode: None,
+                allow_native_process_execution: None,
+                native_process_root: None,
         });
 
         let runtime =

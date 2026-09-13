@@ -439,6 +439,8 @@ mod tests {
                 container_mappings: Vec::new(),
                 authorization_clock_skew_seconds: None,
                 minimum_execution_pinning_mode: None,
+                allow_native_process_execution: None,
+                native_process_root: None,
             }),
             assisted_execution: None,
             collectors: None,

@@ -148,6 +148,19 @@ pub struct DispatchConfig {
     pub publish_results: Option<bool>,
     #[serde(default)]
     pub allow_container_execution: Option<bool>,
+    /// Stage 109 (ADR-0016). Independent permission for native-process
+    /// execution -- DServer authorization ALONE is never sufficient to
+    /// spawn a native process. Deliberately NOT `allow_container_execution`
+    /// reused: Docker availability plays no role in this decision at all.
+    /// Defaults to denied/disabled when absent.
+    #[serde(default)]
+    pub allow_native_process_execution: Option<bool>,
+    /// Stage 109 (ADR-0016). The controlled managed root every native
+    /// artifact/state/log file must live under -- required (in addition to
+    /// `allow_native_process_execution`) before any native mutation may
+    /// occur. Never derived from `container_mappings`/`configuration_root`.
+    #[serde(default)]
+    pub native_process_root: Option<String>,
     #[serde(default)]
     pub configuration_root: Option<String>,
     #[serde(default)]

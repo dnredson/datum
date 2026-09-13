@@ -455,7 +455,7 @@ fn command_text(name: &str, args: &[&str]) -> Option<String> {
     nonempty_output(&out.stdout)
 }
 
-fn collect_capabilities() -> Vec<CapabilityObservation> {
+pub(crate) fn collect_capabilities() -> Vec<CapabilityObservation> {
     let mut capabilities = Vec::new();
     capabilities.push(probe_python());
     capabilities.push(probe_docker());
@@ -467,6 +467,24 @@ fn collect_capabilities() -> Vec<CapabilityObservation> {
         version: None,
         source: CapabilitySource::Embedded,
         detail: Some("embedded Wasmtime execution path compiled into DATUM".to_string()),
+    });
+    // Stage 109 (ADR-0016, Section R): a Linux D-Node must be able to
+    // advertise native_process support even when Docker is completely
+    // absent -- Docker's presence/absence plays no role in this decision.
+    // Never advertised on a platform where the real runtime implementation
+    // does not exist (`native_process_runtime::platform_supported`, the
+    // exact same check the real reconciliation path uses to fail closed).
+    capabilities.push(CapabilityObservation {
+        name: "native_process".to_string(),
+        category: CapabilityCategory::ExecutionRuntime,
+        present: crate::agent::native_process_runtime::platform_supported(),
+        available: crate::agent::native_process_runtime::platform_supported(),
+        version: None,
+        source: CapabilitySource::Embedded,
+        detail: Some(
+            "direct SmartSentinel-managed Linux process execution (Stage 109), independent of Docker availability"
+                .to_string(),
+        ),
     });
 
     if cfg!(windows) {
@@ -654,4 +672,32 @@ fn meminfo_kb(raw: &str, field: &str) -> Option<u64> {
 fn nonempty_output(bytes: &[u8]) -> Option<String> {
     let value = String::from_utf8_lossy(bytes).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod native_process_capability_tests {
+    use super::*;
+
+    #[test]
+    fn native_process_capability_is_advertised_matching_platform_support() {
+        let capabilities = collect_capabilities();
+        let native = capabilities
+            .iter()
+            .find(|c| c.name == "native_process")
+            .expect("native_process capability must be advertised");
+        assert_eq!(native.category, CapabilityCategory::ExecutionRuntime);
+        assert_eq!(native.present, crate::agent::native_process_runtime::platform_supported());
+        assert_eq!(native.available, crate::agent::native_process_runtime::platform_supported());
+    }
+
+    #[test]
+    fn native_process_capability_is_independent_of_docker_capability() {
+        // Section S/R: Docker absence must never remove native_process
+        // capability -- confirmed structurally: `probe_docker()`'s result
+        // and the native_process entry are computed by two entirely
+        // separate, non-interacting code paths.
+        let capabilities = collect_capabilities();
+        assert!(capabilities.iter().any(|c| c.name == "native_process"));
+        assert!(capabilities.iter().any(|c| c.name == "docker"));
+    }
 }

@@ -17,6 +17,8 @@ use crate::agent::execution_projection;
 use crate::agent::image_identity_verification::{
     self, CliDockerImageRuntime, DockerImageRuntime, VerifiedImageIdentity,
 };
+use crate::agent::native_process_acquisition;
+use crate::agent::native_process_runtime;
 use crate::agent::resource_discovery::SmartSentinelResourceDiscovery;
 use crate::agent::runtime_kind::RuntimeKind;
 use crate::agent::stage107a_enforcement::{
@@ -215,6 +217,14 @@ pub struct OperationalArtifactAssignment {
     /// observed state (see `runtime_kind`'s module doc comment).
     #[serde(default)]
     pub native_process: Option<NativeProcessDeploymentSpecV1>,
+    /// Stage 109 (ADR-0016). Mirrors `dserver`'s
+    /// `ArtifactReconciliationAssignment.acquisition`. Populated if and only
+    /// if `runtime_kind == "native_process"`; `None` for `Container` (never
+    /// added to the container execution projection/wire shape). The single
+    /// authoritative owner of native executable content identity --
+    /// `NativeProcessDeploymentSpecV1` never carries its own content hash.
+    #[serde(default)]
+    pub acquisition: Option<OperationalServiceArtifactAcquisition>,
     /// Stage 107B-A (ADR-0013). Mirrors `ContainerDeploymentSpec.image_source_kind`
     /// (dserver): `"registry"`, `"local_build"`, or `"legacy_unclassified"`.
     /// v7 review P2-2: the safe default for a record missing this field is
@@ -346,6 +356,23 @@ pub struct NativeProcessDeploymentSpecV1 {
     pub args: Vec<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
+}
+
+/// Stage 109 (ADR-0016). Mirrors
+/// `dserver::core::service_artifact_registry::ServiceArtifactAcquisition`
+/// field-for-field (independent, hand-written -- no shared crate). The
+/// single authoritative owner of native executable content identity:
+/// `sha256` is the exact byte-hash the materialized executable must match
+/// before it may ever be spawned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalServiceArtifactAcquisition {
+    pub kind: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -528,14 +555,23 @@ pub struct OperationalServiceReconciliationReport {
     pub verified_image_identity: Option<VerifiedImageIdentity>,
 }
 
-/// One M1-M8 governed-host-mutation boundary attempt (review finding P1-2,
-/// v4). `boundary` is the stable M1-M8 identifier (`"M1"` docker run,
-/// `"M2"` docker start, `"M3"` attachment-drift recreate `rm -f`, `"M4"`
-/// stopped+secrets recreate `rm -f`, `"M5"` docker pull, `"M6"` lifecycle
-/// remove_container, `"M7"` docker network create, `"M8"` rollback `rm -f`).
-/// `result` is `"passed"` or `"blocked"`; `block_reason` is the full
-/// `stage107a_enforcement` block-reason string (present only when
-/// `result == "blocked"`). Never carries a secret value.
+/// One governed-host-mutation boundary attempt (review finding P1-2, v4).
+/// `boundary` is a stable identifier -- NOT limited to M1-M8: those name
+/// the Container path's boundaries (`"M1"` docker run, `"M2"` docker
+/// start, `"M3"` attachment-drift recreate `rm -f`, `"M4"` stopped+secrets
+/// recreate `rm -f`, `"M5"` docker pull, `"M6"` lifecycle remove_container,
+/// `"M7"` docker network create, `"M8"` rollback `rm -f`); Stage 109
+/// (ADR-0016) added a separate, never-overlapping N1-N6 series for the
+/// NativeProcess path (`"N1"` materialize/replace verified artifact bytes,
+/// `"N2"` executable-permission mutation, `"N3"` spawn native process,
+/// `"N4"` SIGTERM managed process, `"N5"` SIGKILL managed process, `"N6"`
+/// remove managed artifact/state) via the exact same `check_boundary`
+/// mechanism -- this type and `check_boundary` are runtime-kind-agnostic
+/// by design; a future runtime kind would add its own disjoint identifier
+/// series the same way, never reusing another kind's letters. `result` is
+/// `"passed"` or `"blocked"`; `block_reason` is the full block-reason
+/// string (present only when `result == "blocked"`). Never carries a
+/// secret value.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MutationBoundaryRecord {
     pub boundary: String,
@@ -1024,10 +1060,10 @@ fn post_action_container_binding_check(
 /// `ensure_docker_network`, `rollback_trusted_container_intent`) otherwise
 /// know nothing about `OperationalReconciliationAuthorization` itself, only
 /// about the `LeaseGuard` derived from it.
-struct MutationBoundaryContext<'a> {
-    authorization_id: Option<&'a str>,
-    expires_at_utc: Option<&'a str>,
-    configured_clock_skew_seconds: Option<u64>,
+pub(crate) struct MutationBoundaryContext<'a> {
+    pub(crate) authorization_id: Option<&'a str>,
+    pub(crate) expires_at_utc: Option<&'a str>,
+    pub(crate) configured_clock_skew_seconds: Option<u64>,
 }
 
 /// Review finding P1-3 (v4): non-secret Docker label keys DATUM writes on
@@ -1103,7 +1139,7 @@ fn inspected_container_labels_match(inspected: &serde_json::Value, expected: &Ex
 /// block upward through the caller's `anyhow::Result` chain: the evidence
 /// for a blocked boundary is retained through the propagated error, exactly
 /// like a passed boundary's record is retained through a later success.
-fn check_boundary(
+pub(crate) fn check_boundary(
     lease: &LeaseGuard,
     boundary_context: &MutationBoundaryContext,
     boundary: &str,
@@ -1330,12 +1366,41 @@ fn run_operational_reconciliation_from_bootstrap(
                 services.push(build_runtime_dispatch_error_report(service, assignment, error));
                 continue;
             }
+            ServiceRuntimeDispatch::MissingAssignment => {
+                // Stage 109 (closes Stage 108 P2): a contract error, never
+                // the native execution path -- no host mutation may occur
+                // from an assignment-less service.
+                services.push(native_process_runtime::missing_artifact_assignment_report(service));
+                continue;
+            }
             ServiceRuntimeDispatch::NativeProcess => {
-                // Stage 108: contract understood, runtime dispatched
-                // correctly, no native runtime implementation exists yet, no
-                // mutation occurred. Never Docker, never ActionExecutorPlugin,
-                // never a silent "converged"/no-op.
-                services.push(build_native_process_stub_report(service, assignment));
+                // Stage 109: real, governed native-process reconciliation.
+                // Never Docker, never ActionExecutorPlugin, never routed
+                // through the Container path below.
+                let authorization = context.authorization.as_ref();
+                let cycle_gate = stage107a_cycle_gate.as_ref().and_then(|result| result.as_ref().ok());
+                let lease = cycle_gate.map(|gate| &gate.lease);
+                let effective_mode = cycle_gate.map(|gate| gate.effective_mode);
+                let native_boundary_context = MutationBoundaryContext {
+                    authorization_id: authorization.map(|a| a.authorization_id.as_str()),
+                    expires_at_utc: authorization.and_then(|a| a.expires_at_utc.as_deref()),
+                    configured_clock_skew_seconds: cycle_gate.map(|gate| gate.skew_seconds),
+                };
+                let report = native_process_runtime::reconcile_native_service(
+                    cfg,
+                    &context.project_id,
+                    &context.node_id,
+                    authorization,
+                    lease,
+                    effective_mode,
+                    &native_boundary_context,
+                    service,
+                    assignment.expect("ServiceRuntimeDispatch::NativeProcess implies assignment is Some"),
+                    execute_requested,
+                    control_plane_authorized,
+                    rollback_requested,
+                );
+                services.push(report);
                 continue;
             }
             ServiceRuntimeDispatch::Container => {}
@@ -2384,14 +2449,24 @@ pub fn run_embedded_reconciler(
 /// path" is directly unit-testable (see the tests below), rather than only
 /// provable by source inspection.
 #[derive(Debug, PartialEq, Eq)]
-enum ServiceRuntimeDispatch {
+pub(crate) enum ServiceRuntimeDispatch {
     /// Unknown runtime, or a desired/assigned runtime-kind mismatch.
     Error(String),
+    /// Stage 109 (closes Stage 108 P2): a `NativeProcess`-desired service
+    /// with NO matching artifact assignment. Distinct from `Error`
+    /// (which requires two present, disagreeing values) and from
+    /// `NativeProcess` (which requires exactly one matching assignment to
+    /// exist) -- this was harmless in Stage 108 (no real execution was
+    /// possible either way) but is NOT acceptable once Stage 109 can
+    /// mutate the host: a desired service may enter real native
+    /// reconciliation only when exactly one matching artifact assignment
+    /// exists.
+    MissingAssignment,
     NativeProcess,
     Container,
 }
 
-fn classify_service_runtime_dispatch(
+pub(crate) fn classify_service_runtime_dispatch(
     service: &OperationalDesiredService,
     assignment: Option<&OperationalArtifactAssignment>,
 ) -> ServiceRuntimeDispatch {
@@ -2423,7 +2498,12 @@ fn classify_service_runtime_dispatch(
     }
 
     match desired_runtime_kind {
-        Ok(RuntimeKind::NativeProcess) => ServiceRuntimeDispatch::NativeProcess,
+        Ok(RuntimeKind::NativeProcess) => {
+            if assignment.is_none() {
+                return ServiceRuntimeDispatch::MissingAssignment;
+            }
+            ServiceRuntimeDispatch::NativeProcess
+        }
         _ => ServiceRuntimeDispatch::Container,
     }
 }
@@ -2432,7 +2512,7 @@ fn classify_service_runtime_dispatch(
 /// value -- used by both the dispatch-error and native-process-stub report
 /// builders below, neither of which invokes the reconciler WASM module at
 /// all (there is nothing to decide: no mutation is possible in either case).
-fn no_wasm_decision(status: &str) -> WasmReconciliationDecision {
+pub(crate) fn no_wasm_decision(status: &str) -> WasmReconciliationDecision {
     WasmReconciliationDecision {
         module_id: String::new(),
         function_name: String::new(),
@@ -2487,81 +2567,81 @@ fn build_runtime_dispatch_error_report(
     }
 }
 
-/// Stage 108 (ADR-0015). The stable, truthful NativeProcess stub outcome:
-/// contract understood, runtime dispatched correctly, no native runtime
-/// implementation exists yet, no mutation occurred. Independently
-/// reconstructs the SAME native-process execution projection DServer
-/// computed (`execution_projection::compute_native_projection`/
-/// `native_projection_digest`) and records both the expected (wire) and
-/// recomputed digest as evidence -- parity between the two is asserted by
-/// tests, not gated here (no mutation is possible either way in Stage 108).
-/// Absolutely no Docker call, no `ActionExecutorPlugin`, no silent fallback
-/// to Container, no manufactured container evidence.
-fn build_native_process_stub_report(
-    service: &OperationalDesiredService,
-    assignment: Option<&OperationalArtifactAssignment>,
-) -> OperationalServiceReconciliationReport {
-    let recomputed_execution_projection_digest = assignment.and_then(|artifact| {
-        execution_projection::recompute_native_digest(artifact).ok()
-    });
-    OperationalServiceReconciliationReport {
-        service_id: service.service_id.clone(),
-        artifact_id: assignment.map(|artifact| artifact.artifact_id.clone()),
-        artifact_version: assignment.map(|artifact| artifact.version.clone()),
-        desired_state: service.desired_state.clone(),
-        trusted_container_name: None,
-        trusted_image: None,
-        observed_before_running: false,
-        observation_error: None,
-        secret_resolution_status: "not_applicable_native_process_stage108".to_string(),
-        wasm: no_wasm_decision("not_applicable_native_process_stage108"),
-        execution_status: "not_implemented_native_process_runtime".to_string(),
-        message: "runtime_kind=native_process is understood and dispatched correctly; no native process runtime execution exists in Stage 108".to_string(),
-        observed_after_running: false,
-        host_mutation_performed: false,
-        execution_semantics: None,
-        authorization_id: None,
-        authorization_expires_at_utc: None,
-        execution_generation: assignment.map(|artifact| artifact.execution_generation),
-        expected_execution_projection_digest: assignment.map(|artifact| artifact.execution_projection_digest.clone()),
-        recomputed_execution_projection_digest,
-        execution_pinning_mode: None,
-        f2_status: None,
-        local_policy_digest: None,
-        unpinned_inputs: Vec::new(),
-        authorization_clock_skew_seconds: None,
-        verified_external_inputs: Vec::new(),
-        local_substitutions: Vec::new(),
-        mutation_boundaries_crossed: Vec::new(),
-        verified_image_identity: None,
-    }
-}
-
-/// Stage 108 v2 (independent review, P1-2). Mirrors
-/// `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`'s
-/// exact bounds -- independently hand-written (no shared crate), but the
-/// SAME limits, so a native_process payload cannot pass this crate's wire
-/// validation while failing the registry's, or vice versa. Returns the
-/// first violated bound's message on failure.
-fn native_process_deployment_spec_within_stage108_bounds(
+/// v4 fix (P1-2, renamed from `native_process_deployment_spec_within_stage108_bounds`):
+/// mirrors `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`'s
+/// exact Stage 109 bounds -- independently hand-written (no shared
+/// crate), but the SAME limits, so a native_process payload cannot pass
+/// this crate's wire validation while failing the registry's, or vice
+/// versa. Stage 108's version of this function checked only non-empty/
+/// length/NUL for `entrypoint`/`working_directory`; it did NOT enforce
+/// the Stage 109 requirement that both be genuine POSIX-relative paths
+/// (no leading `/`, no `.`/`..`/empty segments) -- an absolute or
+/// traversal-shaped value could reach this point, and Stage 109's real
+/// containment logic (`native_process_acquisition::resolve_contained_path`)
+/// would only catch it later, at actual host-execution time, not at wire-
+/// validation time. Returns the first violated bound's message on
+/// failure.
+fn native_process_deployment_spec_within_stage109_bounds(
     spec: &NativeProcessDeploymentSpecV1,
 ) -> std::result::Result<(), String> {
     if spec.process_name.trim().is_empty() || spec.process_name.len() > 256 || spec.process_name.contains('\0') {
         return Err("native_process.process_name must be non-empty, NUL-free, and at most 256 characters".to_string());
     }
-    if spec.entrypoint.trim().is_empty() || spec.entrypoint.len() > 4096 || spec.entrypoint.contains('\0') {
-        return Err("native_process.entrypoint must be non-empty, NUL-free, and at most 4096 characters".to_string());
+    if !native_process_acquisition::is_valid_posix_relative_path(&spec.entrypoint) {
+        return Err(
+            "native_process.entrypoint must be a non-empty, NUL-free, bounded, POSIX-relative path with no '.'/'..' segments"
+                .to_string(),
+        );
     }
     if spec.args.len() > 64 || spec.args.iter().any(|arg| arg.len() > 4096 || arg.contains('\0')) {
         return Err("native_process.args must have at most 64 entries, each NUL-free and at most 4096 characters".to_string());
     }
     if let Some(dir) = &spec.working_directory {
-        if dir.trim().is_empty() || dir.len() > 4096 || dir.contains('\0') {
+        if !native_process_acquisition::is_valid_posix_relative_path(dir) {
             return Err(
-                "native_process.working_directory, when present, must be non-empty after trim, NUL-free, and at most 4096 characters"
+                "native_process.working_directory, when present, must be a non-empty, NUL-free, bounded, POSIX-relative path with no '.'/'..' segments"
                     .to_string(),
             );
         }
+    }
+    Ok(())
+}
+
+/// v4 fix (P1-2): agent-side WIRE defense-in-depth mirroring DServer's
+/// authoring-time/assignment-resolution native acquisition contract
+/// (`kind` exactly `native_process_executable`, `sha256` exactly 64
+/// lowercase hex, `source` a valid POSIX-absolute path). Before this fix,
+/// `validate_context` never checked `acquisition` at all for a
+/// NativeProcess assignment -- only real host execution
+/// (`governed_materialize_and_spawn`) rejected a bad kind/source/hash,
+/// meaning a malformed assignment could pass wire validation and only
+/// fail much later, deep in the reconciliation cycle.
+fn native_process_acquisition_within_stage109_bounds(
+    acquisition: Option<&OperationalServiceArtifactAcquisition>,
+) -> std::result::Result<(), String> {
+    let Some(acquisition) = acquisition else {
+        return Err("native_process assignment requires a control_plane.acquisition payload".to_string());
+    };
+    if acquisition.kind != native_process_acquisition::NATIVE_PROCESS_ACQUISITION_KIND {
+        return Err(format!(
+            "native_process assignment requires acquisition.kind to be exactly '{}', got '{}'",
+            native_process_acquisition::NATIVE_PROCESS_ACQUISITION_KIND,
+            acquisition.kind
+        ));
+    }
+    let source = acquisition.source.as_deref().unwrap_or_default();
+    if !native_process_acquisition::is_valid_posix_absolute_source_path(source) {
+        return Err(
+            "native_process assignment requires acquisition.source to be a non-empty, NUL-free, bounded, POSIX-absolute path"
+                .to_string(),
+        );
+    }
+    let sha256 = acquisition.sha256.as_deref().unwrap_or_default();
+    if !native_process_acquisition::is_valid_content_sha256(sha256) {
+        return Err(
+            "native_process assignment requires acquisition.sha256 to be exactly 64 lowercase hexadecimal characters"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -2702,11 +2782,23 @@ fn validate_context(
                         artifact.artifact_id
                     )
                 })?;
-                // Stage 108 v2 (independent review, P1-2): mirrors the exact
-                // same bounds `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`
+                // v4 fix (P1-2): mirrors the exact same Stage 109 bounds
+                // `dserver::core::service_artifact_registry::validate_native_process_deployment_spec`
                 // enforces -- this downstream wire validator must not accept
                 // a weaker payload than the registry itself would have.
-                if let Err(reason) = native_process_deployment_spec_within_stage108_bounds(native) {
+                if let Err(reason) = native_process_deployment_spec_within_stage109_bounds(native) {
+                    bail!(
+                        "artifact reconciliation context contains an unsafe or incomplete native_process assignment: {reason}"
+                    );
+                }
+                // v4 fix (P1-2): the native acquisition contract
+                // (kind/source/sha256) is now ALSO validated at wire time,
+                // mirroring DServer's own authoring-time/assignment-
+                // resolution checks -- agent-side defense-in-depth,
+                // never relied upon as the sole enforcement point (real
+                // host execution independently re-checks all three
+                // immediately before any mutation).
+                if let Err(reason) = native_process_acquisition_within_stage109_bounds(artifact.acquisition.as_ref()) {
                     bail!(
                         "artifact reconciliation context contains an unsafe or incomplete native_process assignment: {reason}"
                     );
@@ -4004,6 +4096,7 @@ mod tests {
             container_name: "datum-svc".to_string(),
             image: "example/svc:1".to_string(),
             native_process: None,
+            acquisition: None,
             image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             target_node: "fog-01".to_string(),
@@ -4031,9 +4124,15 @@ mod tests {
         assignment.image = String::new();
         assignment.native_process = Some(NativeProcessDeploymentSpecV1 {
             process_name: "datum-native-svc".to_string(),
-            entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+            entrypoint: "bin/run".to_string(),
             args: vec!["--config".to_string(), "cfg.toml".to_string()],
-            working_directory: Some("/opt/datum/native-svc".to_string()),
+            working_directory: Some("data".to_string()),
+        });
+        assignment.acquisition = Some(OperationalServiceArtifactAcquisition {
+            kind: native_process_acquisition::NATIVE_PROCESS_ACQUISITION_KIND.to_string(),
+            source: Some("/opt/datum/sources/native-svc.bin".to_string()),
+            revision: None,
+            sha256: Some("b".repeat(64)),
         });
         assignment
     }
@@ -4101,33 +4200,39 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_with_no_assignment_and_native_process_desired_is_native_process() {
+    fn dispatch_with_no_assignment_and_native_process_desired_is_missing_assignment() {
+        // Stage 109 (closes Stage 108 P2): this used to classify as
+        // `NativeProcess` (harmless in Stage 108, since no real execution
+        // was possible). Now that Stage 109 can mutate the host, an
+        // assignment-less native service must be a distinct contract
+        // error, never enter native reconciliation.
         let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), None);
-        assert_eq!(dispatch, ServiceRuntimeDispatch::NativeProcess);
+        assert_eq!(dispatch, ServiceRuntimeDispatch::MissingAssignment);
     }
 
     #[test]
-    fn native_process_stub_report_is_stable_and_truthful() {
-        let report = build_native_process_stub_report(&desired_service("native_process"), Some(&native_process_assignment()));
-        assert_eq!(report.execution_status, "not_implemented_native_process_runtime");
-        assert!(!report.host_mutation_performed);
-        assert!(!report.observed_before_running);
-        assert!(!report.observed_after_running);
-        assert!(report.trusted_container_name.is_none());
-        assert!(report.trusted_image.is_none());
-        assert!(report.verified_image_identity.is_none());
+    fn dispatch_never_yields_native_process_without_an_assignment() {
+        let candidates: Vec<Option<OperationalArtifactAssignment>> = vec![None];
+        for assignment in &candidates {
+            let dispatch = classify_service_runtime_dispatch(&desired_service("native_process"), assignment.as_ref());
+            assert_ne!(dispatch, ServiceRuntimeDispatch::NativeProcess);
+        }
     }
 
     #[test]
-    fn native_process_stub_report_recomputes_a_matching_native_projection_digest() {
-        let mut assignment = native_process_assignment();
-        assignment.execution_projection_digest =
-            execution_projection::recompute_native_digest(&assignment).unwrap();
-        let report = build_native_process_stub_report(&desired_service("native_process"), Some(&assignment));
-        assert_eq!(
-            report.recomputed_execution_projection_digest.as_deref(),
-            Some(assignment.execution_projection_digest.as_str())
-        );
+    fn missing_assignment_is_distinguished_from_runtime_kind_mismatch_and_ordinary_errors() {
+        // Three genuinely distinct dispatch outcomes for a NativeProcess-
+        // desired service must never be conflated:
+        let missing = classify_service_runtime_dispatch(&desired_service("native_process"), None);
+        assert_eq!(missing, ServiceRuntimeDispatch::MissingAssignment);
+
+        let mismatch = classify_service_runtime_dispatch(&desired_service("native_process"), Some(&container_assignment()));
+        assert!(matches!(mismatch, ServiceRuntimeDispatch::Error(_)));
+        assert_ne!(mismatch, ServiceRuntimeDispatch::MissingAssignment);
+
+        let unknown = classify_service_runtime_dispatch(&desired_service("vm"), Some(&native_process_assignment()));
+        assert!(matches!(unknown, ServiceRuntimeDispatch::Error(_)));
+        assert_ne!(unknown, ServiceRuntimeDispatch::MissingAssignment);
     }
 
     #[test]
@@ -4166,6 +4271,111 @@ mod tests {
             },
             side_effects_performed: false,
         };
+        validate_context(&context, "proj", "fog-01").unwrap();
+    }
+
+    // ---- v4 (P1-2): wire validation mirrors Stage 109 bounds ------------ //
+
+    fn native_process_context(assignment: OperationalArtifactAssignment) -> OperationalReconciliationContext {
+        OperationalReconciliationContext {
+            schema_version: "0.1.0".to_string(),
+            contract_kind: "datum_artifact_reconciliation_context".to_string(),
+            project_id: "proj".to_string(),
+            dgraph_id: "dgraph:test".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            desired_services: vec![desired_service("native_process")],
+            artifacts: vec![assignment],
+            authorization: None,
+            reconciler: OperationalReconcilerDescriptor {
+                module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
+                function_name: OPERATIONAL_RECONCILER_FUNCTION.to_string(),
+                abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
+                host_imports_allowed: false,
+            },
+            execution_policy: ArtifactExecutionPolicy {
+                mode: "proposal_only".to_string(),
+                explicit_invocation_required: true,
+                host_imports_allowed: false,
+                side_effects_allowed: false,
+                safe_to_auto_execute: false,
+            },
+            side_effects_performed: false,
+        }
+    }
+
+    #[test]
+    fn validate_context_rejects_absolute_native_entrypoint() {
+        let mut assignment = native_process_assignment();
+        assignment.native_process.as_mut().unwrap().entrypoint = "/bin/run".to_string();
+        let context = native_process_context(assignment);
+        let error = validate_context(&context, "proj", "fog-01").unwrap_err();
+        assert!(format!("{error}").contains("entrypoint"), "error was: {error}");
+    }
+
+    #[test]
+    fn validate_context_rejects_parent_traversing_native_entrypoint() {
+        let mut assignment = native_process_assignment();
+        assignment.native_process.as_mut().unwrap().entrypoint = "../x".to_string();
+        let context = native_process_context(assignment);
+        assert!(validate_context(&context, "proj", "fog-01").is_err());
+    }
+
+    #[test]
+    fn validate_context_rejects_native_entrypoint_with_an_interior_parent_traversal_segment() {
+        let mut assignment = native_process_assignment();
+        assignment.native_process.as_mut().unwrap().entrypoint = "a/../x".to_string();
+        let context = native_process_context(assignment);
+        assert!(validate_context(&context, "proj", "fog-01").is_err());
+    }
+
+    #[test]
+    fn validate_context_rejects_absolute_native_working_directory() {
+        let mut assignment = native_process_assignment();
+        assignment.native_process.as_mut().unwrap().working_directory = Some("/etc".to_string());
+        let context = native_process_context(assignment);
+        assert!(validate_context(&context, "proj", "fog-01").is_err());
+    }
+
+    #[test]
+    fn validate_context_rejects_wrong_native_acquisition_kind() {
+        let mut assignment = native_process_assignment();
+        assignment.acquisition.as_mut().unwrap().kind = "command_bundle".to_string();
+        let context = native_process_context(assignment);
+        let error = validate_context(&context, "proj", "fog-01").unwrap_err();
+        assert!(format!("{error}").contains("acquisition.kind"), "error was: {error}");
+    }
+
+    #[test]
+    fn validate_context_rejects_relative_native_acquisition_source() {
+        let mut assignment = native_process_assignment();
+        assignment.acquisition.as_mut().unwrap().source = Some("relative/sources/x.bin".to_string());
+        let context = native_process_context(assignment);
+        let error = validate_context(&context, "proj", "fog-01").unwrap_err();
+        assert!(format!("{error}").contains("acquisition.source"), "error was: {error}");
+    }
+
+    #[test]
+    fn validate_context_rejects_uppercase_native_acquisition_sha256() {
+        let mut assignment = native_process_assignment();
+        assignment.acquisition.as_mut().unwrap().sha256 = Some("B".repeat(64));
+        let context = native_process_context(assignment);
+        let error = validate_context(&context, "proj", "fog-01").unwrap_err();
+        assert!(format!("{error}").contains("acquisition.sha256"), "error was: {error}");
+    }
+
+    #[test]
+    fn validate_context_rejects_native_assignment_with_no_acquisition_at_all() {
+        let mut assignment = native_process_assignment();
+        assignment.acquisition = None;
+        let context = native_process_context(assignment);
+        let error = validate_context(&context, "proj", "fog-01").unwrap_err();
+        assert!(format!("{error}").contains("acquisition"), "error was: {error}");
+    }
+
+    #[test]
+    fn validate_context_accepts_a_valid_stage109_native_assignment() {
+        let context = native_process_context(native_process_assignment());
         validate_context(&context, "proj", "fog-01").unwrap();
     }
 
@@ -4243,39 +4453,39 @@ mod tests {
     fn wire_native_payload_bound_violations_are_all_rejected() {
         let cases: Vec<(&str, NativeProcessDeploymentSpecV1)> = vec![
             ("process_name containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "bad\0name".to_string(), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+                process_name: "bad\0name".to_string(), entrypoint: "bin/x".to_string(), args: vec![], working_directory: None,
             }),
             ("process_name > 256 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "a".repeat(257), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+                process_name: "a".repeat(257), entrypoint: "bin/x".to_string(), args: vec![], working_directory: None,
             }),
             ("entrypoint containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/bad\0path".to_string(), args: vec![], working_directory: None,
+                process_name: "x".to_string(), entrypoint: "bin/bad\0path".to_string(), args: vec![], working_directory: None,
             }),
             ("entrypoint > 4096 chars", NativeProcessDeploymentSpecV1 {
                 process_name: "x".to_string(), entrypoint: "a".repeat(4097), args: vec![], working_directory: None,
             }),
             ("args > 64 entries", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: (0..65).map(|i| i.to_string()).collect(), working_directory: None,
             }),
             ("one arg > 4096 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec!["a".repeat(4097)], working_directory: None,
             }),
             ("arg containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec!["bad\0arg".to_string()], working_directory: None,
             }),
             ("working_directory blank Some", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec![], working_directory: Some("   ".to_string()),
             }),
             ("working_directory containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
-                args: vec![], working_directory: Some("/bad\0dir".to_string()),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
+                args: vec![], working_directory: Some("bad\0dir".to_string()),
             }),
             ("working_directory > 4096 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec![], working_directory: Some("a".repeat(4097)),
             }),
         ];

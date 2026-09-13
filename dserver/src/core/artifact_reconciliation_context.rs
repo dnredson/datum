@@ -9,7 +9,7 @@ use crate::core::{
     runtime_kind::RuntimeKind,
     service_artifact_registry::{
         ContainerPortMapping, NativeProcessDeploymentSpecV1, ResolvedImageIdentityV1, ServiceArtifact,
-        ServiceArtifactLifecycle, ServiceArtifactSecretBinding, ServiceArtifactWasmDecision,
+        ServiceArtifactAcquisition, ServiceArtifactLifecycle, ServiceArtifactSecretBinding, ServiceArtifactWasmDecision,
         IMAGE_SOURCE_KIND_REGISTRY, IMAGE_SOURCE_KIND_LOCAL_BUILD, IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED,
     },
 };
@@ -54,6 +54,13 @@ pub struct ArtifactReconciliationAssignment {
     /// fields, never PID/process-start-time/observed-state.
     #[serde(default)]
     pub native_process: Option<NativeProcessDeploymentSpecV1>,
+    /// Stage 109 (ADR-0016). Populated if and only if `runtime_kind ==
+    /// "native_process"`; `None` for `Container` (never carried onto the
+    /// container wire shape or execution projection). The single
+    /// authoritative owner of native executable content identity --
+    /// `NativeProcessDeploymentSpecV1` never carries its own content hash.
+    #[serde(default)]
+    pub acquisition: Option<ServiceArtifactAcquisition>,
     /// Stage 107B-A (ADR-0013). See `ContainerDeploymentSpec.image_source_kind`.
     #[serde(default = "default_assignment_image_source_kind")]
     pub image_source_kind: String,
@@ -305,6 +312,7 @@ pub fn resolve_assignments_from_registry(
                         })
                         .collect(),
                     native_process: None,
+                    acquisition: None,
                     lifecycle: artifact.control_plane.lifecycle.clone(),
                     dependencies: artifact.control_plane.dependencies.clone(),
                     wasm_decision: artifact.control_plane.wasm_decision.clone(),
@@ -341,6 +349,7 @@ pub fn resolve_assignments_from_registry(
                     volumes: Vec::new(),
                     configuration_mounts: Vec::new(),
                     native_process: Some(native.clone()),
+                    acquisition: Some(artifact.control_plane.acquisition.clone()),
                     lifecycle: artifact.control_plane.lifecycle.clone(),
                     dependencies: artifact.control_plane.dependencies.clone(),
                     wasm_decision: artifact.control_plane.wasm_decision.clone(),
@@ -397,12 +406,11 @@ pub fn resolve_assignments_from_registry(
 ///   (unaffected by Stage 107B-A).
 pub fn required_completeness_gaps(assignment: &ArtifactReconciliationAssignment) -> Vec<String> {
     let mut gaps = Vec::new();
-    // Stage 108 (ADR-0015, P0-4 correction): runtime-dispatched. A
-    // `native_process` assignment gets NO image-completeness logic at all --
-    // it is not "a container with an empty image", it simply has no
-    // acquisition-completeness model yet (Stage 109 introduces one, via
-    // `ServiceArtifactAcquisition.sha256` entering the NATIVE execution
-    // projection -- see ADR-0015's Stage 109 handoff note).
+    // Stage 108 (ADR-0015, P0-4 correction) / Stage 109 (ADR-0016, Section
+    // D): runtime-dispatched. A `native_process` assignment gets NO OCI
+    // image-completeness logic at all -- it is not "a container with an
+    // empty image"; it has its own, independent native content-completeness
+    // check (`unpinned_native_process_content`) instead.
     if matches!(RuntimeKind::parse(&assignment.runtime_kind), Ok(RuntimeKind::Container)) {
         if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
             // Amendment 2: never required-eligible in this slice -- distinct
@@ -437,6 +445,28 @@ pub fn required_completeness_gaps(assignment: &ArtifactReconciliationAssignment)
                     // else: required-complete for the image portion.
                 }
             }
+        }
+    } else if matches!(RuntimeKind::parse(&assignment.runtime_kind), Ok(RuntimeKind::NativeProcess)) {
+        // Stage 109 (ADR-0016, Section D): a native process must NEVER
+        // execute without an exact, syntactically valid content sha256,
+        // independent of pinning mode. `validate_assignments` already hard-
+        // rejects a missing/invalid hash before a context reaches this
+        // point in practice; this gap exists as defense-in-depth evidence
+        // (mirroring the image-completeness gaps above), not as the only
+        // enforcement point.
+        // v3 fix (P1-2): lowercase-only, matching the agent's
+        // case-sensitive `is_valid_content_sha256` -- see the identical
+        // fix in `service_artifact_registry.rs`'s native validation.
+        let valid = assignment
+            .acquisition
+            .as_ref()
+            .and_then(|acquisition| acquisition.sha256.as_deref())
+            .is_some_and(|sha256| sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        if !valid {
+            gaps.push(format!(
+                "unpinned_native_process_content:{}",
+                assignment.acquisition.as_ref().and_then(|a| a.source.clone()).unwrap_or_default()
+            ));
         }
     }
     // Review finding P1-3 (TOCTOU / "actual bytes used" gap), Option B: an
@@ -671,6 +701,47 @@ fn validate_assignments(
                 // rejected.
                 crate::core::service_artifact_registry::validate_native_process_deployment_spec(native)
                     .map_err(|error| format!("artifact '{}' has an invalid native_process payload: {}", assignment.artifact_id, error.message()))?;
+                // Stage 109 (ADR-0016, Section D): a real native process
+                // must NEVER execute without an exact, syntactically valid
+                // content sha256 -- independent of pinning mode. Checked
+                // here (wire-level, defense in depth) in addition to
+                // `validate_artifact` (registry-level, create/update time).
+                // v3 fix (P1-2): lowercase-only -- matching the agent's
+                // case-sensitive hashing.
+                let valid_sha256 = assignment
+                    .acquisition
+                    .as_ref()
+                    .and_then(|acquisition| acquisition.sha256.as_deref())
+                    .is_some_and(|sha256| {
+                        sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    });
+                if !valid_sha256 {
+                    return Err(format!(
+                        "unpinned_native_process_content: artifact '{}' has no valid acquisition.sha256; a native process must never execute without an exact content hash",
+                        assignment.artifact_id
+                    ));
+                }
+                // v3 fix (P1-2): the resolved assignment must carry EXACTLY
+                // the native acquisition kind, and a POSIX-absolute
+                // `source` -- wire-level defense-in-depth mirroring
+                // `service_artifact_registry::validate_artifact`'s
+                // authoring-time checks, so a mismatch can never reach a
+                // node via a stale/hand-crafted assignment either.
+                let acquisition_kind = assignment.acquisition.as_ref().map(|a| a.kind.as_str()).unwrap_or_default();
+                if acquisition_kind != crate::core::service_artifact_registry::NATIVE_PROCESS_ACQUISITION_KIND {
+                    return Err(format!(
+                        "artifact '{}' declares runtime_kind=native_process but acquisition.kind is '{acquisition_kind}', not '{}'",
+                        assignment.artifact_id,
+                        crate::core::service_artifact_registry::NATIVE_PROCESS_ACQUISITION_KIND
+                    ));
+                }
+                let source = assignment.acquisition.as_ref().and_then(|a| a.source.as_deref()).unwrap_or_default();
+                if !crate::core::service_artifact_registry::is_valid_posix_absolute_path(source) {
+                    return Err(format!(
+                        "artifact '{}' has an invalid acquisition.source (must be a non-empty, NUL-free, bounded, POSIX-absolute path)",
+                        assignment.artifact_id
+                    ));
+                }
             }
             Err(_) => {
                 return Err(format!(
@@ -772,12 +843,18 @@ mod tests {
             container: None,
             native_process: Some(NativeProcessDeploymentSpecV1 {
                 process_name: "datum-native-svc".to_string(),
-                entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+                entrypoint: "bin/run".to_string(),
                 args: vec!["--config".to_string(), "/opt/datum/native-svc/config.toml".to_string()],
-                working_directory: Some("/opt/datum/native-svc".to_string()),
+                working_directory: Some("data".to_string()),
             }),
         };
         item.control_plane.artifact_kind = "command_bundle".to_string();
+        item.control_plane.acquisition = crate::core::service_artifact_registry::ServiceArtifactAcquisition {
+            kind: crate::core::service_artifact_registry::NATIVE_PROCESS_ACQUISITION_KIND.to_string(),
+            source: Some("/opt/datum/sources/native-svc.bin".to_string()),
+            revision: None,
+            sha256: Some("b".repeat(64)),
+        };
         item
     }
 
@@ -800,7 +877,7 @@ mod tests {
         assert_eq!(assignment.runtime_kind, crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS);
         let native = assignment.native_process.as_ref().expect("native_process payload must be present");
         assert_eq!(native.process_name, "datum-native-svc");
-        assert_eq!(native.entrypoint, "/opt/datum/native-svc/bin/run");
+        assert_eq!(native.entrypoint, "bin/run");
         assert!(assignment.container_name.is_empty());
         assert!(assignment.image.is_empty());
     }
@@ -893,12 +970,18 @@ mod tests {
         context.artifacts[0].runtime_kind = crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string();
         context.artifacts[0].native_process = Some(NativeProcessDeploymentSpecV1 {
             process_name: "x".to_string(),
-            entrypoint: "/bin/x".to_string(),
+            entrypoint: "bin/x".to_string(),
             args: Vec::new(),
             working_directory: None,
         });
         context.artifacts[0].container_name = String::new();
         context.artifacts[0].image = String::new();
+        context.artifacts[0].acquisition = Some(ServiceArtifactAcquisition {
+            kind: crate::core::service_artifact_registry::NATIVE_PROCESS_ACQUISITION_KIND.to_string(),
+            source: Some("/opt/datum/sources/x.bin".to_string()),
+            revision: None,
+            sha256: Some("c".repeat(64)),
+        });
         let error = validate_artifact_reconciliation_context(&context)
             .expect_err("a service_id-matching but runtime-kind-mismatched context must be rejected");
         assert!(error.contains("runtime_kind_mismatch"), "error was: {error}");
@@ -919,39 +1002,39 @@ mod tests {
     fn wire_native_payload_bound_violations_are_all_rejected() {
         let cases: Vec<(&str, NativeProcessDeploymentSpecV1)> = vec![
             ("process_name containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "bad\0name".to_string(), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+                process_name: "bad\0name".to_string(), entrypoint: "bin/x".to_string(), args: vec![], working_directory: None,
             }),
             ("process_name > 256 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "a".repeat(257), entrypoint: "/bin/x".to_string(), args: vec![], working_directory: None,
+                process_name: "a".repeat(257), entrypoint: "bin/x".to_string(), args: vec![], working_directory: None,
             }),
             ("entrypoint containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/bad\0path".to_string(), args: vec![], working_directory: None,
+                process_name: "x".to_string(), entrypoint: "bin/bad\0path".to_string(), args: vec![], working_directory: None,
             }),
             ("entrypoint > 4096 chars", NativeProcessDeploymentSpecV1 {
                 process_name: "x".to_string(), entrypoint: "a".repeat(4097), args: vec![], working_directory: None,
             }),
             ("args > 64 entries", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: (0..65).map(|i| i.to_string()).collect(), working_directory: None,
             }),
             ("one arg > 4096 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec!["a".repeat(4097)], working_directory: None,
             }),
             ("arg containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec!["bad\0arg".to_string()], working_directory: None,
             }),
             ("working_directory blank Some", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec![], working_directory: Some("   ".to_string()),
             }),
             ("working_directory containing NUL", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
-                args: vec![], working_directory: Some("/bad\0dir".to_string()),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
+                args: vec![], working_directory: Some("bad\0dir".to_string()),
             }),
             ("working_directory > 4096 chars", NativeProcessDeploymentSpecV1 {
-                process_name: "x".to_string(), entrypoint: "/bin/x".to_string(),
+                process_name: "x".to_string(), entrypoint: "bin/x".to_string(),
                 args: vec![], working_directory: Some("a".repeat(4097)),
             }),
         ];
@@ -1578,6 +1661,7 @@ mod tests {
             image_source_kind: IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             native_process: None,
+                    acquisition: None,
             target_node: "n".to_string(),
             network: None,
             network_aliases: Vec::new(),

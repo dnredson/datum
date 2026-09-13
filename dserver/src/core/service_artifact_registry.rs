@@ -60,6 +60,16 @@ pub const IMAGE_SOURCE_KIND_LOCAL_BUILD: &str = "local_build";
 /// image name.
 pub const IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED: &str = "legacy_unclassified";
 
+/// Stage 109 (ADR-0016). The `control_plane.acquisition.kind` value for a
+/// native-process executable artifact -- audited against the existing
+/// `acquisition.kind` conventions ("image", "git", "command_bundle" seen
+/// elsewhere as free-form values this field already accepts) rather than
+/// inventing conflicting semantics. `source` names an explicit locator (the
+/// minimum bounded Stage 109 mechanism: a declared local-file path this
+/// agent reads directly); `sha256` is the single authoritative executable
+/// content hash (`NativeProcessDeploymentSpecV1` never carries its own).
+pub const NATIVE_PROCESS_ACQUISITION_KIND: &str = "native_process_executable";
+
 fn default_image_source_kind() -> String {
     // v5 review P0-5: the safe default for ANY artifact missing this field
     // is "unclassified", never "registry" -- see the constant's own doc
@@ -1395,6 +1405,58 @@ fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRe
                     "native_process runtime requires runtime.native_process".to_string(),
                 ))?;
             validate_native_process_deployment_spec(native)?;
+            // Stage 109 (ADR-0016, Section D): unlike a container image
+            // (which may legitimately exist unpinned and become
+            // required-complete only later, via the separate
+            // `oci_image_pinning` resolution flow), Stage 109 builds no
+            // async "resolve native content later" pipeline -- the
+            // executable's exact content hash is declared by the operator
+            // at artifact-authoring time. A real native process must NEVER
+            // execute without an exact content sha256, so this is a hard
+            // creation-time requirement, not a deferred completeness gap.
+            //
+            // v3 fix (P1-2): the Stage 109 native content-hash contract is
+            // specifically 64 LOWERCASE hex characters (matching the
+            // agent's `is_valid_content_sha256`, which is
+            // case-sensitive) -- `is_ascii_hexdigit()` alone accepts
+            // uppercase `A-F`, which would authorize an artifact the
+            // agent could never actually match byte-for-byte against its
+            // own lowercase-only acquisition/materialization hashing.
+            // Deliberately NOT changing the shared, legacy,
+            // case-insensitive sha256 check a few lines below (used by
+            // git/command_bundle/etc.) -- this is a native-specific
+            // tightening, not a change to an unrelated existing contract.
+            let native_sha256 = artifact.control_plane.acquisition.sha256.as_deref().unwrap_or_default();
+            if native_sha256.len() != 64 || !native_sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                return invalid(
+                    "runtime.kind='native_process' requires control_plane.acquisition.sha256 to be a 64-character LOWERCASE hexadecimal digest",
+                );
+            }
+            // v3 fix (P1-2): `acquisition.kind` must be EXACTLY
+            // `native_process_executable` for a NativeProcess artifact --
+            // never silently interpreted as a local executable file
+            // regardless of whatever kind string an artifact happens to
+            // declare (git/image/http/command_bundle/a future kind).
+            if artifact.control_plane.acquisition.kind != NATIVE_PROCESS_ACQUISITION_KIND {
+                return invalid(format!(
+                    "runtime.kind='native_process' requires control_plane.acquisition.kind to be exactly '{NATIVE_PROCESS_ACQUISITION_KIND}', got '{}'",
+                    artifact.control_plane.acquisition.kind
+                ));
+            }
+            // v3 fix (P1-2): the v0.1 native acquisition transport is a
+            // declared LOCAL LINUX FILE -- `source` must be a POSIX
+            // absolute path. Validated with pure string logic
+            // (`is_valid_posix_absolute_path`), never `std::path::Path::
+            // is_absolute()`, because DServer itself may run on a
+            // non-Linux host where that method's notion of "absolute"
+            // does not match the Linux wire contract this value is
+            // actually interpreted under (by the always-Linux agent).
+            let source = artifact.control_plane.acquisition.source.as_deref().unwrap_or_default();
+            if !is_valid_posix_absolute_path(source) {
+                return invalid(
+                    "runtime.kind='native_process' requires control_plane.acquisition.source to be a non-empty, NUL-free, bounded, POSIX-absolute path",
+                );
+            }
         }
         Err(_) => {
             return invalid(format!(
@@ -1559,22 +1621,63 @@ fn validate_artifact(artifact: &ServiceArtifact) -> Result<(), ServiceArtifactRe
 /// (`DATUM/src/agent/operational_reconciliation.rs`) still has its own,
 /// independently hand-written mirror of these same bounds, per this
 /// project's no-shared-crate wire-parity discipline.
+/// v3 fix (P1-2 "entrypoint/workdir contract must be validated before
+/// authorization"): a Stage 109 native `entrypoint`/`working_directory`
+/// is, by contract, a RELATIVE path inside the materialized artifact
+/// directory (never an artifact-controlled absolute host path, never
+/// allowed to escape via `..`). Pure string logic -- deliberately NOT
+/// `std::path`-based (DServer may run on any host; this validates a wire
+/// value that the always-Linux agent will later interpret as a POSIX
+/// relative path, and the validation must match THAT interpretation, not
+/// whatever the authoring host's path semantics happen to be).
+fn is_valid_posix_relative_path(value: &str) -> bool {
+    if value.trim().is_empty() || value.len() > 4096 || value.contains('\0') {
+        return false;
+    }
+    if value.starts_with('/') {
+        return false;
+    }
+    value.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// v3 fix (P1-2 "acquisition source contract"): a Stage 109 native
+/// `acquisition.source` (v0.1's local-Linux-file transport) must be a
+/// POSIX ABSOLUTE path -- present, non-empty, NUL-free, bounded, no `.`/
+/// `..`/empty segments. Pure string logic for the same host-independence
+/// reason as `is_valid_posix_relative_path`.
+pub(crate) fn is_valid_posix_absolute_path(value: &str) -> bool {
+    if value.is_empty() || value.len() > 4096 || value.contains('\0') || !value.starts_with('/') {
+        return false;
+    }
+    value
+        .split('/')
+        .skip(1)
+        .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
 pub(crate) fn validate_native_process_deployment_spec(
     spec: &NativeProcessDeploymentSpecV1,
 ) -> Result<(), ServiceArtifactRegistryError> {
     if spec.process_name.trim().is_empty() || spec.process_name.len() > 256 || spec.process_name.contains('\0') {
         return invalid("runtime.native_process.process_name must be non-empty, NUL-free, and at most 256 characters");
     }
-    if spec.entrypoint.trim().is_empty() || spec.entrypoint.len() > 4096 || spec.entrypoint.contains('\0') {
-        return invalid("runtime.native_process.entrypoint must be non-empty, NUL-free, and at most 4096 characters");
+    // v3 fix: entrypoint must be a genuine POSIX RELATIVE path (no
+    // leading '/', no '.'/'..'/empty segments) -- previously only
+    // non-empty/length/NUL were checked, meaning an absolute or
+    // traversal-shaped entrypoint could be authorized and would only be
+    // discovered as invalid later, during real host execution.
+    if !is_valid_posix_relative_path(&spec.entrypoint) {
+        return invalid(
+            "runtime.native_process.entrypoint must be a non-empty, NUL-free, bounded, POSIX-relative path with no '.'/'..' segments",
+        );
     }
     if spec.args.len() > 64 || spec.args.iter().any(|arg| arg.len() > 4096 || arg.contains('\0')) {
         return invalid("runtime.native_process.args must have at most 64 entries, each NUL-free and at most 4096 characters");
     }
     if let Some(dir) = &spec.working_directory {
-        if dir.trim().is_empty() || dir.len() > 4096 || dir.contains('\0') {
+        if !is_valid_posix_relative_path(dir) {
             return invalid(
-                "runtime.native_process.working_directory, when present, must be non-empty after trim, NUL-free, and at most 4096 characters",
+                "runtime.native_process.working_directory, when present, must be a non-empty, NUL-free, bounded, POSIX-relative path with no '.'/'..' segments",
             );
         }
     }
@@ -1822,12 +1925,18 @@ mod tests {
             container: None,
             native_process: Some(NativeProcessDeploymentSpecV1 {
                 process_name: "datum-native-svc".to_string(),
-                entrypoint: "/opt/datum/native-svc/bin/run".to_string(),
+                entrypoint: "bin/run".to_string(),
                 args: vec!["--config".to_string(), "/opt/datum/native-svc/config.toml".to_string()],
-                working_directory: Some("/opt/datum/native-svc".to_string()),
+                working_directory: Some("data".to_string()),
             }),
         };
         artifact.control_plane.artifact_kind = "command_bundle".to_string();
+        artifact.control_plane.acquisition = ServiceArtifactAcquisition {
+            kind: NATIVE_PROCESS_ACQUISITION_KIND.to_string(),
+            source: Some("/opt/datum/sources/native-svc.bin".to_string()),
+            revision: None,
+            sha256: Some("b".repeat(64)),
+        };
         artifact
     }
 
@@ -1855,7 +1964,7 @@ mod tests {
         let mut artifact = valid_artifact();
         artifact.runtime.native_process = Some(NativeProcessDeploymentSpecV1 {
             process_name: "x".to_string(),
-            entrypoint: "/bin/x".to_string(),
+            entrypoint: "bin/x".to_string(),
             args: Vec::new(),
             working_directory: None,
         });
@@ -1897,6 +2006,76 @@ mod tests {
         assert!(validate_artifact(&artifact).is_err());
     }
 
+    // ---- v3 (independent review): P1-2 acquisition/entrypoint contracts - //
+
+    #[test]
+    fn validate_artifact_rejects_wrong_acquisition_kind_for_native_process() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.acquisition.kind = "command_bundle".to_string();
+        let error = validate_artifact(&artifact).unwrap_err();
+        assert!(format!("{error:?}").contains("acquisition.kind"), "error was: {error:?}");
+    }
+
+    #[test]
+    fn validate_artifact_rejects_uppercase_native_sha256() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.acquisition.sha256 = Some("B".repeat(64));
+        let error = validate_artifact(&artifact).unwrap_err();
+        assert!(format!("{error:?}").contains("LOWERCASE"), "error was: {error:?}");
+    }
+
+    #[test]
+    fn validate_artifact_rejects_missing_native_acquisition_source() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.acquisition.source = None;
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_relative_native_acquisition_source() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.acquisition.source = Some("relative/sources/native-svc.bin".to_string());
+        let error = validate_artifact(&artifact).unwrap_err();
+        assert!(format!("{error:?}").contains("acquisition.source"), "error was: {error:?}");
+    }
+
+    #[test]
+    fn validate_artifact_rejects_absolute_native_entrypoint() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().entrypoint = "/bin/run".to_string();
+        let error = validate_artifact(&artifact).unwrap_err();
+        assert!(format!("{error:?}").contains("entrypoint"), "error was: {error:?}");
+    }
+
+    #[test]
+    fn validate_artifact_rejects_parent_traversing_native_entrypoint() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().entrypoint = "../escape/run".to_string();
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_absolute_native_working_directory() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().working_directory = Some("/etc".to_string());
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_rejects_parent_traversing_native_working_directory() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().working_directory = Some("../escape".to_string());
+        assert!(validate_artifact(&artifact).is_err());
+    }
+
+    #[test]
+    fn validate_artifact_accepts_a_nested_relative_native_entrypoint_and_working_directory() {
+        let mut artifact = valid_native_process_artifact();
+        artifact.runtime.native_process.as_mut().unwrap().entrypoint = "bin/nested/run".to_string();
+        artifact.runtime.native_process.as_mut().unwrap().working_directory = Some("data/nested".to_string());
+        assert!(validate_artifact(&artifact).is_ok());
+    }
+
     #[test]
     fn create_computes_a_deterministic_native_process_execution_projection_digest() {
         let registry = empty_registry();
@@ -1917,8 +2096,32 @@ mod tests {
         let created = registry.create("project-native", artifact.clone()).unwrap();
 
         let mut changed = artifact;
-        changed.runtime.native_process.as_mut().unwrap().entrypoint = "/opt/datum/native-svc/bin/run-v2".to_string();
+        changed.runtime.native_process.as_mut().unwrap().entrypoint = "bin/run-v2".to_string();
         let updated = registry.update("project-native", "native-svc", changed).unwrap();
+
+        assert_ne!(
+            updated.control_plane.execution_projection_digest,
+            created.control_plane.execution_projection_digest
+        );
+        assert_eq!(updated.control_plane.execution_generation, created.control_plane.execution_generation + 1);
+    }
+
+    #[test]
+    fn native_process_execution_projection_digest_changes_when_acquisition_sha256_changes() {
+        // Stage 109 (ADR-0016, Section C): content identity is
+        // execution-relevant -- a SHA-256-only change (bytes changed,
+        // nothing else) must change the native projection digest and bump
+        // execution_generation exactly like any other execution-relevant
+        // change.
+        let registry = empty_registry();
+        let mut artifact = valid_native_process_artifact();
+        artifact.control_plane.project_id = "project-native-sha".to_string();
+        artifact.control_plane.target_nodes = vec!["fog-01".to_string()];
+        let created = registry.create("project-native-sha", artifact.clone()).unwrap();
+
+        let mut changed = artifact;
+        changed.control_plane.acquisition.sha256 = Some("c".repeat(64));
+        let updated = registry.update("project-native-sha", "native-svc", changed).unwrap();
 
         assert_ne!(
             updated.control_plane.execution_projection_digest,

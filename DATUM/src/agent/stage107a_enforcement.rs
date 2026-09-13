@@ -449,36 +449,65 @@ pub(crate) fn structurally_valid_resolved_image_identity(
 pub fn required_completeness_gaps(assignment: &crate::agent::operational_reconciliation::OperationalArtifactAssignment) -> Vec<String> {
     use crate::agent::operational_reconciliation::{IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED, IMAGE_SOURCE_KIND_LOCAL_BUILD};
     let mut gaps = Vec::new();
-    // Stage 107B-A (ADR-0013), mirroring
-    // dserver::core::artifact_reconciliation_context::required_completeness_gaps
-    // exactly: a local_build image is permanently unpinned here -- no
-    // docker-image-inspect-based local trust is invented (Amendment 2). A
-    // registry-sourced image is unpinned until explicitly resolved AND
-    // structurally validated; once resolved_image_identity is present and
-    // valid it is required-complete.
-    if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
-        if !assignment.image.trim().is_empty() {
-            gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
-        }
-    } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
-        // v5 review P0-5: never required-eligible until an operator
-        // explicitly classifies it as registry or local_build.
-        if !assignment.image.trim().is_empty() {
-            gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
-        }
-    } else {
-        match &assignment.resolved_image_identity {
-            None => {
-                if !assignment.image.trim().is_empty() {
-                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+    // Stage 109 (ADR-0016, Section D): runtime-dispatched, mirroring
+    // dserver's equivalent guard exactly -- OCI image-completeness logic
+    // must never run against a native_process assignment (it is not "a
+    // container with an empty image"). The real native reconciliation path
+    // (`native_process_runtime::reconcile_native_service`) uses its own,
+    // independent content-completeness check rather than calling this
+    // function for NativeProcess at all; this guard exists so this
+    // function itself is correct and safe if ever called against a native
+    // assignment from elsewhere.
+    if matches!(
+        crate::agent::runtime_kind::RuntimeKind::parse(&assignment.runtime_kind),
+        Ok(crate::agent::runtime_kind::RuntimeKind::Container)
+    ) {
+        // Stage 107B-A (ADR-0013), mirroring
+        // dserver::core::artifact_reconciliation_context::required_completeness_gaps
+        // exactly: a local_build image is permanently unpinned here -- no
+        // docker-image-inspect-based local trust is invented (Amendment 2). A
+        // registry-sourced image is unpinned until explicitly resolved AND
+        // structurally validated; once resolved_image_identity is present and
+        // valid it is required-complete.
+        if assignment.image_source_kind == IMAGE_SOURCE_KIND_LOCAL_BUILD {
+            if !assignment.image.trim().is_empty() {
+                gaps.push(format!("unpinned_image_local_build:{}", assignment.image));
+            }
+        } else if assignment.image_source_kind == IMAGE_SOURCE_KIND_LEGACY_UNCLASSIFIED {
+            // v5 review P0-5: never required-eligible until an operator
+            // explicitly classifies it as registry or local_build.
+            if !assignment.image.trim().is_empty() {
+                gaps.push(format!("unpinned_image_legacy_unclassified:{}", assignment.image));
+            }
+        } else {
+            match &assignment.resolved_image_identity {
+                None => {
+                    if !assignment.image.trim().is_empty() {
+                        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                    }
+                }
+                Some(resolved) => {
+                    // v5 review P1-5: validate, don't merely check Option::is_some().
+                    if !structurally_valid_resolved_image_identity(&assignment.image, resolved) {
+                        gaps.push(format!("unpinned_image_reference:{}", assignment.image));
+                    }
                 }
             }
-            Some(resolved) => {
-                // v5 review P1-5: validate, don't merely check Option::is_some().
-                if !structurally_valid_resolved_image_identity(&assignment.image, resolved) {
-                    gaps.push(format!("unpinned_image_reference:{}", assignment.image));
-                }
-            }
+        }
+    } else if matches!(
+        crate::agent::runtime_kind::RuntimeKind::parse(&assignment.runtime_kind),
+        Ok(crate::agent::runtime_kind::RuntimeKind::NativeProcess)
+    ) {
+        let valid = assignment
+            .acquisition
+            .as_ref()
+            .and_then(|acquisition| acquisition.sha256.as_deref())
+            .is_some_and(|sha256| sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit()));
+        if !valid {
+            gaps.push(format!(
+                "unpinned_native_process_content:{}",
+                assignment.acquisition.as_ref().and_then(|a| a.source.clone()).unwrap_or_default()
+            ));
         }
     }
     // P1-3 (TOCTOU / "actual bytes used" gap), Option B, mirroring
@@ -850,6 +879,7 @@ mod tests {
             container_name: "datum-mqtt".to_string(),
             image: "eclipse-mosquitto:2".to_string(),
             native_process: None,
+            acquisition: None,
             image_source_kind: crate::agent::operational_reconciliation::IMAGE_SOURCE_KIND_REGISTRY.to_string(),
             resolved_image_identity: None,
             target_node: "fog-01".to_string(),
