@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "application_id": "app:feedback-loop",
   "dgraph_id": "dgraph:feedback-loop",
   "revision": 1,

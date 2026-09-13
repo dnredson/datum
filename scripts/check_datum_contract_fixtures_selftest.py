@@ -272,9 +272,9 @@ def _load_positive_index() -> dict:
     for path in sorted(chk.FIXTURE_DIR.glob("*.json")):
         obj = json.loads(path.read_text(encoding="utf-8"))
         s = obj.get("schema", "")
-        if s == "datum.dgraph/1":
+        if s == chk.VS1_DGRAPH_SCHEMA:
             idx["dgraph"][(obj.get("dgraph_id"), obj.get("revision"))] = obj
-        elif s == "datum.dcontinuum/1":
+        elif s == chk.VS1_DCONTINUUM_SCHEMA:
             idx["dcontinuum"][(obj.get("continuum_id"), obj.get("revision"))] = obj
         elif s == "datum.dforward/1":
             idx["dforward"][(obj.get("dforward_id"), obj.get("revision"))] = obj
@@ -330,7 +330,7 @@ class Stage107BMapperExemptionIsNarrowlyScoped(unittest.TestCase):
             ordinary_fixture = tmp_path / "datum.dgraph-1.not-a-mapper-fixture.json"
             ordinary_fixture.write_text(
                 json.dumps({
-                    "schema": "datum.dgraph/1",
+                    "schema": chk.VS1_DGRAPH_SCHEMA,
                     "dgraph_id": "dgraph:not-exempt",
                     "revision": 1,
                     "a_real_looking_digest": "sha256:" + ("ab" * 32),

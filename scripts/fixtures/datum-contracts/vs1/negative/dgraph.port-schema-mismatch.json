@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "x_expect_reject": { "code": "dcall_payload_schema_mismatch", "reason": "D-Call joins output payload_schema .../sensor-reading/1 to input payload_schema .../other/1." },
   "application_id": "app:sensor-pipeline",
   "dgraph_id": "dgraph:sensor-pipeline-schema-mismatch",

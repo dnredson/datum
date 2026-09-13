@@ -1,0 +1,35 @@
+{
+  "schema": "datum.dmap/1",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "dmap_id": "dmap:smart-sentinel-lab:v1",
+  "revision": 1,
+  "dgraph_ref": {
+    "id": "dgraph:smart-sentinel-lab",
+    "revision": 999,
+    "digest": "sha256:fad402e2a317b513593f3d25c8577a8bef03f459ecf0469763e56cb0ed9822f8"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:9b73b1b9cf1f611e1d65de295c4002884992c61cbc67357a7c8738c14b58f9d3"
+  },
+  "placements": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "node_id": "fog-01"
+    },
+    {
+      "service_id": "smart-adapter",
+      "node_id": "mist-arm-gateway-01"
+    },
+    {
+      "service_id": "atom-controller",
+      "node_id": "cloud-01"
+    }
+  ],
+  "x_note": "dgraph_ref.revision does not match the referenced D-Graph",
+  "x_expect_reject": {
+    "code": "dgraph_reference_mismatch"
+  }
+}

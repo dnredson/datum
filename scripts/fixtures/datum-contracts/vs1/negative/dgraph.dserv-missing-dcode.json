@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "x_expect_reject": { "code": "dserv_missing_dcode", "reason": "D-Serv 'decode' has no dcode reference; every D-Serv needs exactly one D-Code reference with a sha256." },
   "application_id": "app:sensor-pipeline",
   "dgraph_id": "dgraph:sensor-pipeline-no-dcode",

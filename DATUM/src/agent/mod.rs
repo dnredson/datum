@@ -1,4 +1,7 @@
 pub mod bootstrap;
+pub mod canonical_dcontinuum;
+pub mod canonical_dgraph;
+pub mod canonical_dmap;
 pub mod discovery;
 pub mod discovery_collectors;
 pub mod execution_projection;

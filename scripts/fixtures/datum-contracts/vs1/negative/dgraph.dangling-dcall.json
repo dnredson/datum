@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "x_expect_reject": { "code": "dcall_endpoint_not_found", "reason": "D-Call 'decode-to-nowhere' targets D-Serv 'ghost' which does not exist." },
   "application_id": "app:sensor-pipeline",
   "dgraph_id": "dgraph:sensor-pipeline-bad-dcall",

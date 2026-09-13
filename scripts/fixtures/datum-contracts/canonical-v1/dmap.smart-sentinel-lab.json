@@ -1,0 +1,24 @@
+{
+  "schema": "datum.dmap/1",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "dmap_id": "dmap:smart-sentinel-lab:v1",
+  "revision": 1,
+  "dgraph_ref": {
+    "id": "dgraph:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:6883f30cd4846bb30572abfa833fe139be3f220d0d8db4890430d86c740127b9"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:ff3f02ac17aad4ff576a50c075b0a788a583ac586d4faa652f712ea94110b502"
+  },
+  "placements": [
+    { "service_id": "chirpstack-gateway-bridge", "node_id": "fog-01" },
+    { "service_id": "smart-adapter", "node_id": "cloud-01" },
+    { "service_id": "atom-controller", "node_id": "cloud-01" }
+  ],
+  "x_note": "Valid complete mapping of dgraph.smart-sentinel-lab.json onto dcontinuum.smart-sentinel-lab.json: every placed D-Serv targets a node that advertises the host-independent datum-dnode/0 ABI (ADR-0003); the restricted mist-arm-gateway-01 node (empty ABI capability set) is left unused, proving ABI-capability-driven placement is honoured, not merely node-class labels. cloud-01 hosts two services (smart-adapter + atom-controller) within its declared static resource capacity, proving aggregate resource feasibility also holds. Real cross-crate mapper fixture, same discipline as the other two canonical-v1 fixtures.",
+  "expected_digest_sha256": "sha256:680ae12b28fab16a11d8bfcb86e019ef294afaa925ff884a16ac96270e825943"
+}

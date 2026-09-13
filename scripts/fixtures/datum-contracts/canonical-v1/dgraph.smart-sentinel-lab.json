@@ -1,0 +1,42 @@
+{
+  "schema": "datum.dgraph/1",
+  "application_id": "app:smart-sentinel-lab",
+  "dgraph_id": "dgraph:smart-sentinel-lab",
+  "revision": 1,
+  "services": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "execution_requirement": { "dnode_abi": "datum-dnode/0" },
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 536870912 }
+    },
+    {
+      "service_id": "smart-adapter",
+      "execution_requirement": { "dnode_abi": "datum-dnode/0" },
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 268435456 }
+    },
+    {
+      "service_id": "atom-controller",
+      "execution_requirement": { "dnode_abi": "datum-dnode/0" },
+      "resource_requirement": { "cpu_cores": 2, "memory_bytes": 1073741824 }
+    }
+  ],
+  "calls": [
+    {
+      "call_id": "bridge-to-adapter",
+      "source_service_id": "chirpstack-gateway-bridge",
+      "target_service_id": "smart-adapter"
+    },
+    {
+      "call_id": "adapter-to-atom",
+      "source_service_id": "smart-adapter",
+      "target_service_id": "atom-controller"
+    },
+    {
+      "call_id": "atom-to-adapter-feedback",
+      "source_service_id": "atom-controller",
+      "target_service_id": "smart-adapter"
+    }
+  ],
+  "x_note": "Legal D-Call cycle (D-4, ADR-0001): smart-adapter -> atom-controller -> smart-adapter. Real cross-crate mapper fixture: dserver::core::canonical_dgraph and DATUM::agent::canonical_dgraph both deserialize this exact file and must independently compute expected_digest_sha256.",
+  "expected_digest_sha256": "sha256:6883f30cd4846bb30572abfa833fe139be3f220d0d8db4890430d86c740127b9"
+}

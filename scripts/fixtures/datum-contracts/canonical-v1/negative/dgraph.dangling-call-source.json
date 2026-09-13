@@ -1,0 +1,47 @@
+{
+  "schema": "datum.dgraph/1",
+  "application_id": "app:smart-sentinel-lab",
+  "dgraph_id": "dgraph:smart-sentinel-lab",
+  "revision": 1,
+  "services": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/0"
+      }
+    },
+    {
+      "service_id": "smart-adapter",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/0"
+      }
+    },
+    {
+      "service_id": "atom-controller",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/0"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "call_id": "bridge-to-adapter",
+      "source_service_id": "does-not-exist",
+      "target_service_id": "smart-adapter"
+    },
+    {
+      "call_id": "adapter-to-atom",
+      "source_service_id": "smart-adapter",
+      "target_service_id": "atom-controller"
+    },
+    {
+      "call_id": "atom-to-adapter-feedback",
+      "source_service_id": "atom-controller",
+      "target_service_id": "smart-adapter"
+    }
+  ],
+  "x_note": "a D-Call source_service_id names no declared service",
+  "x_expect_reject": {
+    "code": "dangling_call_source"
+  }
+}

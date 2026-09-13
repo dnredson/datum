@@ -9,8 +9,28 @@ decision records are in [Architecture Decision Records](../adr/README.md).
 Stage 107 is specification only. No DServer or SmartSentinel runtime behaviour
 changes, no Rust type is renamed, and no API changes. It provides hand-authored
 **contract fixtures for the six canonical v2 contract shapes** plus a stdlib
-consistency checker. The typed model, its validators and JSON Schemas generated
-from those types arrive with the `datum-model` crate in **Stage 108**.
+consistency checker (`scripts/check_datum_contract_fixtures.py`, validating
+`scripts/fixtures/datum-contracts/vs1/`).
+
+**Correction (Stage 110, [ADR-0017](../adr/ADR-0017-canonical-datum-contracts-v1.md)):**
+the typed model did **not**, in fact, arrive with a `datum-model` crate in
+Stage 108 — that stage became the runtime-kind dispatch seam
+([ADR-0015](../adr/ADR-0015-runtime-kind-dispatch-seam.md)) instead, and
+ADR-0007's shared crate was reaffirmed as explicitly deferred. Stage 110
+instead implements the first REAL, compiled typed model for
+`datum.dgraph/1`, `datum.dcontinuum/1` and `datum.dmap/1` as independently
+mirrored per-crate types (`dserver::core::canonical_dgraph`/
+`canonical_dcontinuum`/`canonical_dmap` and their `DATUM::agent::canonical_*`
+counterparts — no shared crate, per ADR-0007), deliberately narrower in
+scope than the fuller vision the VS1 fixtures below sketch (no D-Compile
+lineage, no D-Forward/D-IoT placement, no D-Node ABI/host-kind negotiation,
+no D-Deploy proposal/acceptance workflow). Its own fixtures live under a
+new, separate `scripts/fixtures/datum-contracts/canonical-v1/` directory
+and are validated by a new, separate
+`scripts/check_canonical_datum_contracts_v1.py` — the VS1 fixtures below and
+their checker are untouched and keep validating exactly what they always
+did. See ADR-0017 for the full rationale and the exact boundary between the
+two.
 
 ## Canonical concepts
 
@@ -59,16 +79,33 @@ new `datum.dgraph/1` contract.
 | `datum.dgraph/1` | Application graph: D-Serv vertices, D-Call edges, placement-free. |
 | `datum.dcontinuum/1` | Declared stages, substages, elements, and host-agnostic D-Node runtime descriptors. |
 | `datum.dforward/1` | D-IoT elements, their `provides` / `requires` interfaces (with `same_element` / `any_element` scope), and chains. |
-| `datum.dmap/1` | The single authoritative placement carrier (ADR-0002): D-Serv, D-Node-runtime and D-IoT placements, D-Call realizations, external port bindings. |
+| `datum.dmap/1` | The single authoritative placement carrier (ADR-0002). |
 | `datum.operational-slice/2` | The per-node, content-addressed, **derived** deployment slice. Always `execution_pinning_mode = required`. |
 | `datum.dserv-artifact/1` | The D-Code artifact: immutable, content-addressed, ABI `datum-dnode/0`, typed ports, limits, provenance. No container fields, no host kind. |
+
+**`datum.dmap/1` wire shape correction (independent review v4, Stage 110):**
+the field list this table originally showed for `datum.dmap/1` (D-Serv,
+D-Node-runtime and D-IoT placements, D-Call realizations, external port
+bindings) describes the Stage 107 hand-authored VS1 sketch, which now
+self-declares `datum.x-fixture.vs1-dmap/1`, not `datum.dmap/1` -- see
+ADR-0017's "Relationship to the Stage 107 hand-authored VS1 fixtures" and
+ADR-0002's Stage 110 addendum. The COMPILED, currently-implemented
+`datum.dmap/1` (Stage 110, ADR-0017) is deliberately smaller: `project_id`,
+`application_id`, `dmap_id`, `revision`, `dgraph_ref`/`dcontinuum_ref`
+(exact id+revision+digest), and a `placements: {service_id, node_id}` list
+(single placement per D-Serv). The richer shape may return later as an
+explicit, compatible extension or a new schema version -- it is not
+silently assumed to already exist in today's `datum.dmap/1`.
 
 A seventh object, `datum.dserv-execution-contract/1` (`DServExecutionContractV1`),
 is embedded in each `dserv_instance` workload of a slice.
 
 Digests are `SHA-256` over the RFC 8785 JSON Canonicalization Scheme (ADR-0006).
-Stage 107 fixtures use the placeholder
-`sha256:0000…0000`; real digests arrive in Stage 108.
+The Stage 107 VS1 fixtures above use the placeholder `sha256:0000…0000` and
+still do. Stage 110's `canonical-v1` fixtures for `datum.dgraph/1`,
+`datum.dcontinuum/1` and `datum.dmap/1` carry real, computed digests
+(`expected_digest_sha256`), independently verified by both Rust crates and
+the Python checker (ADR-0017).
 
 ## D-Serv execution-contract host invariance
 

@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dcontinuum/1",
+  "schema": "datum.x-fixture.vs1-dcontinuum/1",
   "project_id": "monitor-f49c8",
   "continuum_id": "continuum:monitor-f49c8-host-invariance",
   "revision": 1,

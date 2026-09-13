@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dmap/1",
+  "schema": "datum.x-fixture.vs1-dmap/1",
   "x_expect_reject": { "code": "stage_constraint_violation", "reason": "decode declares allowed_stages [S3-Fog, S5-Cloud] but is placed on local-01, which is a simulated S1/S2 element, not S3-Fog or S5-Cloud." },
   "project_id": "monitor-f49c8",
   "dmap_id": "dmap:bad:stage-constraint",

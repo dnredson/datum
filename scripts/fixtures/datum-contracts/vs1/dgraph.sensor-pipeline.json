@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "application_id": "app:sensor-pipeline",
   "dgraph_id": "dgraph:sensor-pipeline",
   "revision": 1,

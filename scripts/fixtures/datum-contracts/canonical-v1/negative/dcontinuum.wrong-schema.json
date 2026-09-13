@@ -1,0 +1,58 @@
+{
+  "schema": "datum.dcontinuum/2",
+  "project_id": "monitor-f49c8",
+  "dcontinuum_id": "continuum:smart-sentinel-lab",
+  "revision": 1,
+  "nodes": [
+    {
+      "node_id": "cloud-01",
+      "platform": {
+        "os": "linux",
+        "architecture": "amd64"
+      },
+      "capabilities": {
+        "dnode_abi_versions": [
+          "datum-dnode/0"
+        ]
+      }
+    },
+    {
+      "node_id": "fog-01",
+      "platform": {
+        "os": "linux",
+        "architecture": "amd64"
+      },
+      "capabilities": {
+        "dnode_abi_versions": [
+          "datum-dnode/0"
+        ]
+      }
+    },
+    {
+      "node_id": "mist-arm-gateway-01",
+      "platform": {
+        "os": "linux",
+        "architecture": "arm64"
+      },
+      "capabilities": {
+        "dnode_abi_versions": []
+      }
+    }
+  ],
+  "links": [
+    {
+      "link_id": "fog-to-cloud",
+      "from_node_id": "fog-01",
+      "to_node_id": "cloud-01"
+    },
+    {
+      "link_id": "mist-to-fog",
+      "from_node_id": "mist-arm-gateway-01",
+      "to_node_id": "fog-01"
+    }
+  ],
+  "x_note": "schema is not datum.dcontinuum/1",
+  "x_expect_reject": {
+    "code": "schema_invalid"
+  }
+}

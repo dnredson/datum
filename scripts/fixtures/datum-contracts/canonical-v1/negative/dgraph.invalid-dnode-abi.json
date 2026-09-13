@@ -1,0 +1,50 @@
+{
+  "schema": "datum.dgraph/1",
+  "application_id": "app:smart-sentinel-lab",
+  "dgraph_id": "dgraph:smart-sentinel-lab",
+  "revision": 1,
+  "services": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/999"
+      },
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 536870912 }
+    },
+    {
+      "service_id": "smart-adapter",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/0"
+      },
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 268435456 }
+    },
+    {
+      "service_id": "atom-controller",
+      "execution_requirement": {
+        "dnode_abi": "datum-dnode/0"
+      },
+      "resource_requirement": { "cpu_cores": 2, "memory_bytes": 1073741824 }
+    }
+  ],
+  "calls": [
+    {
+      "call_id": "bridge-to-adapter",
+      "source_service_id": "chirpstack-gateway-bridge",
+      "target_service_id": "smart-adapter"
+    },
+    {
+      "call_id": "adapter-to-atom",
+      "source_service_id": "smart-adapter",
+      "target_service_id": "atom-controller"
+    },
+    {
+      "call_id": "atom-to-adapter-feedback",
+      "source_service_id": "atom-controller",
+      "target_service_id": "smart-adapter"
+    }
+  ],
+  "x_note": "dnode_abi 'datum-dnode/999' is not the v0.1 accepted D-Node ABI (datum-dnode/0, ADR-0003)",
+  "x_expect_reject": {
+    "code": "invalid_dnode_abi"
+  }
+}

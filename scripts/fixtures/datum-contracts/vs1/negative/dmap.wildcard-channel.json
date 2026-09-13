@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dmap/1",
+  "schema": "datum.x-fixture.vs1-dmap/1",
   "x_expect_reject": { "code": "channel_wildcard_or_malformed", "reason": "dcall_realizations channel contains an MQTT wildcard '+'. Channels are sanitized: ':' removed, '+' and '#' rejected." },
   "project_id": "monitor-f49c8",
   "dmap_id": "dmap:bad:wildcard-channel",

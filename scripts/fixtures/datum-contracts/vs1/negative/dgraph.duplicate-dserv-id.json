@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dgraph/1",
+  "schema": "datum.x-fixture.vs1-dgraph/1",
   "x_expect_reject": { "code": "duplicate_dserv_id", "reason": "Two D-Serv entries share dserv_id 'decode'." },
   "application_id": "app:sensor-pipeline",
   "dgraph_id": "dgraph:sensor-pipeline-dup-id",

@@ -1,0 +1,32 @@
+{
+  "schema": "datum.dcontinuum/1",
+  "project_id": "monitor-f49c8",
+  "dcontinuum_id": "continuum:smart-sentinel-lab",
+  "revision": 1,
+  "nodes": [
+    {
+      "node_id": "cloud-01",
+      "platform": { "os": "linux", "architecture": "amd64" },
+      "capacity": { "cpu_cores": 8, "memory_bytes": 17179869184 },
+      "capabilities": { "dnode_abi_versions": ["datum-dnode/0"] }
+    },
+    {
+      "node_id": "fog-01",
+      "platform": { "os": "linux", "architecture": "amd64" },
+      "capacity": { "cpu_cores": 4, "memory_bytes": 4294967296 },
+      "capabilities": { "dnode_abi_versions": ["datum-dnode/0"] }
+    },
+    {
+      "node_id": "mist-arm-gateway-01",
+      "platform": { "os": "linux", "architecture": "arm64" },
+      "capacity": { "cpu_cores": 1, "memory_bytes": 536870912 },
+      "capabilities": { "dnode_abi_versions": [] }
+    }
+  ],
+  "links": [
+    { "link_id": "fog-to-cloud", "from_node_id": "fog-01", "to_node_id": "cloud-01" },
+    { "link_id": "mist-to-fog", "from_node_id": "mist-arm-gateway-01", "to_node_id": "fog-01" }
+  ],
+  "x_note": "Heterogeneous v0.1 continuum: cloud-01/fog-01 support the single v0.1 D-Node ABI (datum-dnode/0, ADR-0003), host-independent; mist-arm-gateway-01 is a restricted/lightweight element that cannot host any D-Code under the current ABI (empty capability set is legal, distinct from an unrecognised-ABI-token violation). Heterogeneity is also expressed via static resource capacity (cloud-01: 8 cpu/16GiB; fog-01: 4 cpu/4GiB; mist-arm-gateway-01: 1 cpu/512MiB) and platform (amd64 vs arm64), never via a host-executor-kind partition. Real cross-crate mapper fixture, same discipline as dgraph.smart-sentinel-lab.json.",
+  "expected_digest_sha256": "sha256:ff3f02ac17aad4ff576a50c075b0a788a583ac586d4faa652f712ea94110b502"
+}

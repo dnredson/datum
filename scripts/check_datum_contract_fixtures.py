@@ -81,13 +81,36 @@ LEGACY_LABELS = [
     "controlled composite graph",
     "observed runtime graph",
 ]
-# Identifier strings of the six canonical v2 contract shapes. Stage 107 provides
-# hand-authored *contract fixtures* for these; the typed model and JSON Schemas
-# generated from it are Stage 108 work.
+# Identifier strings of the six canonical v2 contract shapes. `datum.dgraph/1`,
+# `datum.dcontinuum/1` and `datum.dmap/1` are now REAL, compiled, Stage 110
+# production schemas (dserver::core::canonical_dgraph/canonical_dcontinuum/
+# canonical_dmap and their DATUM::agent::canonical_* mirrors -- ADR-0017).
+# This list still names the correct target strings for the documentation
+# check below; it is unaffected by the VS1-fixture schema migration two
+# sections down (Stage 110 P0 fix), since it never routes any fixture
+# validation -- it only asserts these six strings are still documented in
+# datum-canonical-model.md.
 V2_CONTRACT_SHAPE_IDS = [
     "datum.dgraph/1", "datum.dcontinuum/1", "datum.dforward/1", "datum.dmap/1",
     "datum.operational-slice/2", "datum.dserv-artifact/1",
 ]
+# Stage 110 P0 fix (independent review v2): the Stage 107 hand-authored VS1
+# fixtures under this directory originally self-declared "schema":
+# "datum.dgraph/1" / "datum.dcontinuum/1" / "datum.dmap/1" -- the EXACT same
+# strings the real Stage 110 canonical-v1 contracts now use, but for a
+# materially different, incompatible, never-compiled wire shape (D-Compile
+# lineage, typed ports/QoS, D-Forward/D-IoT placement, D-Node ABI/host-kind,
+# D-Deploy proposal-acceptance state). One schema identifier must denote
+# exactly one wire family -- see ADR-0017's "Relationship to the Stage 107
+# hand-authored VS1 fixtures" section. The VS1 fixtures were therefore
+# migrated to these explicit `datum.x-fixture.vs1-*` spellings (this checker
+# and its fixtures were updated together; the validators below are otherwise
+# UNCHANGED -- same fields, same finding codes, same rejection rules, only
+# the expected `schema` literal moved). `datum.dforward/1` was NOT touched:
+# it never collided with anything Stage 110 introduces.
+VS1_DGRAPH_SCHEMA = "datum.x-fixture.vs1-dgraph/1"
+VS1_DCONTINUUM_SCHEMA = "datum.x-fixture.vs1-dcontinuum/1"
+VS1_DMAP_SCHEMA = "datum.x-fixture.vs1-dmap/1"
 KNOWN_REJECT_CODES = {
     "dcall_endpoint_not_found", "dcall_payload_schema_mismatch",
     "duplicate_dserv_id", "dserv_missing_dcode",
@@ -213,8 +236,8 @@ EMITTABLE_CODES = {
 
 def v_dgraph(obj: dict) -> list[dict]:
     e: list[dict] = []
-    if obj.get("schema") != "datum.dgraph/1":
-        e.append(F("schema_invalid", "schema must be datum.dgraph/1"))
+    if obj.get("schema") != VS1_DGRAPH_SCHEMA:
+        e.append(F("schema_invalid", f"schema must be {VS1_DGRAPH_SCHEMA}"))
     for field in ("application_id", "dgraph_id", "revision"):
         if field not in obj:
             e.append(F("missing_field", f"missing '{field}'"))
@@ -270,8 +293,8 @@ def v_dgraph(obj: dict) -> list[dict]:
 
 def v_dcontinuum(obj: dict) -> list[dict]:
     e: list[dict] = []
-    if obj.get("schema") != "datum.dcontinuum/1":
-        e.append(F("schema_invalid", "schema must be datum.dcontinuum/1"))
+    if obj.get("schema") != VS1_DCONTINUUM_SCHEMA:
+        e.append(F("schema_invalid", f"schema must be {VS1_DCONTINUUM_SCHEMA}"))
     # continuum_id and revision are canonical; project_id is an implementation
     # scoping field (ADR-0001) -- accepted, but must be a non-empty string if given.
     for field in ("continuum_id", "revision"):
@@ -330,8 +353,8 @@ def v_dforward(obj: dict) -> list[dict]:
 
 def v_dmap(obj: dict, idx: dict) -> list[dict]:
     e: list[dict] = []
-    if obj.get("schema") != "datum.dmap/1":
-        e.append(F("schema_invalid", "schema must be datum.dmap/1"))
+    if obj.get("schema") != VS1_DMAP_SCHEMA:
+        e.append(F("schema_invalid", f"schema must be {VS1_DMAP_SCHEMA}"))
     for field in ("project_id", "dmap_id", "revision", "inputs", "decision",
                   "dserv_placements", "dnode_runtime_placements",
                   "dcall_realizations", "external_port_bindings", "validation"):
@@ -559,9 +582,9 @@ def check_fixtures(rep: Report) -> None:
             continue
         loaded[path] = obj
         schema = obj.get("schema", "")
-        if schema == "datum.dgraph/1":
+        if schema == VS1_DGRAPH_SCHEMA:
             idx["dgraph"][(obj.get("dgraph_id"), obj.get("revision"))] = obj
-        elif schema == "datum.dcontinuum/1":
+        elif schema == VS1_DCONTINUUM_SCHEMA:
             idx["dcontinuum"][(obj.get("continuum_id"), obj.get("revision"))] = obj
         elif schema == "datum.dforward/1":
             idx["dforward"][(obj.get("dforward_id"), obj.get("revision"))] = obj
@@ -626,13 +649,13 @@ def check_fixtures(rep: Report) -> None:
 def dispatch_findings(obj: dict, idx: dict) -> list[dict]:
     schema = obj.get("schema") or ""
     projection = obj.get("projection") or ""
-    if schema == "datum.dgraph/1":
+    if schema == VS1_DGRAPH_SCHEMA:
         return v_dgraph(obj)
-    if schema == "datum.dcontinuum/1":
+    if schema == VS1_DCONTINUUM_SCHEMA:
         return v_dcontinuum(obj)
     if schema == "datum.dforward/1":
         return v_dforward(obj)
-    if schema == "datum.dmap/1":
+    if schema == VS1_DMAP_SCHEMA:
         return v_dmap(obj, idx)
     if schema == "datum.operational-slice/2":
         return v_operational_slice(obj)

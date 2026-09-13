@@ -15,6 +15,20 @@ The checker also runs the Stage 107 documentation checks (canonical terms presen
 in the glossary, ADR index complete, TD-1 in its correct lifecycle state, the
 canonical-model page names every v2 contract shape id).
 
+**Stage 110 P0 fix (ADR-0017, independent review v2):** the `dgraph.*`,
+`dcontinuum.*` and `dmap.*` fixtures below originally self-declared
+`"schema": "datum.dgraph/1"` / `"datum.dcontinuum/1"` / `"datum.dmap/1"` —
+the exact strings later assigned to Stage 110's real, compiled, materially
+different `CanonicalDGraphV1`/`CanonicalDContinuumV1`/`CanonicalDMapV1`
+types. They were migrated to explicit `datum.x-fixture.vs1-dgraph/1` /
+`datum.x-fixture.vs1-dcontinuum/1` / `datum.x-fixture.vs1-dmap/1` spellings
+so one schema identifier denotes exactly one wire family. This is a label
+change only — every validation rule and finding code is unchanged; see
+`scripts/fixtures/datum-contracts/vs1/README.md` and ADR-0017 for the full
+rationale. The real production contracts and their own fixtures live under
+`scripts/fixtures/datum-contracts/canonical-v1/`, validated by
+`scripts/check_canonical_datum_contracts_v1.py`.
+
 ## Placeholder-digest convention
 
 There is no `datum-model` crate yet (Stage 108), no D-Compile (Stage 110) and no
@@ -26,24 +40,28 @@ sha256:0000000000000000000000000000000000000000000000000000000000000000
 ```
 
 The checker verifies cross-references by **natural key** — a D-Map's
-`inputs.dgraph = {dgraph_id, revision}` must match a `datum.dgraph/1` fixture's
-`dgraph_id` + `revision` — not by digest string, and it flags any other
+`inputs.dgraph = {dgraph_id, revision}` must match a `datum.x-fixture.vs1-dgraph/1`
+fixture's `dgraph_id` + `revision` — not by digest string, and it flags any other
 real-looking `sha256:` value in a Stage 107 fixture. Real RFC 8785 JCS + SHA-256
-digests (ADR-0006) arrive with the `datum-model` crate in Stage 108, which turns
-these fixtures into typed tests.
+digests (ADR-0006) did not, in the end, arrive with a shared `datum-model` crate
+in Stage 108 (that stage became the runtime-kind dispatch seam instead); Stage 110
+delivers the first real digests for `datum.dgraph/1`/`datum.dcontinuum/1`/
+`datum.dmap/1` as independently-mirrored per-crate types, with their own
+fixtures under `canonical-v1/` — these VS1 fixtures keep the placeholder
+digest exactly as before.
 
 ## Positive fixtures
 
 | File | Schema / role |
 |---|---|
-| `dgraph.sensor-pipeline.json` | `datum.dgraph/1` — the VS1 application graph (`decode → alert`, acyclic). |
-| `dgraph.dcall-cycle.json` | `datum.dgraph/1` — a graph with a D-Call cycle, which is **accepted** (D-4). |
-| `dcontinuum.monitor-f49c8.json` | `datum.dcontinuum/1` — S2-Mist / S3-Fog / S5-Cloud, elements `fog-01` and `cloud-01`. |
-| `dcontinuum.host-invariance.json` | `datum.dcontinuum/1` — test-only: `fog-01` supports `container` and `native_process`. |
+| `dgraph.sensor-pipeline.json` | `datum.x-fixture.vs1-dgraph/1` — the VS1 application graph (`decode → alert`, acyclic). |
+| `dgraph.dcall-cycle.json` | `datum.x-fixture.vs1-dgraph/1` — a graph with a D-Call cycle, which is **accepted** (D-4). |
+| `dcontinuum.monitor-f49c8.json` | `datum.x-fixture.vs1-dcontinuum/1` — S2-Mist / S3-Fog / S5-Cloud, elements `fog-01` and `cloud-01`. |
+| `dcontinuum.host-invariance.json` | `datum.x-fixture.vs1-dcontinuum/1` — test-only: `fog-01` supports `container` and `native_process`. |
 | `dforward.monitor-f49c8.json` | `datum.dforward/1` — D-IoT elements, interfaces, chains. |
-| `dmap.sensor-pipeline.fog-only.json` | `datum.dmap/1` — VS1a: `decode` + `alert` on `fog-01`. |
-| `dmap.sensor-pipeline.fog-cloud.json` | `datum.dmap/1` — VS1b: `decode@fog-01`, `alert@cloud-01`. |
-| `dmap.sensor-pipeline.native-dnode.json` | `datum.dmap/1` — host-invariance pair of `fog-only`, native D-Node host. |
+| `dmap.sensor-pipeline.fog-only.json` | `datum.x-fixture.vs1-dmap/1` — VS1a: `decode` + `alert` on `fog-01`. |
+| `dmap.sensor-pipeline.fog-cloud.json` | `datum.x-fixture.vs1-dmap/1` — VS1b: `decode@fog-01`, `alert@cloud-01`. |
+| `dmap.sensor-pipeline.native-dnode.json` | `datum.x-fixture.vs1-dmap/1` — host-invariance pair of `fog-only`, native D-Node host. |
 | `operational-slice.fog-01.container.json` | `datum.operational-slice/2` — VS1a slice, container-hosted D-Node. |
 | `operational-slice.fog-01.native.json` | `datum.operational-slice/2` — same slice, native D-Node; `execution_contract` blocks byte-identical. |
 | `dserv-artifact.decode.json`, `dserv-artifact.alert.json` | `datum.dserv-artifact/1` — the two D-Code artifacts. |
