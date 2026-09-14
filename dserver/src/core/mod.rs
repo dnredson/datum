@@ -10,6 +10,7 @@ pub mod analyzer;
 pub mod canonical_dcontinuum;
 pub mod canonical_dgraph;
 pub mod canonical_dmap;
+pub mod canonical_placement;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
 pub mod ddeploy;

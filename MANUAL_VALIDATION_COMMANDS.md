@@ -1,17 +1,100 @@
-# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure
+# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure, and canonical deterministic placement v1
 
 For independent review, after this pass's implementation. These are
 commands the USER runs manually; none were run automatically as part of
 "closing" a finding in this pass unless explicitly stated otherwise above.
 
-## LOCAL REPOSITORY (already run in this session, repeat to re-verify)
+## Canonical deterministic placement v1 (ADR-0020) — v1 + v2 + v3 (independent review fixes)
+
+Per this pass's test policy, the full suite below was deliberately NOT
+re-run to produce this count (only the focused groups were, and are
+reported in `canonical-deterministic-placement-v1-review-v3.zip`'s
+`test-results.txt`) — the total below is a computed expectation from the
+previously-verified 1102-passed v2 baseline (itself 1063 + 19 + 20) plus
+this v3 pass's own known net-new test count (1 new
+`core::canonical_placement` unit test [eligibility-snapshot
+absent-vs-present-empty JSON round-trip] + 11 new `core::ddeploy` tests
+[provenance input-completeness: commitment/eligibility round-trip,
+distinctness-changes-provenance x2, and 7 C1D decision-integrity/tamper
+reload-failure tests] + 4 new `api::ddeploy` direct-serde tests = 16), for
+the user to confirm directly:
 
 ```
 cd dserver
 cargo build --locked
 cargo test --locked
 ```
-Expected: 1053 passed (dserver bin) + 1 passed (control-state-inspect bin), 0 failed.
+Expected: **1118** passed (dserver bin, = 1063 + 19 [v1] + 20 [v2] + 16 [v3])
++ 1 passed (control-state-inspect bin), 0 failed.
+
+Focused groups (already run and passing in this session):
+```
+cargo test --locked canonical_placement   # 23 passed (16 v1 + 6 v2 + 1 v3)
+cargo test --locked ddeploy                # 148 passed (119 v1 + 10 core v2 + 4 api v2 + 11 core v3 + 4 api v3)
+cargo test --locked api::ddeploy           # 8 passed (4 v2 + 4 v3)
+cargo test --locked dnode_registry         # 27 passed (unaffected, re-confirmed)
+cargo test --locked artifact_reconciliation_context   # 37 passed (unaffected, re-confirmed)
+cargo check --locked                       # clean
+cargo check --locked --tests               # clean
+```
+
+### WINDOWS / POWERSHELL — live-server proof of `POST /api/v1/ddeploy/plan`
+
+Requires a running `DServer` instance and at least one declared D-Node (see
+the "D-Node/D-Continuum authority transition" section below, steps 1-2, to
+declare `fog-01`/`cloud-01` first).
+
+```powershell
+$base = "http://127.0.0.1:8080"
+$plan = @{
+  application_id = "app-planned-demo"
+  dgraph = @{
+    schema = "datum.dgraph/1"; application_id = "app-planned-demo"
+    dgraph_id = "dgraph:planned-demo"; revision = 1
+    services = @(
+      @{ service_id = "svc-a"; execution_requirement = @{ dnode_abi = "datum-dnode/0" }; resource_requirement = @{ cpu_cores = 1; memory_bytes = 134217728 } }
+    )
+    calls = @()
+  }
+} | ConvertTo-Json -Depth 8
+Invoke-RestMethod -Method Post -Uri "$base/api/v1/ddeploy/plan" -ContentType "application/json" -Headers @{ "X-Datum-Project" = "monitor-f49c8" } -Body $plan
+```
+Expected: HTTP 201, a `state: "pending"` proposal body with a populated
+`placement_provenance.decisions[0]` naming a declared D-Node, and
+`proposal.source == "deterministic"`. Follow with the normal
+`POST /api/v1/ddeploy/proposals/{proposal_id}/accept` call (see below) to
+prove the planner never auto-accepts — that call remains a SEPARATE,
+explicit step with its own `accepted_by` audit label.
+
+### v2 fix — R1 spoofing attempt must be rejected with 400
+
+Add a `source` (or `dcontinuum`/`placements`) field to the `$plan` body
+above and resend it:
+
+```powershell
+$spoofed = $plan | ConvertFrom-Json
+$spoofed | Add-Member -NotePropertyName source -NotePropertyValue "ai"
+Invoke-RestMethod -Method Post -Uri "$base/api/v1/ddeploy/plan" -ContentType "application/json" -Headers @{ "X-Datum-Project" = "monitor-f49c8" } -Body ($spoofed | ConvertTo-Json -Depth 8)
+```
+Expected: HTTP 4xx (a JSON-extraction rejection from `deny_unknown_fields`)
+and no proposal created — never a 201 with `proposal.source` reflecting the
+spoofed value. This pass did not execute an end-to-end Axum integration test
+against the pinned Axum version to confirm the EXACT status code (400 vs
+422 vs another 4xx), so an exact code is deliberately not asserted here
+(independent review v3, C2 correction) — `api::ddeploy::tests::
+plan_request_payload_serde_rejects_an_explicit_source_field` (and its
+`dcontinuum`/`placements` siblings) directly prove the deserialization
+itself fails via `serde_json::from_str`, which is what actually determines
+this behavior regardless of which 4xx status Axum's JSON extractor maps a
+`serde` error to.
+
+### v2 fix — R3 project-wide overcommit must fail at the SECOND acceptance
+
+Declare a small node (e.g. `cpu_cores: 4`), submit and accept two Pending
+proposals for two DIFFERENT applications each requesting 4 CPU cores on it.
+The first `POST .../accept` must succeed; the second must return HTTP 422
+with `"error":"project_node_cpu_capacity_exceeded"` — never a silent
+double-commit.
 
 ```
 cd ..

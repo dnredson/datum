@@ -26,9 +26,10 @@ use crate::core::canonical_dgraph::CanonicalDGraphV1;
 use crate::core::canonical_dmap::{CanonicalDMapV1, CanonicalDServPlacementV1};
 use crate::core::ddeploy::{
     accept_proposal, active_operational_projection, check_artifact_list_project_scope,
-    create_proposal, is_canonical_authority_active, load_state, operational_dgraph_id_for_project,
-    persist_state, validate_full, validate_proposal_context, AcceptError, AcceptOutcome,
-    CreateProposalInput, DDeployAcceptanceV1, DDeployProposalV1, ProposalRecord, ProposalSource,
+    compute_project_node_commitments, create_proposal, derive_placement_eligibility_view,
+    is_canonical_authority_active, load_state, operational_dgraph_id_for_project, persist_state,
+    validate_full, validate_proposal_context, AcceptError, AcceptOutcome, CreateProposalInput,
+    DDeployAcceptanceV1, DDeployProposalV1, PlannerProvenanceV1, ProposalRecord, ProposalSource,
     F_PERSISTENCE_CONFLICT, F_PROPOSAL_NOT_FOUND,
 };
 use crate::core::service_artifact_registry::ServiceArtifact;
@@ -185,6 +186,39 @@ impl From<&ProposalRecord> for ProposalResponse {
     }
 }
 
+/// Canonical deterministic placement v1 (roadmap conceptual phase 120,
+/// ADR-0020). Deliberately carries NO `source`/`dcontinuum`/`placements`
+/// field at all -- unlike `ProposalInputPayload`, this endpoint's entire
+/// point is that the caller never supplies (and is never asked to
+/// reconstruct) a proposal source, a D-Continuum claim, or a placement
+/// decision; all three are derived server-side. Foundation closure v2 (R1
+/// fix): a proposal produced by THIS endpoint is unconditionally
+/// `ProposalSource::Deterministic` -- `post_plan_proposal` never reads a
+/// `source` field from any payload, so there is no caller-suppliable value
+/// that could reach `proposal.source`. `deny_unknown_fields` (unlike every
+/// other DTO in this module) is deliberate here: a caller attempting to
+/// send `source`/`dcontinuum`/`placements` to THIS endpoint gets an
+/// immediate 400 rather than having the field silently ignored, which could
+/// otherwise look (to that caller) like it had taken effect.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanRequestPayload {
+    pub application_id: String,
+    pub dgraph: CanonicalDGraphV1,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlanResponse {
+    pub proposal: DDeployProposalV1,
+    pub proposal_digest: String,
+    pub state: &'static str,
+    /// Full decision evidence from `core::canonical_placement` -- exposed
+    /// directly so a caller need not re-run the (deterministic, so
+    /// reproducible anyway) policy to see WHY each D-Serv landed where it
+    /// did.
+    pub placement_provenance: crate::core::canonical_placement::PlacementProvenance,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AcceptRequestPayload {
     pub accepted_by: String,
@@ -325,6 +359,7 @@ pub async fn post_create_proposal(
             dgraph: payload.dgraph,
             dcontinuum: authoritative_dcontinuum,
             placements: payload.placements,
+            planner_provenance: None,
         },
         proposal_id,
         Utc::now().to_rfc3339(),
@@ -335,6 +370,135 @@ pub async fn post_create_proposal(
     persist_state(&db_path, &ddeploy_state).map_err(persistence_failure)?;
 
     Ok((StatusCode::CREATED, JsonResponse(ProposalResponse::from(&record))))
+}
+
+/// Canonical deterministic placement v1 (roadmap conceptual phase 120,
+/// ADR-0020): `canonical DGraph + authoritative structural DContinuum +
+/// CURRENT project-wide structural commitment + CURRENT ServiceArtifact
+/// eligibility + deterministic placement policy -> candidate placements ->
+/// ordinary D-Deploy create_proposal -> validate -> explicit acceptance
+/// later`. This handler NEVER calls `accept_proposal` -- it produces a
+/// PENDING proposal through the exact same `create_proposal` function
+/// `post_create_proposal` uses, with zero special-cased validation logic of
+/// its own. The caller supplies only `application_id`/`dgraph`;
+/// `source`/D-Continuum/placements are ALL entirely server-derived, so
+/// there is no caller-suppliable field this endpoint could use to fabricate
+/// a node, a capacity, a placement authority, or a false provenance claim
+/// (foundation closure v2, R1 fix).
+///
+/// Foundation closure v2 (R2/R3B fix): unlike v1, this handler now acquires
+/// the SAME lock order `accept_proposal` uses --
+/// `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> ServiceArtifact stable view`
+/// -- and holds it across planning itself, not merely across persistence.
+/// This is necessary (not merely defensive) because the plan now genuinely
+/// depends on the CURRENT `DDeployStateV1` (for project-wide structural
+/// commitment, R3B) and the CURRENT `ServiceArtifact` snapshot (for
+/// eligibility, R2): a plan computed against a detached, possibly-stale
+/// snapshot of either could recommend a placement that a concurrent
+/// acceptance elsewhere has just made infeasible or ineligible. Holding the
+/// same locks used by acceptance for the ENTIRE plan-and-create sequence
+/// means the facts this plan is built from cannot change out from under it
+/// before its own resulting proposal is persisted. No lock is ever held
+/// across network I/O -- there is none in this path.
+pub async fn post_plan_proposal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PlanRequestPayload>,
+) -> Result<(StatusCode, JsonResponse<PlanResponse>), ApiError> {
+    let project_id = extract_project_id(&headers)?;
+
+    let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction().lock().map_err(lock_error)?;
+    let db_path = default_control_state_db_path();
+
+    let registry_state = crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let authoritative_dcontinuum = crate::core::dnode_registry::build_canonical_dcontinuum(&registry_state, &project_id)
+        .map_err(|findings| unprocessable(&findings))?;
+
+    let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    // R3B: exclude this application's OWN current active D-Map from the
+    // "other active applications" baseline -- a successful acceptance
+    // REPLACES it rather than adding a second, simultaneously-authoritative
+    // one (transient dual-running migration headroom is a future phase-119
+    // concern; this model is POST-ACCEPTANCE steady state only).
+    let commitments = compute_project_node_commitments(&project_id, &ddeploy_state.active_by_application, &ddeploy_state.proposals, Some(&payload.application_id))
+        .map_err(internal_error)?;
+
+    let (plan, record) = state
+        .service_artifacts
+        .with_stable_view(|registry_state| -> Result<(crate::core::canonical_placement::CanonicalPlacementPlanV1, ProposalRecord), ApiError> {
+            let artifacts = registry_state.artifacts_by_project.get(&project_id).cloned().unwrap_or_default();
+
+            // R2: candidate nodes are filtered against the CURRENT,
+            // just-snapshotted-under-lock ServiceArtifact eligibility view --
+            // never a detached fetch taken before this lock was acquired.
+            let eligibility = derive_placement_eligibility_view(&payload.dgraph, &artifacts);
+            let plan = crate::core::canonical_placement::plan_canonical_placements(&payload.dgraph, &authoritative_dcontinuum, &commitments, &eligibility)
+                .map_err(|findings| unprocessable(&findings))?;
+
+            let proposal_id = format!("ddeploy-proposal:{}", Uuid::new_v4());
+            let record = create_proposal(
+                &mut ddeploy_state,
+                CreateProposalInput {
+                    project_id: project_id.clone(),
+                    application_id: payload.application_id.clone(),
+                    source: ProposalSource::Deterministic,
+                    dgraph: payload.dgraph.clone(),
+                    dcontinuum: authoritative_dcontinuum.clone(),
+                    placements: plan.placements.clone(),
+                    // C1A/C1B/C1C fix: persist the EXACT canonical input
+                    // refs, commitment baseline, and eligibility view this
+                    // successful call actually used -- `commitments`/
+                    // `eligibility` are the very values just passed into
+                    // `plan_canonical_placements` above, not a
+                    // reconstruction; `dgraph_ref`/`dcontinuum_ref` are built
+                    // from `plan.provenance`'s own already-recomputed
+                    // id/revision/digest fields (identical to what
+                    // `create_proposal` will independently recompute and
+                    // assign to `proposal.dgraph_ref`/`dcontinuum_ref` below,
+                    // since both derive from the same deterministic digest
+                    // functions over the same `payload.dgraph`/
+                    // `authoritative_dcontinuum` values).
+                    planner_provenance: Some(PlannerProvenanceV1 {
+                        planner_version: plan.provenance.planner_version.clone(),
+                        policy_name: plan.provenance.policy_name.clone(),
+                        policy_version: plan.provenance.policy_version.clone(),
+                        dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+                            id: plan.provenance.dgraph_id.clone(),
+                            revision: plan.provenance.dgraph_revision,
+                            digest: plan.provenance.dgraph_digest.clone(),
+                        },
+                        dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+                            id: plan.provenance.dcontinuum_id.clone(),
+                            revision: plan.provenance.dcontinuum_revision,
+                            digest: plan.provenance.dcontinuum_digest.clone(),
+                        },
+                        committed_by_node: commitments.clone(),
+                        eligibility: eligibility.clone(),
+                        decisions: plan.provenance.decisions.clone(),
+                    }),
+                },
+                proposal_id,
+                Utc::now().to_rfc3339(),
+                &artifacts,
+            )
+            .map_err(|findings| unprocessable(&findings))?;
+
+            persist_state(&db_path, &ddeploy_state).map_err(persistence_failure)?;
+
+            Ok((plan, record))
+        })
+        .map_err(internal_error)??;
+
+    Ok((
+        StatusCode::CREATED,
+        JsonResponse(PlanResponse {
+            proposal: record.proposal.clone(),
+            proposal_digest: record.proposal_digest.clone(),
+            state: "pending",
+            placement_provenance: plan.provenance,
+        }),
+    ))
 }
 
 pub async fn get_proposal(
@@ -529,4 +693,151 @@ pub fn effective_canonical_operational_graph(project_id: &str) -> Result<Option<
 
 pub fn canonical_authority_active(project_id: &str) -> Result<bool, String> {
     is_canonical_authority_active(project_id)
+}
+
+#[cfg(test)]
+mod tests {
+    // Foundation closure v2 (R1 fix): this crate has no established
+    // precedent anywhere for constructing a real `AppState`/SQLite-backed
+    // `ServiceArtifactRegistry` inside a unit test to invoke an Axum handler
+    // directly (`post_plan_proposal` needs both) -- runtime HTTP-level
+    // coverage for R1 is therefore MANUAL (see `MANUAL_VALIDATION_COMMANDS.md`).
+    // What IS provable at this level, cheaply and reliably, is the
+    // STRUCTURAL guarantee the fix actually rests on: `PlanRequestPayload`
+    // has no field a caller could use to influence `proposal.source` at
+    // all, and `post_plan_proposal`'s body hardcodes
+    // `ProposalSource::Deterministic` unconditionally. Combined with the
+    // core-level `planner_output_is_accepted_by_create_proposal_unmodified`
+    // test (`core::ddeploy`), which proves a proposal built exactly the way
+    // this handler builds one really does end up with
+    // `proposal.source == ProposalSource::Deterministic`, these two facts
+    // together are the real proof of item 1/2's mandatory regressions: it
+    // is not merely that the handler CURRENTLY happens to pass
+    // `ProposalSource::Deterministic` -- it is that there exists no
+    // deserializable field through which a caller's own value could ever
+    // reach that call.
+    fn production_source() -> String {
+        let source = include_str!("ddeploy.rs");
+        let production_source: String = source.lines().take_while(|line| line.trim() != "#[cfg(test)]").collect::<Vec<_>>().join("\n");
+        assert!(
+            production_source.len() < source.len(),
+            "the '#[cfg(test)] mod tests' boundary was not found -- this test would otherwise scan its own forbidden-string literals"
+        );
+        production_source
+    }
+
+    fn struct_body(source: &str, struct_name: &str) -> String {
+        let needle = format!("struct {struct_name} {{");
+        let start = source.find(&needle).unwrap_or_else(|| panic!("'{needle}' not found in source")) + needle.len();
+        let end = source[start..].find('}').unwrap_or_else(|| panic!("no closing brace found for struct {struct_name}"));
+        source[start..start + end].to_string()
+    }
+
+    fn fn_body(source: &str, fn_signature_prefix: &str) -> String {
+        let start = source.find(fn_signature_prefix).unwrap_or_else(|| panic!("'{fn_signature_prefix}' not found in source"));
+        // Every handler in this file is followed by either another `pub
+        // async fn` or `fn accept_error_to_api` -- either is a safe
+        // end-of-function marker for this simple text scan (no nested
+        // `fn` definitions exist inside any handler body in this file).
+        let rest = &source[start..];
+        let next_fn = rest[fn_signature_prefix.len()..]
+            .find("\npub async fn ")
+            .or_else(|| rest[fn_signature_prefix.len()..].find("\nfn accept_error_to_api"))
+            .unwrap_or(rest.len() - fn_signature_prefix.len());
+        rest[..fn_signature_prefix.len() + next_fn].to_string()
+    }
+
+    #[test]
+    fn plan_request_payload_has_no_caller_controllable_source_field() {
+        let body = struct_body(&production_source(), "PlanRequestPayload");
+        assert!(!body.contains("source"), "PlanRequestPayload must carry no field through which a caller could influence proposal.source -- found: {body}");
+        assert!(body.contains("application_id") && body.contains("dgraph"), "sanity check that struct_body() actually found the real struct: {body}");
+    }
+
+    /// Independent review v3 (C2): a cheap, DIRECT `serde_json`
+    /// deserialization proof -- not merely a text-scan of the source, and
+    /// not an assertion about which exact HTTP status Axum's JSON extractor
+    /// maps a `serde` error to for the pinned Axum version (that was never
+    /// executed end-to-end in this pass; see `MANUAL_VALIDATION_COMMANDS.md`
+    /// for the corrected "HTTP 4xx, never 201" phrasing). The only property
+    /// this test needs to prove is the one that actually determines the
+    /// product behavior: `PlanRequestPayload` cannot be deserialized at all
+    /// when an extra `source` field is present.
+    #[test]
+    fn plan_request_payload_serde_rejects_an_explicit_source_field() {
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []},
+            "source": "operator"
+        }"#;
+        let result: Result<super::PlanRequestPayload, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "PlanRequestPayload must reject an explicit 'source' field, not silently ignore it");
+    }
+
+    #[test]
+    fn plan_request_payload_serde_rejects_an_explicit_dcontinuum_field() {
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []},
+            "dcontinuum": {"schema": "datum.dcontinuum/1", "project_id": "proj-x", "dcontinuum_id": "continuum:x", "revision": 1, "nodes": [], "links": []}
+        }"#;
+        let result: Result<super::PlanRequestPayload, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "PlanRequestPayload must reject an explicit 'dcontinuum' field, not silently ignore it");
+    }
+
+    #[test]
+    fn plan_request_payload_serde_rejects_an_explicit_placements_field() {
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []},
+            "placements": [{"service_id": "svc-a", "node_id": "fabricated-node"}]
+        }"#;
+        let result: Result<super::PlanRequestPayload, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "PlanRequestPayload must reject an explicit 'placements' field, not silently ignore it");
+    }
+
+    #[test]
+    fn plan_request_payload_serde_accepts_a_normal_payload_with_no_denied_field() {
+        // Sanity control for the three tests above: proves their failure is
+        // specifically caused by the extra field, not by an unrelated schema
+        // mismatch in this test's own JSON fixture.
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []}
+        }"#;
+        let result: Result<super::PlanRequestPayload, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "a normal payload with no denied field must deserialize cleanly: {result:?}");
+    }
+
+    #[test]
+    fn plan_request_payload_rejects_unknown_fields() {
+        let body = production_source();
+        let struct_decl_start = body.find("pub struct PlanRequestPayload").unwrap();
+        let preceding = &body[..struct_decl_start];
+        let last_attr_start = preceding.rfind("#[derive").unwrap();
+        let header = &preceding[last_attr_start..];
+        assert!(header.contains("deny_unknown_fields"), "PlanRequestPayload must reject an explicit source/dcontinuum/placements field with a 400 rather than silently ignoring it: {header}");
+    }
+
+    #[test]
+    fn post_plan_proposal_hardcodes_deterministic_source_and_never_reads_a_payload_source() {
+        let body = fn_body(&production_source(), "pub async fn post_plan_proposal(");
+        assert!(body.contains("ProposalSource::Deterministic"), "post_plan_proposal must unconditionally set ProposalSource::Deterministic");
+        assert!(!body.contains("payload.source"), "post_plan_proposal must never read a caller-supplied source field (none exists on PlanRequestPayload, but this also guards against a future field being added and wired up incorrectly)");
+    }
+
+    #[test]
+    fn post_plan_proposal_holds_the_same_lock_order_accept_proposal_uses() {
+        // R2/R3B fix: planning now genuinely depends on live DDeployStateV1/
+        // ServiceArtifact state, so it must hold the SAME lock order as
+        // acceptance (DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+        // ServiceArtifact stable view) across planning itself, not merely
+        // across the final persist.
+        let body = fn_body(&production_source(), "pub async fn post_plan_proposal(");
+        let ddeploy_lock_pos = body.find("ddeploy_transaction().lock()").expect("post_plan_proposal must acquire DDEPLOY_TRANSACTION");
+        let dnode_lock_pos = body.find("dnode_registry::dnode_transaction().lock()").expect("post_plan_proposal must acquire DNODE_TRANSACTION");
+        let stable_view_pos = body.find("with_stable_view").expect("post_plan_proposal must use the ServiceArtifact stable view");
+        assert!(ddeploy_lock_pos < dnode_lock_pos, "DDEPLOY_TRANSACTION must be acquired before DNODE_TRANSACTION");
+        assert!(dnode_lock_pos < stable_view_pos, "DNODE_TRANSACTION must be acquired before the ServiceArtifact stable view");
+    }
 }

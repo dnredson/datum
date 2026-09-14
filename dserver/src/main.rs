@@ -30,7 +30,7 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
-use api::ddeploy::{get_active, get_proposal, post_accept_proposal, post_create_proposal, post_validate_proposal};
+use api::ddeploy::{get_active, get_proposal, post_accept_proposal, post_create_proposal, post_plan_proposal, post_validate_proposal};
 use api::dnode_registry::{delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode};
 use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::secret_preflight::get_secret_preflight;
@@ -410,6 +410,7 @@ async fn main() {
         .route("/api/v1/dmap", get(get_dmap))
         .route("/api/v1/ddeploy/proposals/validate", post(post_validate_proposal))
         .route("/api/v1/ddeploy/proposals", post(post_create_proposal))
+        .route("/api/v1/ddeploy/plan", post(post_plan_proposal))
         .route("/api/v1/ddeploy/proposals/:proposal_id", get(get_proposal))
         .route("/api/v1/ddeploy/proposals/:proposal_id/accept", post(post_accept_proposal))
         .route("/api/v1/ddeploy/active", get(get_active))
