@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-atom-db",
-      "image": "postgres:16-alpine",
+      "image": "docker.io/library/postgres@sha256:075f7ba66bc9b3ce7d6b8b635208ff61cd7cf1a67d71ec530eec5d7ae0cbe571",
       "image_source_kind": "registry",
       "ports": [
         {

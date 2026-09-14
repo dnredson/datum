@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-bootstrap-db",
-      "image": "postgres:16.2-alpine",
+      "image": "docker.io/library/postgres@sha256:d2ae11f7207eb2c726b1678d7f98df2210759b8e5014d77afa9f77d014e33a9e",
       "image_source_kind": "registry",
       "ports": [],
       "network": "datum-magistrala-net",

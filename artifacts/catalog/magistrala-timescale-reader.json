@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-timescale-reader",
-      "image": "ghcr.io/absmach/magistrala/timescale-reader:v1.0.0",
+      "image": "ghcr.io/absmach/magistrala/timescale-reader@sha256:786248d906eba68be139f3a6ac26b8c0c5d4e6f6edb765f2fa80545822100dc2",
       "image_source_kind": "registry",
       "ports": [
         {

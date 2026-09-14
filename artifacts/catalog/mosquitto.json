@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-mosquitto",
-      "image": "eclipse-mosquitto:2",
+      "image": "docker.io/library/eclipse-mosquitto@sha256:6dba0f1b2795ddcbe0d41bdfb8b8d56a423acca23ccde4342a4652be54639b11",
       "image_source_kind": "registry",
       "ports": [
         {

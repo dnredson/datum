@@ -1839,7 +1839,7 @@ mod tests {
             CreateProposalInput { project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &[artifact_svc_a.clone()],
         ).expect("initial proposal must be valid");
-        let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &[artifact_svc_a.clone()], "2026-01-01T00:00:00Z", "a1".to_string())
+        let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &[artifact_svc_a.clone()], Some(&dcontinuum), "2026-01-01T00:00:00Z", "a1".to_string())
             .expect("initial acceptance must succeed");
         assert_eq!(outcome.materialized_dmap.revision, 1);
 

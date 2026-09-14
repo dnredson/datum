@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack",
-      "image": "chirpstack/chirpstack:4",
+      "image": "docker.io/chirpstack/chirpstack@sha256:c749015e640b8cf33338c08b12922896b17636feb06e421abdd3cc80f1cdc6b9",
       "image_source_kind": "registry",
       "ports": [
         {

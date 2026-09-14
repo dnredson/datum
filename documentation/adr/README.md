@@ -40,6 +40,7 @@ work belongs to Stages 107A and 107B.
 | [ADR-0016](ADR-0016-native-process-runtime-v0.1.md) | Native process runtime v0.1 (Stage 109) | Accepted and implemented | ADR-0015, ADR-0006, ADR-0011, ADR-0012 |
 | [ADR-0017](ADR-0017-canonical-datum-contracts-v1.md) | Canonical DATUM contracts v1: `datum.dgraph/1`, `datum.dcontinuum/1`, `datum.dmap/1` (Stage 110) | Accepted and implemented | ADR-0001, ADR-0002, ADR-0006, ADR-0007, ADR-0009, ADR-0015 |
 | [ADR-0018](ADR-0018-ddeploy-proposal-acceptance-projection.md) | D-Deploy proposal / explicit acceptance / D-Map -> OperationalDGraph projection (Stage 111) | Accepted and implemented | ADR-0002, ADR-0006, ADR-0007, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0017 |
+| [ADR-0019](ADR-0019-dnode-structural-authority-and-dcontinuum-derivation.md) | D-Node structural authority and authoritative D-Continuum derivation | Accepted and implemented | ADR-0002, ADR-0006, ADR-0013, ADR-0017, ADR-0018 |
 
 ## Relationship to closed phases
 

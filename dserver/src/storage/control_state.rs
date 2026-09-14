@@ -22,6 +22,18 @@ pub const DOMAIN_OPERATIONAL_DGRAPH: &str = "operational_dgraph";
 /// separate domain from `DOMAIN_OPERATIONAL_DGRAPH` (the pre-existing
 /// legacy operational graph) -- Stage 111 never writes into that domain.
 pub const DOMAIN_DDEPLOY_STATE: &str = "ddeploy_state";
+/// D-Node structural authority (D-Node/D-Continuum foundation closure,
+/// ADR-0019): the server-owned STRUCTURAL D-Node registry (platform/
+/// capacity/D-Node-ABI declarations) DServer derives the authoritative
+/// `datum.dcontinuum/1` from. Deliberately a SEPARATE domain from any
+/// Sentinel lease/liveness state (`SentinelRegistrationRecord` is never
+/// persisted at all today -- see `sentinel_registration.rs`) and from
+/// `DOMAIN_RESOURCE_REGISTRY` (an unrelated hardware/OS-identity discovery
+/// subsystem whose `resources` payload is an opaque, unresolvable
+/// content-addressed `capacity_profile_id` digest, never a typed numeric
+/// capacity -- see `dnode_registry.rs`'s module doc for the full audit
+/// conclusion on why that subsystem was not reused here).
+pub const DOMAIN_DNODE_REGISTRY: &str = "dnode_structural_registry";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {

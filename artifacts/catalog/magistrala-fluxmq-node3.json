@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-fluxmq-node3",
-      "image": "ghcr.io/absmach/fluxmq:v1.0.0",
+      "image": "ghcr.io/absmach/fluxmq@sha256:7faa05be6c32b7317953af4b766f1502ca49b87d49ffe1e044940def7d27a0f9",
       "image_source_kind": "registry",
       "ports": [
         {

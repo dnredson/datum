@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-nginx",
-      "image": "docker.io/nginx:1.31.3-alpine3.24",
+      "image": "docker.io/library/nginx@sha256:1d40e3eb3bf4f138de1d67193f2aa5309fcaf343eb5ffadbf5e9439de1eb1ebb",
       "image_source_kind": "registry",
       "ports": [
         {

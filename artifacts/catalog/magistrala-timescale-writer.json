@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-timescale-writer",
-      "image": "ghcr.io/absmach/magistrala/timescale-writer:v1.0.0",
+      "image": "ghcr.io/absmach/magistrala/timescale-writer@sha256:5268592ca294d49cf064a5656a232c1bfc17b8e485ef3a68808862fd0237066a",
       "image_source_kind": "registry",
       "ports": [
         {

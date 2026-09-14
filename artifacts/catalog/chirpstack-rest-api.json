@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack-rest-api",
-      "image": "chirpstack/chirpstack-rest-api:4",
+      "image": "docker.io/chirpstack/chirpstack-rest-api@sha256:7085dfb6f7a0bc6746c53e91af3e827cd4b4e8b7aab4db4bcb54046280eb8acf",
       "image_source_kind": "registry",
       "ports": [
         {

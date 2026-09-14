@@ -101,6 +101,34 @@ fn lock_error<T>(_: T) -> ApiError {
     internal_error("ddeploy transaction lock poisoned")
 }
 
+/// D-Node/D-Continuum authority transition (D-Node/D-Continuum foundation
+/// closure, ADR-0019): derives DServer's own server-owned authoritative
+/// `datum.dcontinuum/1` for `project_id` from the structural D-Node registry
+/// (`core::dnode_registry`) and verifies the caller-supplied `claimed`
+/// continuum's nodes genuinely match it. Returns the AUTHORITATIVE
+/// continuum on success -- callers must use THIS, never `claimed`, for every
+/// downstream validation/persistence step, so a proposal's `dcontinuum_ref`/
+/// `dcontinuum_snapshot` is always server-derived even when the caller's
+/// claim happened to be internally consistent. Fails closed with
+/// `authoritative_dcontinuum_unavailable` if no structural D-Node has ever
+/// been declared, and with `dcontinuum_node_unregistered` /
+/// `dnode_structural_conflict` / `dnode_capability_invalid` if `claimed`
+/// names a node the registry does not recognise or disagrees with.
+fn authoritative_dcontinuum_for_project(
+    project_id: &str,
+    claimed: &CanonicalDContinuumV1,
+) -> Result<CanonicalDContinuumV1, ApiError> {
+    let db_path = default_control_state_db_path();
+    let registry_state = crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let authoritative = crate::core::dnode_registry::build_canonical_dcontinuum(&registry_state, project_id)
+        .map_err(|findings| unprocessable(&findings))?;
+    let authority_findings = crate::core::dnode_registry::check_dcontinuum_authority(claimed, &authoritative);
+    if !authority_findings.is_empty() {
+        return Err(unprocessable(&authority_findings));
+    }
+    Ok(authoritative)
+}
+
 /// Fetches the project-scoped `ServiceArtifact` list and defensively verifies
 /// it is actually scoped to the requested project (`F_ARTIFACT_PROJECT_MISMATCH`)
 /// before handing it to any Stage 111 validation/acceptance path.
@@ -233,8 +261,15 @@ pub async fn post_validate_proposal(
         }));
     }
 
+    // D-Node/D-Continuum authority transition (ADR-0019): the caller's own
+    // `dcontinuum` shape is valid, but it is NEVER trusted as the record of
+    // what D-Nodes genuinely exist -- only the server-owned structural
+    // registry is. `authoritative_dcontinuum` REPLACES `payload.dcontinuum`
+    // for every downstream use below.
+    let authoritative_dcontinuum = authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
+
     let dgraph_digest = crate::core::canonical_dgraph::recompute_dgraph_digest(&payload.dgraph).map_err(internal_error)?;
-    let dcontinuum_digest = crate::core::canonical_dcontinuum::recompute_dcontinuum_digest(&payload.dcontinuum).map_err(internal_error)?;
+    let dcontinuum_digest = crate::core::canonical_dcontinuum::recompute_dcontinuum_digest(&authoritative_dcontinuum).map_err(internal_error)?;
 
     let proposal = DDeployProposalV1 {
         schema: crate::core::ddeploy::DDEPLOY_PROPOSAL_SCHEMA.to_string(),
@@ -245,12 +280,12 @@ pub async fn post_validate_proposal(
         created_at_utc: Utc::now().to_rfc3339(),
         expected_active_dmap_revision: None,
         dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: payload.dgraph.dgraph_id.clone(), revision: payload.dgraph.revision, digest: dgraph_digest },
-        dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: payload.dcontinuum.dcontinuum_id.clone(), revision: payload.dcontinuum.revision, digest: dcontinuum_digest },
+        dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: authoritative_dcontinuum.dcontinuum_id.clone(), revision: authoritative_dcontinuum.revision, digest: dcontinuum_digest },
         placements: payload.placements.clone(),
     };
 
     let artifacts = fetch_project_artifacts(&state, &project_id)?;
-    let outcome = validate_full(&proposal, &payload.dgraph, &payload.dcontinuum, &artifacts, "dmap:preview", 1);
+    let outcome = validate_full(&proposal, &payload.dgraph, &authoritative_dcontinuum, &artifacts, "dmap:preview", 1);
 
     Ok(JsonResponse(ValidateResponse {
         valid: outcome.findings.is_empty(),
@@ -269,6 +304,13 @@ pub async fn post_create_proposal(
     let project_id = extract_project_id(&headers)?;
     let artifacts = fetch_project_artifacts(&state, &project_id)?;
 
+    // D-Node/D-Continuum authority transition (ADR-0019): see the identical
+    // comment in `post_validate_proposal`. `authoritative_dcontinuum`
+    // REPLACES `payload.dcontinuum` -- the persisted `ProposalRecord`'s
+    // `dcontinuum_snapshot` is therefore always server-derived, never a
+    // verbatim client payload.
+    let authoritative_dcontinuum = authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
+
     let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
@@ -281,7 +323,7 @@ pub async fn post_create_proposal(
             application_id: payload.application_id,
             source: payload.source,
             dgraph: payload.dgraph,
-            dcontinuum: payload.dcontinuum,
+            dcontinuum: authoritative_dcontinuum,
             placements: payload.placements,
         },
         proposal_id,
@@ -331,6 +373,16 @@ pub async fn post_accept_proposal(
     }
 
     let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    // Foundation closure v2 (ADR-0019, R1 TOCTOU requirement): acquire the
+    // D-Node registry's own transaction lock too, NESTED inside
+    // `DDEPLOY_TRANSACTION` (fixed order, documented on `dnode_transaction`
+    // itself) and held for the ENTIRE remainder of this call -- through the
+    // authority revalidation below, the `ServiceArtifact` stable view, the
+    // acceptance mutation, and the final SQLite persist. A concurrent
+    // `PUT`/`DELETE` on a D-Node cannot commit anywhere in that window, so
+    // the structural facts this call validates against cannot change out
+    // from under it between the check and the persist.
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
 
@@ -341,6 +393,22 @@ pub async fn post_accept_proposal(
     if !validate_proposal_context(&existing.proposal, &project_id).is_empty() {
         return Err(not_found_proposal(&proposal_id));
     }
+    let existing_is_pending = existing.state == crate::core::ddeploy::ProposalLifecycleState::Pending;
+
+    // Only a PENDING proposal's acceptance needs the CURRENT authoritative
+    // D-Continuum -- an idempotent replay of an ALREADY-accepted proposal
+    // must succeed regardless of any later D-Node registry change (R1
+    // scope is the PENDING -> ACCEPTED transition only; historical
+    // acceptances are immutable, see `core::ddeploy::accept_proposal`'s doc
+    // comment on this parameter).
+    let current_authoritative_dcontinuum = if existing_is_pending {
+        let registry_state = crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+        let authoritative = crate::core::dnode_registry::build_canonical_dcontinuum(&registry_state, &project_id)
+            .map_err(|findings| unprocessable(&findings))?;
+        Some(authoritative)
+    } else {
+        None
+    };
 
     let now = Utc::now().to_rfc3339();
     let acceptance_id = format!("ddeploy-acceptance:{}", Uuid::new_v4());
@@ -372,6 +440,7 @@ pub async fn post_accept_proposal(
                 payload.accepted_by.trim(),
                 payload.expected_proposal_digest.as_deref(),
                 &artifacts,
+                current_authoritative_dcontinuum.as_ref(),
                 &now,
                 acceptance_id,
             )
@@ -407,6 +476,13 @@ fn accept_error_to_api(error: AcceptError) -> ApiError {
         AcceptError::Stale(message) => conflict(crate::core::ddeploy::F_STALE_ACTIVE_DMAP_REVISION, message),
         AcceptError::Collision(findings) => unprocessable(&findings),
         AcceptError::Internal(message) => internal_error(message),
+        // Foundation closure v2 (ADR-0019, R1): a CONFLICT (409), not a 422
+        // -- the proposal's own shape was fine; the world it depended on
+        // (the server-owned D-Node structural registry) has since changed.
+        AcceptError::StaleAuthority(findings) => (
+            StatusCode::CONFLICT,
+            JsonResponse(json!({"error": crate::core::ddeploy::F_STALE_AUTHORITATIVE_DCONTINUUM, "findings": findings_json(&findings)})),
+        ),
     }
 }
 

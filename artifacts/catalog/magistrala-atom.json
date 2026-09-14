@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-atom",
-      "image": "ghcr.io/absmach/atom:v1.0.0",
+      "image": "ghcr.io/absmach/atom@sha256:6079036f89543c83547084d1a5e9714b97e0a4e03f12ffc79da824cab37ea9f3",
       "image_source_kind": "registry",
       "ports": [
         {

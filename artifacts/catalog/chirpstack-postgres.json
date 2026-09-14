@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack-postgres",
-      "image": "postgres:14-alpine",
+      "image": "docker.io/library/postgres@sha256:3b36dd7df1337107cef7502b1e3e94c971483ae87498a9310d25c60fba08cfc9",
       "image_source_kind": "registry",
       "ports": [],
       "network": "datum-fog-net",

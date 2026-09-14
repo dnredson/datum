@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-timescale",
-      "image": "timescale/timescaledb:2.29.0-pg16-oss",
+      "image": "docker.io/timescale/timescaledb@sha256:d14a1b8eb75db5f1d39926fe8b26a6a278465744d43ff0890e84f3d35dce14b6",
       "image_source_kind": "registry",
       "ports": [
         {

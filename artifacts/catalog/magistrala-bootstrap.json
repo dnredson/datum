@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-magistrala-bootstrap",
-      "image": "ghcr.io/absmach/magistrala/bootstrap:v1.0.0",
+      "image": "ghcr.io/absmach/magistrala/bootstrap@sha256:8e79eeb8d3ab61e03c9c86e3243ca5e192a7543d7fe9f17d53813f02c62836be",
       "image_source_kind": "registry",
       "ports": [
         {

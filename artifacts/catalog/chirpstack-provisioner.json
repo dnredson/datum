@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack-provisioner",
-      "image": "ghcr.io/dnredson/chirpstack-provisioner:main",
+      "image": "ghcr.io/dnredson/chirpstack-provisioner@sha256:6e12ba9787be723bb2b404cfab6a7cfc79300ab237fc61dd0a839a93b675de29",
       "image_source_kind": "registry",
       "ports": [
         {

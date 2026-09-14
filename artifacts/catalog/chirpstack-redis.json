@@ -6,7 +6,7 @@
     "kind": "container",
     "container": {
       "container_name": "datum-chirpstack-redis",
-      "image": "redis:7-alpine",
+      "image": "docker.io/library/redis@sha256:1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c",
       "image_source_kind": "registry",
       "ports": [],
       "network": "datum-fog-net",
