@@ -15,6 +15,13 @@ pub const DEFAULT_CONTROL_STATE_DB_PATH: &str = "datum-control-plane.db";
 pub const CONTROL_STATE_SCHEMA_VERSION: &str = "0.1.0";
 pub const DOMAIN_RESOURCE_REGISTRY: &str = "resource_registry";
 pub const DOMAIN_OPERATIONAL_DGRAPH: &str = "operational_dgraph";
+/// Stage 111 (ADR-0018): the D-Deploy proposal/acceptance lifecycle state
+/// domain -- proposals, acceptances, active per-application D-Maps, and
+/// their derived operational-projection revision counters, persisted as
+/// ONE atomic blob per `persist_domain_json` call. Deliberately a NEW,
+/// separate domain from `DOMAIN_OPERATIONAL_DGRAPH` (the pre-existing
+/// legacy operational graph) -- Stage 111 never writes into that domain.
+pub const DOMAIN_DDEPLOY_STATE: &str = "ddeploy_state";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {

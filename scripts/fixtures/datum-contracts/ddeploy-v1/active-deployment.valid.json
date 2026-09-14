@@ -1,0 +1,32 @@
+{
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "active_dmap": {
+    "schema": "datum.dmap/1",
+    "project_id": "monitor-f49c8",
+    "application_id": "app:ddeploy-lab",
+    "dmap_id": "dmap:13:monitor-f49c815:app:ddeploy-lab",
+    "revision": 1,
+    "dgraph_ref": {
+      "id": "dgraph:ddeploy-lab",
+      "revision": 1,
+      "digest": "sha256:253d80977d106893cec352eefbbb32c8d2f20ed918f32eecd280e3274edc2a6c"
+    },
+    "dcontinuum_ref": {
+      "id": "continuum:ddeploy-lab",
+      "revision": 1,
+      "digest": "sha256:4b81c698506a5ec62e17ef8f6ae5299c6628c1d3837b654150d68a4245de1d60"
+    },
+    "placements": [
+      { "service_id": "svc-ingest", "node_id": "fog-01" },
+      { "service_id": "svc-process", "node_id": "cloud-01" }
+    ]
+  },
+  "dmap_digest": "sha256:5c70d6158f5f0186a4e0a9e785772c0133f89af4b35cea1ac9f84db17c65858b",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-001",
+  "acceptance_id": "ddeploy-acceptance:ddeploy-lab-001",
+  "accepted_at_utc": "2026-01-01T00:05:00Z",
+  "operational_dgraph_id": "ddeploy-operational:monitor-f49c8",
+  "operational_revision": 1,
+  "x_note": "The shape GET /api/v1/ddeploy/active returns for one active application deployment (ActiveDeploymentSummary), materialized by accepting acceptance.valid.json's proposal. active_dmap is the exact CanonicalDMapV1 (datum.dmap/1, Stage 110, ADR-0017) DServer constructed and materialized -- reusing CanonicalDMapV1::validate_against verbatim, never a parallel type. dmap_id uses canonical_dmap_id's length-prefixed encoding (independent review v2, identifier-composition audit) -- see acceptance.valid.json's x_note for the full rationale. dmap_digest is authoritative over active_dmap ONLY (recompute_dmap_digest sorts placements by service_id before hashing -- unlike compute_proposal_digest, which hashes the proposal's placements array in the order the caller supplied, see ADR-0018)."
+}

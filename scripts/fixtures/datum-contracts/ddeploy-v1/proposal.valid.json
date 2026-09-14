@@ -1,0 +1,25 @@
+{
+  "schema": "datum.ddeploy-proposal/1",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-001",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "source": "operator",
+  "created_at_utc": "2026-01-01T00:00:00Z",
+  "expected_active_dmap_revision": null,
+  "dgraph_ref": {
+    "id": "dgraph:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:253d80977d106893cec352eefbbb32c8d2f20ed918f32eecd280e3274edc2a6c"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:4b81c698506a5ec62e17ef8f6ae5299c6628c1d3837b654150d68a4245de1d60"
+  },
+  "placements": [
+    { "service_id": "svc-ingest", "node_id": "fog-01" },
+    { "service_id": "svc-process", "node_id": "cloud-01" }
+  ],
+  "x_note": "First deployment of app:ddeploy-lab into project monitor-f49c8 (expected_active_dmap_revision=null): a Stage 111 D-Deploy proposal. dgraph_ref/dcontinuum_ref bind to a 2-service dgraph:ddeploy-lab / 2-node continuum:ddeploy-lab (not shown here -- the proposal wire type carries only refs, never the full snapshot; DServer's persisted ProposalRecord keeps the immutable dgraph_snapshot/dcontinuum_snapshot internally). Real fixture: dserver::core::ddeploy deserializes this file, recomputes it via compute_proposal_digest, and asserts the result equals expected_digest_sha256.",
+  "expected_digest_sha256": "sha256:18660999ac9c7bbd18f5f42425015abb5110ab60a1d61eb860855edf99258ddd"
+}

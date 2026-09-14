@@ -30,6 +30,7 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
+use api::ddeploy::{get_active, get_proposal, post_accept_proposal, post_create_proposal, post_validate_proposal};
 use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::secret_preflight::get_secret_preflight;
 use api::secret_resolver_contract::get_secret_resolver_contract;
@@ -406,6 +407,11 @@ async fn main() {
         .route("/api/v1/topology", get(get_topology))
         .route("/api/v1/dmap", post(set_dmap))
         .route("/api/v1/dmap", get(get_dmap))
+        .route("/api/v1/ddeploy/proposals/validate", post(post_validate_proposal))
+        .route("/api/v1/ddeploy/proposals", post(post_create_proposal))
+        .route("/api/v1/ddeploy/proposals/:proposal_id", get(get_proposal))
+        .route("/api/v1/ddeploy/proposals/:proposal_id/accept", post(post_accept_proposal))
+        .route("/api/v1/ddeploy/active", get(get_active))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
             "/api/v1/action-plan/materialized",

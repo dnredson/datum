@@ -3299,6 +3299,100 @@ mod tests {
         );
     }
 
+    /// Stage 111 (ADR-0018 independent review v2, P0-2): the SAME
+    /// `with_stable_view` mechanism `authorize_operational_reconciliation`
+    /// already relies on (proven generically above) is what
+    /// `api::ddeploy::post_accept_proposal` now also holds across its own
+    /// acceptance-critical eligibility revalidation AND its SQLite persist
+    /// commit. This test reproduces that exact usage shape directly against
+    /// the registry: a reader resolves a project's artifacts inside
+    /// `with_stable_view` (mirroring `fetch_project_artifacts`'s replacement
+    /// in `post_accept_proposal`) and holds the view open (mirroring holding
+    /// it through `accept_proposal` + `persist_state`); a concurrent
+    /// `update` narrowing `target_nodes` away from the node the reader is
+    /// about to validate eligibility for must NOT be able to commit until
+    /// the reader's view completes -- otherwise the accepted result could
+    /// be committed against an artifact eligibility snapshot already
+    /// invalidated before that commit (the exact TOCTOU window P0-2
+    /// describes).
+    #[test]
+    fn stage111_acceptance_style_stable_view_blocks_a_concurrent_target_nodes_narrowing() {
+        let registry = ServiceArtifactRegistry::from_state(ServiceArtifactRegistryState::default());
+        let project_id = "proj-toctou";
+        let mut artifact = valid_artifact();
+        artifact.control_plane.target_nodes = vec!["fog-01".to_string()];
+        registry.create(project_id, artifact.clone()).unwrap();
+
+        let (view_entered_tx, view_entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_view_tx, release_view_rx) = std::sync::mpsc::channel::<()>();
+        let resolved_eligible: std::sync::Arc<std::sync::Mutex<Option<bool>>> = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let resolved_eligible_reader = resolved_eligible.clone();
+
+        let reader = registry.clone();
+        let reader_handle = std::thread::spawn(move || {
+            reader
+                .with_stable_view(|state| {
+                    // Mirrors `post_accept_proposal`'s closure: resolve the
+                    // project's CURRENT artifacts once, at the top of the
+                    // held view.
+                    let artifacts = state
+                        .artifacts_by_project
+                        .get(project_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    view_entered_tx.send(()).unwrap();
+                    // Mirrors holding the view through `accept_proposal`'s
+                    // revalidation AND `persist_state`'s SQLite commit --
+                    // the test controls exactly when this "commit" occurs.
+                    release_view_rx.recv().unwrap();
+                    let eligible = artifacts
+                        .iter()
+                        .any(|a| a.artifact_id == "sma" && a.control_plane.target_nodes.iter().any(|n| n == "fog-01"));
+                    *resolved_eligible_reader.lock().unwrap() = Some(eligible);
+                })
+                .unwrap();
+        });
+
+        view_entered_rx.recv().unwrap();
+
+        let writer = registry.clone();
+        let mut narrowed = artifact.clone();
+        narrowed.control_plane.target_nodes = vec!["cloud-01".to_string()];
+        let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel::<()>();
+        let writer_handle = std::thread::spawn(move || {
+            writer.update(project_id, "sma", narrowed).unwrap();
+            writer_done_tx.send(()).unwrap();
+        });
+
+        let writer_finished_early = writer_done_rx
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_ok();
+        assert!(
+            !writer_finished_early,
+            "a concurrent target_nodes-narrowing update must NOT commit while the Stage 111 acceptance-style stable view is still held -- this is the exact P0-2 TOCTOU window"
+        );
+
+        // Release the view (simulating the acceptance's persist completing);
+        // the writer may now proceed.
+        release_view_tx.send(()).unwrap();
+        reader_handle.join().unwrap();
+        writer_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("writer should complete promptly once the stable view is released");
+        writer_handle.join().unwrap();
+
+        // The reader's resolution, captured BEFORE the writer could commit,
+        // must reflect the ORIGINAL (still-eligible) artifact state.
+        assert_eq!(*resolved_eligible.lock().unwrap(), Some(true), "the held view must have resolved eligibility against the pre-write artifact state, not a partially-applied one");
+
+        // AFTER the view releases and the writer commits, a fresh read
+        // correctly observes the narrowed eligibility -- the writer was
+        // delayed, never lost or corrupted.
+        let after = registry.list(project_id).unwrap();
+        let updated = after.artifacts.iter().find(|a| a.artifact_id == "sma").unwrap();
+        assert_eq!(updated.control_plane.target_nodes, vec!["cloud-01".to_string()]);
+    }
+
     #[test]
     fn backend_path_is_none_for_an_in_memory_registry() {
         let registry = ServiceArtifactRegistry::from_state(ServiceArtifactRegistryState::default());

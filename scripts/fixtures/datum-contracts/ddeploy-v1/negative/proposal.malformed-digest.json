@@ -1,0 +1,33 @@
+{
+  "schema": "datum.ddeploy-proposal/1",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-malformed-digest",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "source": "operator",
+  "created_at_utc": "2026-01-01T00:00:00Z",
+  "expected_active_dmap_revision": null,
+  "dgraph_ref": {
+    "id": "dgraph:ddeploy-lab",
+    "revision": 1,
+    "digest": "253d80977d106893cec352eefbbb32c8d2f20ed918f32eecd280e3274edc2a6c"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:4b81c698506a5ec62e17ef8f6ae5299c6628c1d3837b654150d68a4245de1d60"
+  },
+  "placements": [
+    {
+      "service_id": "svc-ingest",
+      "node_id": "fog-01"
+    },
+    {
+      "service_id": "svc-process",
+      "node_id": "cloud-01"
+    }
+  ],
+  "x_expect_reject": {
+    "code": "invalid_digest_format"
+  },
+  "x_note": "dgraph_ref.digest is missing the required 'sha256:' prefix (jcs::is_canonical_digest_format, ADR-0006). validate_proposal_shape must reject this with F_INVALID_DIGEST_FORMAT before any cross-contract check runs."
+}

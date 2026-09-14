@@ -1,0 +1,34 @@
+{
+  "schema": "datum.ddeploy-proposal/1",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-002-b",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "source": "operator",
+  "created_at_utc": "2026-01-01T00:10:00Z",
+  "expected_active_dmap_revision": 1,
+  "dgraph_ref": {
+    "id": "dgraph:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:253d80977d106893cec352eefbbb32c8d2f20ed918f32eecd280e3274edc2a6c"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:4b81c698506a5ec62e17ef8f6ae5299c6628c1d3837b654150d68a4245de1d60"
+  },
+  "placements": [
+    {
+      "service_id": "svc-ingest",
+      "node_id": "cloud-01"
+    },
+    {
+      "service_id": "svc-process",
+      "node_id": "cloud-01"
+    }
+  ],
+  "x_current_active_dmap_revision_at_accept_time": 2,
+  "x_expect_reject": {
+    "code": "stale_active_dmap_revision"
+  },
+  "x_note": "Worked example from ADR-0018/the Stage 111 brief: this proposal ('B') was created expecting the active revision to still be 1 (expected_active_dmap_revision=1), but by the time it is submitted for acceptance, a DIFFERENT proposal ('A', not shown -- see dserver::core::ddeploy's two_proposals_same_active_revision_first_succeeds_second_is_stale for the full Rust state-machine proof) has already been accepted and moved the active revision to 2 (x_current_active_dmap_revision_at_accept_time). accept_proposal's compare-and-swap check (expected_active_dmap_revision != current_active_revision) must reject this with F_STALE_ACTIVE_DMAP_REVISION (HTTP 409) rather than silently activating as revision 3."
+}

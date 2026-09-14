@@ -1,0 +1,24 @@
+{
+  "schema": "datum.ddeploy-acceptance/1",
+  "acceptance_id": "ddeploy-acceptance:ddeploy-lab-digest-mismatch",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-001",
+  "proposal_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "accepted_at_utc": "2026-01-01T00:05:00Z",
+  "accepted_by": "operator:alice",
+  "materialized_dmap_ref": {
+    "id": "dmap:13:monitor-f49c815:app:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:5c70d6158f5f0186a4e0a9e785772c0133f89af4b35cea1ac9f84db17c65858b"
+  },
+  "operational_projection_ref": {
+    "operational_dgraph_id": "ddeploy-operational:monitor-f49c8",
+    "revision": 1
+  },
+  "x_referenced_proposal_fixture": "proposal.valid.json",
+  "x_expect_reject": {
+    "code": "proposal_digest_mismatch"
+  },
+  "x_note": "proposal_digest here does not match ../proposal.valid.json's real expected_digest_sha256 (sha256:18660999ac9c7bbd18f5f42425015abb5110ab60a1d61eb860855edf99258ddd) -- simulating an acceptance request whose caller-supplied expected_proposal_digest no longer matches the server's recorded proposal (e.g. after a proposal was somehow tampered, or the caller is confused about which proposal it is accepting). accept_proposal must reject with F_PROPOSAL_DIGEST_MISMATCH (HTTP 409) rather than accepting against the wrong recorded digest."
+}

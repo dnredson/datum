@@ -1,0 +1,22 @@
+{
+  "x_illustrative_only": "This is NOT a full datum.ddeploy-proposal/1 document -- it is a minimal, illustrative snippet of the ServiceArtifact.control_plane join Stage 111's check_node_eligibility (dserver::core::ddeploy) performs. ServiceArtifact's own JSON contract belongs to a separate, pre-existing fixture family (service_artifact_registry), not to this Stage 111 ddeploy-v1 family.",
+  "candidate_placement": {
+    "service_id": "svc-process",
+    "node_id": "mist-arm-gateway-01"
+  },
+  "resolved_service_artifact": {
+    "artifact_id": "artifact:svc-process",
+    "service_id": "svc-process",
+    "control_plane": {
+      "target_nodes": [
+        "cloud-01",
+        "fog-01"
+      ],
+      "target_stages": []
+    }
+  },
+  "x_expect_reject": {
+    "code": "node_not_eligible"
+  },
+  "x_note": "candidate_placement.node_id ('mist-arm-gateway-01') is not present in the resolved artifact's control_plane.target_nodes ('cloud-01', 'fog-01') -- check_node_eligibility must reject this with F_NODE_NOT_ELIGIBLE. This is a proposal/acceptance-time ELIGIBILITY check only (ADR-0002/ADR-0018): target_nodes is never consulted again once a placement is accepted."
+}

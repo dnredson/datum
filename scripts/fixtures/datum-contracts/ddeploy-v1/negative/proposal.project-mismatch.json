@@ -1,0 +1,34 @@
+{
+  "schema": "datum.ddeploy-proposal/1",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-project-mismatch",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "source": "operator",
+  "created_at_utc": "2026-01-01T00:00:00Z",
+  "expected_active_dmap_revision": null,
+  "dgraph_ref": {
+    "id": "dgraph:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:253d80977d106893cec352eefbbb32c8d2f20ed918f32eecd280e3274edc2a6c"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:4b81c698506a5ec62e17ef8f6ae5299c6628c1d3837b654150d68a4245de1d60"
+  },
+  "placements": [
+    {
+      "service_id": "svc-ingest",
+      "node_id": "fog-01"
+    },
+    {
+      "service_id": "svc-process",
+      "node_id": "cloud-01"
+    }
+  ],
+  "x_request_context_project_id": "some-other-project",
+  "x_expect_reject": {
+    "code": "proposal_project_mismatch"
+  },
+  "x_note": "This proposal's own project_id ('monitor-f49c8') does not match x_request_context_project_id ('some-other-project'), simulating a fetch/accept request made under the WRONG X-Datum-Project header. validate_proposal_context (dserver::core::ddeploy) flags this as proposal_project_mismatch; the real API (get_proposal/post_accept_proposal) additionally reports it as a plain 404 (proposal_not_found) rather than a differentiated 422/409, to avoid disclosing cross-tenant proposal existence -- see ADR-0018's 'Cross-tenant proposal isolation' section."
+}

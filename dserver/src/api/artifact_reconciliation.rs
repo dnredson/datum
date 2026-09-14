@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 use crate::{
     api::operational_dgraph::operational_dgraph_slice_snapshot,
     core::artifact_reconciliation_context::{
-        build_artifact_reconciliation_context, build_context_from_assignments,
+        build_artifact_reconciliation_context_with_authority, build_context_from_assignments,
         validate_artifact_reconciliation_context,
-        ArtifactReconciliationContext,
+        ArtifactReconciliationContext, PlacementAuthority,
     },
+    core::ddeploy::is_canonical_authority_active,
     AppState,
 };
 
@@ -55,9 +56,21 @@ pub async fn get_operational_reconciliation_context(
         Some(authorization) => build_context_from_assignments(&slice, authorization.snapshot.clone())
             .map_err(bad_request)?,
         None => {
+            // Stage 111 (ADR-0018 independent review v2, P0-1): this is the
+            // unauthenticated/proposal-preview mutable-resolution fallback --
+            // it must resolve using the SAME placement authority the
+            // project is actually under, never unconditionally
+            // `LegacyTargetNodes`, or a canonical-authority-active project's
+            // service could silently stop resolving here the moment
+            // `target_nodes` narrows post-acceptance.
+            let authority = if is_canonical_authority_active(&project_id).map_err(internal_error)? {
+                PlacementAuthority::CanonicalDMap
+            } else {
+                PlacementAuthority::LegacyTargetNodes
+            };
             let artifacts = state.service_artifacts.list(&project_id)
                 .map_err(|error| internal_error(error.to_string()))?;
-            build_artifact_reconciliation_context(&slice, &artifacts.artifacts)
+            build_artifact_reconciliation_context_with_authority(&slice, &artifacts.artifacts, authority)
                 .map_err(bad_request)?
         }
     };

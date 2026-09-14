@@ -18,7 +18,8 @@ use crate::{
     api::resource_registry::active_resource_binding_for_node,
     core::{
         artifact_reconciliation_context::{
-            build_artifact_reconciliation_context, required_completeness_gaps,
+            build_artifact_reconciliation_context_with_authority, required_completeness_gaps,
+            PlacementAuthority,
         },
         operational_dgraph::{
             authorization_is_valid_for_context, build_operational_slice,
@@ -232,6 +233,13 @@ pub async fn put_operational_dgraph(
 ) -> Result<JsonResponse<OperationalDGraph>, ApiError> {
     ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
     let project_id = extract_project_id(&headers)?;
+    // Stage 111 (ADR-0018): once a project has an active canonical
+    // `datum.dmap/1`-backed deployment, this legacy write path must never
+    // independently overwrite placement -- fail closed rather than let a
+    // stale write silently clobber (or race) the canonical projection.
+    if crate::api::ddeploy::canonical_authority_active(&project_id).map_err(internal_error)? {
+        return Err(canonical_authority_conflict(&project_id));
+    }
     validate_operational_dgraph(&graph).map_err(bad_request)?;
     crate::core::multinode_dgraph::validate_multinode_metadata(&graph).map_err(bad_request)?;
     if graph.project_id.trim() != project_id {
@@ -282,17 +290,47 @@ pub async fn get_operational_dgraph_slice(
 }
 
 /// Capture the accepted graph under the same transaction used by publication.
+///
+/// Stage 111 (ADR-0018) effective-authority accessor: this is the ONE
+/// centralized decision point every read path in this crate uses. If a
+/// canonical `datum.dmap/1`-derived deployment is active for `project_id`,
+/// that derived graph (`api::ddeploy::effective_canonical_operational_graph`)
+/// IS the current operational graph -- never the legacy in-process store,
+/// which would otherwise silently go stale the instant canonical authority
+/// activates (ADR-0002). Every consumer in this crate reaches the legacy
+/// store exclusively through this function or `graph_and_authorizations_snapshot`
+/// (audited: `alternative_paths`, `artifact_reconciliation`,
+/// `governed_deployment_preflight`, `external_ai_inference`,
+/// `operational_dgraph_acquisition`, `operational_analysis_context`,
+/// `live_dashboard`, `secret_preflight`, `secret_resolver_contract`,
+/// `graphql`, `sentinel_telemetry`), so there is no bypass where one API
+/// sees canonical placement and another sees the stale legacy graph.
 pub fn operational_dgraph_snapshot(project_id: &str) -> Result<Option<OperationalDGraph>, String> {
     ensure_operational_dgraph_persistence_initialized()?;
+    if let Some(graph) = crate::api::ddeploy::effective_canonical_operational_graph(project_id)? {
+        return Ok(Some(graph));
+    }
     let _transaction = state_transaction().lock().map_err(string_lock_error)?;
     Ok(graph_store().read().map_err(string_lock_error)?.get(project_id.trim()).cloned())
 }
 
 fn graph_and_authorizations_snapshot(project_id: &str) -> Result<Option<(OperationalDGraph, AuthorizationMap)>, String> {
     ensure_operational_dgraph_persistence_initialized()?;
+    // Resolved BEFORE acquiring `state_transaction()`: the canonical check
+    // reads a separate SQLite domain via `core::ddeploy`, never this
+    // module's mutex, so there is no lock-ordering or reentrancy hazard.
+    let canonical_graph = crate::api::ddeploy::effective_canonical_operational_graph(project_id)?;
     let _transaction = state_transaction().lock().map_err(string_lock_error)?;
-    let graphs = graph_store().read().map_err(string_lock_error)?;
-    let Some(graph) = graphs.get(project_id.trim()).cloned() else { return Ok(None); };
+    let graph = match canonical_graph {
+        Some(graph) => graph,
+        None => {
+            let graphs = graph_store().read().map_err(string_lock_error)?;
+            match graphs.get(project_id.trim()).cloned() {
+                Some(graph) => graph,
+                None => return Ok(None),
+            }
+        }
+    };
     let authorizations = authorization_store().read().map_err(string_lock_error)?.clone();
     Ok(Some((graph, authorizations)))
 }
@@ -410,11 +448,34 @@ async fn authorize_operational_reconciliation(
 
     let binding = active_resource_binding_for_node(&project_id, node_id)
         .map_err(internal_error)?.ok_or_else(|| conflict(format!("cannot authorize operational reconciliation for node '{}': no active Resource Registry binding exists", node_id)))?;
+    // Stage 111 (ADR-0018): resolved BEFORE the transaction lock (own SQLite
+    // domain, not this module's mutex -- see `graph_and_authorizations_snapshot`).
+    // An authorization issued while canonical authority is active must bind
+    // the canonical-derived graph's `(dgraph_id, revision)`, never the stale
+    // legacy graph's -- otherwise it would authorize a mutation against
+    // content that is not, in fact, the current effective deployment.
+    let canonical_graph = crate::api::ddeploy::effective_canonical_operational_graph(&project_id).map_err(internal_error)?;
+    // Stage 111 (ADR-0018 independent review v2, P0-1): the SAME authority
+    // decision that selected `canonical_graph` above must also govern how
+    // artifacts are resolved for the authorization snapshot below -- an
+    // authorization issued while canonical authority is active must bind
+    // artifacts using `CanonicalDMap` semantics (never re-checking
+    // `target_nodes` as current placement truth), exactly matching what
+    // `get_operational_reconciliation_context` will resolve when it later
+    // serves this same node.
+    let placement_authority = if canonical_graph.is_some() {
+        PlacementAuthority::CanonicalDMap
+    } else {
+        PlacementAuthority::LegacyTargetNodes
+    };
     // Hold the transaction from the graph read through authorization commit.
     // A concurrent publication cannot invalidate the revision between them.
     let _transaction = state_transaction().lock().map_err(lock_error)?;
-    let graph = graph_store().read().map_err(lock_error)?.get(&project_id).cloned()
-        .ok_or_else(|| missing_graph(&project_id))?;
+    let graph = match canonical_graph {
+        Some(graph) => graph,
+        None => graph_store().read().map_err(lock_error)?.get(&project_id).cloned()
+            .ok_or_else(|| missing_graph(&project_id))?,
+    };
 
     let slice_for_binding = build_operational_slice(&graph, node_id, None).map_err(bad_request)?;
     let requested_persistence_scope = request
@@ -460,7 +521,7 @@ async fn authorize_operational_reconciliation(
                 .get(&project_id)
                 .cloned()
                 .unwrap_or_default();
-            let resolved_context = build_artifact_reconciliation_context(&slice_for_binding, &artifacts)
+            let resolved_context = build_artifact_reconciliation_context_with_authority(&slice_for_binding, &artifacts, placement_authority)
                 .map_err(|error| bad_request(format!(
                     "cannot authorize: artifact join failed for node '{node_id}': {error}"
                 )))?;
@@ -600,6 +661,12 @@ fn missing_graph(project_id: &str) -> ApiError {
 }
 fn bad_request(message: String) -> ApiError { (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message}))) }
 fn conflict(message: String) -> ApiError { (StatusCode::CONFLICT, JsonResponse(json!({"error": message}))) }
+fn canonical_authority_conflict(project_id: &str) -> ApiError {
+    (StatusCode::CONFLICT, JsonResponse(json!({
+        "error": "canonical_dmap_authority_active",
+        "message": format!("project '{project_id}' has an active canonical D-Deploy deployment; legacy operational D-Graph writes are refused -- publish a new D-Deploy proposal and accept it instead"),
+    })))
+}
 fn not_found(message: String) -> ApiError { (StatusCode::NOT_FOUND, JsonResponse(json!({"error": message}))) }
 fn internal_error(message: String) -> ApiError { (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message}))) }
 fn string_lock_error<T>(error: std::sync::PoisonError<T>) -> String {

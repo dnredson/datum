@@ -1,0 +1,26 @@
+{
+  "x_illustrative_only": "This is NOT a full datum.dgraph/1 / datum.dcontinuum/1 pair -- it is a minimal snippet isolating the ONE resource-feasibility check being violated, reused verbatim by Stage 111 from CanonicalDMapV1::validate_against (Stage 110, ADR-0017). The full three-contract feasibility mechanism (individual + aggregate CPU/memory fit) is exhaustively fixtured and tested by scripts/fixtures/datum-contracts/canonical-v1/ already; this file exists only so the Stage 111 checker can demonstrate that validate_full (dserver::core::ddeploy) reuses that mechanism rather than re-implementing or weakening it.",
+  "service": {
+    "service_id": "svc-heavy",
+    "resource_requirement": {
+      "cpu_cores": 8,
+      "memory_bytes": 17179869184
+    }
+  },
+  "node": {
+    "node_id": "mist-arm-gateway-01",
+    "capacity": {
+      "cpu_cores": 1,
+      "memory_bytes": 536870912
+    }
+  },
+  "candidate_placement": {
+    "service_id": "svc-heavy",
+    "node_id": "mist-arm-gateway-01"
+  },
+  "x_expected_stage110_finding": "insufficient_node_memory",
+  "x_expect_reject": {
+    "code": "candidate_dmap_invalid"
+  },
+  "x_note": "svc-heavy requires 17179869184 bytes (16 GiB) but mist-arm-gateway-01 only declares 536870912 bytes (512 MiB) of capacity -- CanonicalDMapV1::validate_against's individual-fit check (insufficient_node_memory) rejects this candidate; Stage 111's validate_full surfaces it as part of the aggregated candidate_dmap_invalid outcome (dserver::api::ddeploy::unprocessable). No scoring, retry, or alternate-node fallback occurs -- this is a rejection rule, never a placement algorithm (Stage 112 remains out of scope)."
+}

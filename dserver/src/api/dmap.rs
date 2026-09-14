@@ -1,3 +1,13 @@
+//! LEGACY, pre-Stage-111 endpoint: an untyped Firebase JSON blob keyed by
+//! project, with no schema and no relationship to the canonical
+//! `datum.dmap/1` contract (Stage 110, `core::canonical_dmap`) or to the
+//! D-Deploy proposal/acceptance lifecycle (Stage 111, ADR-0018,
+//! `core::ddeploy` / `api::ddeploy`). Its `"accepted"` field, if present in
+//! caller-supplied JSON, is opaque application data here -- it is NEVER
+//! interpreted as a D-Deploy acceptance, and this handler never parses its
+//! stored payload as a `CanonicalDMapV1`. Kept unmodified for backward
+//! compatibility; do not extend it to carry canonical placement authority.
+
 use axum::{
     extract::{Json, State},
     http::{HeaderMap, StatusCode},

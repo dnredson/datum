@@ -8,8 +8,10 @@ use crate::{
     api::operational_dgraph::operational_dgraph_slice_snapshot,
     core::{
         artifact_reconciliation_context::{
-            build_artifact_reconciliation_context, validate_artifact_reconciliation_context,
+            build_artifact_reconciliation_context_with_authority, validate_artifact_reconciliation_context,
+            PlacementAuthority,
         },
+        ddeploy::is_canonical_authority_active,
         secret_preflight::{build_secret_preflight, SecretPreflight},
     },
     AppState,
@@ -46,7 +48,14 @@ pub async fn get_secret_preflight(
         .service_artifacts
         .list(&project_id)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
-    let context = build_artifact_reconciliation_context(&slice, &artifacts.artifacts)
+    // Stage 111 (ADR-0018 independent review v2, P0-1): see the identical
+    // fix/rationale in api::governed_deployment_preflight.
+    let authority = if is_canonical_authority_active(&project_id).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))? {
+        PlacementAuthority::CanonicalDMap
+    } else {
+        PlacementAuthority::LegacyTargetNodes
+    };
+    let context = build_artifact_reconciliation_context_with_authority(&slice, &artifacts.artifacts, authority)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     validate_artifact_reconciliation_context(&context)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;

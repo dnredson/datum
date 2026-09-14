@@ -159,30 +159,95 @@ pub struct ArtifactReconciliationContext {
     pub side_effects_performed: bool,
 }
 
+/// Stage 111 (ADR-0018 independent review v2, P0-1): WHICH placement
+/// authority governs artifact resolution for a given node slice. Explicit
+/// and typed -- never inferred from a `dgraph_id` prefix, a metadata
+/// string, or whether `target_nodes` happens to still agree with the
+/// current placement.
+///
+/// `LegacyTargetNodes`: `ServiceArtifact.control_plane.target_nodes` IS the
+/// current placement truth (pre-Stage-111 behavior, and the behavior for
+/// any project that has never had a canonical D-Deploy acceptance).
+///
+/// `CanonicalDMap`: an accepted `datum.dmap/1` has ALREADY selected the
+/// node for this service (Stage 111, ADR-0002/ADR-0018) -- `target_nodes`
+/// is proposal/acceptance-time ELIGIBILITY only and must NOT be
+/// re-consulted as current placement truth here. A later `target_nodes`
+/// edit must never cause an already-accepted service to stop resolving (or
+/// start resolving somewhere else) through this path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacementAuthority {
+    LegacyTargetNodes,
+    CanonicalDMap,
+}
+
 /// Resolve `assignments` from the CURRENT (mutable) artifact registry, then
-/// build the envelope. This is the MUTABLE-RESOLUTION path: use it only when
-/// there is no authorized immutable snapshot to serve instead (review
-/// finding P0-1) -- at authorization-issuance time (where resolving current
-/// content is exactly what's needed, to capture the new snapshot), and as
-/// the fallback for a context fetch with no attached authorization
-/// (unauthenticated/proposal-preview use, matching pre-Stage-107A
-/// behaviour). A context fetch WITH a valid, snapshot-bearing authorization
-/// must call `build_context_from_assignments` with the authorization's
-/// stored `snapshot` instead of this function -- see
+/// build the envelope, using LEGACY `target_nodes` placement-authority
+/// semantics -- preserved EXACTLY for backward compatibility. This is the
+/// MUTABLE-RESOLUTION path: use it only when there is no authorized
+/// immutable snapshot to serve instead (review finding P0-1) -- at
+/// authorization-issuance time (where resolving current content is exactly
+/// what's needed, to capture the new snapshot), and as the fallback for a
+/// context fetch with no attached authorization (unauthenticated/proposal-
+/// preview use, matching pre-Stage-107A behaviour). A context fetch WITH a
+/// valid, snapshot-bearing authorization must call
+/// `build_context_from_assignments` with the authorization's stored
+/// `snapshot` instead of this function -- see
 /// `dserver/src/api/artifact_reconciliation.rs`.
+///
+/// Stage 111 (ADR-0018 independent review v2): when canonical D-Map
+/// authority is active for the project this slice belongs to, callers MUST
+/// use `build_artifact_reconciliation_context_with_authority(..., PlacementAuthority::CanonicalDMap)`
+/// instead -- this function always applies `target_nodes` as current
+/// placement truth and must never be called for a canonical-authority-active
+/// project.
 pub fn build_artifact_reconciliation_context(
     slice: &OperationalDGraphSlice,
     artifacts: &[ServiceArtifact],
 ) -> Result<ArtifactReconciliationContext, String> {
-    let assignments = resolve_assignments_from_registry(slice, artifacts)?;
+    build_artifact_reconciliation_context_with_authority(slice, artifacts, PlacementAuthority::LegacyTargetNodes)
+}
+
+/// Stage 111 (ADR-0018 independent review v2, P0-1): the authority-aware
+/// entry point every NEW caller should use, and the ONE place both legacy
+/// and canonical callers actually converge -- there is no second, copied
+/// implementation of assignment construction.
+pub fn build_artifact_reconciliation_context_with_authority(
+    slice: &OperationalDGraphSlice,
+    artifacts: &[ServiceArtifact],
+    authority: PlacementAuthority,
+) -> Result<ArtifactReconciliationContext, String> {
+    let assignments = resolve_assignments_from_registry_with_authority(slice, artifacts, authority)?;
     build_context_from_assignments(slice, assignments)
 }
 
 /// The resolution half of `build_artifact_reconciliation_context`: join
-/// `slice.desired_services` against the CURRENT, mutable `artifacts` list.
+/// `slice.desired_services` against the CURRENT, mutable `artifacts` list,
+/// using LEGACY `target_nodes` placement-authority semantics. See
+/// `resolve_assignments_from_registry_with_authority` for the
+/// authority-aware entry point.
 pub fn resolve_assignments_from_registry(
     slice: &OperationalDGraphSlice,
     artifacts: &[ServiceArtifact],
+) -> Result<Vec<ArtifactReconciliationAssignment>, String> {
+    resolve_assignments_from_registry_with_authority(slice, artifacts, PlacementAuthority::LegacyTargetNodes)
+}
+
+/// Stage 111 (ADR-0018 independent review v2, P0-1): the authority-aware
+/// resolver. The direct/alias join (identical in both modes) is followed by
+/// an authority-specific eligibility check:
+///   - `LegacyTargetNodes`: `artifact.control_plane.target_nodes` MUST
+///     contain `slice.node_id` -- EXACTLY the pre-Stage-111 rule, unchanged.
+///   - `CanonicalDMap`: `target_nodes` is NOT consulted here at all -- the
+///     accepted D-Map already checked eligibility at proposal/acceptance
+///     time (`core::ddeploy::check_node_eligibility`); re-checking it on
+///     every read would let a later `target_nodes` edit silently break (or
+///     redirect) an already-accepted placement, which is exactly the
+///     authority violation ADR-0002/ADR-0018 forbid.
+pub fn resolve_assignments_from_registry_with_authority(
+    slice: &OperationalDGraphSlice,
+    artifacts: &[ServiceArtifact],
+    authority: PlacementAuthority,
 ) -> Result<Vec<ArtifactReconciliationAssignment>, String> {
     let mut assignments = Vec::with_capacity(slice.desired_services.len());
 
@@ -196,9 +261,12 @@ pub fn resolve_assignments_from_registry(
                 .is_some_and(|aliases| aliases.iter().any(|alias| {
                     alias.as_str() == Some(service.service_id.as_str())
                 }));
-            (direct_match || alias_match)
-                && artifact.control_plane.target_nodes.iter()
-                    .any(|node| node == &slice.node_id)
+            let node_eligible = match authority {
+                PlacementAuthority::LegacyTargetNodes => artifact.control_plane.target_nodes.iter()
+                    .any(|node| node == &slice.node_id),
+                PlacementAuthority::CanonicalDMap => true,
+            };
+            (direct_match || alias_match) && node_eligible
         }).collect::<Vec<_>>();
 
         let artifact = match matches.as_slice() {
@@ -254,10 +322,12 @@ pub fn resolve_assignments_from_registry(
         // assignment construction, replacing the unconditional
         // `artifact.runtime.container.as_ref().ok_or(...)` unwrap that made
         // it impossible for a `native_process` artifact to produce ANY
-        // assignment. The `target_nodes` selection check above (lines
-        // 183-194) is UNCHANGED by this stage -- that transition belongs to
-        // the stage that makes an accepted `datum.dmap/1` authoritative, per
-        // ADR-0015's placement-authority-transition note.
+        // assignment. The node-eligibility check above is now
+        // authority-aware (Stage 111, ADR-0018 independent review v2,
+        // P0-1): `target_nodes` is CURRENT placement truth only under
+        // `PlacementAuthority::LegacyTargetNodes`; under `CanonicalDMap` it
+        // is not consulted here at all, because the accepted D-Map already
+        // is that authority.
         let common = (
             artifact.artifact_id.clone(),
             service.service_id.clone(),
@@ -1699,5 +1769,125 @@ mod tests {
         let error = build_artifact_reconciliation_context(&slice(), &[item])
             .expect_err("unsafe policy should fail closed");
         assert!(error.contains("unsafe"));
+    }
+
+    // ---- Stage 111 (ADR-0018 independent review v2, P0-1): real -----------
+    // ---- canonical-vs-legacy artifact-resolution authority end-to-end ----
+
+    /// The mandatory end-to-end regression: proves the placement-authority
+    /// transition actually reaches the REAL artifact-resolution path (not
+    /// merely the persisted `DDeployStateV1` object). All three layers in
+    /// one test, exactly as required:
+    ///   1. accepted D-Map is current placement authority through the REAL
+    ///      `build_artifact_reconciliation_context_with_authority` path;
+    ///   2. the LEGACY resolver's `target_nodes` behavior is completely
+    ///      unaffected/preserved;
+    ///   3. a NEW proposal is still correctly rejected against the CURRENT
+    ///      (narrowed) `target_nodes` eligibility.
+    #[test]
+    fn canonical_authority_reaches_the_real_artifact_resolution_path() {
+        use crate::core::canonical_dcontinuum::{
+            CanonicalDContinuumV1, CanonicalDNodeV1, CanonicalNodeCapabilitiesV1, CanonicalNodeCapacityV1,
+            CanonicalNodePlatformV1, CANONICAL_DCONTINUUM_SCHEMA,
+        };
+        use crate::core::canonical_dgraph::{
+            CanonicalDGraphV1, CanonicalDServExecutionRequirementV1, CanonicalDServResourceRequirementV1,
+            CanonicalDServV1, CANONICAL_DGRAPH_SCHEMA, DNODE_ABI_V0,
+        };
+        use crate::core::canonical_dmap::CanonicalDServPlacementV1;
+        use crate::core::ddeploy::{accept_proposal, create_proposal, CreateProposalInput, DDeployStateV1, ProposalSource};
+
+        let dgraph = CanonicalDGraphV1 {
+            schema: CANONICAL_DGRAPH_SCHEMA.to_string(),
+            application_id: "app:p01".to_string(),
+            dgraph_id: "dgraph:p01".to_string(),
+            revision: 1,
+            services: vec![CanonicalDServV1 {
+                service_id: "svc-a".to_string(),
+                execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
+                resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 134_217_728 },
+            }],
+            calls: vec![],
+        };
+        let dcontinuum = CanonicalDContinuumV1 {
+            schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+            project_id: "proj-p01".to_string(),
+            dcontinuum_id: "continuum:p01".to_string(),
+            revision: 1,
+            nodes: vec![
+                CanonicalDNodeV1 { node_id: "fog-01".to_string(), platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "amd64".to_string() }, capacity: CanonicalNodeCapacityV1 { cpu_cores: 4, memory_bytes: 4_294_967_296 }, capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] } },
+                CanonicalDNodeV1 { node_id: "cloud-01".to_string(), platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "amd64".to_string() }, capacity: CanonicalNodeCapacityV1 { cpu_cores: 8, memory_bytes: 17_179_869_184 }, capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] } },
+            ],
+            links: vec![],
+        };
+        let placements = vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "fog-01".to_string() }];
+
+        // Step 1: artifact svc-a has target_nodes = ["fog-01"] (matching the
+        // canonical placement).
+        let mut artifact_svc_a = artifact("fog-01");
+        artifact_svc_a.artifact_id = "svc-a".to_string();
+        artifact_svc_a.service_id = "svc-a".to_string();
+        // `check_target_stages` (Stage 111, ADR-0018) fails closed on ANY
+        // non-empty `target_stages` -- this test is about the
+        // `target_nodes` authority transition specifically, so clear it.
+        artifact_svc_a.control_plane.target_stages = Vec::new();
+
+        // Step 2: accept a canonical D-Map placing svc-a -> fog-01.
+        let mut state = DDeployStateV1::empty();
+        create_proposal(
+            &mut state,
+            CreateProposalInput { project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
+            "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &[artifact_svc_a.clone()],
+        ).expect("initial proposal must be valid");
+        let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &[artifact_svc_a.clone()], "2026-01-01T00:00:00Z", "a1".to_string())
+            .expect("initial acceptance must succeed");
+        assert_eq!(outcome.materialized_dmap.revision, 1);
+
+        // Build the operational slice for fog-01 (mirrors what
+        // `build_operational_slice` would derive from the effective
+        // canonical `OperationalDGraph` for this node).
+        let mut fog_slice = slice();
+        fog_slice.node_id = "fog-01".to_string();
+        fog_slice.desired_services = vec![OperationalDesiredService { service_id: "svc-a".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() }];
+
+        // Step 3/4: the REAL canonical-authority path resolves svc-a on fog-01.
+        let canonical_context = build_artifact_reconciliation_context_with_authority(&fog_slice, &[artifact_svc_a.clone()], PlacementAuthority::CanonicalDMap)
+            .expect("canonical resolution must succeed before any artifact mutation");
+        assert_eq!(canonical_context.artifacts[0].artifact_id, "svc-a");
+
+        // Step 4/5: mutate the artifact's target_nodes AWAY from fog-01 --
+        // the accepted D-Map (state.active_by_application) is completely
+        // unaffected by this (it only reads `artifacts` when explicitly
+        // passed in; nothing here calls back into `state`).
+        let mut mutated_artifact_svc_a = artifact_svc_a.clone();
+        mutated_artifact_svc_a.control_plane.target_nodes = vec!["cloud-01".to_string()];
+        let active = state.active_for("proj-p01", "app:p01").expect("acceptance must still be active");
+        assert_eq!(active.active_dmap.placements[0].node_id, "fog-01", "accepted D-Map placement must be completely unaffected by the artifact mutation");
+
+        // Step 6: the REAL canonical-authority path STILL resolves svc-a on
+        // fog-01, using the MUTATED artifact -- proving target_nodes is not
+        // consulted as current placement truth on this path.
+        let canonical_context_after_mutation = build_artifact_reconciliation_context_with_authority(&fog_slice, &[mutated_artifact_svc_a.clone()], PlacementAuthority::CanonicalDMap)
+            .expect("canonical resolution must STILL succeed after target_nodes narrows away from fog-01 -- the accepted D-Map remains placement authority");
+        assert_eq!(canonical_context_after_mutation.artifacts[0].artifact_id, "svc-a");
+
+        // Step 7: the LEGACY resolver, given the SAME mutated artifact, must
+        // NOT resolve svc-a for fog-01 -- backward-compatible legacy
+        // semantics are completely preserved.
+        let legacy_result = build_artifact_reconciliation_context_with_authority(&fog_slice, &[mutated_artifact_svc_a.clone()], PlacementAuthority::LegacyTargetNodes);
+        assert!(legacy_result.is_err(), "legacy resolver must still require target_nodes to contain the current node");
+        // Also via the actual public legacy entry point, not just the
+        // authority-parameterized one.
+        assert!(build_artifact_reconciliation_context(&fog_slice, &[mutated_artifact_svc_a.clone()]).is_err());
+
+        // Step 8: a NEW proposal still targeting fog-01, evaluated against
+        // the CURRENT (narrowed) artifact eligibility, is rejected.
+        let mut state2 = state;
+        let rejected = create_proposal(
+            &mut state2,
+            CreateProposalInput { project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
+            "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &[mutated_artifact_svc_a],
+        );
+        assert!(rejected.is_err_and(|findings| findings.iter().any(|f| f.code == "node_not_eligible")), "a NEW proposal must be rejected against the CURRENT (narrowed) target_nodes eligibility");
     }
 }

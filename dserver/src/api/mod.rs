@@ -7,6 +7,7 @@ pub mod governed_deployment_preflight;
 pub mod capabilities;
 pub mod controlled_wasm_deployment;
 pub mod dashboard;
+pub mod ddeploy;
 pub mod deployment_lifecycle;
 pub mod deployment_planning;
 pub mod dgraph_artifact_integrity;

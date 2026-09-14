@@ -1,0 +1,33 @@
+{
+  "x_illustrative_only": "This is NOT a full datum.ddeploy-proposal/1 document -- it is a minimal, illustrative snippet of the ServiceArtifact join resolve_artifact_for_service (dserver::core::ddeploy) performs. ServiceArtifact's own JSON contract belongs to a separate, pre-existing fixture family (service_artifact_registry), not to this Stage 111 ddeploy-v1 family.",
+  "candidate_placement": {
+    "service_id": "svc-process",
+    "node_id": "cloud-01"
+  },
+  "resolved_service_artifacts": [
+    {
+      "artifact_id": "artifact:svc-process-v1",
+      "service_id": "svc-process",
+      "control_plane": {
+        "target_nodes": [
+          "cloud-01"
+        ],
+        "target_stages": []
+      }
+    },
+    {
+      "artifact_id": "artifact:svc-process-v2",
+      "service_id": "svc-process",
+      "control_plane": {
+        "target_nodes": [
+          "cloud-01"
+        ],
+        "target_stages": []
+      }
+    }
+  ],
+  "x_expect_reject": {
+    "code": "artifact_ambiguous"
+  },
+  "x_note": "Two ServiceArtifact records ('artifact:svc-process-v1' and 'artifact:svc-process-v2') both directly match canonical service_id 'svc-process' for the same project. resolve_artifact_for_service requires EXACTLY one match -- zero or more than one both fail closed (F_ARTIFACT_NOT_FOUND / F_ARTIFACT_AMBIGUOUS respectively); this fixture illustrates the ambiguous case. The join never silently picks the first match."
+}

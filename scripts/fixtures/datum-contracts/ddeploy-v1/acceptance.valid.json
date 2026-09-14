@@ -1,0 +1,21 @@
+{
+  "schema": "datum.ddeploy-acceptance/1",
+  "acceptance_id": "ddeploy-acceptance:ddeploy-lab-001",
+  "proposal_id": "ddeploy-proposal:ddeploy-lab-001",
+  "proposal_digest": "sha256:18660999ac9c7bbd18f5f42425015abb5110ab60a1d61eb860855edf99258ddd",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:ddeploy-lab",
+  "accepted_at_utc": "2026-01-01T00:05:00Z",
+  "accepted_by": "operator:alice",
+  "materialized_dmap_ref": {
+    "id": "dmap:13:monitor-f49c815:app:ddeploy-lab",
+    "revision": 1,
+    "digest": "sha256:5c70d6158f5f0186a4e0a9e785772c0133f89af4b35cea1ac9f84db17c65858b"
+  },
+  "operational_projection_ref": {
+    "operational_dgraph_id": "ddeploy-operational:monitor-f49c8",
+    "revision": 1
+  },
+  "x_note": "The explicit acceptance record for proposal.valid.json. accepted_by is a CALLER-SUPPLIED AUDIT LABEL only (ADR-0018, same convention as ResolvedImageIdentityV1.resolved_by) -- DServer performs no authentication of it. materialized_dmap_ref.id uses canonical_dmap_id's length-prefixed encoding (independent review v2, identifier-composition audit: 'dmap:' + '<len>:<project_id>' + '<len>:<application_id>', concatenated with no separator between the two length-prefixed components -- unambiguous regardless of what characters project_id/application_id themselves contain, e.g. the literal ':' inside 'app:ddeploy-lab'). materialized_dmap_ref.digest is the SAME value recompute_dmap_digest produces for the CanonicalDMapV1 DServer materializes from this proposal's placements (dmap_id/revision are DServer-owned, never proposal-supplied). operational_projection_ref.operational_dgraph_id is DELIBERATELY not equal to either canonical dgraph_ref.id or a legacy 'dgraph:<project_id>' id -- see ADR-0018's authorization-separation section.",
+  "expected_dmap_digest_sha256": "sha256:5c70d6158f5f0186a4e0a9e785772c0133f89af4b35cea1ac9f84db17c65858b"
+}
