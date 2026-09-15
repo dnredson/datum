@@ -68,6 +68,7 @@
 //! into caller-supplied `node_id` for isolated testing; it is never the
 //! governed path.
 
+use std::path::Path;
 use std::time::Instant;
 
 use crate::dcode::authorization::DCodeInvocationAuthorizationV1;
@@ -105,6 +106,135 @@ impl DCodeExecutor for InProcessExecutor<'_> {
     }
 }
 
+/// Independent review fix v2 (I1A): one validated, decoded emit from a
+/// successful invocation -- populated ONLY after `parse_and_validate_output`
+/// succeeds (an invalid/undeclared/excess emit never reaches here). This is
+/// deliberately NEVER `Serialize`/`Deserialize` and NEVER persisted -- the
+/// raw emit payload exists only transiently in this trusted process's
+/// memory, exactly long enough for `dcall::delivery` to dispatch it. Evidence
+/// (`DCodeInvocationEvidenceV1::emits`, `DCodeEmitEvidenceV1`) remains
+/// digest/size-only, unaffected by this type's existence.
+///
+/// Independent review fix v3 (J1A): `envelope::ValidatedEmit` itself now has
+/// private fields and no public constructor (see that type's doc comment) --
+/// this alias inherits that opacity, so a `ValidatedDCodeEmit` can only ever
+/// be one produced by a real `parse_and_validate_output` call, accessed via
+/// its `.port()`/`.payload()` methods.
+pub type ValidatedDCodeEmit = crate::dcode::envelope::ValidatedEmit;
+
+/// Independent review fix v2 (I1A): the richer, transient (never serialized)
+/// result of an invocation -- `.evidence()` is identical to what
+/// `invoke_dcode` alone would have returned; `.validated_emits()`
+/// additionally carries the REAL decoded emit bytes for a trusted host-side
+/// caller (D-Call dispatch) to consume directly, without ever persisting
+/// them. Empty whenever the invocation didn't reach a successful,
+/// emit-bearing output (failure, or a canonical no-output `Success`).
+///
+/// Independent review fix v3 (J1A): fields are PRIVATE with read-only
+/// accessors, and this type does NOT implement `Deserialize` -- the only
+/// place a `DCodeInvocationResult` can be constructed is inside this module's
+/// own `invoke_dcode_impl`, after a real invocation actually ran. A caller
+/// (in this crate or, if this library were ever depended on externally, any
+/// other crate) cannot fabricate one from an arbitrary
+/// `DCodeInvocationEvidenceV1` + arbitrary bytes -- see
+/// `source-dcode-emit-provenance-audit.txt`.
+pub struct DCodeInvocationResult {
+    evidence: DCodeInvocationEvidenceV1,
+    validated_emits: Vec<ValidatedDCodeEmit>,
+}
+
+impl DCodeInvocationResult {
+    pub fn evidence(&self) -> &DCodeInvocationEvidenceV1 {
+        &self.evidence
+    }
+
+    pub fn validated_emits(&self) -> &[ValidatedDCodeEmit] {
+        &self.validated_emits
+    }
+}
+
+/// Independent review fix v5 (K1A): distinguishes a result KNOWN to have
+/// been produced by the real GOVERNED isolated-worker execution path from
+/// the merely-opaque `DCodeInvocationResult` above. J1's opacity fix (private
+/// fields, no `Deserialize`) closed direct fabrication, but it did NOT close
+/// a subtler gap: `invoke_dcode_capturing_emits` still accepts any `&dyn
+/// DCodeExecutor`, so a caller-implemented `FakeExecutor` returning a
+/// syntactically valid ADR-0003 success envelope could still legitimately
+/// mint a `DCodeInvocationResult` -- without ever running real isolated-worker
+/// Wasmtime execution. `GovernedDCodeInvocationResult` has private fields, no
+/// public constructor, and is never `Deserialize`; the ONLY way to obtain one
+/// is `invoke_dcode_governed_capturing_emits` below (or, for a `cargo test`
+/// binary that cannot rely on sibling-executable resolution / a provisioned
+/// local identity file, the `dcall-test-support`-feature-gated
+/// `invoke_dcode_governed_capturing_emits_for_test`) -- the production producer always runs the real isolated worker; the
+/// non-default test-support producer permits synthetic executors. Production
+/// D-Call dispatch (`dcall::delivery::dispatch_validated_emit`) accepts ONLY
+/// this type -- see `governed-source-invocation-provenance-audit.txt`.
+pub struct GovernedDCodeInvocationResult {
+    inner: DCodeInvocationResult,
+}
+
+impl GovernedDCodeInvocationResult {
+    pub fn evidence(&self) -> &DCodeInvocationEvidenceV1 {
+        self.inner.evidence()
+    }
+
+    pub fn validated_emits(&self) -> &[ValidatedDCodeEmit] {
+        self.inner.validated_emits()
+    }
+}
+
+/// Independent review fix v5 (K1B): the ONLY production way to obtain a
+/// `GovernedDCodeInvocationResult`. Resolves THIS installation's own local
+/// D-Node identity from `dnode_root` itself (never a caller-supplied
+/// `node_id` override -- mirrors the G1 fix already applied to the governed
+/// D-Code CLI) and the trusted installed sibling `smartsentinel-dcode-worker`
+/// binary itself via `dcode::worker::trusted_sibling_worker_binary_path`
+/// (never a caller-supplied path override -- mirrors G2), then runs the real
+/// Phase-111 isolated-worker execution path. Authorization/artifact are still
+/// supplied by the caller because Phase-111 already validates their exact
+/// binding to the resolved node identity inside `invoke_dcode_impl` -- this
+/// function does not duplicate that.
+pub fn invoke_dcode_governed_capturing_emits(
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    dnode_root: &Path,
+    input_port: &str,
+    input: &[u8],
+) -> Result<GovernedDCodeInvocationResult, String> {
+    let local_identity = crate::dcode::local_identity::load_local_identity(dnode_root)?;
+    let worker_binary = crate::dcode::worker::trusted_sibling_worker_binary_path();
+    let executor = crate::dcode::worker::IsolatedWorkerExecutor { worker_binary: &worker_binary, module_store_root: dnode_root };
+    let inner = invoke_dcode_capturing_emits(&executor, module_store, authorization, artifact, &local_identity.node_id, input_port, input);
+    Ok(GovernedDCodeInvocationResult { inner })
+}
+
+/// TEST-ONLY (independent review fix v5, K1D): compiled ONLY behind the
+/// non-default `dcall-test-support` feature, so a normal `cargo build`/
+/// `cargo build --release` never includes this symbol at all. Identical to
+/// `invoke_dcode_governed_capturing_emits` except a `cargo test` binary
+/// supplies its own executor/worker-resolved-`this_node_id` directly, since
+/// it cannot rely on sibling-executable resolution or a provisioned local
+/// identity file the way a real installation can. Still always wraps a REAL
+/// `invoke_dcode_capturing_emits` call -- callers typically pass a real
+/// `dcode::worker::IsolatedWorkerExecutor` here too, for the strongest test
+/// evidence, though `InProcessExecutor` remains available for tests that only
+/// need to exercise the surrounding governance logic quickly.
+#[cfg(feature = "dcall-test-support")]
+pub fn invoke_dcode_governed_capturing_emits_for_test(
+    executor: &dyn DCodeExecutor,
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    this_node_id: &str,
+    input_port: &str,
+    input: &[u8],
+) -> GovernedDCodeInvocationResult {
+    let inner = invoke_dcode_capturing_emits(executor, module_store, authorization, artifact, this_node_id, input_port, input);
+    GovernedDCodeInvocationResult { inner }
+}
+
 pub fn invoke_dcode(
     executor: &dyn DCodeExecutor,
     module_store: &DCodeModuleStore,
@@ -114,6 +244,105 @@ pub fn invoke_dcode(
     input_port: &str,
     input: &[u8],
 ) -> DCodeInvocationEvidenceV1 {
+    invoke_dcode_impl(executor, module_store, authorization, artifact, this_node_id, input_port, input, None, None).evidence
+}
+
+/// Independent review fix v2 (I1A/I1B): identical to `invoke_dcode` except it
+/// ALSO returns the real, decoded, validated emit payloads (transiently, in
+/// process memory only -- never serialized/persisted). This is the ONLY
+/// function that gives a caller access to real emit bytes; it exists
+/// specifically so `dcall::delivery::dispatch_validated_emit` can prove a
+/// dispatched payload actually came from a real successful source D-Code
+/// invocation (SHA-256(payload) checked against the corresponding
+/// `DCodeEmitEvidenceV1` digest already in `evidence.emits`) rather than
+/// trusting arbitrary caller-supplied bytes.
+pub fn invoke_dcode_capturing_emits(
+    executor: &dyn DCodeExecutor,
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    this_node_id: &str,
+    input_port: &str,
+    input: &[u8],
+) -> DCodeInvocationResult {
+    invoke_dcode_impl(executor, module_store, authorization, artifact, this_node_id, input_port, input, None, None)
+}
+
+/// Independent review fix v2 (I2A): identical to `invoke_dcode` except BOTH
+/// `message_id` AND `correlation_id` are host-supplied rather than minted
+/// here -- used EXCLUSIVELY by `dcall::delivery`'s destination execution, so
+/// a D-Call delivery grant's own bound `message_id`/`correlation_id` are the
+/// SAME identifiers that end up in both the guest-visible input envelope and
+/// this invocation's own `DCodeInvocationEvidenceV1`, closing the gap where
+/// the grant and the actual destination invocation could otherwise mint two
+/// independent, potentially-divergent message identities for what is
+/// supposed to be one delivery. Never exposed to a raw CLI/API caller.
+pub fn invoke_dcode_with_delivery_identity(
+    executor: &dyn DCodeExecutor,
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    this_node_id: &str,
+    input_port: &str,
+    input: &[u8],
+    message_id: &str,
+    correlation_id: &str,
+) -> DCodeInvocationEvidenceV1 {
+    invoke_dcode_impl(
+        executor,
+        module_store,
+        authorization,
+        artifact,
+        this_node_id,
+        input_port,
+        input,
+        None,
+        Some((message_id.to_string(), correlation_id.to_string())),
+    )
+    .evidence
+}
+
+/// Phase 112 (ADR-0022): identical to `invoke_dcode` except the envelope's
+/// `correlation_id` is the caller-supplied value (propagated by the D-Call
+/// host layer across one logical call chain) instead of a freshly minted
+/// one -- `message_id` is still always freshly generated per invocation,
+/// exactly as `invoke_dcode` does. Never exposed to a raw CLI/API caller;
+/// only `dcall::delivery`'s host-mediated dispatch uses this.
+pub fn invoke_dcode_with_correlation(
+    executor: &dyn DCodeExecutor,
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    this_node_id: &str,
+    input_port: &str,
+    input: &[u8],
+    correlation_id: &str,
+) -> DCodeInvocationEvidenceV1 {
+    invoke_dcode_impl(
+        executor,
+        module_store,
+        authorization,
+        artifact,
+        this_node_id,
+        input_port,
+        input,
+        Some(correlation_id.to_string()),
+        None,
+    )
+    .evidence
+}
+
+fn invoke_dcode_impl(
+    executor: &dyn DCodeExecutor,
+    module_store: &DCodeModuleStore,
+    authorization: &DCodeInvocationAuthorizationV1,
+    artifact: &CanonicalDServArtifactV1,
+    this_node_id: &str,
+    input_port: &str,
+    input: &[u8],
+    correlation_override: Option<String>,
+    identity_override: Option<(String, String)>,
+) -> DCodeInvocationResult {
     let started = Instant::now();
     let input_sha256 = sha256_hex(input);
     let limits_applied = DCodeAppliedLimits {
@@ -172,7 +401,7 @@ pub fn invoke_dcode(
             evidence.error_code = Some($code.to_string());
             evidence.error_message = Some($message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return evidence;
+            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
         }};
     }
 
@@ -308,9 +537,18 @@ pub fn invoke_dcode(
     };
 
     // R4A: host constructs the input envelope; message_id/correlation_id are
-    // ALWAYS host-generated, never derived from the guest.
-    let (envelope_bytes, message_id, correlation_id, received_at_utc) =
-        envelope::build_input_envelope(input_port, input);
+    // ALWAYS host-generated, never derived from the guest. Phase 112:
+    // `correlation_override` (set only by `invoke_dcode_with_correlation`)
+    // propagates one D-Call chain's correlation_id instead of minting a new
+    // one; `identity_override` (I2A, set only by
+    // `invoke_dcode_with_delivery_identity`) supplies BOTH host-owned
+    // identities so a D-Call delivery grant's own bound message_id/
+    // correlation_id are the exact values the guest actually receives.
+    let (envelope_bytes, message_id, correlation_id, received_at_utc) = match (identity_override, correlation_override) {
+        (Some((message_id, correlation_id)), _) => envelope::build_input_envelope_with_identity(input_port, input, message_id, correlation_id),
+        (None, Some(correlation_id)) => envelope::build_input_envelope_with_correlation(input_port, input, correlation_id),
+        (None, None) => envelope::build_input_envelope(input_port, input),
+    };
     evidence.message_id = message_id;
     evidence.correlation_id = correlation_id;
     // F3A: identity of the EXACT bytes/timestamp the guest actually
@@ -327,21 +565,21 @@ pub fn invoke_dcode(
             evidence.error_code = Some("validation_failed".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return evidence;
+            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
         }
         ExecutionOutcome::ResourceLimit(message) => {
             evidence.outcome = DCodeInvocationOutcome::ResourceLimit;
             evidence.error_code = Some("resource_limit".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return evidence;
+            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
         }
         ExecutionOutcome::Trap(message) => {
             evidence.outcome = DCodeInvocationOutcome::Trap;
             evidence.error_code = Some("trap".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return evidence;
+            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
         }
     };
 
@@ -356,7 +594,7 @@ pub fn invoke_dcode(
         ExecutionOutput::NoOutput => {
             evidence.outcome = DCodeInvocationOutcome::Success;
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return evidence;
+            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
         }
         ExecutionOutput::Bytes(bytes) => bytes,
     };
@@ -365,6 +603,7 @@ pub fn invoke_dcode(
     evidence.output_size = Some(raw_output.len());
 
     // R4B/R4C: parse and fail-closed-validate the output envelope.
+    let mut validated_emits: Vec<ValidatedDCodeEmit> = Vec::new();
     let declared_output_ports: Vec<String> = artifact.ports.outputs.iter().map(|port| port.port.clone()).collect();
     match envelope::parse_and_validate_output(&raw_output, &declared_output_ports, artifact.limits.max_emits_per_invocation)
     {
@@ -381,11 +620,16 @@ pub fn invoke_dcode(
                 .emits
                 .iter()
                 .map(|emit| DCodeEmitEvidenceV1 {
-                    port: emit.port.clone(),
-                    payload_sha256: sha256_hex(&emit.payload),
-                    payload_size: emit.payload.len(),
+                    port: emit.port().to_string(),
+                    payload_sha256: sha256_hex(emit.payload()),
+                    payload_size: emit.payload().len(),
                 })
                 .collect();
+            // I1A: the REAL decoded emit bytes, transiently, for
+            // `invoke_dcode_capturing_emits` callers only -- `invoke_dcode`/
+            // `invoke_dcode_with_correlation`/`invoke_dcode_with_delivery_identity`
+            // all discard this field via `.evidence`.
+            validated_emits = validated.emits;
             // A well-formed envelope -- whether the guest's own business
             // logic reports "ok" or "rejected" -- is a successful
             // INFRASTRUCTURE-level invocation; `output_status` carries the
@@ -419,7 +663,7 @@ pub fn invoke_dcode(
     }
 
     evidence.duration_ms = started.elapsed().as_millis() as u64;
-    evidence
+    DCodeInvocationResult { evidence, validated_emits }
 }
 
 #[cfg(test)]

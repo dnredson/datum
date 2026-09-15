@@ -109,9 +109,7 @@ struct Resolved {
 }
 
 fn default_worker_binary_path() -> PathBuf {
-    let mut path = std::env::current_exe().expect("current_exe should resolve");
-    path.set_file_name(if cfg!(windows) { "smartsentinel-dcode-worker.exe" } else { "smartsentinel-dcode-worker" });
-    path
+    datum::dcode::worker::trusted_sibling_worker_binary_path()
 }
 
 fn read_input(input_path: &str) -> Result<Vec<u8>> {

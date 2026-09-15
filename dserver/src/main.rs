@@ -33,6 +33,7 @@ use api::dashboard::get_dashboard;
 use api::ddeploy::{get_active, get_proposal, post_accept_proposal, post_create_proposal, post_plan_proposal, post_validate_proposal};
 use api::dnode_registry::{delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode};
 use api::dcode::{get_dserv_artifact, post_authorize_dcode_invocation, post_declare_dserv_artifact};
+use api::dcall::{get_dcall_endpoint, get_dcalls_for_source_service, post_redeem_grant, post_request_grant, put_dcall_endpoint};
 use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::secret_preflight::get_secret_preflight;
 use api::secret_resolver_contract::get_secret_resolver_contract;
@@ -422,6 +423,11 @@ async fn main() {
         .route("/api/v1/dcode/artifacts", post(post_declare_dserv_artifact))
         .route("/api/v1/dcode/artifacts/:application_id/:dserv_id", get(get_dserv_artifact))
         .route("/api/v1/dcode/authorize", post(post_authorize_dcode_invocation))
+        .route("/api/v1/dcall/endpoints/:node_id/:transport", put(put_dcall_endpoint))
+        .route("/api/v1/dcall/endpoints/:node_id/:transport", get(get_dcall_endpoint))
+        .route("/api/v1/dcall/calls/:project_id/:application_id/:source_service_id", get(get_dcalls_for_source_service))
+        .route("/api/v1/dcall/grants", post(post_request_grant))
+        .route("/api/v1/dcall/grants/:grant_id/redeem", post(post_redeem_grant))
         .route("/api/v1/dcontinuum/authoritative", get(get_authoritative_dcontinuum))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(

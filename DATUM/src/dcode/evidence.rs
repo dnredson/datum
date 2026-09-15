@@ -178,3 +178,96 @@ pub struct DCodeAppliedLimits {
     pub max_memory_pages: u32,
     pub max_message_bytes: u32,
 }
+
+/// Independent review fix v5 (section 9): the ONE deterministic digest
+/// algorithm used to identify a `DCodeInvocationEvidenceV1` record for D-Call
+/// binding purposes -- used identically for BOTH the source invocation that
+/// produced a dispatched emit and the destination invocation D-Call actually
+/// executed, so `dcall::delivery` never maintains two subtly different
+/// evidence-digest algorithms. This is plain `serde_json` serialization
+/// (struct field order is fixed by the type definition, so this is already
+/// deterministic for structurally identical records) -- identical to the
+/// algorithm `dcall::evidence::build_success_evidence` already used for the
+/// destination side before this fix, now shared rather than duplicated.
+/// Returns the bare 64-lowercase-hex representation (this crate's existing
+/// `sha256_hex` convention), never the full evidence content itself.
+pub fn dcode_evidence_sha256(evidence: &DCodeInvocationEvidenceV1) -> String {
+    crate::dcode::identity::sha256_hex(&serde_json::to_vec(evidence).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_evidence() -> DCodeInvocationEvidenceV1 {
+        DCodeInvocationEvidenceV1 {
+            schema: DCODE_EVIDENCE_SCHEMA.to_string(),
+            authorization_id: "auth-1".to_string(),
+            project_id: "proj:lab".to_string(),
+            application_id: "app:a".to_string(),
+            service_id: "source".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_id: "dmap:1".to_string(),
+            dmap_revision: 1,
+            dmap_digest: format!("sha256:{}", "1".repeat(64)),
+            dgraph_id: "dgraph:1".to_string(),
+            dgraph_revision: 1,
+            dgraph_digest: format!("sha256:{}", "2".repeat(64)),
+            dserv_artifact_id: "dserv:pipeline:source".to_string(),
+            dserv_artifact_digest: "3".repeat(64),
+            dserv_artifact_descriptor_digest: format!("sha256:{}", "4".repeat(64)),
+            module_size_bytes: Some(64),
+            dnode_abi: "datum-dnode/0".to_string(),
+            fresh_instance_per_invocation: true,
+            input_port: "in".to_string(),
+            message_id: "m1".to_string(),
+            correlation_id: "c1".to_string(),
+            input_sha256: "5".repeat(64),
+            input_size: 7,
+            input_envelope_sha256: "6".repeat(64),
+            input_envelope_size: 100,
+            received_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            output_sha256: None,
+            output_size: None,
+            output_status: Some("ok".to_string()),
+            output_reason_present: false,
+            output_reason_sha256: None,
+            output_reason_size: None,
+            emits: Vec::new(),
+            limits_applied: DCodeAppliedLimits { fuel_per_invocation: 1_000_000, timeout_ms: 100, max_memory_pages: 4, max_message_bytes: 65536 },
+            outcome: DCodeInvocationOutcome::Success,
+            error_code: None,
+            error_message: None,
+            error_offending_value_sha256: None,
+            error_offending_value_size: None,
+            duration_ms: 1,
+        }
+    }
+
+    /// Section 9: the shared source/destination evidence-digest helper must
+    /// be deterministic for structurally identical records...
+    #[test]
+    fn dcode_evidence_sha256_is_deterministic_for_identical_records() {
+        let a = sample_evidence();
+        let b = sample_evidence();
+        assert_eq!(dcode_evidence_sha256(&a), dcode_evidence_sha256(&b));
+    }
+
+    /// ...and sensitive to any real difference (here, `node_id`), so it
+    /// genuinely identifies a SPECIFIC evidence record rather than merely a
+    /// coarse fingerprint of a few fields.
+    #[test]
+    fn dcode_evidence_sha256_changes_when_the_evidence_itself_changes() {
+        let a = sample_evidence();
+        let mut b = sample_evidence();
+        b.node_id = "cloud-01".to_string();
+        assert_ne!(dcode_evidence_sha256(&a), dcode_evidence_sha256(&b));
+    }
+
+    #[test]
+    fn dcode_evidence_sha256_is_a_bare_64_char_lowercase_hex_string() {
+        let digest = dcode_evidence_sha256(&sample_evidence());
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    }
+}

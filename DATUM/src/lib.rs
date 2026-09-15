@@ -4,6 +4,7 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod core;
+pub mod dcall;
 pub mod dcode;
 pub mod deployment_planning;
 pub mod dgraph_snapshot;

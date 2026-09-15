@@ -33,3 +33,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 tower-http = { version = "0.5", features = ["cors"] }
 http = "1"
+# Phase 112 (ADR-0022): D-Call endpoint URL validation (scheme/userinfo
+# checks). Already present transitively via reqwest at 2.5.8 -- declared
+# directly here rather than hand-parsing URLs, since a correct URL parser
+# is exactly the kind of "smallest existing mechanism" the D-Call spec asks
+# to reuse rather than reimplement.
+url = "2"

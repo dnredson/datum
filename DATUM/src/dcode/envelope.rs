@@ -119,10 +119,27 @@ pub fn safe_error_message(error: &EnvelopeError) -> (String, Option<Vec<u8>>) {
     }
 }
 
+/// Independent review fix v3 (J1A): fields are PRIVATE and there is no public
+/// constructor -- the only place a `ValidatedEmit` can ever be created is
+/// inside `parse_and_validate_output` below, after a guest's output envelope
+/// has been fully parsed and validated. This makes it a genuine
+/// compile-time/API-boundary property (not merely a convention) that no
+/// caller outside this module can fabricate a `ValidatedEmit` carrying
+/// arbitrary port/payload bytes -- see `source-dcode-emit-provenance-audit.txt`.
 #[derive(Debug)]
 pub struct ValidatedEmit {
-    pub port: String,
-    pub payload: Vec<u8>,
+    port: String,
+    payload: Vec<u8>,
+}
+
+impl ValidatedEmit {
+    pub fn port(&self) -> &str {
+        &self.port
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
 }
 
 #[derive(Debug)]
@@ -137,8 +154,47 @@ pub struct ValidatedOutput {
 /// influences either. Returns the serialized JSON bytes to hand to
 /// `datum_handle`, plus the generated identifiers/timestamp for evidence.
 pub fn build_input_envelope(port: &str, payload: &[u8]) -> (Vec<u8>, String, String, String) {
-    let message_id = format!("dcode-msg:{}", uuid::Uuid::new_v4());
     let correlation_id = format!("dcode-corr:{}", uuid::Uuid::new_v4());
+    build_input_envelope_with_correlation(port, payload, correlation_id)
+}
+
+/// Phase 112 (ADR-0022) extension: identical to `build_input_envelope`
+/// except `correlation_id` is supplied by the caller instead of freshly
+/// minted here -- used ONLY by the D-Call host-mediated delivery path
+/// (`dcall::delivery`) to propagate one correlation_id across an entire
+/// logical call chain (ADR-0003's "D-Node owns message/correlation
+/// identity" rule still holds: the value still originates from
+/// HOST-GENERATED state -- the correlation_id created by the very first
+/// invocation in the chain -- never from anything guest-supplied, and never
+/// from a raw CLI/API caller). `message_id` is ALWAYS freshly generated
+/// here too, exactly like `build_input_envelope` -- every delivery attempt,
+/// including a D-Call-mediated one, gets its own unique message_id.
+pub fn build_input_envelope_with_correlation(
+    port: &str,
+    payload: &[u8],
+    correlation_id: String,
+) -> (Vec<u8>, String, String, String) {
+    let message_id = format!("dcode-msg:{}", uuid::Uuid::new_v4());
+    build_input_envelope_with_identity(port, payload, message_id, correlation_id)
+}
+
+/// Phase 112 independent review fix v2 (I2A): identical to
+/// `build_input_envelope_with_correlation` except BOTH `message_id` AND
+/// `correlation_id` are supplied by the caller instead of either being
+/// freshly minted here. Both values still originate exclusively from
+/// HOST-GENERATED state (never guest-supplied, never a raw CLI/API caller
+/// input) -- the only caller of this function is D-Call's destination
+/// delivery path, which uses the delivery GRANT's own bound `message_id`/
+/// `correlation_id` so that a grant genuinely binds the identity of the
+/// message actually delivered, rather than the destination invocation
+/// minting an independent one that could silently diverge from what the
+/// grant recorded.
+pub fn build_input_envelope_with_identity(
+    port: &str,
+    payload: &[u8],
+    message_id: String,
+    correlation_id: String,
+) -> (Vec<u8>, String, String, String) {
     let received_at_utc = chrono::Utc::now().to_rfc3339();
     let envelope = DCodeInputEnvelopeV1 {
         abi: DNODE_ENVELOPE_ABI.to_string(),

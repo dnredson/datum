@@ -10,6 +10,7 @@ pub mod dashboard;
 pub mod ddeploy;
 pub mod dnode_registry;
 pub mod dcode;
+pub mod dcall;
 pub mod deployment_lifecycle;
 pub mod deployment_planning;
 pub mod dgraph_artifact_integrity;

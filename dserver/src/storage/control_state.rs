@@ -42,6 +42,25 @@ pub const DOMAIN_DNODE_REGISTRY: &str = "dnode_structural_registry";
 /// a separate domain from `ServiceArtifact`'s own registry (ADR-0005:
 /// Management WASM / container artifacts are never D-Code).
 pub const DOMAIN_DCODE_REGISTRY: &str = "dcode_artifact_registry";
+/// D-Call operational D-Node transport endpoint registry (ADR-0022):
+/// server-owned OPERATIONAL routing configuration mapping a structural
+/// `node_id` to a concrete transport address for cross-D-Node D-Call
+/// delivery. Deliberately NOT part of `DOMAIN_DNODE_REGISTRY` -- endpoint
+/// addresses are explicitly excluded from `CanonicalDNodeV1`/D-Continuum
+/// structural authority (that stays host-independent); this is a separate,
+/// purely operational domain, exactly analogous to how `dcode_registry`
+/// keeps D-Code metadata separate from `ServiceArtifact`.
+pub const DOMAIN_DCALL_ENDPOINT_REGISTRY: &str = "dcall_endpoint_registry";
+/// D-Call delivery grant state (ADR-0022): short-lived, single-use,
+/// server-issued delivery authorizations plus their redemption state. Only
+/// `SHA-256(token)` is ever persisted here, never the raw bearer token
+/// (`dcall_grant::DCallGrantRecord`'s own doc comment is the authoritative
+/// statement of that invariant). Redeemed state is durable and MUST survive
+/// a restart -- an already-redeemed grant must never become valid again
+/// merely because the process reloaded (see `dcall_grant_replay_audit`/
+/// `final-acceptance-gate.txt` in the review package for the regression
+/// proving this).
+pub const DOMAIN_DCALL_GRANT_STATE: &str = "dcall_grant_state";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {

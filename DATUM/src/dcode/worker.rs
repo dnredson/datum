@@ -273,6 +273,24 @@ pub fn invoke_isolated(
     }
 }
 
+/// Independent review fix v5 (K1C): the ONE centralized trusted-worker-path
+/// resolver in the crate -- the sibling `smartsentinel-dcode-worker`
+/// executable next to whatever binary is currently running. Previously this
+/// exact logic was duplicated in `smartsentinel-dcode-invoke.rs`,
+/// `smartsentinel-dcall-listen.rs`, and `dcall::delivery`; all three now call
+/// this instead. Only correct for a real INSTALLED binary -- a `cargo test`
+/// binary's `current_exe()` does not live alongside the real worker binary
+/// the way an installation does (Cargo puts test binaries under
+/// `target/.../deps`, one level below where `[[bin]]` targets are placed),
+/// which is exactly why the `dcall-test-support`-feature-gated test seams
+/// exist to let a test supply `env!("CARGO_BIN_EXE_smartsentinel-dcode-worker")`
+/// explicitly instead.
+pub fn trusted_sibling_worker_binary_path() -> PathBuf {
+    let mut path = std::env::current_exe().expect("current_exe should resolve");
+    path.set_file_name(if cfg!(windows) { "smartsentinel-dcode-worker.exe" } else { "smartsentinel-dcode-worker" });
+    path
+}
+
 /// The REAL production `DCodeExecutor` -- spawns a fresh isolated worker
 /// child process per invocation (see `invoke_isolated` above). Used
 /// exclusively by the governed CLI binaries; never by `dcode::invoke`'s own

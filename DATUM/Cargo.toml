@@ -8,6 +8,16 @@ default-run = "datum"
 test = false
 doctest = false
 
+[features]
+# Independent review fix v5 (K1D): gates every "_for_test"/"*_for_test"
+# D-Call/D-Code seam that lets a caller supply an explicit executor, worker
+# binary path, or node identity override -- these exist ONLY so `cargo test`
+# binaries (which cannot rely on sibling-executable resolution or a
+# provisioned local identity file the way a real installation can) can
+# exercise the real governed code paths. A plain `cargo build`/`cargo build
+# --release` (default features only) does not compile any of these symbols
+# at all -- see `dcall-test-hook-surface-audit.txt`.
+dcall-test-support = []
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -30,3 +40,8 @@ fs2 = "0.4"
 # Stage 109 (ADR-0016): explicit direct dependency for Linux signal handling
 # (SIGTERM/SIGKILL via libc::kill) -- never assumed available transitively.
 libc = "0.2"
+
+# The real integration suite now uses default production entrypoints.
+[[test]]
+name = "dcall_two_node_integration"
+path = "tests/dcall_two_node_integration.rs"

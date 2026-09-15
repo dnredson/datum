@@ -18,6 +18,8 @@ pub mod dnode_registry;
 pub mod dserv_artifact;
 pub mod dcode_registry;
 pub mod dcode_authorization;
+pub mod dcall_endpoint;
+pub mod dcall;
 pub mod controlled_wasm_deployment;
 pub mod controlled_wasm_persistence;
 pub mod deployment_assignment;

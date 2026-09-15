@@ -1,4 +1,4 @@
-# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure, canonical deterministic placement v1, and canonical D-Serv artifact / D-Code WASM v0.1
+# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure, canonical deterministic placement v1, canonical D-Serv artifact / D-Code WASM v0.1, and canonical D-Call realization v0.1
 
 For independent review, after this pass's implementation. These are
 commands the USER runs manually; none were run automatically as part of
@@ -459,3 +459,194 @@ curl -sS -D - -o /dev/null -H "Authorization: Bearer $(cat /tmp/tok.txt)" \
   -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json" \
   "https://registry-1.docker.io/v2/library/eclipse-mosquitto/manifests/2" | grep -i docker-content-digest
 ```
+
+## Canonical D-Call realization v0.1 (ADR-0022, roadmap phase 112) — v7 endpoint transport-authority closure
+
+Continue the existing route/grant/evidence architecture. Production dispatch
+accepts only an opaque `GovernedDCodeInvocationResult` and an index into its
+own validated emits. The production source producer resolves local identity
+and the installed sibling worker; it accepts no executor, node-id, or worker
+override. Generic invocation results cannot enter production dispatch.
+`dcall-test-support` remains a non-default Cargo feature for synthetic unit
+fixtures. Its producer can use an arbitrary executor: those results are test
+fixtures, not production execution provenance. Default builds omit those seams.
+
+The real integration suite uses DEFAULT production entrypoints, including
+`invoke_dcode_governed_capturing_emits`, `dispatch_validated_emit`, and the
+governed receive path. It provisions the exact Cargo-built worker at the
+sibling name resolved by the test executable's logical installation. It uses
+no executor/worker/node override seam. Each real DServer has isolated config,
+SQLite, operational state, and its own executable copy.
+
+### Focused and real proof commands
+
+```powershell
+cd dserver
+cargo test --locked --bin DServer dcall
+cargo test --locked --bin DServer dcall_endpoint
+cargo check --locked
+cargo check --locked --tests
+cd ../DATUM
+cargo test --locked --features dcall-test-support --lib dcall
+cargo test --locked --lib dcode
+cargo check --locked
+cargo check --locked --tests
+# SQLite inspection requires Python. If the Windows alias is unavailable,
+# set DATUM_PROOF_PYTHON to the real installed python.exe.
+cargo test --locked --test dcall_two_node_integration -- --ignored --test-threads=1
+cd ..
+python -B scripts/check_dcall_default_provenance.py
+```
+
+The expensive suite contains SEVEN tests: remote governed delivery, local
+governed delivery, payload-tamper rejection, stale-source after DGraph revision
+change, stale-source after DMap destination-placement change, destination
+message-limit preflight, and source message-limit preflight. All seven are
+ignored in ordinary broad runs; the explicit `--ignored` command runs them.
+The integration target no longer requires `dcall-test-support`.
+
+Each stale mismatch is independently exercised through real HTTP issuance:
+source service/node, DGraph id/revision/digest, DMap id/revision/digest, source
+artifact id, module digest, and descriptor digest. Every rejection returns
+HTTP 422 `dcall_source_execution_stale`, with no grant-state current entry or
+history write. Real stale tests retain the old opaque source result across
+actual proposal acceptance. SQLite remains empty; the control-plane observer
+records no destination authorization request, which production execution
+requires before invoking the destination worker. No retries occur.
+
+Message-limit tests reject `payload_size > max_message_bytes` with the exact
+source/destination codes, inspect SQLite current state AND history before any
+accepted request, and accept the exact raw-payload boundary. These are
+conservative RAW-PAYLOAD preflight bounds. Phase 111 remains the exact authority
+for the serialized ADR-0003 envelope's byte size at actual execution; an
+accepted boundary grant does not promise that its final envelope will fit.
+
+Persisted-state corruption tests reject invalid local/remote node relationships,
+endpoint presence/revision/id/digest, contract references, endpoint identities,
+module/descriptor/evidence digests, and key/grant-id disagreement. Reload never
+repairs state. The replay test issues, redeems, persists, reloads, and rejects
+second redemption with the existing AlreadyRedeemed outcome.
+
+The remote observer captures the REAL destination listener response for an
+independent evidence digest and message/correlation comparison. SQLite's grant
+record binds the exact source digest. The local suite also observes a complete
+real destination evidence record on a second fresh, redeemed local grant and
+compares the same public evidence builder's result. Ordinary local dispatch is
+separately required to succeed through the same private destination helper.
+Persistent grant and delivery evidence contains digests/sizes, never payloads.
+
+
+## v7 transport authority and response closure
+
+Grant issuance binds endpoint E (node, transport, endpoint id, revision and
+JCS descriptor digest). After the production endpoint fetch, the source checks
+node == grant destination, transport == HTTP, id/revision/digest == the grant.
+It recomputes `sha256:` plus lowercase SHA-256 of existing DATUM JCS bytes for
+exactly `{node_id, transport, endpoint_id, revision, base_url}` and requires
+recomputed == fetched == grant digest. Only then is the bearer/payload POST
+constructed and sent. Failure is `dcall_endpoint_authority_mismatch`, with a
+fixed diagnostic hashed into sanitized evidence and no redemption attempt.
+
+The live-observer regression exercises production `deliver_remote` and the
+actual endpoint-fetch client: a legitimate revision-2 descriptor at a changed
+URL receives ZERO requests from an old revision-1 grant. All control-plane
+requests are recorded (exactly the GET, no redeem). Independent node, transport,
+id, revision, claimed digest and URL substitutions also fail before delivery.
+The unchanged real seven-test suite supplies matching-endpoint delivery.
+
+DServer still checks CURRENT endpoint == E during redemption. This catches a
+registry change AFTER source validation and BEFORE redemption and prevents
+execution. It does not make the two checks atomic: authority can change in the
+small gap before network arrival, and a previously validated address can then
+receive bytes. Bare HTTP also provides no confidentiality against an on-path
+attacker. This is not distributed atomicity or cryptographic endpoint attestation.
+
+Registry URLs reject query/fragment components (including empty components)
+with `dcall_endpoint_url_query_rejected` and
+`dcall_endpoint_url_fragment_rejected`; path prefixes remain supported.
+Malformed HTTP-2xx JSON, non-object/missing/non-string/unknown outcome, or invalid
+success evidence fails `dcall_remote_response_malformed`. Structured `failed`
+remains destination-execution failure. The existing 1-MiB body bound remains.
+
+P2 decision: a small typed grant-request rejection preserves ONLY the three
+whitelisted stale-source/source-limit/destination-limit codes in existing
+error_code evidence. Arbitrary server code/message/body is never persisted as
+text; the client retains only status and a body SHA-256 diagnostic. Unknown
+codes retain `dcall_grant_request_failed`. No evidence schema expansion.
+
+### Final broad commands
+
+```powershell
+cd dserver
+cargo test --locked
+cd ../DATUM
+cargo test --locked --lib
+cargo test --locked --tests -- --test-threads=1
+cargo check --locked
+cargo check --locked --tests
+cargo check --locked --tests --features dcall-test-support
+cd ..
+python -B scripts/check_canonical_datum_contracts_v1.py
+python -B scripts/check_canonical_datum_contracts_v1_selftest.py
+python -B scripts/check_ddeploy_contracts_v1.py
+python -B scripts/check_ddeploy_contracts_v1_selftest.py
+python -B scripts/check_datum_contract_fixtures.py
+python -B scripts/check_datum_contract_fixtures_selftest.py
+python -m mkdocs build --strict
+git diff --check
+```
+
+### Actual v7 results
+
+The table below is generated from this pass's final command records, not prior
+review totals. Zero Rust tests for compiler/checker commands means they are
+command checks; their exit codes and output are recorded in test-results.txt.
+
+| Check | Passed | Failed | Ignored |
+|---|---:|---:|---:|
+| server-focused | 60 | 0 | 0 |
+| server-endpoint | 10 | 0 | 0 |
+| server-check | 0 | 0 | 0 |
+| server-check-tests | 0 | 0 | 0 |
+| datum-dcall | 34 | 0 | 0 |
+| datum-dcode | 113 | 0 | 1 |
+| real-integration | 7 | 0 | 0 |
+| server-broad | 1223 | 0 | 0 |
+| datum-lib | 1010 | 0 | 1 |
+| datum-tests | 481 | 0 | 7 |
+| datum-check | 0 | 0 | 0 |
+| datum-check-tests | 0 | 0 | 0 |
+| datum-check-feature-tests | 0 | 0 | 0 |
+| default-provenance | 0 | 0 | 0 |
+| canonical | 0 | 0 | 0 |
+| canonical-selftest | 0 | 0 | 0 |
+| ddeploy | 0 | 0 | 0 |
+| ddeploy-selftest | 0 | 0 | 0 |
+| fixtures | 0 | 0 | 0 |
+| fixtures-selftest | 0 | 0 | 0 |
+
+MkDocs and final `git diff --check` results are recorded in the review package
+after this documentation is generated and validated. All required commands
+must exit zero before packaging.
+
+### Remaining boundaries
+
+Bare HTTP is for the trusted/lab network; grants do not provide TLS or remote
+attestation. DServer compares caller-declared continuity and stores the opaque
+source evidence digest; the governed installed runtime supplies execution
+provenance. Local installation integrity is trusted. Distributed state can
+change between preflight/redemption and guest execution; there is no distributed
+atomicity. Lost responses remain ambiguous; grants provide at-most-once
+redemption and there are no automatic retries or recursive dispatch.
+The pre-existing ignored in-process Wasmtime interrupt-crash test remains;
+production invocation uses child-process isolation. Earlier failed attempts
+are retained in the review logs. The proof-observer native abort was traced
+to inherited nonblocking sockets and double panic during cleanup; both were
+fixed. Production listener sockets also explicitly enter blocking mode, with
+a delayed-input regression. Existing native-runtime broad tests require
+drive-root `/tmp` writes on Windows and passed outside the restricted sandbox.
+Final results refer only to the current successful candidate.
+
+No shipped dispatch demonstration CLI was added. D-Forward/D-IoT/D-Engine and
+placement generation remain outside this slice. Existing B5/B6 lab-host
+configuration and secret-version gaps remain outside Phase 112.
