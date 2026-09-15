@@ -34,6 +34,14 @@ pub const DOMAIN_DDEPLOY_STATE: &str = "ddeploy_state";
 /// capacity -- see `dnode_registry.rs`'s module doc for the full audit
 /// conclusion on why that subsystem was not reused here).
 pub const DOMAIN_DNODE_REGISTRY: &str = "dnode_structural_registry";
+/// Canonical D-Serv artifact / D-Code registry (ADR-0021): server-owned
+/// canonical METADATA and digest IDENTITY for `datum.dserv-artifact/1`
+/// descriptors. The module BYTES themselves are never persisted here -- they
+/// live in the D-Node-local content-addressed module store (DATUM
+/// `dcode::module_store`, operational, not control-plane state). Deliberately
+/// a separate domain from `ServiceArtifact`'s own registry (ADR-0005:
+/// Management WASM / container artifacts are never D-Code).
+pub const DOMAIN_DCODE_REGISTRY: &str = "dcode_artifact_registry";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {

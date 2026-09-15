@@ -40,7 +40,14 @@ type ApiError = (StatusCode, JsonResponse<Value>);
 
 static DDEPLOY_TRANSACTION: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn ddeploy_transaction() -> &'static Mutex<()> {
+/// `pub(crate)` (D-Code authorization, ADR-0021): `api::dcode`'s
+/// `post_authorize_dcode_invocation` also acquires this same lock, as the
+/// OUTERMOST lock in its own `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+/// DCODE_TRANSACTION` chain, for the same reason `post_accept_proposal`
+/// already nests `DNODE_TRANSACTION` inside it: a consistent snapshot
+/// across D-Deploy active-authority state and the D-Node/D-Code registries
+/// requires one fixed, never-reversed lock order.
+pub(crate) fn ddeploy_transaction() -> &'static Mutex<()> {
     DDEPLOY_TRANSACTION.get_or_init(|| Mutex::new(()))
 }
 

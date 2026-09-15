@@ -1,8 +1,244 @@
-# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure, and canonical deterministic placement v1
+# Manual validation commands — D-Node/D-Continuum + 107A/107B foundation closure, canonical deterministic placement v1, and canonical D-Serv artifact / D-Code WASM v0.1
 
 For independent review, after this pass's implementation. These are
 commands the USER runs manually; none were run automatically as part of
 "closing" a finding in this pass unless explicitly stated otherwise above.
+
+## Canonical D-Serv artifact / D-Code WASM v0.1 (ADR-0021, roadmap phase 111) — v1 + independent review v2 + v3 + v4 + v5 (final ABI conformance, before commit)
+
+Independent review v5 (FINAL, before commit) closed 5 more findings (H1-H5),
+none of which change the CLI surface used below: the guest's EXACT packed
+`datum_handle` return value `0` now correctly succeeds as canonical "no
+output" (never fed into JSON-envelope parsing, distinct from the
+non-canonical `(nonzero_ptr << 32) | 0`) — proven through the real isolated
+worker too, not just in-process (H1); `datum_dealloc`'s exact typed
+signature is now resolved and load-bearing BEFORE `datum_handle` runs
+(previously only its NAME was checked, so a wrongly-typed `dealloc` could
+silently execute) — a correctly-typed `dealloc` that itself traps AFTER a
+successful `datum_handle` still follows this ADR's documented best-effort
+semantics, unchanged (H2); the local D-Node identity init flow is now
+serialized across concurrent processes/threads via a dedicated exclusive
+`fs2` file lock, closing a TOCTOU race that could otherwise let two
+concurrent initializations both believe they "won" (H3); a stale comment
+claiming `wasm_backtrace(false)` mitigates the known native Wasmtime crash
+(it does not — process isolation does) was corrected, along with an
+adjacent stale claim about wall-clock timeout enforcement scope (H4); and
+the review package's `test-results.txt` is regenerated as one coherent
+report rather than a stale heading with newer results appended beneath it
+(H5, packaging only).
+
+Independent review v4 closed 3 more findings (G1-G3) plus a documentation
+correction (G4): the governed CLI no longer accepts a raw `--node-id`
+argument at all — it resolves its own local D-Node identity from a new,
+explicitly-initialized (`smartsentinel-dcode-init`) local identity file
+(`dcode::local_identity`), deliberately separate from both canonical D-Node
+structural authority and Sentinel registration/lease, and uses that SAME
+resolved value for both the DServer authorization request and the local
+equality check — closing a prior circularity where a caller's own
+`--node-id` claim was both the thing requested and the thing checked (G1);
+the governed CLI no longer accepts `--worker-binary` either — production
+worker resolution is always the trusted sibling `smartsentinel-dcode-worker`
+next to the running executable, closing a gap where a caller could inject a
+fake worker binary that fabricates a success response without ever running
+Wasmtime (G2); execution evidence no longer persists the guest-controlled
+output `reason` string verbatim, nor embeds a guest-controlled invalid
+`status`/undeclared output `port` value in `error_message` — both are now
+digest/size/presence only, proven via adversarial marker-exfiltration tests
+across every guest-controlled channel (G3); and a doc comment claiming
+"authorization targets THIS node" (true only after G1) is corrected (G4).
+
+Independent review v2 closed 8 findings (R1-R8): the governed CLI now
+obtains authorization/artifact directly from DServer (R1, no more
+locally-fabricated authorization driving real execution); the DATUM-side
+invocation path binds BOTH the module content digest AND the whole-artifact
+descriptor digest via a full DATUM-side mirror of `datum.dserv-artifact/1`
+(R2A/R2B/R2C); `dcode.size_bytes` is checked against the real loaded module
+length (R3); the ADR-0003 `datum-dnode/0` envelope (ports, host-owned
+message_id/correlation_id, emit validation) is now actually implemented
+(R4); D-Code execution runs in an ISOLATED CHILD PROCESS
+(`smartsentinel-dcode-worker`), so the documented Windows/Wasmtime automatic
+fuel/epoch crash can no longer take down the parent SmartSentinel process
+(R5); the CLI exits non-zero for any non-Success outcome (R6); every
+`safety`/`limits` field is now actually enforced or validated (R7); and a
+stale registry-comment inaccuracy about `artifact_id`/`version` was
+corrected (R8).
+
+Independent review v3 (FINAL, before commit) closed 7 more findings (F1-F7):
+`constraints.allowed_stages` now fails closed as currently-unverifiable when
+non-empty, since canonical D-Node authority has no stage identity to check it
+against (F1); the isolated worker's timeout is now a HARD, UNGRACED deadline
+— the previous 250ms hidden grace on top of `timeout_ms` is gone (F2);
+execution evidence now also carries the DMap/DGraph/descriptor digests,
+module size, and the ADR-0003 envelope's own digest/size/timestamp — not just
+the module digest and raw payload — so a past invocation's exact bound
+authority can be reconstructed from evidence alone (F3/F3A); the real
+execution path now also runs the mirrored `artifact.validate()` before using
+any limits/ports/safety field, not just DServer's registry (F4); a stale doc
+comment wrongly implying control-plane authorization needs D-Call was
+corrected (F5); two pre-existing, unrelated DATUM test regressions caused by
+the already-committed foundation-closure catalog pinning were found and
+fixed as baseline hygiene (F6); and `dcode.uri`/`dcode.sha256`/
+`dcode.content_id` must now all agree, and `abi.required_exports` must be
+exactly the canonical set, not merely a superset (F7).
+
+`dserver` core tests (never rerun as a full suite in this pass per test
+policy beyond one final confirmation below):
+```
+cd dserver
+cargo build --locked
+cargo test --locked
+```
+Expected: **1163** passed (DServer bin) + 1 passed (control-state-inspect
+bin), 0 failed. (Neither v4 nor v5 made ANY dserver-side changes — G1-G4 and
+H1-H5 are all DATUM-side CLI/library concerns — so this count is unchanged
+since v3 and was re-confirmed by an actual full-suite run in this v5 pass,
+not merely carried forward.)
+
+Focused groups (already run and passing in this session; note `cargo test
+<filter>` alone in `dserver/` can select the wrong default binary target —
+use `cargo test --locked --bin DServer <filter>` explicitly, as shown):
+```
+cargo test --locked --bin DServer dserv_artifact        # 22 passed (unaffected by v4, re-confirmed)
+cargo test --locked --bin DServer dcode_registry        # 8 passed (unaffected, re-confirmed)
+cargo test --locked --bin DServer dcode_authorization   # 15 passed (unaffected, re-confirmed)
+cargo test --locked --bin DServer ddeploy               # 148 passed (unaffected, re-confirmed)
+cargo test --locked --bin DServer dnode_registry        # 27 passed (unaffected, re-confirmed)
+cargo test --locked --bin DServer artifact_reconciliation_context  # 37 passed (unaffected, re-confirmed)
+cargo check --locked && cargo check --locked --tests
+```
+
+DATUM side — per the standing memory note that DATUM's `[lib]` has
+`test = false` in `Cargo.toml`, `cargo test` ALONE never runs its lib tests
+— `--lib` (or a filter that also builds the lib target) is required:
+
+```
+cd DATUM
+cargo build --locked
+cargo test --locked --lib
+```
+Expected: **996 passed, 1 ignored**, 0 failed, for the full DATUM lib
+(actually re-run and confirmed in this v5 pass — up from 979 in v4: +17 net
+new, all in `dcode` — see below). Filter with `cargo test --locked --lib
+dcode` for just the `dcode` module: **110 passed, 1 ignored** (up from 93 in
+v4 — v5 added: `runtime`'s 9 new tests [H1 no-output x2, H2 dealloc-signature
+x6, 1 missing-dealloc regression], `invoke`'s 3 new H1 no-output tests,
+`worker`'s 1 new no-output JSON round-trip test, and `local_identity`'s 4 new
+H3 concurrent-race tests = 17 net new).
+The 1 ignored test (`infinite_loop_exhausts_fuel_and_fails_closed` in
+`dcode::runtime`) remains the documented, reproducible environment-specific
+Wasmtime/Windows crash in the IN-PROCESS automatic fuel-exhaustion trap path
+— running it standalone (`cargo test --locked --lib -- --ignored
+infinite_loop_exhausts_fuel_and_fails_closed`) is expected to CRASH the test
+process with `STATUS_STACK_BUFFER_OVERRUN`; this is the documented finding
+itself, not a new regression, and R5's whole point is that the REAL
+production path no longer goes through this in-process code at all (see the
+NEW, non-ignored, GREEN `dcode_worker_isolation` proof below).
+
+**Two pre-existing, unrelated test regressions FOUND AND FIXED as F6
+baseline-regression hygiene (not D-Code logic):** running the full DATUM
+integration-test targets (`cargo test --locked --tests`) previously surfaced
+`tests/smartsentinel_fog_bundle_contract.rs::fog_core_artifacts_and_local_profile_validate`
+and (found during this pass's own final confirmation run)
+`tests/smartsentinel_o2_service_artifact.rs::magistrala_bootstrap_db_catalog_contract_is_valid`,
+both red because the earlier, already-committed foundation-closure pass
+(`95349e1bd2e25aa9246de82092667b6fec5371d1`) correctly moved real catalog
+images to digest-pinned identities, but these tests and
+`DATUM/config.fog.linux`'s dispatch mappings (a REAL config feeding a
+`trusted_image` governance check, not cosmetic) still referenced the old
+mutable tags. Both fixed (config + one assertion updated to the correct
+pinned identity, digest pinning itself untouched) — see
+`foundation-regression-hygiene-audit.txt` in the review package. The full
+`cargo test --locked --tests -- --test-threads=1` run remains genuinely
+green in v5 (re-confirmed by an actual run, not carried forward): **481
+passed, 0 failed**, across every integration test binary (up from 480 in
+v4 — the 1 new v5 `dcode_worker_isolation` no-output-through-the-real-worker
+test below).
+
+Real end-to-end CLI proof (install a compiled WASM module, then invoke it,
+via the actual `smartsentinel-dcode-install`/`smartsentinel-dcode-invoke`
+binaries as subprocesses — `smartsentinel-dcode-invoke` now requires the
+`offline-test-only` subcommand for this local-file-driven mode; the governed
+`invoke` subcommand instead fetches from a live DServer, see below):
+```
+cargo test --locked --test dcode_cli_end_to_end
+```
+Expected: **6 passed**, 0 failed (up from 3 in v3 — v4 added
+`governed_invoke_subcommand_rejects_raw_node_id_and_worker_binary_arguments`
+(G1C-1/G2B-1), `smartsentinel_dcode_init_is_idempotent_and_fails_closed_on_conflict`
+(G1C-4, via the real new `smartsentinel-dcode-init` binary), and
+`governed_invoke_without_prior_init_fails_closed_before_any_network_attempt`
+(G1C, proves the local check runs BEFORE any DServer contact)).
+
+**Real process-isolation proof, with v3's strict-timeout tightening.** This
+exercises the REAL `smartsentinel-dcode-worker` subprocess via the exact
+same `dcode::worker::invoke_isolated` function the governed CLI path uses,
+and proves the CALLING (test) process survives an infinite loop / fuel
+exhaustion / a malformed module / a hung worker, none of which it could
+survive if D-Code ran in-process on this platform — AND (new in v3) that
+`timeout_ms` is enforced as a hard, ungraced deadline, not
+`timeout_ms + 250ms`:
+```
+cargo test --locked --test dcode_worker_isolation
+```
+Expected: **10 passed**, 0 failed (up from 9 in v3/v4 — v5 added
+`no_output_module_succeeds_through_the_isolated_worker_without_being_parsed_as_json`,
+H1's proof that the canonical no-output distinction survives the REAL worker
+IPC boundary, not just the in-process path), including
+`infinite_loop_cannot_crash_the_parent_process` — GREEN and non-ignored,
+unlike its in-process analog above.
+
+To manually exercise the CLI yourself against a real module (requires a
+`.wasm` file implementing the `datum-dnode/0` ABI — the WAT fixtures in
+`DATUM/src/dcode/runtime.rs`'s test module can be compiled with `wat2wasm`
+or the `wat` crate):
+```
+# INTERNAL/TEST-ONLY mode (bypasses DServer entirely -- retains --node-id
+# and --worker-binary overrides for isolated testing):
+cargo run --locked --bin smartsentinel-dcode-install -- \
+  --module-path <path-to>.wasm --declared-sha256 <sha256> --store-root ./dcode-store
+cargo run --locked --bin smartsentinel-dcode-invoke -- offline-test-only \
+  --authorization-path authorization.json --artifact-path artifact.json \
+  --node-id <node-id> --input-port <port> --store-root ./dcode-store --input-path input.bin
+
+# GOVERNED PRODUCTION mode (R1, hardened by v4 G1/G2 -- requires a running
+# DServer with the service already active + a registered D-Serv artifact).
+# One-time step: initialize this installation's LOCAL D-Node identity
+# (idempotent; a DIFFERENT node_id at the same --dnode-root fails closed):
+cargo run --locked --bin smartsentinel-dcode-init -- \
+  --node-id <node-id> --dnode-root ./dcode-store
+# Then invoke -- note there is NO --node-id and NO --worker-binary here at
+# all: both are resolved from the trusted local installation, never from a
+# command-line argument.
+cargo run --locked --bin smartsentinel-dcode-invoke -- invoke \
+  --dserver-url http://127.0.0.1:8080 --project-id <project> \
+  --application-id <app> --service-id <service> \
+  --input-port <port> --dnode-root ./dcode-store --input-path input.bin
+```
+
+### WINDOWS / POWERSHELL — live-server proof of the governed D-Code invocation path (R1, v4 G1/G2)
+
+Requires a running `DServer` instance, a declared D-Node (see the
+D-Continuum authority section below), an accepted D-Map placing a service on
+that node, and a registered `datum.dserv-artifact/1` for that service
+(`POST /api/v1/dcode/artifacts`). Then, WITHOUT ever writing an authorization
+file OR a `--node-id`/`--worker-binary` argument by hand, confirm the CLI's
+`invoke` subcommand resolves its own local identity/worker and obtains a
+fresh authorization live:
+```powershell
+cargo run --bin smartsentinel-dcode-init -- `
+  --node-id <node-id> --dnode-root ./dcode-store
+cargo run --bin smartsentinel-dcode-invoke -- invoke `
+  --dserver-url http://127.0.0.1:8080 --project-id monitor-f49c8 `
+  --application-id <app> --service-id <service> `
+  --input-port <port> --dnode-root ./dcode-store --input-path input.bin
+```
+Expected: the process resolves `local_node_id` from `./dcode-store`'s
+identity file (never from a command-line override), fetches a fresh
+authorization + artifact over HTTP for that SAME node_id, recomputes and
+checks the descriptor digest itself, and either succeeds or fails closed
+with a specific error code — never silently accepts a hand-fabricated
+authorization or a caller-chosen worker binary (there is no path to either
+in this CLI mode at all).
 
 ## Canonical deterministic placement v1 (ADR-0020) — v1 + v2 + v3 (independent review fixes)
 

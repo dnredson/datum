@@ -42,6 +42,7 @@ work belongs to Stages 107A and 107B.
 | [ADR-0018](ADR-0018-ddeploy-proposal-acceptance-projection.md) | D-Deploy proposal / explicit acceptance / D-Map -> OperationalDGraph projection (Stage 111) | Accepted and implemented | ADR-0002, ADR-0006, ADR-0007, ADR-0009, ADR-0011, ADR-0012, ADR-0013, ADR-0015, ADR-0017 |
 | [ADR-0019](ADR-0019-dnode-structural-authority-and-dcontinuum-derivation.md) | D-Node structural authority and authoritative D-Continuum derivation | Accepted and implemented | ADR-0002, ADR-0006, ADR-0013, ADR-0017, ADR-0018 |
 | [ADR-0020](ADR-0020-canonical-deterministic-placement-v1.md) | Canonical deterministic placement v1 | Accepted and implemented | ADR-0002, ADR-0006, ADR-0017, ADR-0018, ADR-0019 |
+| [ADR-0021](ADR-0021-canonical-dserv-artifact-and-dcode-wasm-v0.1.md) | Canonical D-Serv artifact and D-Code/WASM v0.1 (roadmap phase 111) | Accepted and implemented | ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0017, ADR-0018, ADR-0019 |
 
 ## Relationship to closed phases
 
