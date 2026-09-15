@@ -28,7 +28,7 @@ environment_variable = "CHIRPSTACK_API_SECRET"
 [[dispatch.container_mappings]]
 service_name = "mqtt"
 container_name = "datum-mosquitto"
-artifact = "eclipse-mosquitto:2"
+artifact = "docker.io/library/eclipse-mosquitto@sha256:6dba0f1b2795ddcbe0d41bdfb8b8d56a423acca23ccde4342a4652be54639b11"
 ports = [{ host_port = 1883, container_port = 1883, protocol = "tcp" }]
 
 #[collectors.process_windows]
@@ -83,19 +83,19 @@ implemented_by = [{ process_name = "datum" }]
 [[dispatch.container_mappings]]
 service_name = "chirpstack-postgres"
 container_name = "datum-chirpstack-postgres"
-artifact = "postgres:14-alpine"
+artifact = "docker.io/library/postgres@sha256:3b36dd7df1337107cef7502b1e3e94c971483ae87498a9310d25c60fba08cfc9"
 ports = []
 
 [[dispatch.container_mappings]]
 service_name = "chirpstack-redis"
 container_name = "datum-chirpstack-redis"
-artifact = "redis:7-alpine"
+artifact = "docker.io/library/redis@sha256:1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c"
 ports = []
 
 [[dispatch.container_mappings]]
 service_name = "chirpstack"
 container_name = "datum-chirpstack"
-artifact = "chirpstack/chirpstack:4"
+artifact = "docker.io/chirpstack/chirpstack@sha256:c749015e640b8cf33338c08b12922896b17636feb06e421abdd3cc80f1cdc6b9"
 command = ["-c", "/etc/chirpstack"]
 ports = [{ host_port = 18081, container_port = 8080, protocol = "tcp" }, { host_port = 19101, container_port = 9100, protocol = "tcp" }]
 
@@ -114,7 +114,7 @@ implemented_by = [{ container_name = "datum-chirpstack" }]
 [[dispatch.container_mappings]]
 service_name = "chirpstack-provisioner"
 container_name = "datum-chirpstack-provisioner"
-artifact = "ghcr.io/dnredson/chirpstack-provisioner:main"
+artifact = "ghcr.io/dnredson/chirpstack-provisioner@sha256:6e12ba9787be723bb2b404cfab6a7cfc79300ab237fc61dd0a839a93b675de29"
 ports = [{ host_port = 18082, container_port = 8085, protocol = "tcp" }]
 
 [[services.items]]

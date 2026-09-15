@@ -78,9 +78,15 @@ fn magistrala_bootstrap_db_catalog_contract_is_valid() {
         document["artifact_id"].as_str(),
         Some("magistrala-bootstrap-db")
     );
+    // Independent review v3 (F6 provenance, second instance found during the
+    // final full-suite run): the already-committed foundation-closure work
+    // (`95349e1`) correctly moved this catalog entry from a mutable tag to a
+    // digest-pinned identity; this golden-fixture assertion was not updated
+    // alongside it. Not caused by, and unrelated to, the D-Code work in this
+    // pass -- fixed here as the same baseline-regression hygiene as F6.
     assert_eq!(
         document["runtime"]["container"]["image"].as_str(),
-        Some("postgres:16.2-alpine")
+        Some("docker.io/library/postgres@sha256:d2ae11f7207eb2c726b1678d7f98df2210759b8e5014d77afa9f77d014e33a9e")
     );
     assert_eq!(
         document["runtime"]["container"]["network"].as_str(),
