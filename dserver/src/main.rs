@@ -12,16 +12,12 @@ use axum::{
     Router,
 };
 
-use api::alternative_paths::get_alternative_paths;
-use api::artifact_reconciliation::get_operational_reconciliation_context;
-use api::governed_deployment_preflight::get_governed_deployment_preflight;
-use api::external_ai_inference::{
-    get_external_ai_inference_request, post_external_ai_inference_response,
-};
 use api::action_results::{
     get_latest_action_execution_report, list_latest_action_execution_reports,
     post_action_execution_report,
 };
+use api::alternative_paths::get_alternative_paths;
+use api::artifact_reconciliation::get_operational_reconciliation_context;
 use api::capabilities::{get_node_capabilities, list_capabilities, put_node_capabilities};
 use api::controlled_wasm_deployment::{
     get_controlled_wasm_deployment_for_node, get_controlled_wasm_deployment_manifest,
@@ -30,16 +26,17 @@ use api::controlled_wasm_deployment::{
     post_controlled_wasm_dgraph, post_controlled_wasm_live_report,
 };
 use api::dashboard::get_dashboard;
-use api::ddeploy::{get_active, get_proposal, post_accept_proposal, post_create_proposal, post_plan_proposal, post_validate_proposal};
-use api::dnode_registry::{delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode};
-use api::dcode::{get_dserv_artifact, post_authorize_dcode_invocation, post_declare_dserv_artifact};
-use api::dcall::{get_dcall_endpoint, get_dcalls_for_source_service, post_redeem_grant, post_request_grant, put_dcall_endpoint};
-use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
-use api::secret_preflight::get_secret_preflight;
-use api::secret_resolver_contract::get_secret_resolver_contract;
-use api::service_artifacts::{
-    delete_service_artifact, get_service_artifact, list_service_artifacts,
-    post_resolve_image_identity, post_service_artifact, put_service_artifact,
+use api::dcall::{
+    get_dcall_endpoint, get_dcalls_for_source_service, post_redeem_grant, post_request_grant,
+    put_dcall_endpoint,
+};
+use api::dcode::{
+    get_dserv_artifact, post_authorize_dcode_invocation, post_declare_dserv_artifact,
+};
+use api::ddeploy::{
+    get_active, get_active_authority_v2, get_proposal, get_proposal_v2, post_accept_proposal,
+    post_accept_proposal_v2, post_create_proposal, post_create_proposal_v2, post_plan_proposal,
+    post_validate_proposal, post_validate_proposal_v2,
 };
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
@@ -60,6 +57,13 @@ use api::dgraph_resource_limits::get_dgraph_resource_limits_contract;
 use api::dgraph_rollback_audit::get_dgraph_rollback_audit_contract;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
+use api::dnode_registry::{
+    delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode,
+};
+use api::external_ai_inference::{
+    get_external_ai_inference_request, post_external_ai_inference_response,
+};
+use api::governed_deployment_preflight::get_governed_deployment_preflight;
 use api::graph::{get_latest_graph, get_materialized_graph};
 use api::graphql::{build_schema, graphiql, graphql_post, DatumSchema};
 use api::installation_plan::{get_installation_plan_for_node, get_latest_installation_plan};
@@ -80,6 +84,7 @@ use api::installation_tasks::{
     post_assisted_execution_request, post_installation_task_approval,
     post_local_mapping_preflight_report,
 };
+use api::live_dashboard::{get_graph_overview, get_live_dashboard_html, get_live_dashboard_state};
 use api::local_dgraph_snapshot::{
     get_latest_local_dgraph_snapshot, list_latest_local_dgraph_snapshots,
     post_local_dgraph_snapshot,
@@ -88,8 +93,8 @@ use api::operational_analysis_context::{
     acquire_active_analysis_context, acquire_passive_analysis_context,
 };
 use api::operational_dgraph::{
-    get_operational_dgraph, get_operational_projects, post_operational_project, get_operational_dgraph_slice,
-    post_operational_reconciliation_authorization,
+    get_operational_dgraph, get_operational_dgraph_slice, get_operational_projects,
+    post_operational_project, post_operational_reconciliation_authorization,
     post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
@@ -98,6 +103,8 @@ use api::resource_registry::{
     get_resource, get_resource_binding, list_resource_bindings, list_resources,
     post_resource_binding, post_resource_discovery,
 };
+use api::secret_preflight::get_secret_preflight;
+use api::secret_resolver_contract::get_secret_resolver_contract;
 use api::sentinel_registration::{
     get_sentinel_registration, list_sentinel_registrations, post_sentinel_heartbeat,
     put_sentinel_registration,
@@ -106,13 +113,16 @@ use api::sentinel_telemetry::{
     get_observed_dgraph, get_sentinel_telemetry, get_sentinel_telemetry_history,
     list_sentinel_telemetry, post_sentinel_telemetry,
 };
+use api::service_artifacts::{
+    delete_service_artifact, get_service_artifact, list_service_artifacts,
+    post_resolve_image_identity, post_service_artifact, put_service_artifact,
+};
 use api::topology::{get_topology, set_topology};
 use api::wasm_module_registry::{
     get_wasm_module_descriptor, list_wasm_module_descriptors, post_wasm_module_descriptor,
 };
 use api::wasm_runtime_reports::{
-    get_latest_wasm_runtime_report, list_latest_wasm_runtime_reports,
-    post_wasm_runtime_report,
+    get_latest_wasm_runtime_report, list_latest_wasm_runtime_reports, post_wasm_runtime_report,
 };
 use api::{
     analysis::{analyze_latest_graph, get_materialized_analysis},
@@ -416,6 +426,11 @@ async fn main() {
         .route("/api/v1/ddeploy/proposals/:proposal_id", get(get_proposal))
         .route("/api/v1/ddeploy/proposals/:proposal_id/accept", post(post_accept_proposal))
         .route("/api/v1/ddeploy/active", get(get_active))
+        .route("/api/v1/ddeploy/v2/proposals/validate", post(post_validate_proposal_v2))
+        .route("/api/v1/ddeploy/v2/proposals", post(post_create_proposal_v2))
+        .route("/api/v1/ddeploy/v2/proposals/:proposal_id", get(get_proposal_v2))
+        .route("/api/v1/ddeploy/v2/proposals/:proposal_id/accept", post(post_accept_proposal_v2))
+        .route("/api/v1/ddeploy/v2/authority", get(get_active_authority_v2))
         .route("/api/v1/dnodes", get(list_dnodes))
         .route("/api/v1/dnodes/:node_id", put(put_dnode))
         .route("/api/v1/dnodes/:node_id", get(get_dnode))

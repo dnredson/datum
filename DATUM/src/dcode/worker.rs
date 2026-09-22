@@ -76,20 +76,32 @@ pub enum WorkerResponse {
     /// remain two distinct wire representations across the worker IPC
     /// boundary, exactly as they are two distinct `ExecutionOutput` variants
     /// in-process.
-    Success { output_b64: Option<String> },
-    ValidationFailed { message: String },
-    ResourceLimit { message: String },
-    Trap { message: String },
+    Success {
+        output_b64: Option<String>,
+    },
+    ValidationFailed {
+        message: String,
+    },
+    ResourceLimit {
+        message: String,
+    },
+    Trap {
+        message: String,
+    },
 }
 
 impl From<ExecutionOutcome> for WorkerResponse {
     fn from(outcome: ExecutionOutcome) -> Self {
         match outcome {
-            ExecutionOutcome::Success(ExecutionOutput::NoOutput) => WorkerResponse::Success { output_b64: None },
-            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => {
-                WorkerResponse::Success { output_b64: Some(base64_encode(&output)) }
+            ExecutionOutcome::Success(ExecutionOutput::NoOutput) => {
+                WorkerResponse::Success { output_b64: None }
             }
-            ExecutionOutcome::ValidationFailed(message) => WorkerResponse::ValidationFailed { message },
+            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => WorkerResponse::Success {
+                output_b64: Some(base64_encode(&output)),
+            },
+            ExecutionOutcome::ValidationFailed(message) => {
+                WorkerResponse::ValidationFailed { message }
+            }
             ExecutionOutcome::ResourceLimit(message) => WorkerResponse::ResourceLimit { message },
             ExecutionOutcome::Trap(message) => WorkerResponse::Trap { message },
         }
@@ -99,14 +111,20 @@ impl From<ExecutionOutcome> for WorkerResponse {
 impl WorkerResponse {
     fn into_execution_outcome(self) -> ExecutionOutcome {
         match self {
-            WorkerResponse::Success { output_b64: None } => ExecutionOutcome::Success(ExecutionOutput::NoOutput),
-            WorkerResponse::Success { output_b64: Some(b64) } => match base64_decode(&b64) {
+            WorkerResponse::Success { output_b64: None } => {
+                ExecutionOutcome::Success(ExecutionOutput::NoOutput)
+            }
+            WorkerResponse::Success {
+                output_b64: Some(b64),
+            } => match base64_decode(&b64) {
                 Ok(bytes) => ExecutionOutcome::Success(ExecutionOutput::Bytes(bytes)),
                 Err(error) => ExecutionOutcome::ResourceLimit(format!(
                     "dcode worker returned an unparseable success output: {error}"
                 )),
             },
-            WorkerResponse::ValidationFailed { message } => ExecutionOutcome::ValidationFailed(message),
+            WorkerResponse::ValidationFailed { message } => {
+                ExecutionOutcome::ValidationFailed(message)
+            }
             WorkerResponse::ResourceLimit { message } => ExecutionOutcome::ResourceLimit(message),
             WorkerResponse::Trap { message } => ExecutionOutcome::Trap(message),
         }
@@ -120,7 +138,9 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn base64_decode(value: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.decode(value).map_err(|error| error.to_string())
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|error| error.to_string())
 }
 
 enum WaitOutcome {
@@ -195,7 +215,9 @@ pub fn invoke_isolated(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return ExecutionOutcome::ResourceLimit(format!("failed to serialize dcode worker request: {error}"));
+            return ExecutionOutcome::ResourceLimit(format!(
+                "failed to serialize dcode worker request: {error}"
+            ));
         }
     };
 
@@ -253,8 +275,12 @@ pub fn invoke_isolated(
             ))
         }
         WaitOutcome::Exited(status) => {
-            let stdout_bytes = stdout_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-            let stderr_text = stderr_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
+            let stdout_bytes = stdout_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_default();
+            let stderr_text = stderr_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_default();
 
             if !status.success() {
                 return ExecutionOutcome::ResourceLimit(format!(
@@ -287,7 +313,11 @@ pub fn invoke_isolated(
 /// explicitly instead.
 pub fn trusted_sibling_worker_binary_path() -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe should resolve");
-    path.set_file_name(if cfg!(windows) { "smartsentinel-dcode-worker.exe" } else { "smartsentinel-dcode-worker" });
+    path.set_file_name(if cfg!(windows) {
+        "smartsentinel-dcode-worker.exe"
+    } else {
+        "smartsentinel-dcode-worker"
+    });
     path
 }
 
@@ -302,7 +332,13 @@ pub struct IsolatedWorkerExecutor<'a> {
 
 impl DCodeExecutor for IsolatedWorkerExecutor<'_> {
     fn execute(&self, digest: &str, limits: &InvocationLimits, input: &[u8]) -> ExecutionOutcome {
-        invoke_isolated(self.worker_binary, self.module_store_root, digest, limits, input)
+        invoke_isolated(
+            self.worker_binary,
+            self.module_store_root,
+            digest,
+            limits,
+            input,
+        )
     }
 }
 
@@ -316,12 +352,17 @@ mod tests {
         // `std::process::Command` -- this module is where that
         // responsibility actually lives instead.
         let source = include_str!("worker.rs");
-        assert!(source.contains("std::process::"), "worker.rs must own process spawning/supervision");
+        assert!(
+            source.contains("std::process::"),
+            "worker.rs must own process spawning/supervision"
+        );
     }
 
     #[test]
     fn worker_response_round_trips_success_through_json() {
-        let response = WorkerResponse::from(ExecutionOutcome::Success(ExecutionOutput::Bytes(b"hello".to_vec())));
+        let response = WorkerResponse::from(ExecutionOutcome::Success(ExecutionOutput::Bytes(
+            b"hello".to_vec(),
+        )));
         let json = serde_json::to_string(&response).unwrap();
         let parsed: WorkerResponse = serde_json::from_str(&json).unwrap();
         match parsed.into_execution_outcome() {
@@ -337,7 +378,10 @@ mod tests {
     fn worker_response_round_trips_no_output_through_json_as_a_distinct_case() {
         let response = WorkerResponse::from(ExecutionOutcome::Success(ExecutionOutput::NoOutput));
         let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"output_b64\":null"), "no-output must serialize as a null output_b64, got: {json}");
+        assert!(
+            json.contains("\"output_b64\":null"),
+            "no-output must serialize as a null output_b64, got: {json}"
+        );
         let parsed: WorkerResponse = serde_json::from_str(&json).unwrap();
         match parsed.into_execution_outcome() {
             ExecutionOutcome::Success(ExecutionOutput::NoOutput) => {}
@@ -351,11 +395,18 @@ mod tests {
             Path::new("this-binary-does-not-exist-anywhere"),
             Path::new("."),
             &"a".repeat(64),
-            &InvocationLimits { fuel_per_invocation: 1, timeout_ms: 100, max_memory_pages: 1, max_message_bytes: 1 },
+            &InvocationLimits {
+                fuel_per_invocation: 1,
+                timeout_ms: 100,
+                max_memory_pages: 1,
+                max_message_bytes: 1,
+            },
             b"",
         );
         match outcome {
-            ExecutionOutcome::ResourceLimit(message) => assert!(message.contains("failed to spawn")),
+            ExecutionOutcome::ResourceLimit(message) => {
+                assert!(message.contains("failed to spawn"))
+            }
             other => panic!("expected ResourceLimit, got {other:?}"),
         }
     }

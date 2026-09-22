@@ -13,8 +13,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::core::canonical_dgraph::CanonicalValidationFinding;
-use crate::core::dcode_authorization::{authorize_dcode_invocation, DCodeInvocationAuthorizationV1};
-use crate::core::dcode_registry::{declare_dserv_artifact, load_state as load_dcode_state, persist_state as persist_dcode_state, DCodeArtifactRegistryStateV1, DeclareDServArtifactError};
+use crate::core::dcode_authorization::{
+    authorize_dcode_invocation, DCodeInvocationAuthorizationV1,
+};
+use crate::core::dcode_registry::{
+    declare_dserv_artifact, load_state as load_dcode_state, persist_state as persist_dcode_state,
+    DCodeArtifactRegistryStateV1, DeclareDServArtifactError,
+};
 use crate::core::dserv_artifact::CanonicalDServArtifactV1;
 use crate::storage::control_state::default_control_state_db_path;
 
@@ -36,11 +41,17 @@ fn db_path() -> PathBuf {
 }
 
 fn bad_request(message: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message.into()})))
+    (
+        StatusCode::BAD_REQUEST,
+        JsonResponse(json!({"error": message.into()})),
+    )
 }
 
 fn internal_error(message: impl Into<String>) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message.into()})))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({"error": message.into()})),
+    )
 }
 
 fn lock_error<T>(_: T) -> ApiError {
@@ -48,7 +59,10 @@ fn lock_error<T>(_: T) -> ApiError {
 }
 
 fn findings_json(findings: &[CanonicalValidationFinding]) -> Vec<Value> {
-    findings.iter().map(|finding| json!({"code": finding.code, "message": finding.message})).collect()
+    findings
+        .iter()
+        .map(|finding| json!({"code": finding.code, "message": finding.message}))
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -74,25 +88,34 @@ pub async fn post_declare_dserv_artifact(
     let _transaction = dcode_transaction().lock().map_err(lock_error)?;
     let db_path = db_path();
     let mut state = load_dcode_state(&db_path).map_err(internal_error)?;
-    let key = crate::core::dcode_registry::dserv_artifact_key(&artifact.application_id, &artifact.dserv_id);
+    let key = crate::core::dcode_registry::dserv_artifact_key(
+        &artifact.application_id,
+        &artifact.dserv_id,
+    );
     let already_present = state.artifacts.contains_key(&key);
     let artifact_id = artifact.artifact_id.clone();
 
     declare_dserv_artifact(&mut state, artifact).map_err(|error| match error {
         DeclareDServArtifactError::Invalid(findings) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            JsonResponse(json!({"error": "dserv_artifact_invalid", "findings": findings_json(&findings)})),
+            JsonResponse(
+                json!({"error": "dserv_artifact_invalid", "findings": findings_json(&findings)}),
+            ),
         ),
-        DeclareDServArtifactError::Conflict(message) => {
-            (StatusCode::CONFLICT, JsonResponse(json!({"error": "dserv_artifact_conflict", "message": message})))
-        }
+        DeclareDServArtifactError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            JsonResponse(json!({"error": "dserv_artifact_conflict", "message": message})),
+        ),
     })?;
 
     if !already_present {
         persist_dcode_state(&db_path, &state).map_err(internal_error)?;
     }
 
-    Ok(JsonResponse(DeclareDServArtifactResponse { artifact_id, inserted: !already_present }))
+    Ok(JsonResponse(DeclareDServArtifactResponse {
+        artifact_id,
+        inserted: !already_present,
+    }))
 }
 
 pub async fn get_dserv_artifact(
@@ -160,14 +183,20 @@ pub async fn post_authorize_dcode_invocation(
         }
     }
 
-    let _ddeploy_transaction = crate::api::ddeploy::ddeploy_transaction().lock().map_err(lock_error)?;
-    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction().lock().map_err(lock_error)?;
+    let _ddeploy_transaction = crate::api::ddeploy::ddeploy_transaction()
+        .lock()
+        .map_err(lock_error)?;
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction()
+        .lock()
+        .map_err(lock_error)?;
     let _dcode_transaction = dcode_transaction().lock().map_err(lock_error)?;
 
     let db_path = db_path();
     let ddeploy_state = crate::core::ddeploy::load_state(&db_path).map_err(internal_error)?;
-    let dnode_registry_state = crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
-    let dcode_registry_state: DCodeArtifactRegistryStateV1 = load_dcode_state(&db_path).map_err(internal_error)?;
+    let dnode_registry_state =
+        crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let dcode_registry_state: DCodeArtifactRegistryStateV1 =
+        load_dcode_state(&db_path).map_err(internal_error)?;
 
     let authorization = authorize_dcode_invocation(
         &ddeploy_state,

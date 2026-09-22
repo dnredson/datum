@@ -55,14 +55,21 @@ pub struct DeliverResponse {
 }
 
 fn failed(code: &str, message: impl Into<String>) -> DeliverResponse {
-    DeliverResponse { outcome: "failed".to_string(), error_code: Some(code.to_string()), message: Some(message.into()), dcode_evidence: None }
+    DeliverResponse {
+        outcome: "failed".to_string(),
+        error_code: Some(code.to_string()),
+        message: Some(message.into()),
+        dcode_evidence: None,
+    }
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, response: &DeliverResponse) {
@@ -104,7 +111,14 @@ where
     let headers_end = loop {
         match stream.read(&mut chunk) {
             Ok(0) => {
-                write_response(&mut stream, 400, &failed("malformed_request", "connection closed before headers were complete"));
+                write_response(
+                    &mut stream,
+                    400,
+                    &failed(
+                        "malformed_request",
+                        "connection closed before headers were complete",
+                    ),
+                );
                 return;
             }
             Ok(n) => {
@@ -113,36 +127,70 @@ where
                     break pos + 4;
                 }
                 if buffer.len() > MAX_HEADER_BYTES {
-                    write_response(&mut stream, 400, &failed("malformed_request", "request headers too large"));
+                    write_response(
+                        &mut stream,
+                        400,
+                        &failed("malformed_request", "request headers too large"),
+                    );
                     return;
                 }
             }
             Err(_) => {
-                write_response(&mut stream, 400, &failed("malformed_request", "error reading request"));
+                write_response(
+                    &mut stream,
+                    400,
+                    &failed("malformed_request", "error reading request"),
+                );
                 return;
             }
         }
     };
 
     let header_text = String::from_utf8_lossy(&buffer[..headers_end]).to_string();
-    let is_post_to_deliver_path = header_text.lines().next().map(|line| line.starts_with(&format!("POST {DELIVER_PATH} "))).unwrap_or(false);
+    let is_post_to_deliver_path = header_text
+        .lines()
+        .next()
+        .map(|line| line.starts_with(&format!("POST {DELIVER_PATH} ")))
+        .unwrap_or(false);
     if !is_post_to_deliver_path {
-        write_response(&mut stream, 404, &failed("not_found", "only POST to the D-Call deliver path is supported"));
+        write_response(
+            &mut stream,
+            404,
+            &failed(
+                "not_found",
+                "only POST to the D-Call deliver path is supported",
+            ),
+        );
         return;
     }
     let content_length = header_text.lines().find_map(|line| {
         let lower = line.to_ascii_lowercase();
-        lower.strip_prefix("content-length:").and_then(|value| value.trim().parse::<usize>().ok())
+        lower
+            .strip_prefix("content-length:")
+            .and_then(|value| value.trim().parse::<usize>().ok())
     });
     let content_length = match content_length {
         Some(length) => length,
         None => {
-            write_response(&mut stream, 400, &failed("malformed_request", "missing Content-Length"));
+            write_response(
+                &mut stream,
+                400,
+                &failed("malformed_request", "missing Content-Length"),
+            );
             return;
         }
     };
     if content_length > MAX_BODY_BYTES {
-        write_response(&mut stream, 413, &failed("payload_too_large", format!("request body {content_length} bytes exceeds the {MAX_BODY_BYTES}-byte limit")));
+        write_response(
+            &mut stream,
+            413,
+            &failed(
+                "payload_too_large",
+                format!(
+                    "request body {content_length} bytes exceeds the {MAX_BODY_BYTES}-byte limit"
+                ),
+            ),
+        );
         return;
     }
 
@@ -155,7 +203,14 @@ where
         }
     }
     if body.len() < content_length {
-        write_response(&mut stream, 400, &failed("malformed_request", "request body shorter than declared Content-Length"));
+        write_response(
+            &mut stream,
+            400,
+            &failed(
+                "malformed_request",
+                "request body shorter than declared Content-Length",
+            ),
+        );
         return;
     }
     body.truncate(content_length);
@@ -163,7 +218,11 @@ where
     let request: DeliverRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(error) => {
-            write_response(&mut stream, 400, &failed("malformed_request", format!("invalid JSON body: {error}")));
+            write_response(
+                &mut stream,
+                400,
+                &failed("malformed_request", format!("invalid JSON body: {error}")),
+            );
             return;
         }
     };
@@ -202,7 +261,9 @@ mod tests {
     fn send_raw_request(addr: std::net::SocketAddr, raw: &[u8]) -> String {
         let mut stream = TcpStream::connect(addr).unwrap();
         stream.write_all(raw).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut response = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
@@ -224,17 +285,37 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             stream.set_nonblocking(true).unwrap();
             ready.send(()).unwrap();
-            serve_one_request(stream, |_| (200, DeliverResponse { outcome: "success".into(), error_code: None, message: None, dcode_evidence: None }));
+            serve_one_request(stream, |_| {
+                (
+                    200,
+                    DeliverResponse {
+                        outcome: "success".into(),
+                        error_code: None,
+                        message: None,
+                        dcode_evidence: None,
+                    },
+                )
+            });
         });
         let mut client = TcpStream::connect(address).unwrap();
         accepted.recv().unwrap();
         std::thread::sleep(Duration::from_millis(50));
         let body = serde_json::json!({"grant_id":"g1","token":"tok","payload_b64":"aGk=","payload_sha256":"a".repeat(64),"payload_size":2}).to_string();
-        write!(client, "POST {DELIVER_PATH} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(
+            client,
+            "POST {DELIVER_PATH} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
-        assert!(response.contains("200 OK") && response.contains("success"), "{response}");
+        assert!(
+            response.contains("200 OK") && response.contains("success"),
+            "{response}"
+        );
         thread.join().unwrap();
     }
 
@@ -246,7 +327,15 @@ mod tests {
             if let Ok((stream, _)) = listener.accept() {
                 serve_one_request(stream, |request| {
                     assert_eq!(request.grant_id, "g1");
-                    (200, DeliverResponse { outcome: "success".to_string(), error_code: None, message: None, dcode_evidence: None })
+                    (
+                        200,
+                        DeliverResponse {
+                            outcome: "success".to_string(),
+                            error_code: None,
+                            message: None,
+                            dcode_evidence: None,
+                        },
+                    )
                 });
             }
         });
@@ -263,10 +352,15 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
-                serve_one_request(stream, |_| panic!("handler must never be called for an oversized request"));
+                serve_one_request(stream, |_| {
+                    panic!("handler must never be called for an oversized request")
+                });
             }
         });
-        let raw = format!("POST {DELIVER_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", MAX_BODY_BYTES + 1);
+        let raw = format!(
+            "POST {DELIVER_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
         let response = send_raw_request(addr, raw.as_bytes());
         assert!(response.contains("413"), "response: {response}");
     }
@@ -277,11 +371,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
-                serve_one_request(stream, |_| panic!("handler must never be called for malformed JSON"));
+                serve_one_request(stream, |_| {
+                    panic!("handler must never be called for malformed JSON")
+                });
             }
         });
         let body = "{not valid json";
-        let raw = format!("POST {DELIVER_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let raw = format!(
+            "POST {DELIVER_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
         let response = send_raw_request(addr, raw.as_bytes());
         assert!(response.contains("400"), "response: {response}");
     }
@@ -292,7 +391,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
-                serve_one_request(stream, |_| panic!("handler must never be called for the wrong path"));
+                serve_one_request(stream, |_| {
+                    panic!("handler must never be called for the wrong path")
+                });
             }
         });
         let raw = "POST /some/other/path HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}";

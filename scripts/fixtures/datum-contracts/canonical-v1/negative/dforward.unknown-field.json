@@ -1,0 +1,61 @@
+{
+  "schema": "datum.dforward/1",
+  "project_id": "monitor-f49c8",
+  "dforward_id": "dforward:smart-sentinel-lab",
+  "revision": 1,
+  "rogue_field": true,
+  "diots": [
+    {
+      "diot_id": "mqtt-broker",
+      "diot_kind": "mqtt_broker",
+      "artifact_requirement": {
+        "artifact_id": "mosquitto"
+      },
+      "provides": [
+        {
+          "interface": "mqtt.pubsub/3.1.1"
+        }
+      ],
+      "requires": []
+    }
+  ],
+  "external_endpoints": [
+    {
+      "endpoint_id": "sensor-ingress",
+      "direction": "input",
+      "interface": "mqtt.pubsub/3.1.1"
+    },
+    {
+      "endpoint_id": "alert-egress",
+      "direction": "output",
+      "interface": "mqtt.pubsub/3.1.1"
+    }
+  ],
+  "chains": [
+    {
+      "chain_id": "sensor-ingress",
+      "hops": [
+        {
+          "from": "sensor-ingress",
+          "to": "mqtt-broker",
+          "interface": "mqtt.pubsub/3.1.1"
+        }
+      ]
+    },
+    {
+      "chain_id": "alert-egress",
+      "hops": [
+        {
+          "from": "mqtt-broker",
+          "to": "alert-egress",
+          "interface": "mqtt.pubsub/3.1.1"
+        }
+      ]
+    }
+  ],
+  "support_jobs": [],
+  "x_note": "carries an unrecognised top-level field; must be rejected by deny_unknown_fields at deserialization time, before validate() ever runs",
+  "x_expect_reject": {
+    "code": "deny_unknown_fields"
+  }
+}

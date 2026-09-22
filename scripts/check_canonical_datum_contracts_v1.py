@@ -81,6 +81,15 @@ EMITTABLE_CODES = {
     "aggregate_node_cpu_exceeded", "aggregate_node_memory_exceeded",
     # Stage 110 P1 fix (independent review v3): reference digest shape.
     "invalid_digest_format",
+    # Phase 113A (ADR-0023): datum.dforward/1 fixtures happen to live under
+    # this same canonical-v1/negative/ directory; these are the exact Rust
+    # `canonical_dforward.rs` finding codes this checker's `dforward` branch
+    # mirrors -- `deny_unknown_fields` is a pseudo-code standing in for a
+    # deserialization-time `#[serde(deny_unknown_fields)]` rejection, exactly
+    # like the real Rust fixture-scan test's own special case for it.
+    "duplicate_diot_id", "dangling_hop_source", "dangling_hop_target",
+    "external_direction_invalid", "external_adjacent_interface_invalid",
+    "deny_unknown_fields",
 }
 
 _CANONICAL_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -526,6 +535,60 @@ def dispatch_findings(path: Path, obj: dict, dgraph_by_key: dict, dcontinuum_by_
             findings += v_canonical_dcontinuum(real_dcontinuum)
         if real_dgraph is not None and real_dcontinuum is not None:
             findings += v_canonical_dmap_cross(obj, real_dgraph, real_dcontinuum)
+        return findings
+    if kind == "dforward":
+        findings = []
+        # Top-level `#[serde(deny_unknown_fields)]` (Rust) rejects an unknown
+        # key at DESERIALIZATION time, before validate() ever runs -- mirrored
+        # here as a pseudo-finding so this checker's uniform
+        # negative_fixture_verdict() path can still assert it, exactly like
+        # the real Rust fixture-scan test's dedicated "deserialized
+        # successfully" special case for this one code.
+        known_top_level_keys = {
+            "schema", "project_id", "dforward_id", "revision",
+            "diots", "external_endpoints", "chains", "support_jobs",
+        }
+        if any(k not in known_top_level_keys for k in obj.keys() if not k.startswith("x_") and k != "expected_digest_sha256"):
+            findings.append(F("deny_unknown_fields", "unrecognised top-level field"))
+        if obj.get("schema") != "datum.dforward/1": findings.append(F("schema_invalid", "schema must be datum.dforward/1"))
+        for key in ("project_id", "dforward_id"):
+            if not isinstance(obj.get(key), str) or not obj[key].strip(): findings.append(F("missing_field", f"{key} must be non-empty"))
+        if not isinstance(obj.get("revision"), int) or obj["revision"] < 1: findings.append(F("revision_invalid", "revision must be >= 1"))
+        ids=[]
+        diots_by_id={}
+        for diot in obj.get("diots") or []:
+            ident=diot.get("diot_id")
+            if not isinstance(ident, str) or not ident.strip(): findings.append(F("missing_field", "diot_id must be non-empty"))
+            if ident in ids: findings.append(F("duplicate_diot_id", "duplicate diot_id"))
+            ids.append(ident)
+            diots_by_id[ident]=diot
+        endpoints_by_id={e.get("endpoint_id"): e for e in obj.get("external_endpoints") or []}
+        declared=set(ids)|set(endpoints_by_id.keys())
+
+        def provides_or_requires(diot: dict, interface: str) -> bool:
+            return any(p.get("interface") == interface for p in diot.get("provides") or []) or \
+                   any(r.get("interface") == interface for r in diot.get("requires") or [])
+
+        for chain in obj.get("chains") or []:
+            for hop in chain.get("hops") or []:
+                h_from, h_to, h_iface = hop.get("from"), hop.get("to"), hop.get("interface")
+                if h_from not in declared: findings.append(F("dangling_hop_source", "hop source is undeclared"))
+                if h_to not in declared: findings.append(F("dangling_hop_target", "hop target is undeclared"))
+                if not isinstance(h_iface, str) or not h_iface.strip(): findings.append(F("missing_field", "hop interface must be non-empty"))
+                src_ep = endpoints_by_id.get(h_from)
+                if src_ep is not None:
+                    if src_ep.get("direction") != "input":
+                        findings.append(F("external_direction_invalid", "only input endpoints may be hop sources"))
+                    target = diots_by_id.get(h_to)
+                    if target is not None and not provides_or_requires(target, h_iface):
+                        findings.append(F("external_adjacent_interface_invalid", "DIoT adjacent to input lacks the endpoint interface"))
+                dst_ep = endpoints_by_id.get(h_to)
+                if dst_ep is not None:
+                    if dst_ep.get("direction") != "output":
+                        findings.append(F("external_direction_invalid", "only output endpoints may be hop targets"))
+                    source = diots_by_id.get(h_from)
+                    if source is not None and not provides_or_requires(source, h_iface):
+                        findings.append(F("external_adjacent_interface_invalid", "DIoT adjacent to output lacks the endpoint interface"))
         return findings
     return [F("unrecognised_schema", f"unrecognised canonical-v1 fixture filename '{path.name}' (expected dgraph./dcontinuum./dmap. prefix)")]
 

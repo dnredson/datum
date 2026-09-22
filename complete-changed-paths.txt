@@ -1,0 +1,196 @@
+ M DATUM/src/agent/bootstrap.rs
+ M DATUM/src/agent/canonical_dcontinuum.rs
+ M DATUM/src/agent/canonical_dgraph.rs
+ M DATUM/src/agent/canonical_dmap.rs
+ M DATUM/src/agent/discovery.rs
+ M DATUM/src/agent/discovery_collectors.rs
+ M DATUM/src/agent/execution_projection.rs
+ M DATUM/src/agent/image_identity_verification.rs
+ M DATUM/src/agent/integrated_service_evidence.rs
+ M DATUM/src/agent/jcs.rs
+ M DATUM/src/agent/mod.rs
+ M DATUM/src/agent/native_process_acquisition.rs
+ M DATUM/src/agent/native_process_runtime.rs
+ M DATUM/src/agent/native_process_state.rs
+ M DATUM/src/agent/operational_evidence.rs
+ M DATUM/src/agent/operational_reconciliation.rs
+ M DATUM/src/agent/operational_service_loop.rs
+ M DATUM/src/agent/resource_discovery.rs
+ M DATUM/src/agent/runtime_artifact.rs
+ M DATUM/src/agent/runtime_kind.rs
+ M DATUM/src/agent/service_artifact.rs
+ M DATUM/src/agent/service_loop.rs
+ M DATUM/src/agent/stage107a_enforcement.rs
+ M DATUM/src/bin/smartsentinel-bootstrap.rs
+ M DATUM/src/bin/smartsentinel-dcall-listen.rs
+ M DATUM/src/bin/smartsentinel-dcode-init.rs
+ M DATUM/src/bin/smartsentinel-dcode-install.rs
+ M DATUM/src/bin/smartsentinel-dcode-invoke.rs
+ M DATUM/src/bin/smartsentinel-dcode-worker.rs
+ M DATUM/src/bin/smartsentinel-discovery.rs
+ M DATUM/src/bin/smartsentinel-observe.rs
+ M DATUM/src/bin/smartsentinel-operational-reconcile.rs
+ M DATUM/src/bin/smartsentinel-runtime-prerequisite.rs
+ M DATUM/src/bin/smartsentinel-service-evidence.rs
+ M DATUM/src/bin/smartsentinel-service-probe.rs
+ M DATUM/src/cli/dgraph_snapshot.rs
+ M DATUM/src/cli/dispatch.rs
+ M DATUM/src/cli/wasm_deploy_live.rs
+ M DATUM/src/core/plugins/host_telemetry_linux.rs
+ M DATUM/src/dcall/client.rs
+ M DATUM/src/dcall/delivery.rs
+ M DATUM/src/dcall/delivery/tests/endpoint_authority.rs
+ M DATUM/src/dcall/evidence.rs
+ M DATUM/src/dcall/listener.rs
+ M DATUM/src/dcode/abi.rs
+ M DATUM/src/dcode/authorization.rs
+ M DATUM/src/dcode/client.rs
+ M DATUM/src/dcode/dserv_artifact.rs
+ M DATUM/src/dcode/envelope.rs
+ M DATUM/src/dcode/evidence.rs
+ M DATUM/src/dcode/identity.rs
+ M DATUM/src/dcode/invoke.rs
+ M DATUM/src/dcode/local_identity.rs
+ M DATUM/src/dcode/module_store.rs
+ M DATUM/src/dcode/runtime.rs
+ M DATUM/src/dcode/worker.rs
+ M DATUM/src/dgraph_snapshot/observed_health.rs
+ M DATUM/src/telemetry.rs
+ M DATUM/src/wasm_runtime/artifact.rs
+ M DATUM/src/wasm_runtime/deployment.rs
+ M DATUM/src/wasm_runtime/generic_runner.rs
+ M DATUM/src/wasm_runtime/integrity.rs
+ M DATUM/src/wasm_runtime/live_deployment.rs
+ M DATUM/tests/dcall_two_node_integration.rs
+ M DATUM/tests/dcode_cli_end_to_end.rs
+ M DATUM/tests/dcode_worker_isolation.rs
+ M DATUM/tests/smartsentinel_fog_bundle_contract.rs
+ M DATUM/tests/smartsentinel_mist_gateway_contract.rs
+ M DATUM/tests/smartsentinel_o2_discovery.rs
+ M DATUM/tests/smartsentinel_o2_operational_wasm.rs
+ M DATUM/tests/smartsentinel_o2_service_artifact.rs
+ M DATUM/tests/smartsentinel_o2_service_deployment_reconciliation.rs
+ M DATUM/tests/support/dcall_proof.rs
+ M MANUAL_VALIDATION_COMMANDS.md
+ M documentation/adr/ADR-0022-canonical-dcall-realization-v0.1.md
+ M documentation/adr/README.md
+ M documentation/architecture/overview.md
+ M documentation/concepts/datum.md
+ M documentation/reference/vs1-contract-fixtures.md
+ M dserver/src/api/alternative_paths.rs
+ M dserver/src/api/artifact_reconciliation.rs
+ M dserver/src/api/controlled_wasm_deployment.rs
+ M dserver/src/api/dcall.rs
+ M dserver/src/api/dcode.rs
+ M dserver/src/api/ddeploy.rs
+ M dserver/src/api/deployment_lifecycle.rs
+ M dserver/src/api/dgraph_capability_negotiation.rs
+ M dserver/src/api/dgraph_rollback_audit.rs
+ M dserver/src/api/dnode_registry.rs
+ M dserver/src/api/external_ai_inference.rs
+ M dserver/src/api/governed_deployment_preflight.rs
+ M dserver/src/api/graphql.rs
+ M dserver/src/api/ingest.rs
+ M dserver/src/api/live_dashboard.rs
+ M dserver/src/api/mod.rs
+ M dserver/src/api/nodes.rs
+ M dserver/src/api/operational_analysis_context.rs
+ M dserver/src/api/operational_dgraph.rs
+ M dserver/src/api/operational_dgraph_acquisition.rs
+ M dserver/src/api/operational_evidence.rs
+ M dserver/src/api/passive_observation_trigger.rs
+ M dserver/src/api/resource_registry.rs
+ M dserver/src/api/secret_preflight.rs
+ M dserver/src/api/secret_resolver_contract.rs
+ M dserver/src/api/sentinel_registration.rs
+ M dserver/src/api/sentinel_telemetry.rs
+ M dserver/src/api/service_artifacts.rs
+ M dserver/src/bin/control-state-inspect.rs
+ M dserver/src/core/active_ai_context.rs
+ M dserver/src/core/ai_gnn_data_contract.rs
+ M dserver/src/core/alternative_path_planner.rs
+ M dserver/src/core/artifact_reconciliation_context.rs
+ M dserver/src/core/canonical_dcontinuum.rs
+ M dserver/src/core/canonical_dgraph.rs
+ M dserver/src/core/canonical_dmap.rs
+ M dserver/src/core/canonical_placement.rs
+ M dserver/src/core/controlled_dgraph_deployment.rs
+ M dserver/src/core/controlled_dgraph_deployment_tests.rs
+ M dserver/src/core/controlled_wasm_deployment.rs
+ M dserver/src/core/controlled_wasm_persistence.rs
+ M dserver/src/core/dcall.rs
+ M dserver/src/core/dcall/tests.rs
+ M dserver/src/core/dcall_endpoint.rs
+ M dserver/src/core/dcode_authorization.rs
+ M dserver/src/core/dcode_registry.rs
+ M dserver/src/core/ddeploy.rs
+ M dserver/src/core/deployment_assignment.rs
+ M dserver/src/core/deployment_dependency.rs
+ M dserver/src/core/deployment_lifecycle.rs
+ M dserver/src/core/deployment_lifecycle_observed.rs
+ M dserver/src/core/deployment_manifest.rs
+ M dserver/src/core/deployment_readiness.rs
+ M dserver/src/core/dgraph_capability_negotiation.rs
+ M dserver/src/core/dgraph_resource_limits.rs
+ M dserver/src/core/dgraph_rollback_audit.rs
+ M dserver/src/core/dnode_registry.rs
+ M dserver/src/core/dserv_artifact.rs
+ M dserver/src/core/execution_projection.rs
+ M dserver/src/core/external_ai_inference.rs
+ M dserver/src/core/gnn_dry_run.rs
+ M dserver/src/core/governed_deployment_preflight.rs
+ M dserver/src/core/jcs.rs
+ M dserver/src/core/mod.rs
+ M dserver/src/core/multinode_dgraph.rs
+ M dserver/src/core/oci_image_pinning.rs
+ M dserver/src/core/oci_registry_resolver.rs
+ M dserver/src/core/operational_analysis_context.rs
+ M dserver/src/core/operational_dgraph.rs
+ M dserver/src/core/operational_dgraph_acquisition.rs
+ M dserver/src/core/operational_dgraph_persistence.rs
+ M dserver/src/core/operational_dgraph_recovery.rs
+ M dserver/src/core/operational_evidence.rs
+ M dserver/src/core/resource_observation.rs
+ M dserver/src/core/resource_registry.rs
+ M dserver/src/core/resource_registry_persistence.rs
+ M dserver/src/core/runtime_kind.rs
+ M dserver/src/core/secret_preflight.rs
+ M dserver/src/core/secret_resolver_contract.rs
+ M dserver/src/core/sentinel_registration.rs
+ M dserver/src/core/sentinel_telemetry.rs
+ M dserver/src/core/service_artifact_registry.rs
+ M dserver/src/main.rs
+ M dserver/src/storage/control_state.rs
+ M dserver/src/storage/operational_evidence.rs
+ M scripts/check_canonical_datum_contracts_v1.py
+ M scripts/check_datum_contract_fixtures.py
+ M scripts/check_datum_contract_fixtures_selftest.py
+ M scripts/fixtures/datum-contracts/canonical-v1/negative/dmap.wrong-schema.json
+ M scripts/fixtures/datum-contracts/vs1/README.md
+ M scripts/fixtures/datum-contracts/vs1/dforward.monitor-f49c8.json
+?? DATUM/src/agent/canonical_dforward.rs
+?? DATUM/src/agent/canonical_dmap_v2.rs
+?? MANIFEST.txt
+?? PHASE113A_REVIEW.md
+?? complete-changed-paths.txt
+?? documentation/adr/ADR-0023-canonical-dforward-diot-dmap-v2.md
+?? dserver/src/core/canonical_dforward.rs
+?? dserver/src/core/canonical_dmap_v2.rs
+?? dserver/src/core/ddeploy_v2.rs
+?? dserver/src/core/dforward_projection.rs
+?? final-git-status.txt
+?? scripts/__pycache__/
+?? scripts/check_phase113a_contracts.py
+?? scripts/check_phase113a_contracts_selftest.py
+?? scripts/fixtures/datum-contracts/canonical-v1/dforward.smart-sentinel-lab.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.adjacent-diot-interface-mismatch.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.dangling-hop-source.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.dangling-hop-target.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.duplicate-diot.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.external-direction-mismatch.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.incompatible-interface.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.unknown-field.json
+?? scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.wrong-schema.json
+?? scripts/fixtures/datum-contracts/ddeploy-v2/
+?? scripts/fixtures/datum-contracts/dmap-v2/
+?? test-results.txt

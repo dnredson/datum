@@ -1,0 +1,16 @@
+{
+  "schema": "datum.ddeploy-acceptance/2",
+  "acceptance_id": "acceptance:smart-sentinel-lab",
+  "proposal_id": "proposal:smart-sentinel-lab",
+  "proposal_digest": "sha256:c253c203fa92ef10c43977c0ad3448ee515b4d504d7e10d24afa11fdf9ff861f",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "accepted_at_utc": "2026-09-15T00:05:00Z",
+  "accepted_by": "operator:dana",
+  "materialized_dmap_ref": {
+    "id": "dmap:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:b38a2aa111f358cb92fda232d6a5f707f798b6e4dca278626a7e0dd5a7e39851"
+  },
+  "x_note": "Real Phase 113A DDeployAcceptanceV2 bundle fixture (closure pass 5), mutually consistent with ddeploy-v2/proposal.json (exact proposal_digest match) and dmap-v2/dmap.smart-sentinel-lab.json (exact materialized_dmap_ref id/revision/digest match, both computed by the real production CanonicalDMapV2::digest function). Replaces the prior stale placeholder."
+}

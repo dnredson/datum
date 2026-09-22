@@ -1,0 +1,19 @@
+{
+  "schema": "datum.ddeploy-acceptance/2",
+  "acceptance_id": "acceptance:smart-sentinel-lab",
+  "proposal_id": "proposal:smart-sentinel-lab",
+  "proposal_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "accepted_at_utc": "2026-09-15T00:05:00Z",
+  "accepted_by": "operator:dana",
+  "materialized_dmap_ref": {
+    "id": "dmap:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:b38a2aa111f358cb92fda232d6a5f707f798b6e4dca278626a7e0dd5a7e39851"
+  },
+  "x_note": "proposal_digest is an arbitrary value that does not equal the real proposal.json's own actual digest (sha256:c253c203...)",
+  "x_expect_reject": {
+    "case": "acceptance_proposal_digest_mismatch"
+  }
+}

@@ -19,7 +19,7 @@ hand-authored sketches were migrated to explicit
 `datum.x-fixture.vs1-dmap/1` spellings. This is a **label change only** —
 every field, validation rule, and finding code below is otherwise
 unchanged; `scripts/check_datum_contract_fixtures.py` was updated in the
-same pass to expect the new labels. `datum.dforward/1` was not touched (it
+same pass to expect the new labels. DForward now uses `datum.x-fixture.vs1-dforward/1`
 never collided). The real, compiled `datum.dgraph/1`/`datum.dcontinuum/1`/
 `datum.dmap/1` production contracts and their own fixtures live under the
 sibling `scripts/fixtures/datum-contracts/canonical-v1/` directory,
@@ -61,7 +61,7 @@ implementations.
 | `dgraph.dcall-cycle.json` | `datum.x-fixture.vs1-dgraph/1` — a graph containing a D-Call cycle, which is **accepted** (D-4). |
 | `dcontinuum.monitor-f49c8.json` | `datum.x-fixture.vs1-dcontinuum/1` — the VS1 continuum (S2-Mist / S3-Fog / S5-Cloud). |
 | `dcontinuum.host-invariance.json` | `datum.x-fixture.vs1-dcontinuum/1` — test-only: `fog-01` supports `container` and `native_process`. |
-| `dforward.monitor-f49c8.json` | `datum.dforward/1` — D-IoT elements, interfaces, chains. Every chain hop `from`/`to` resolves to a declared `diot_id` (or an `external_endpoints` entry). |
+| `dforward.monitor-f49c8.json` | `datum.x-fixture.vs1-dforward/1` — historical D-IoT elements, interfaces, chains. |
 | `dmap.sensor-pipeline.fog-only.json` | `datum.x-fixture.vs1-dmap/1` — VS1a: `decode` + `alert` on `fog-01`. |
 | `dmap.sensor-pipeline.fog-cloud.json` | `datum.x-fixture.vs1-dmap/1` — VS1b: `decode@fog-01`, `alert@cloud-01`. |
 | `dmap.sensor-pipeline.native-dnode.json` | `datum.x-fixture.vs1-dmap/1` — host-invariance pair of `fog-only`, native D-Node host. |

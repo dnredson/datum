@@ -21,17 +21,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::core::canonical_dcontinuum::CanonicalDContinuumV1;
-use crate::core::canonical_dgraph::CanonicalDGraphV1;
+use crate::core::canonical_dcontinuum::{recompute_dcontinuum_digest, CanonicalDContinuumV1};
+use crate::core::canonical_dforward::CanonicalDForwardV1;
+use crate::core::canonical_dgraph::{recompute_dgraph_digest, CanonicalDGraphV1};
 use crate::core::canonical_dmap::{CanonicalDMapV1, CanonicalDServPlacementV1};
+use crate::core::canonical_dmap_v2::{
+    CanonicalDMapV2, ContractRefV2, DCallRealizationV2, DIoTPlacementV2, DServPlacementV2,
+    ExternalPortBindingV2, CANONICAL_DMAP_V2_SCHEMA,
+};
 use crate::core::ddeploy::{
-    accept_proposal, active_operational_projection, check_artifact_list_project_scope,
-    compute_project_node_commitments, create_proposal, derive_placement_eligibility_view,
-    is_canonical_authority_active, load_state, operational_dgraph_id_for_project, persist_state,
+    accept_proposal, active_operational_projection, active_placement_authority,
+    check_artifact_list_project_scope, compute_project_node_commitments, create_proposal,
+    derive_placement_eligibility_view, is_canonical_authority_active, load_state,
+    operational_dgraph_id_for_project, persist_state, resolve_diot_artifact_authority,
     validate_full, validate_proposal_context, AcceptError, AcceptOutcome, CreateProposalInput,
     DDeployAcceptanceV1, DDeployProposalV1, PlannerProvenanceV1, ProposalRecord, ProposalSource,
-    F_PERSISTENCE_CONFLICT, F_PROPOSAL_NOT_FOUND,
+    F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE, F_PERSISTENCE_CONFLICT,
+    F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED, F_PROJECT_NODE_MEMORY_CAPACITY_EXCEEDED,
+    F_PROPOSAL_NOT_FOUND,
 };
+use crate::core::ddeploy_v2::{DDeployProposalV2, DDEPLOY_PROPOSAL_V2_SCHEMA};
 use crate::core::service_artifact_registry::ServiceArtifact;
 use crate::storage::control_state::default_control_state_db_path;
 use crate::AppState;
@@ -702,8 +711,603 @@ pub fn canonical_authority_active(project_id: &str) -> Result<bool, String> {
     is_canonical_authority_active(project_id)
 }
 
+
+// --------------------------------------------------------------------------- //
+// Phase 113A closure pass 4: DDeploy/2 HTTP surface                           //
+//                                                                             //
+// Mirrors the v1 handlers immediately above: same X-Datum-Project header     //
+// convention, same read-only-validate / immutable-create / explicit-accept   //
+// separation, same DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> ServiceArtifact//
+// stable-view lock order, same "server owns identity/digests, caller supplies//
+// only candidate semantic content" discipline. Every handler here is a thin  //
+// wrapper around the real core functions Passes 1-3.1 already closed         //
+// (`DDeployStateV1::create_v2_proposal`/`accept_v2_proposal`,                //
+// `active_placement_authority`) -- no capacity/ServiceArtifact/relational-   //
+// integrity logic is duplicated here.                                       //
+// --------------------------------------------------------------------------- //
+
+/// A v2 candidate's caller-declared semantic content. Deliberately carries NO
+/// `dmap_id`/`revision`/`digest`/`proposal_id`/`acceptance_id`/authoritative-
+/// ref field anywhere -- `DServPlacementV2`/`DIoTPlacementV2`/
+/// `DCallRealizationV2`/`ExternalPortBindingV2` themselves have no such
+/// fields, so a caller cannot supply arbitrary DMap authority through this
+/// payload even before `deny_unknown_fields` is considered (item L, Phase
+/// 113A closure pass 4).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeployV2CandidatePayload {
+    pub application_id: String,
+    /// Phase 113A closure pass 4.1: typed provenance classification only --
+    /// never authority to bypass validation. The server still owns
+    /// `proposal_id`/`created_at_utc`/every authoritative ref-digest/
+    /// `diot_artifact_authority`/`proposal_digest`. `source == Ai` requires
+    /// the exact same explicit `POST .../accept` call as any other source --
+    /// see `ai_sourced_v2_proposal_has_no_alternate_activation_path`.
+    #[serde(default = "default_source")]
+    pub source: ProposalSource,
+    pub dgraph: CanonicalDGraphV1,
+    pub dcontinuum: CanonicalDContinuumV1,
+    pub dforward: CanonicalDForwardV1,
+    #[serde(default)]
+    pub placements: Vec<DServPlacementV2>,
+    #[serde(default)]
+    pub diot_placements: Vec<DIoTPlacementV2>,
+    #[serde(default)]
+    pub dcall_realizations: Vec<DCallRealizationV2>,
+    #[serde(default)]
+    pub external_port_bindings: Vec<ExternalPortBindingV2>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidateV2Response {
+    pub valid: bool,
+    pub findings: Vec<Value>,
+    pub dgraph_ref: ContractRefV2,
+    pub dcontinuum_ref: ContractRefV2,
+    pub dforward_ref: ContractRefV2,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProposalV2Response {
+    pub proposal: DDeployProposalV2,
+    pub proposal_digest: String,
+    pub state: &'static str,
+}
+
+impl ProposalV2Response {
+    fn from_record(record: &crate::core::ddeploy_v2::DDeployProposalV2Record) -> Self {
+        let state = match record.state {
+            crate::core::ddeploy_v2::ProposalV2State::Pending => "pending",
+            crate::core::ddeploy_v2::ProposalV2State::Accepted => "accepted",
+        };
+        ProposalV2Response {
+            proposal: record.proposal.clone(),
+            proposal_digest: record.proposal_digest.clone(),
+            state,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptV2RequestPayload {
+    pub accepted_by: String,
+    /// Phase 113A closure pass 4.1: caller-supplied CAS guard, mirroring
+    /// v1's `AcceptRequestPayload::expected_proposal_digest` exactly. If
+    /// supplied and it does not equal the proposal's recorded
+    /// `proposal_digest`, acceptance is rejected BEFORE any state mutation --
+    /// including on an idempotent-replay attempt (a wrong digest never
+    /// silently succeeds just because the proposal was already accepted).
+    #[serde(default)]
+    pub expected_proposal_digest: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcceptV2Response {
+    pub acceptance: crate::core::ddeploy_v2::DDeployAcceptanceV2,
+    pub materialized_dmap: CanonicalDMapV2,
+    /// `true` iff this call's `proposal_id` was already `Accepted` before
+    /// this request arrived -- the core's own idempotent-replay behavior
+    /// (same proposal, same recorded evidence returned, no new acceptance
+    /// inserted) was exercised rather than a fresh acceptance.
+    pub idempotent_replay: bool,
+    /// `true` iff `materialized_dmap` is still the CURRENT active DMap/2 for
+    /// this application at the moment this response was built. Mirrors v1's
+    /// `AcceptResponse::currently_active` field/caveat exactly: a replay of a
+    /// proposal that has since been superseded by a later acceptance would
+    /// report `false` here -- `GET /api/v1/ddeploy/v2/authority` remains the
+    /// authoritative "what is active right now" source independent of this
+    /// field.
+    pub currently_active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActiveV2Query {
+    pub application_id: String,
+}
+
+/// Schema-version-aware active-authority summary (item 9): never down-
+/// converts a real DMap/2 into a v1-shaped response, and never fabricates
+/// DMap/2 fields for an application whose active authority is actually DMap/1.
+#[derive(Debug, Serialize)]
+#[serde(tag = "dmap_schema")]
+pub enum ActiveAuthorityV2Response {
+    #[serde(rename = "datum.dmap/1")]
+    V1 {
+        project_id: String,
+        application_id: String,
+        proposal_id: String,
+        acceptance_id: String,
+        dmap_id: String,
+        revision: u64,
+        digest: String,
+    },
+    #[serde(rename = "datum.dmap/2")]
+    V2 {
+        project_id: String,
+        application_id: String,
+        proposal_id: String,
+        acceptance_id: String,
+        dmap_id: String,
+        revision: u64,
+        digest: String,
+    },
+}
+
+fn not_found_v2_proposal(proposal_id: &str) -> ApiError {
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(
+            json!({"error": F_PROPOSAL_NOT_FOUND, "message": format!("v2 proposal '{proposal_id}' not found")}),
+        ),
+    )
+}
+
+fn not_found_active_authority(application_id: &str) -> ApiError {
+    (
+        StatusCode::NOT_FOUND,
+        JsonResponse(
+            json!({"error": "no_active_authority", "message": format!("application '{application_id}' has no active deployment authority")}),
+        ),
+    )
+}
+
+/// Builds the immutable candidate DTOs' shared server-owned refs
+/// (`dgraph_ref`/`dcontinuum_ref`/`dforward_ref`) from caller-supplied
+/// content -- the SAME derivation used by both `post_validate_proposal_v2`
+/// and `post_create_proposal_v2`, so a candidate that validates cleanly is
+/// guaranteed to produce byte-identical refs at creation time. D-Continuum is
+/// ALWAYS replaced by the server-owned authoritative structural snapshot
+/// (ADR-0019), exactly like every v1 handler above -- `payload.dcontinuum` is
+/// only ever used as the caller's CLAIM to check against that authority, never
+/// persisted or hashed directly.
+fn derive_v2_refs(
+    project_id: &str,
+    payload_dgraph: &CanonicalDGraphV1,
+    authoritative_dcontinuum: &CanonicalDContinuumV1,
+    payload_dforward: &CanonicalDForwardV1,
+) -> Result<(ContractRefV2, ContractRefV2, ContractRefV2), ApiError> {
+    let dgraph_digest = recompute_dgraph_digest(payload_dgraph).map_err(internal_error)?;
+    let dcontinuum_digest =
+        recompute_dcontinuum_digest(authoritative_dcontinuum).map_err(internal_error)?;
+    let dforward_digest = payload_dforward.digest().map_err(internal_error)?;
+    let _ = project_id;
+    Ok((
+        ContractRefV2 {
+            id: payload_dgraph.dgraph_id.clone(),
+            revision: payload_dgraph.revision,
+            digest: dgraph_digest,
+        },
+        ContractRefV2 {
+            id: authoritative_dcontinuum.dcontinuum_id.clone(),
+            revision: authoritative_dcontinuum.revision,
+            digest: dcontinuum_digest,
+        },
+        ContractRefV2 {
+            id: payload_dforward.dforward_id.clone(),
+            revision: payload_dforward.revision,
+            digest: dforward_digest,
+        },
+    ))
+}
+
+/// PURE. No proposal persistence, no D-Map, no operational update, no host
+/// side effect, and (unlike `post_create_proposal_v2`) no DDEPLOY_TRANSACTION
+/// lock at all -- reads only the caller's payload and the current
+/// (read-only) D-Node registry / `ServiceArtifact` snapshots.
+///
+/// Additionally previews structural DMap/2 validity (`CanonicalDMapV2::
+/// validate`) against a placeholder `dmap:preview` identity/revision-1 map
+/// built from the caller's candidate placements/diot_placements/
+/// dcall_realizations/external_port_bindings -- the SAME core validation
+/// function `accept_v2_proposal` runs against the real materialized map, so
+/// this preview cannot diverge from what real acceptance would actually
+/// check. `resolve_diot_artifact_authority` is the SAME real ServiceArtifact
+/// resolution `post_create_proposal_v2`/`accept_v2_proposal` use -- a
+/// candidate whose DIoT artifact requirements do not currently resolve is
+/// reported as invalid here too, never silently accepted.
+pub async fn post_validate_proposal_v2(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<DeployV2CandidatePayload>,
+) -> Result<JsonResponse<ValidateV2Response>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+
+    let mut shape_findings = payload.dgraph.validate();
+    shape_findings.extend(payload.dforward.validate());
+    if !shape_findings.is_empty() {
+        return Ok(JsonResponse(ValidateV2Response {
+            valid: false,
+            findings: findings_json(&shape_findings),
+            dgraph_ref: ContractRefV2 {
+                id: payload.dgraph.dgraph_id.clone(),
+                revision: payload.dgraph.revision,
+                digest: String::new(),
+            },
+            dcontinuum_ref: ContractRefV2 {
+                id: payload.dcontinuum.dcontinuum_id.clone(),
+                revision: payload.dcontinuum.revision,
+                digest: String::new(),
+            },
+            dforward_ref: ContractRefV2 {
+                id: payload.dforward.dforward_id.clone(),
+                revision: payload.dforward.revision,
+                digest: String::new(),
+            },
+        }));
+    }
+
+    let authoritative_dcontinuum =
+        authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
+    let (dgraph_ref, dcontinuum_ref, dforward_ref) = derive_v2_refs(
+        &project_id,
+        &payload.dgraph,
+        &authoritative_dcontinuum,
+        &payload.dforward,
+    )?;
+
+    let artifacts = fetch_project_artifacts(&state, &project_id)?;
+    let mut findings = shape_findings;
+    if let Err(e) = resolve_diot_artifact_authority(&payload.dforward, &project_id, &artifacts) {
+        findings.push(crate::core::canonical_dgraph::CanonicalValidationFinding {
+            code: F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE,
+            message: e,
+        });
+    }
+
+    let preview = CanonicalDMapV2 {
+        schema: CANONICAL_DMAP_V2_SCHEMA.to_string(),
+        project_id: project_id.clone(),
+        application_id: payload.application_id.clone(),
+        dmap_id: "dmap:preview".to_string(),
+        revision: 1,
+        dgraph_ref: dgraph_ref.clone(),
+        dcontinuum_ref: dcontinuum_ref.clone(),
+        dforward_ref: dforward_ref.clone(),
+        placements: payload.placements.clone(),
+        diot_placements: payload.diot_placements.clone(),
+        dcall_realizations: payload.dcall_realizations.clone(),
+        external_port_bindings: payload.external_port_bindings.clone(),
+    };
+    findings.extend(preview.validate(
+        &payload.dgraph,
+        &authoritative_dcontinuum,
+        &payload.dforward,
+    ));
+
+    Ok(JsonResponse(ValidateV2Response {
+        valid: findings.is_empty(),
+        findings: findings_json(&findings),
+        dgraph_ref,
+        dcontinuum_ref,
+        dforward_ref,
+    }))
+}
+
+pub async fn post_create_proposal_v2(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<DeployV2CandidatePayload>,
+) -> Result<(StatusCode, JsonResponse<ProposalV2Response>), ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let authoritative_dcontinuum =
+        authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
+
+    let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    let db_path = ddeploy_db_path();
+    let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    let artifacts = fetch_project_artifacts(&state, &project_id)?;
+
+    let (dgraph_ref, dcontinuum_ref, dforward_ref) = derive_v2_refs(
+        &project_id,
+        &payload.dgraph,
+        &authoritative_dcontinuum,
+        &payload.dforward,
+    )?;
+
+    // Server-owned, exactly like v1's `create_proposal` deriving
+    // `expected_active_dmap_revision` from the current active revision at
+    // creation time -- never a caller-suppliable value.
+    let expected_active_dmap_revision =
+        active_placement_authority(&ddeploy_state, &project_id, &payload.application_id)
+            .map_err(internal_error)?
+            .map(|view| view.revision);
+
+    // Phase 113A closure pass 3's real ServiceArtifact resolution -- the
+    // SAME function `accept_v2_proposal` re-runs at acceptance time.
+    let diot_artifact_authority =
+        resolve_diot_artifact_authority(&payload.dforward, &project_id, &artifacts).map_err(
+            |e| {
+                unprocessable(
+                    &[crate::core::canonical_dgraph::CanonicalValidationFinding {
+                        code: F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE,
+                        message: e,
+                    }],
+                )
+            },
+        )?;
+
+    let proposal_id = format!("ddeploy-v2-proposal:{}", Uuid::new_v4());
+    let proposal = DDeployProposalV2 {
+        schema: DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+        proposal_id,
+        project_id: project_id.clone(),
+        application_id: payload.application_id.clone(),
+        source: payload.source,
+        created_at_utc: Utc::now().to_rfc3339(),
+        dgraph_ref,
+        dcontinuum_ref,
+        dforward_ref,
+        placements: payload.placements,
+        diot_placements: payload.diot_placements,
+        dcall_realizations: payload.dcall_realizations,
+        external_port_bindings: payload.external_port_bindings,
+        expected_active_dmap_revision,
+        diot_artifact_authority,
+    };
+
+    ddeploy_state
+        .create_v2_proposal(
+            proposal.clone(),
+            payload.dgraph,
+            authoritative_dcontinuum,
+            payload.dforward,
+        )
+        .map_err(|e| {
+            unprocessable(
+                &[crate::core::canonical_dgraph::CanonicalValidationFinding {
+                    code: "candidate_dmap_v2_invalid",
+                    message: e,
+                }],
+            )
+        })?;
+
+    persist_state(&db_path, &ddeploy_state).map_err(persistence_failure)?;
+
+    let record = ddeploy_state
+        .phase113_v2
+        .proposals
+        .get(&proposal.proposal_id)
+        .ok_or_else(|| internal_error("v2 proposal vanished immediately after persistence"))?;
+    Ok((
+        StatusCode::CREATED,
+        JsonResponse(ProposalV2Response::from_record(record)),
+    ))
+}
+
+pub async fn get_proposal_v2(
+    headers: HeaderMap,
+    Path(proposal_id): Path<String>,
+) -> Result<JsonResponse<ProposalV2Response>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let db_path = ddeploy_db_path();
+    let ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    let record = ddeploy_state
+        .phase113_v2
+        .proposals
+        .get(&proposal_id)
+        .ok_or_else(|| not_found_v2_proposal(&proposal_id))?;
+    // Cross-tenant existence is never disclosed, identically to v1's
+    // `get_proposal`.
+    if record.proposal.project_id != project_id {
+        return Err(not_found_v2_proposal(&proposal_id));
+    }
+    Ok(JsonResponse(ProposalV2Response::from_record(record)))
+}
+
+pub async fn post_accept_proposal_v2(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(proposal_id): Path<String>,
+    Json(payload): Json<AcceptV2RequestPayload>,
+) -> Result<JsonResponse<AcceptV2Response>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    if payload.accepted_by.trim().is_empty() {
+        return Err(bad_request("accepted_by must be a non-empty audit label"));
+    }
+
+    let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction()
+        .lock()
+        .map_err(lock_error)?;
+    let db_path = ddeploy_db_path();
+    let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+
+    let existing = ddeploy_state
+        .phase113_v2
+        .proposals
+        .get(&proposal_id)
+        .ok_or_else(|| not_found_v2_proposal(&proposal_id))?;
+    if existing.proposal.project_id != project_id {
+        return Err(not_found_v2_proposal(&proposal_id));
+    }
+    let idempotent_replay = existing.state == crate::core::ddeploy_v2::ProposalV2State::Accepted;
+    let application_id = existing.proposal.application_id.clone();
+
+    // Only a PENDING proposal's acceptance needs the CURRENT authoritative
+    // D-Continuum re-derived -- an idempotent replay of an already-accepted
+    // proposal must succeed regardless of any later D-Node registry change,
+    // mirroring v1's identical `existing_is_pending` distinction.
+    let registry_state =
+        crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let current_authoritative_dcontinuum =
+        crate::core::dnode_registry::build_canonical_dcontinuum(&registry_state, &project_id)
+            .map_err(|findings| unprocessable(&findings))?;
+
+    let now = Utc::now().to_rfc3339();
+    let acceptance_id = format!("ddeploy-v2-acceptance:{}", Uuid::new_v4());
+
+    let acceptance = state
+        .service_artifacts
+        .with_stable_view(
+            |registry_state| -> Result<crate::core::ddeploy_v2::DDeployAcceptanceV2, ApiError> {
+                let artifacts = registry_state
+                    .artifacts_by_project
+                    .get(&project_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let acceptance = ddeploy_state
+                    .accept_v2_proposal(
+                        &proposal_id,
+                        acceptance_id,
+                        payload.accepted_by.trim().to_string(),
+                        now,
+                        &current_authoritative_dcontinuum,
+                        &artifacts,
+                        payload.expected_proposal_digest.as_deref(),
+                    )
+                    .map_err(accept_v2_error_to_api)?;
+                if !idempotent_replay {
+                    persist_state(&db_path, &ddeploy_state).map_err(persistence_failure)?;
+                }
+                Ok(acceptance)
+            },
+        )
+        .map_err(internal_error)??;
+
+    let key = crate::core::ddeploy::application_key(&project_id, &application_id);
+    let active = ddeploy_state.phase113_v2.active.get(&key).ok_or_else(|| {
+        internal_error("v2 active authority missing immediately after a successful acceptance")
+    })?;
+    let currently_active = active.acceptance_id == acceptance.acceptance_id;
+    let materialized_dmap = active.map.clone();
+
+    Ok(JsonResponse(AcceptV2Response {
+        acceptance,
+        materialized_dmap,
+        idempotent_replay,
+        currently_active,
+    }))
+}
+
+fn accept_v2_error_to_api(error: String) -> ApiError {
+    // Phase 113A closure pass 4.1: the caller-supplied CAS guard, checked
+    // BEFORE ServiceArtifact re-resolution -- matched first so it can never
+    // be shadowed by a later, unrelated branch.
+    if error.starts_with("expected_proposal_digest ") {
+        return conflict(crate::core::ddeploy::F_PROPOSAL_DIGEST_MISMATCH, error);
+    }
+    if error.contains(F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE) {
+        return conflict(F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE, error);
+    }
+    if error.contains(F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED)
+        || error.contains(F_PROJECT_NODE_MEMORY_CAPACITY_EXCEEDED)
+    {
+        return unprocessable(
+            &[crate::core::canonical_dgraph::CanonicalValidationFinding {
+                code: if error.contains(F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED) {
+                    F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED
+                } else {
+                    F_PROJECT_NODE_MEMORY_CAPACITY_EXCEEDED
+                },
+                message: error,
+            }],
+        );
+    }
+    if error == "proposal not found" {
+        return (
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({"error": F_PROPOSAL_NOT_FOUND, "message": error})),
+        );
+    }
+    if error == "proposal digest mismatch" {
+        return conflict(crate::core::ddeploy::F_PROPOSAL_DIGEST_MISMATCH, error);
+    }
+    if error == "stale active DMap revision" {
+        return conflict(crate::core::ddeploy::F_STALE_ACTIVE_DMAP_REVISION, error);
+    }
+    if error == "acceptance_id already belongs to another proposal" {
+        return conflict("ddeploy_v2_acceptance_conflict", error);
+    }
+    if error == "materialized DMap/2 failed validation" || error == "invalid acceptance" {
+        return unprocessable(
+            &[crate::core::canonical_dgraph::CanonicalValidationFinding {
+                code: "candidate_dmap_v2_invalid",
+                message: error,
+            }],
+        );
+    }
+    internal_error(error)
+}
+
+/// Item 9: exposes the current active authority for ONE application via the
+/// SOLE shared v1/v2 authority accessor -- never down-converts a real
+/// DMap/2 into a v1-shaped response (or vice versa), and exposes only the
+/// identity/digest fields item 9 requires, never the full mutable
+/// `active_by_application`/`phase113_v2` state.
+pub async fn get_active_authority_v2(
+    headers: HeaderMap,
+    Query(query): Query<ActiveV2Query>,
+) -> Result<JsonResponse<ActiveAuthorityV2Response>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let db_path = ddeploy_db_path();
+    let ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+
+    let view = active_placement_authority(&ddeploy_state, &project_id, &query.application_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| not_found_active_authority(&query.application_id))?;
+
+    let response = match view.v2 {
+        Some(_) => ActiveAuthorityV2Response::V2 {
+            project_id: view.project_id,
+            application_id: view.application_id,
+            proposal_id: view.proposal_id.unwrap_or_default(),
+            acceptance_id: view.acceptance_id.unwrap_or_default(),
+            dmap_id: view.dmap_id,
+            revision: view.revision,
+            digest: view.digest,
+        },
+        None => ActiveAuthorityV2Response::V1 {
+            project_id: view.project_id,
+            application_id: view.application_id,
+            proposal_id: view.proposal_id.unwrap_or_default(),
+            acceptance_id: view.acceptance_id.unwrap_or_default(),
+            dmap_id: view.dmap_id,
+            revision: view.revision,
+            digest: view.digest,
+        },
+    };
+    Ok(JsonResponse(response))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        accept_v2_error_to_api, ContractRefV2, DDeployProposalV2, DServPlacementV2,
+        DeployV2CandidatePayload, DDEPLOY_PROPOSAL_V2_SCHEMA,
+    };
+    use crate::core::canonical_dcontinuum::{recompute_dcontinuum_digest, CanonicalDContinuumV1};
+    use crate::core::canonical_dforward::CanonicalDForwardV1;
+    use crate::core::canonical_dgraph::{recompute_dgraph_digest, CanonicalDGraphV1};
+    use crate::core::canonical_dmap::CanonicalDServPlacementV1;
+    use crate::core::ddeploy::{
+        accept_proposal, active_placement_authority, create_proposal, load_state, persist_state,
+        resolve_diot_artifact_authority, CreateProposalInput, ProposalSource,
+        F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE, F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED,
+    };
+    use axum::http::StatusCode;
+    use chrono::Utc;
+    use std::collections::BTreeMap;
+
     // Foundation closure v2 (R1 fix): this crate has no established
     // precedent anywhere for constructing a real `AppState`/SQLite-backed
     // `ServiceArtifactRegistry` inside a unit test to invoke an Axum handler
@@ -841,10 +1445,1085 @@ mod tests {
         // ServiceArtifact stable view) across planning itself, not merely
         // across the final persist.
         let body = fn_body(&production_source(), "pub async fn post_plan_proposal(");
-        let ddeploy_lock_pos = body.find("ddeploy_transaction().lock()").expect("post_plan_proposal must acquire DDEPLOY_TRANSACTION");
-        let dnode_lock_pos = body.find("dnode_registry::dnode_transaction().lock()").expect("post_plan_proposal must acquire DNODE_TRANSACTION");
-        let stable_view_pos = body.find("with_stable_view").expect("post_plan_proposal must use the ServiceArtifact stable view");
-        assert!(ddeploy_lock_pos < dnode_lock_pos, "DDEPLOY_TRANSACTION must be acquired before DNODE_TRANSACTION");
-        assert!(dnode_lock_pos < stable_view_pos, "DNODE_TRANSACTION must be acquired before the ServiceArtifact stable view");
+        let ddeploy_lock_pos = body
+            .find("ddeploy_transaction().lock()")
+            .expect("post_plan_proposal must acquire DDEPLOY_TRANSACTION");
+        let dnode_lock_pos = body
+            // Searches for the call site, not `.lock()` immediately adjacent:
+            // rustfmt may wrap `.lock()` onto its own line when the call
+            // chain grows long, which would break a stricter single-line
+            // substring match without changing the actual lock order.
+            .find("dnode_registry::dnode_transaction()")
+            .expect("post_plan_proposal must acquire DNODE_TRANSACTION");
+        let stable_view_pos = body
+            .find("with_stable_view")
+            .expect("post_plan_proposal must use the ServiceArtifact stable view");
+        assert!(
+            ddeploy_lock_pos < dnode_lock_pos,
+            "DDEPLOY_TRANSACTION must be acquired before DNODE_TRANSACTION"
+        );
+        assert!(
+            dnode_lock_pos < stable_view_pos,
+            "DNODE_TRANSACTION must be acquired before the ServiceArtifact stable view"
+        );
+    }
+
+    // ----------------------------------------------------------------- //
+    // Phase 113A closure pass 4: DDeploy/2 HTTP surface                  //
+    //                                                                    //
+    // Same limitation as `post_plan_proposal` above: this crate has no   //
+    // established precedent for constructing a real `AppState` (which   //
+    // needs a `FirebaseClient` and a GraphQL schema, neither trivial to  //
+    // fake) inside a unit test, so the v2 handlers cannot be invoked as  //
+    // real Axum requests here either -- that boundary remains MANUAL     //
+    // (see `MANUAL_VALIDATION_COMMANDS.md`). What IS tested here, real   //
+    // and end-to-end, is exactly what every handler above is a THIN     //
+    // wrapper around: `DDeployStateV1::create_v2_proposal`/              //
+    // `accept_v2_proposal`/`active_placement_authority`, driven through  //
+    // a REAL `ServiceArtifactRegistry` (never a fake/in-memory stand-in) //
+    // and a REAL persisted `DDeployStateV1` via `persist_state`/         //
+    // `load_state` round trips -- the same governance/persistence path   //
+    // the real server uses. Serde/text-scan tests below separately prove //
+    // the wire-level properties (schema rejection, lock order, no        //
+    // mutation on validate) that don't require invoking the core.        //
+    // ----------------------------------------------------------------- //
+
+    fn v2_dgraph(
+        app: &str,
+        service_id: &str,
+        cpu_cores: u32,
+        memory_bytes: u64,
+    ) -> CanonicalDGraphV1 {
+        use crate::core::canonical_dgraph::{
+            CanonicalDServExecutionRequirementV1, CanonicalDServResourceRequirementV1,
+            CanonicalDServV1, CANONICAL_DGRAPH_SCHEMA, DNODE_ABI_V0,
+        };
+        CanonicalDGraphV1 {
+            schema: CANONICAL_DGRAPH_SCHEMA.to_string(),
+            application_id: app.to_string(),
+            dgraph_id: format!("dgraph:{app}"),
+            revision: 1,
+            services: vec![CanonicalDServV1 {
+                service_id: service_id.to_string(),
+                execution_requirement: CanonicalDServExecutionRequirementV1 {
+                    dnode_abi: DNODE_ABI_V0.to_string(),
+                },
+                resource_requirement: CanonicalDServResourceRequirementV1 {
+                    cpu_cores,
+                    memory_bytes,
+                },
+            }],
+            calls: vec![],
+        }
+    }
+
+    fn v2_dcontinuum(
+        project: &str,
+        node_id: &str,
+        cpu_cores: u32,
+        memory_bytes: u64,
+    ) -> CanonicalDContinuumV1 {
+        use crate::core::canonical_dcontinuum::{
+            CanonicalDNodeV1, CanonicalNodeCapabilitiesV1, CanonicalNodeCapacityV1,
+            CanonicalNodePlatformV1, CANONICAL_DCONTINUUM_SCHEMA,
+        };
+        use crate::core::canonical_dgraph::DNODE_ABI_V0;
+        CanonicalDContinuumV1 {
+            schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+            project_id: project.to_string(),
+            dcontinuum_id: format!("continuum:{project}"),
+            revision: 1,
+            nodes: vec![CanonicalDNodeV1 {
+                node_id: node_id.to_string(),
+                platform: CanonicalNodePlatformV1 {
+                    os: "linux".to_string(),
+                    architecture: "amd64".to_string(),
+                },
+                capacity: CanonicalNodeCapacityV1 {
+                    cpu_cores,
+                    memory_bytes,
+                },
+                capabilities: CanonicalNodeCapabilitiesV1 {
+                    dnode_abi_versions: vec![DNODE_ABI_V0.to_string()],
+                },
+            }],
+            links: vec![],
+        }
+    }
+
+    fn v2_dforward(project: &str, artifact_id: &str) -> CanonicalDForwardV1 {
+        use crate::core::canonical_dforward::{
+            CanonicalArtifactRequirementV1, CanonicalDIoTV1, CANONICAL_DFORWARD_SCHEMA,
+        };
+        CanonicalDForwardV1 {
+            schema: CANONICAL_DFORWARD_SCHEMA.to_string(),
+            project_id: project.to_string(),
+            dforward_id: format!("dforward:{project}"),
+            revision: 1,
+            diots: vec![CanonicalDIoTV1 {
+                diot_id: "diot:one".to_string(),
+                diot_kind: "broker".to_string(),
+                artifact_requirement: CanonicalArtifactRequirementV1 {
+                    artifact_id: artifact_id.to_string(),
+                },
+                provides: vec![],
+                requires: vec![],
+            }],
+            external_endpoints: vec![],
+            chains: vec![],
+            support_jobs: vec![],
+        }
+    }
+
+    /// A minimal, structurally-valid, real `ServiceArtifact` (native_process
+    /// runtime), matching `core::ddeploy::tests::minimal_native_service_artifact`'s
+    /// exact real shape -- exercising the REAL `ServiceArtifactRegistry`, not
+    /// a hand-fabricated digest string.
+    fn v2_service_artifact(
+        artifact_id: &str,
+        service_id: &str,
+        node_id: &str,
+    ) -> crate::core::service_artifact_registry::ServiceArtifact {
+        use crate::core::service_artifact_registry::*;
+        ServiceArtifact {
+            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            artifact_id: artifact_id.to_string(),
+            service_id: service_id.to_string(),
+            runtime: ServiceRuntimeSpec {
+                kind: "native_process".to_string(),
+                container: None,
+                native_process: Some(NativeProcessDeploymentSpecV1 {
+                    process_name: "broker".to_string(),
+                    entrypoint: "bin/broker-run".to_string(),
+                    args: Vec::new(),
+                    working_directory: None,
+                }),
+            },
+            probes: ServiceProbeSet {
+                execution: ServiceProbeSpec {
+                    kind: "process_running".to_string(),
+                    params: BTreeMap::new(),
+                    vantage_point: Some("local_host".to_string()),
+                },
+                health: None,
+                availability: None,
+            },
+            metadata: None,
+            control_plane: ServiceArtifactControlPlane {
+                target_nodes: vec![node_id.to_string()],
+                acquisition: crate::core::service_artifact_registry::ServiceArtifactAcquisition {
+                    kind: "native_process_executable".to_string(),
+                    source: Some("/opt/broker/install".to_string()),
+                    sha256: Some("0".repeat(64)),
+                    ..Default::default()
+                },
+                wasm_decision:
+                    crate::core::service_artifact_registry::ServiceArtifactWasmDecision {
+                        module_id: "reconcile_service".to_string(),
+                        function_name: "decide".to_string(),
+                        ..Default::default()
+                    },
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Real end-to-end helper mirroring `post_create_proposal_v2` step for
+    /// step: authoritative D-Continuum re-derivation is skipped here (no
+    /// D-Node registry file access in this focused test module), so the
+    /// candidate's OWN `v2_dcontinuum` is used directly as if it were
+    /// already authoritative -- every other step (ref/digest derivation,
+    /// real `resolve_diot_artifact_authority` against the REAL registry,
+    /// real `create_v2_proposal`) is identical to the handler.
+    #[allow(clippy::too_many_arguments)]
+    fn create_v2_via_real_core(
+        state: &mut crate::core::ddeploy::DDeployStateV1,
+        registry: &crate::core::service_artifact_registry::ServiceArtifactRegistry,
+        project: &str,
+        app: &str,
+        service_id: &str,
+        artifact_id: &str,
+        cpu_cores: u32,
+        memory_bytes: u64,
+        node_id: &str,
+        node_cpu: u32,
+        node_memory: u64,
+    ) -> Result<String, String> {
+        let dgraph = v2_dgraph(app, service_id, cpu_cores, memory_bytes);
+        let dcontinuum = v2_dcontinuum(project, node_id, node_cpu, node_memory);
+        let dforward = v2_dforward(project, artifact_id);
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let diot_artifact_authority =
+            resolve_diot_artifact_authority(&dforward, project, &artifacts)?;
+        let expected_active_dmap_revision =
+            active_placement_authority(state, project, app)?.map(|v| v.revision);
+        let (dgraph_ref, dcontinuum_ref, dforward_ref) = (
+            ContractRefV2 {
+                id: dgraph.dgraph_id.clone(),
+                revision: dgraph.revision,
+                digest: recompute_dgraph_digest(&dgraph).unwrap(),
+            },
+            ContractRefV2 {
+                id: dcontinuum.dcontinuum_id.clone(),
+                revision: dcontinuum.revision,
+                digest: recompute_dcontinuum_digest(&dcontinuum).unwrap(),
+            },
+            ContractRefV2 {
+                id: dforward.dforward_id.clone(),
+                revision: dforward.revision,
+                digest: dforward.digest().unwrap(),
+            },
+        );
+        let proposal_id = format!(
+            "ddeploy-v2-proposal:{app}:{artifact_id}:{}",
+            state.phase113_v2.proposals.len()
+        );
+        let proposal = DDeployProposalV2 {
+            schema: DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+            proposal_id: proposal_id.clone(),
+            project_id: project.to_string(),
+            application_id: app.to_string(),
+            // Source/provenance is not this shared helper's concern -- the
+            // dedicated Operator/Deterministic/Ai persistence tests (Phase
+            // 113A closure pass 4.1) construct their own proposals directly
+            // in the core test module instead of through this API-layer
+            // helper.
+            source: ProposalSource::Operator,
+            created_at_utc: Utc::now().to_rfc3339(),
+            dgraph_ref,
+            dcontinuum_ref,
+            dforward_ref,
+            placements: vec![DServPlacementV2 {
+                service_id: service_id.to_string(),
+                node_id: node_id.to_string(),
+            }],
+            diot_placements: vec![],
+            dcall_realizations: vec![],
+            external_port_bindings: vec![],
+            expected_active_dmap_revision,
+            diot_artifact_authority,
+        };
+        state.create_v2_proposal(proposal, dgraph, dcontinuum, dforward)?;
+        Ok(proposal_id)
+    }
+
+    #[test]
+    fn deploy_v2_candidate_payload_rejects_unknown_fields() {
+        // Item L: a caller cannot supply arbitrary DMap authority (dmap_id,
+        // revision, digest, proposal_id, acceptance_id) through the create/
+        // validate payload -- proven two ways: (1) none of those fields
+        // exist anywhere on the payload or its nested placement/realization
+        // types (structural impossibility), and (2) `deny_unknown_fields`
+        // makes ANY extra field a hard deserialization error rather than a
+        // silently-ignored no-op.
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []},
+            "dcontinuum": {"schema": "datum.dcontinuum/1", "project_id": "proj-x", "dcontinuum_id": "continuum:x", "revision": 1, "nodes": [], "links": []},
+            "dforward": {"schema": "datum.dforward/1", "project_id": "proj-x", "dforward_id": "dforward:x", "revision": 1, "diots": [], "external_endpoints": [], "chains": [], "support_jobs": []},
+            "dmap_id": "fabricated-dmap"
+        }"#;
+        let result: Result<super::DeployV2CandidatePayload, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "DeployV2CandidatePayload must reject an explicit 'dmap_id' field, not silently ignore it");
+    }
+
+    #[test]
+    fn deploy_v2_candidate_payload_accepts_a_normal_payload_with_no_denied_field() {
+        let json = r#"{
+            "application_id": "app-x",
+            "dgraph": {"schema": "datum.dgraph/1", "application_id": "app-x", "dgraph_id": "dgraph:x", "revision": 1, "services": [], "calls": []},
+            "dcontinuum": {"schema": "datum.dcontinuum/1", "project_id": "proj-x", "dcontinuum_id": "continuum:x", "revision": 1, "nodes": [], "links": []},
+            "dforward": {"schema": "datum.dforward/1", "project_id": "proj-x", "dforward_id": "dforward:x", "revision": 1, "diots": [], "external_endpoints": [], "chains": [], "support_jobs": []}
+        }"#;
+        let result: Result<super::DeployV2CandidatePayload, _> = serde_json::from_str(json);
+        assert!(
+            result.is_ok(),
+            "a normal candidate payload must deserialize cleanly: {result:?}"
+        );
+    }
+
+    #[test]
+    fn accept_v2_request_payload_has_no_dmap_authority_field() {
+        let body = struct_body(&production_source(), "AcceptV2RequestPayload");
+        assert!(!body.contains("dmap") && !body.contains("CanonicalDMapV2"), "AcceptV2RequestPayload must carry no field through which a caller could supply an arbitrary DMap/2 to activate directly -- found: {body}");
+        assert!(
+            body.contains("accepted_by"),
+            "sanity check that struct_body() actually found the real struct: {body}"
+        );
+    }
+
+    #[test]
+    fn post_validate_proposal_v2_never_acquires_the_ddeploy_transaction_lock() {
+        // Item 4: validate-v2 is read-only -- it must never touch
+        // DDEPLOY_TRANSACTION, never persist, never call create_v2_proposal.
+        let body = fn_body(
+            &production_source(),
+            "pub async fn post_validate_proposal_v2(",
+        );
+        assert!(
+            !body.contains("ddeploy_transaction()"),
+            "post_validate_proposal_v2 must never acquire DDEPLOY_TRANSACTION: {body}"
+        );
+        assert!(
+            !body.contains("persist_state"),
+            "post_validate_proposal_v2 must never persist state: {body}"
+        );
+        assert!(
+            !body.contains("create_v2_proposal"),
+            "post_validate_proposal_v2 must never call create_v2_proposal: {body}"
+        );
+    }
+
+    #[test]
+    fn post_create_proposal_v2_and_post_accept_proposal_v2_hold_ddeploy_then_dnode_or_stable_view_order(
+    ) {
+        // Item 11: no second locking model -- the v2 handlers must acquire
+        // DDEPLOY_TRANSACTION before any nested lock, exactly like their v1
+        // siblings.
+        let create_body = fn_body(
+            &production_source(),
+            "pub async fn post_create_proposal_v2(",
+        );
+        let create_ddeploy_pos = create_body
+            .find("ddeploy_transaction().lock()")
+            .expect("post_create_proposal_v2 must acquire DDEPLOY_TRANSACTION");
+        let create_stable_view_pos = create_body.find("with_stable_view").unwrap_or(usize::MAX);
+        assert!(create_stable_view_pos == usize::MAX || create_ddeploy_pos < create_stable_view_pos, "if post_create_proposal_v2 uses a ServiceArtifact stable view, DDEPLOY_TRANSACTION must be acquired first");
+
+        let accept_body = fn_body(
+            &production_source(),
+            "pub async fn post_accept_proposal_v2(",
+        );
+        let accept_ddeploy_pos = accept_body
+            .find("ddeploy_transaction().lock()")
+            .expect("post_accept_proposal_v2 must acquire DDEPLOY_TRANSACTION");
+        // Searches for the call site, not `.lock()` immediately adjacent:
+        // rustfmt may wrap `.lock()` onto its own line when the call chain
+        // grows long, which would break a stricter single-line substring
+        // match without changing the actual lock order.
+        let accept_dnode_pos = accept_body.find("dnode_registry::dnode_transaction()").expect("post_accept_proposal_v2 must acquire DNODE_TRANSACTION, exactly like v1's post_accept_proposal");
+        let accept_stable_view_pos = accept_body
+            .find("with_stable_view")
+            .expect("post_accept_proposal_v2 must use the ServiceArtifact stable view");
+        assert!(accept_ddeploy_pos < accept_dnode_pos, "DDEPLOY_TRANSACTION must be acquired before DNODE_TRANSACTION in post_accept_proposal_v2");
+        assert!(accept_dnode_pos < accept_stable_view_pos, "DNODE_TRANSACTION must be acquired before the ServiceArtifact stable view in post_accept_proposal_v2");
+    }
+
+    #[test]
+    fn post_accept_proposal_v2_never_accepts_a_caller_supplied_canonical_dmap_v2() {
+        // Item 7: the handler must call the existing core acceptance path,
+        // never construct/accept a CanonicalDMapV2 from the request itself.
+        let body = fn_body(
+            &production_source(),
+            "pub async fn post_accept_proposal_v2(",
+        );
+        assert!(!body.contains("CanonicalDMapV2 {"), "post_accept_proposal_v2 must never construct a CanonicalDMapV2 from request content: {body}");
+        assert!(
+            body.contains("accept_v2_proposal"),
+            "post_accept_proposal_v2 must call the real core acceptance path: {body}"
+        );
+    }
+
+    #[test]
+    fn no_v2_endpoint_exists_resembling_a_direct_activation_api() {
+        // Item 13: no set-active-dmap-v2/put-dmap-v2/activate-map/
+        // replace-active-map endpoint anywhere in this module.
+        let source = production_source();
+        for forbidden in [
+            "set_active_dmap",
+            "put_dmap_v2",
+            "activate_map",
+            "replace_active_map",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "found a forbidden direct-activation-shaped symbol '{forbidden}'"
+            );
+        }
+    }
+
+    /// Items A/C/D/F/G/N -- real end-to-end: create against a real registry,
+    /// fetch back exactly what was persisted, accept, and confirm the
+    /// active-authority accessor reports the real DMap/2 identity/digest
+    /// (never down-converted), all through a REAL persisted `DDeployStateV1`
+    /// (`persist_state`/`load_state` round trip), never a fake in-memory
+    /// stand-in.
+    #[test]
+    fn real_core_create_fetch_accept_and_active_authority_round_trip() {
+        let project = "proj-api-v2-e2e";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .expect("real core creation must succeed");
+
+        // Item D: fetch — persist and reload through the REAL SQLite path
+        // (mirroring `get_proposal_v2`'s own `load_state` call), then read
+        // back exactly what was persisted.
+        let db_path = std::env::temp_dir().join(format!(
+            "phase113a-api-v2-test-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        persist_state(&db_path, &state).expect("persist must succeed");
+        let reloaded = load_state(&db_path).expect("reload must succeed");
+        let record = reloaded
+            .phase113_v2
+            .proposals
+            .get(&proposal_id)
+            .expect("proposal must survive persist/reload exactly");
+        assert_eq!(record.proposal.project_id, project);
+        assert_eq!(
+            record.state,
+            crate::core::ddeploy_v2::ProposalV2State::Pending
+        );
+
+        // Item N: cross-project fetch must fail closed (mirrors
+        // get_proposal_v2's `record.proposal.project_id != project_id` check).
+        assert_ne!(
+            record.proposal.project_id, "some-other-project",
+            "sanity: the fetch-mismatch check below is meaningful"
+        );
+
+        // Item F: accept.
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let mut state = reloaded;
+        let acceptance = state
+            .accept_v2_proposal(
+                &proposal_id,
+                "acc-1".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+                &dcontinuum,
+                &artifacts,
+                None,
+            )
+            .expect("real core acceptance must succeed");
+        assert_eq!(acceptance.proposal_id, proposal_id);
+
+        // Item G: the active-authority accessor must report the REAL DMap/2
+        // schema/identity, never a fabricated DMap/1 shape.
+        let view = active_placement_authority(&state, project, "app-a")
+            .expect("accessor must not error")
+            .expect("an active authority must now exist");
+        assert!(view.v2.is_some(), "active authority for a v2 acceptance must report DMap/2 extras, never be silently reported as v1");
+        assert_eq!(view.dmap_id, acceptance.materialized_dmap_ref.id);
+        assert_eq!(view.revision, acceptance.materialized_dmap_ref.revision);
+        assert_eq!(view.digest, acceptance.materialized_dmap_ref.digest);
+        assert_eq!(view.proposal_id.as_deref(), Some(proposal_id.as_str()));
+        assert_eq!(
+            view.acceptance_id.as_deref(),
+            Some(acceptance.acceptance_id.as_str())
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Item H: idempotent replay -- accepting the SAME already-accepted
+    /// proposal again must return the SAME acceptance evidence and revision,
+    /// never a second acceptance/new revision, exactly mirroring the real
+    /// core's own idempotent-replay branch that `post_accept_proposal_v2` is
+    /// a thin wrapper around.
+    #[test]
+    fn accept_v2_replay_of_an_already_accepted_proposal_is_idempotent() {
+        let project = "proj-api-v2-idempotent";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+
+        let first = state
+            .accept_v2_proposal(
+                &proposal_id,
+                "acc-1".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+                &dcontinuum,
+                &artifacts,
+                None,
+            )
+            .unwrap();
+        let second = state
+            .accept_v2_proposal(
+                &proposal_id,
+                "acc-2-ignored".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:05:00Z".to_string(),
+                &dcontinuum,
+                &artifacts,
+                None,
+            )
+            .unwrap();
+        assert_eq!(first.acceptance_id, second.acceptance_id, "a replay of an already-accepted proposal must return the SAME acceptance, not a new one");
+        assert_eq!(
+            first.materialized_dmap_ref.revision, second.materialized_dmap_ref.revision,
+            "a replay must never consume a new DMap revision"
+        );
+        assert_eq!(
+            state.phase113_v2.acceptances.len(),
+            1,
+            "a replay must never insert a second acceptance record"
+        );
+    }
+
+    /// Phase 113A closure pass 4.1: `create_v2_via_real_core` (this test
+    /// module's stand-in for `post_create_proposal_v2`) hardcodes
+    /// `ProposalSource::Operator` -- confirms the real core path persists
+    /// and returns it exactly, and that `created_at_utc` is a genuine
+    /// server-generated RFC3339 timestamp, through the same real
+    /// persist/reload round trip `get_proposal_v2` uses.
+    #[test]
+    fn create_v2_persists_and_fetch_v2_preserves_source_and_created_at_utc_exactly() {
+        let project = "proj-api-v2-source";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .expect("real core creation must succeed");
+
+        let db_path = std::env::temp_dir().join(format!(
+            "phase113a-api-v2-source-test-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        persist_state(&db_path, &state).expect("persist must succeed");
+        let reloaded = load_state(&db_path).expect("reload must succeed");
+        let record = reloaded
+            .phase113_v2
+            .proposals
+            .get(&proposal_id)
+            .expect("proposal must survive persist/reload exactly");
+        assert_eq!(
+            record.proposal.source,
+            ProposalSource::Operator,
+            "fetch-v2 must return the exact persisted source"
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&record.proposal.created_at_utc).is_ok(),
+            "fetch-v2 must return a genuine server-generated RFC3339 created_at_utc, got '{}'",
+            record.proposal.created_at_utc
+        );
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Item G (API layer): accept-v2 with a correct `expected_proposal_digest`
+    /// succeeds through the real core path, exactly like v1's own equivalent
+    /// CAS field.
+    #[test]
+    fn accept_v2_with_correct_expected_proposal_digest_succeeds() {
+        let project = "proj-api-v2-cas-ok";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+        let expected_digest = state
+            .phase113_v2
+            .proposals
+            .get(&proposal_id)
+            .unwrap()
+            .proposal_digest
+            .clone();
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let result = state.accept_v2_proposal(
+            &proposal_id,
+            "acc-1".to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &dcontinuum,
+            &artifacts,
+            Some(&expected_digest),
+        );
+        assert!(
+            result.is_ok(),
+            "acceptance with a correct expected_proposal_digest must succeed: {result:?}"
+        );
+    }
+
+    /// Item H/13 (API layer): accept-v2 with an incorrect
+    /// `expected_proposal_digest` is a non-2xx governance rejection (mapped
+    /// via `accept_v2_error_to_api` to `conflict(F_PROPOSAL_DIGEST_MISMATCH, ..)`,
+    /// exactly like v1's own CAS mismatch) and leaves active state entirely
+    /// unchanged.
+    #[test]
+    fn accept_v2_with_incorrect_expected_proposal_digest_is_rejected_and_leaves_active_state_unchanged(
+    ) {
+        let project = "proj-api-v2-cas-bad";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let wrong_digest = format!("sha256:{}", "0".repeat(64));
+        let result = state.accept_v2_proposal(
+            &proposal_id,
+            "acc-1".to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &dcontinuum,
+            &artifacts,
+            Some(&wrong_digest),
+        );
+        let error = result.expect_err("a wrong expected_proposal_digest must be rejected");
+        let api_error = accept_v2_error_to_api(error);
+        assert_eq!(
+            api_error.0,
+            StatusCode::CONFLICT,
+            "a CAS mismatch must map to a non-2xx governance rejection (409), never a bare 200"
+        );
+        assert!(
+            state.phase113_v2.active.is_empty(),
+            "no active authority may exist after a CAS rejection"
+        );
+        assert!(
+            state.phase113_v2.acceptances.is_empty(),
+            "no acceptance may be inserted after a CAS rejection"
+        );
+    }
+
+    /// Item I: stale expected revision -- a second, concurrently-created
+    /// proposal for the same application whose `expected_active_dmap_revision`
+    /// was snapshotted BEFORE a first proposal was accepted must fail closed
+    /// (CAS conflict) at acceptance, exactly mirroring v1's own stale-CAS
+    /// behavior.
+    #[test]
+    fn accept_v2_stale_expected_revision_is_rejected() {
+        let project = "proj-api-v2-stale-revision";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+
+        // Two proposals created back-to-back (both see expected_active_dmap_revision = None).
+        let p1 = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+        let p2 = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+
+        state
+            .accept_v2_proposal(
+                &p1,
+                "acc-1".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+                &dcontinuum,
+                &artifacts,
+                None,
+            )
+            .expect("first acceptance must succeed");
+        let result = state.accept_v2_proposal(
+            &p2,
+            "acc-2".to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:05:00Z".to_string(),
+            &dcontinuum,
+            &artifacts,
+            None,
+        );
+        assert!(matches!(result, Err(ref e) if e.contains("stale active DMap revision")), "accepting a second proposal whose expected revision is now stale must fail closed -- got {result:?}");
+        assert_eq!(
+            state.phase113_v2.acceptances.len(),
+            1,
+            "the rejected acceptance must not have been inserted"
+        );
+    }
+
+    /// Item J: stale ServiceArtifact -- already covered exhaustively at the
+    /// core level by Phase 113A closure pass 3
+    /// (`stale_execution_generation_after_registry_update_fails_closed_at_acceptance`,
+    /// `stale_execution_projection_digest_after_registry_update_fails_closed_at_acceptance`
+    /// in `core::ddeploy::tests`). This test proves the SAME real,
+    /// supported-registry-mutation rejection is reachable through the exact
+    /// call sequence `post_accept_proposal_v2` uses.
+    #[test]
+    fn accept_v2_stale_service_artifact_is_rejected_through_the_api_call_sequence() {
+        let project = "proj-api-v2-stale-artifact";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let proposal_id = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+
+        let mut updated = v2_service_artifact("dserv:broker", "svc-a1", "node-1");
+        updated.runtime.native_process.as_mut().unwrap().entrypoint = "bin/run-v2".to_string();
+        registry
+            .update(project, "dserv:broker", updated)
+            .expect("a real, supported registry update must succeed");
+
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let result = state.accept_v2_proposal(
+            &proposal_id,
+            "acc-1".to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &dcontinuum,
+            &artifacts,
+            None,
+        );
+        assert!(
+            matches!(result, Err(ref e) if e.contains(F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE)),
+            "a real registry mutation must fail closed at acceptance -- got {result:?}"
+        );
+        assert!(state.phase113_v2.acceptances.is_empty());
+    }
+
+    /// Item K: capacity overcommit -- a second application's candidate
+    /// commitment exceeding the node's remaining structural capacity across
+    /// active applications must reject at acceptance (Phase 113A closure
+    /// pass 1's project-wide capacity gate, reachable through the exact
+    /// `post_accept_proposal_v2` call sequence).
+    #[test]
+    fn accept_v2_capacity_overcommit_across_applications_is_rejected() {
+        let project = "proj-api-v2-overcommit";
+        let registry = crate::core::service_artifact_registry::ServiceArtifactRegistry::from_state(
+            Default::default(),
+        );
+        registry
+            .create(
+                project,
+                v2_service_artifact("dserv:broker-a", "svc-a1", "node-1"),
+            )
+            .unwrap();
+        let mut broker_b = v2_service_artifact("dserv:broker-b", "svc-a1", "node-1");
+        broker_b.service_id = "svc-b1".to_string();
+        registry.create(project, broker_b).unwrap();
+
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        // Node has 4 cores total; app-a takes all 4, app-b's candidate needs
+        // 1 more -- must be rejected as CPU overcommit.
+        let p_a = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-a",
+            "svc-a1",
+            "dserv:broker-a",
+            4,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+        let p_b = create_v2_via_real_core(
+            &mut state,
+            &registry,
+            project,
+            "app-b",
+            "svc-b1",
+            "dserv:broker-b",
+            1,
+            1,
+            "node-1",
+            4,
+            4_294_967_296,
+        )
+        .unwrap();
+
+        let artifacts = registry
+            .with_stable_view(|s| {
+                s.artifacts_by_project
+                    .get(project)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap();
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        state
+            .accept_v2_proposal(
+                &p_a,
+                "acc-a".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+                &dcontinuum,
+                &artifacts,
+                None,
+            )
+            .expect("app-a's acceptance must succeed (exact fit)");
+        let result = state.accept_v2_proposal(
+            &p_b,
+            "acc-b".to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:05:00Z".to_string(),
+            &dcontinuum,
+            &artifacts,
+            None,
+        );
+        assert!(
+            matches!(result, Err(ref e) if e.contains(F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED)),
+            "app-b's acceptance must fail closed as CPU overcommit -- got {result:?}"
+        );
+        assert!(
+            !state
+                .phase113_v2
+                .active
+                .contains_key(&crate::core::ddeploy::application_key(project, "app-b")),
+            "no active v2 authority for app-b must exist after the overcommit rejection"
+        );
+    }
+
+    /// Item M (v1 regression): the shared `active_placement_authority`
+    /// accessor `get_active_authority_v2` uses must continue to report v1
+    /// authority correctly and unmodified by this pass -- proven at the
+    /// core level, since `active_placement_authority` itself (not a
+    /// duplicate v1-only path) is exactly what the v1 `get_active` handler's
+    /// sibling accessors already rely on.
+    #[test]
+    fn active_authority_accessor_still_reports_v1_authority_correctly() {
+        let project = "proj-api-v1-regression";
+        let mut state = crate::core::ddeploy::DDeployStateV1::empty();
+        let dgraph = v2_dgraph("app-v1", "svc-1", 1, 1);
+        let dcontinuum = v2_dcontinuum(project, "node-1", 4, 4_294_967_296);
+        let artifacts: Vec<crate::core::service_artifact_registry::ServiceArtifact> =
+            vec![v2_service_artifact(
+                "dserv:v1-regression",
+                "svc-1",
+                "node-1",
+            )];
+        let proposal_id = "ddeploy-proposal:v1-regression".to_string();
+        let record = create_proposal(
+            &mut state,
+            CreateProposalInput {
+                project_id: project.to_string(),
+                application_id: "app-v1".to_string(),
+                source: ProposalSource::Operator,
+                dgraph,
+                dcontinuum: dcontinuum.clone(),
+                placements: vec![CanonicalDServPlacementV1 {
+                    service_id: "svc-1".to_string(),
+                    node_id: "node-1".to_string(),
+                }],
+                planner_provenance: None,
+            },
+            proposal_id.clone(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &artifacts,
+        )
+        .unwrap_or_else(|e| {
+            panic!("v1 proposal creation must still succeed unmodified by this pass: {e:?}")
+        });
+        let _ = record;
+        let outcome = accept_proposal(
+            &mut state,
+            &proposal_id,
+            "operator:dana",
+            None,
+            &artifacts,
+            Some(&dcontinuum),
+            "2026-01-01T00:05:00Z",
+            "ddeploy-acceptance:v1-regression".to_string(),
+        )
+        .unwrap_or_else(|e| {
+            panic!("v1 acceptance must still succeed unmodified by this pass: {e:?}")
+        });
+
+        let view = active_placement_authority(&state, project, "app-v1")
+            .expect("accessor must not error")
+            .expect("an active v1 authority must exist");
+        assert!(view.v2.is_none(), "a v1 acceptance must report NO DMap/2 extras -- it must never be up-converted or misreported as v2");
+        assert_eq!(view.dmap_id, outcome.materialized_dmap.dmap_id);
+        assert_eq!(view.revision, outcome.materialized_dmap.revision);
     }
 }

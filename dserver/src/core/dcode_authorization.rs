@@ -21,17 +21,18 @@
 //! `post_accept_proposal`/`post_plan_proposal` already do.
 
 use crate::core::canonical_dgraph::DNODE_ABI_V0;
-use crate::core::canonical_dmap::CanonicalContractReferenceV1;
 use crate::core::canonical_dgraph::{recompute_dgraph_digest, CanonicalValidationFinding};
-use crate::core::ddeploy::{application_key, DDeployStateV1};
+use crate::core::canonical_dmap::CanonicalContractReferenceV1;
 use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
+use crate::core::ddeploy::DDeployStateV1;
 use crate::core::dnode_registry::DNodeRegistryStateV1;
 use crate::core::dserv_artifact::recompute_dserv_artifact_digest;
 
 pub const F_DCODE_APPLICATION_NOT_ACTIVE: &str = "dcode_application_not_active";
 pub const F_DCODE_SERVICE_NOT_IN_DGRAPH: &str = "dcode_service_not_in_dgraph";
 pub const F_DCODE_SERVICE_NOT_PLACED_ON_NODE: &str = "dcode_service_not_placed_on_node";
-pub const F_DCODE_EXECUTION_REQUIREMENT_UNSUPPORTED: &str = "dcode_execution_requirement_unsupported";
+pub const F_DCODE_EXECUTION_REQUIREMENT_UNSUPPORTED: &str =
+    "dcode_execution_requirement_unsupported";
 pub const F_DCODE_NODE_UNKNOWN: &str = "dcode_node_unknown";
 pub const F_DCODE_NODE_ABI_UNSUPPORTED: &str = "dcode_node_abi_unsupported";
 pub const F_DCODE_ARTIFACT_NOT_FOUND: &str = "dcode_artifact_not_found";
@@ -50,10 +51,14 @@ pub const F_DCODE_STALE_AUTHORIZATION: &str = "stale_dcode_authorization";
 /// silently ignoring a constraint the artifact explicitly declares. This
 /// does NOT make the descriptor itself invalid -- `validate()` still
 /// accepts it -- it only means it is not yet EXECUTABLE under v0.1.
-pub const F_DCODE_ARTIFACT_STAGE_CONSTRAINT_UNVERIFIABLE: &str = "dcode_artifact_stage_constraint_unverifiable";
+pub const F_DCODE_ARTIFACT_STAGE_CONSTRAINT_UNVERIFIABLE: &str =
+    "dcode_artifact_stage_constraint_unverifiable";
 
 fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidationFinding {
-    CanonicalValidationFinding { code, message: message.into() }
+    CanonicalValidationFinding {
+        code,
+        message: message.into(),
+    }
 }
 
 /// Immutable binding data proving one specific D-Code invocation is
@@ -110,28 +115,33 @@ pub fn authorize_dcode_invocation(
     service_id: &str,
     node_id: &str,
 ) -> Result<DCodeInvocationAuthorizationV1, CanonicalValidationFinding> {
-    // 1. application has an ACTIVE canonical accepted DMap.
-    let active = ddeploy_state
-        .active_by_application
-        .get(&application_key(project_id, application_id))
-        .filter(|active| active.active_dmap.project_id == project_id)
+    // 1. application has an ACTIVE canonical accepted DMap. Phase 113A
+    // closure pass 2: sourced EXCLUSIVELY from the shared v1/v2 authority
+    // accessor -- this function no longer reads `active_by_application`
+    // directly, so it authorizes identically whether the active authority is
+    // DMap/1 or DMap/2 (see `ddeploy::active_placement_authority`'s doc
+    // comment for the full rationale).
+    let active = crate::core::ddeploy::active_placement_authority(ddeploy_state, project_id, application_id)
+        .map_err(|error| finding(F_DCODE_APPLICATION_NOT_ACTIVE, error))?
         .ok_or_else(|| {
             finding(
                 F_DCODE_APPLICATION_NOT_ACTIVE,
                 format!("project '{project_id}' application '{application_id}' has no active accepted D-Map"),
             )
         })?;
+    // `active_placement_authority` always populates these for a real active
+    // application; only its bare-`CanonicalDMapV2` `from_dmap2` path (unused
+    // here) leaves them `None`.
+    let dgraph_snapshot = active.dgraph_snapshot.as_ref().ok_or_else(|| {
+        finding(
+            F_DCODE_APPLICATION_NOT_ACTIVE,
+            format!("active application '{application_id}' authority carries no D-Graph snapshot"),
+        )
+    })?;
 
     // 2. service_id exists in that application's immutable DGraph snapshot,
     //    and its execution_requirement is the v0.1 D-Node ABI.
-    let proposal = ddeploy_state.proposals.get(&active.proposal_id).ok_or_else(|| {
-        finding(
-            F_DCODE_APPLICATION_NOT_ACTIVE,
-            format!("active application '{application_id}' references proposal '{}', which is missing", active.proposal_id),
-        )
-    })?;
-    let service = proposal
-        .dgraph_snapshot
+    let service = dgraph_snapshot
         .services
         .iter()
         .find(|service| service.service_id == service_id)
@@ -153,7 +163,6 @@ pub fn authorize_dcode_invocation(
 
     // 3. active DMap places that service on the requested D-Node.
     let placement = active
-        .active_dmap
         .placements
         .iter()
         .find(|placement| placement.service_id == service_id)
@@ -175,9 +184,17 @@ pub fn authorize_dcode_invocation(
 
     // 5. current authoritative D-Node declares support for datum-dnode/0.
     let node = dnode_registry_state.nodes.get(node_id).ok_or_else(|| {
-        finding(F_DCODE_NODE_UNKNOWN, format!("node '{node_id}' is not a currently declared structural D-Node"))
+        finding(
+            F_DCODE_NODE_UNKNOWN,
+            format!("node '{node_id}' is not a currently declared structural D-Node"),
+        )
     })?;
-    if !node.capabilities.dnode_abi_versions.iter().any(|abi| abi == DNODE_ABI_V0) {
+    if !node
+        .capabilities
+        .dnode_abi_versions
+        .iter()
+        .any(|abi| abi == DNODE_ABI_V0)
+    {
         return Err(finding(
             F_DCODE_NODE_ABI_UNSUPPORTED,
             format!("node '{node_id}' does not declare support for '{DNODE_ABI_V0}'"),
@@ -220,28 +237,36 @@ pub fn authorize_dcode_invocation(
         ));
     }
 
-    let dgraph_digest = recompute_dgraph_digest(&proposal.dgraph_snapshot)
-        .map_err(|error| finding(F_DCODE_ARTIFACT_INVALID, format!("recompute D-Graph digest: {error}")))?;
-    let descriptor_digest = recompute_dserv_artifact_digest(artifact)
-        .map_err(|error| finding(F_DCODE_ARTIFACT_INVALID, format!("recompute D-Serv artifact descriptor digest: {error}")))?;
+    let dgraph_digest = recompute_dgraph_digest(dgraph_snapshot).map_err(|error| {
+        finding(
+            F_DCODE_ARTIFACT_INVALID,
+            format!("recompute D-Graph digest: {error}"),
+        )
+    })?;
+    let descriptor_digest = recompute_dserv_artifact_digest(artifact).map_err(|error| {
+        finding(
+            F_DCODE_ARTIFACT_INVALID,
+            format!("recompute D-Serv artifact descriptor digest: {error}"),
+        )
+    })?;
 
     Ok(DCodeInvocationAuthorizationV1 {
         authorization_id: format!(
             "dcode-auth:{project_id}:{application_id}:{service_id}:{node_id}:{}",
-            active.active_dmap.revision
+            active.revision
         ),
         project_id: project_id.to_string(),
         application_id: application_id.to_string(),
         service_id: service_id.to_string(),
         node_id: node_id.to_string(),
         dmap_ref: CanonicalContractReferenceV1 {
-            id: active.active_dmap.dmap_id.clone(),
-            revision: active.active_dmap.revision,
-            digest: active.dmap_digest.clone(),
+            id: active.dmap_id.clone(),
+            revision: active.revision,
+            digest: active.digest.clone(),
         },
         dgraph_ref: CanonicalContractReferenceV1 {
-            id: proposal.dgraph_snapshot.dgraph_id.clone(),
-            revision: proposal.dgraph_snapshot.revision,
+            id: dgraph_snapshot.dgraph_id.clone(),
+            revision: dgraph_snapshot.revision,
             digest: dgraph_digest,
         },
         dserv_artifact_id: artifact.artifact_id.clone(),
@@ -274,7 +299,8 @@ pub fn verify_dcode_authorization_still_current(
     if current.dmap_ref != authorization.dmap_ref
         || current.dgraph_ref != authorization.dgraph_ref
         || current.dserv_artifact_digest != authorization.dserv_artifact_digest
-        || current.dserv_artifact_descriptor_digest != authorization.dserv_artifact_descriptor_digest
+        || current.dserv_artifact_descriptor_digest
+            != authorization.dserv_artifact_descriptor_digest
         || current.dnode_abi != authorization.dnode_abi
     {
         return Err(finding(
@@ -293,24 +319,25 @@ pub fn verify_dcode_authorization_still_current(
 mod tests {
     use super::*;
     use crate::core::canonical_dcontinuum::{
-        CanonicalNodeCapabilitiesV1, CanonicalNodeCapacityV1, CanonicalNodePlatformV1, CanonicalDNodeV1,
+        CanonicalDNodeV1, CanonicalNodeCapabilitiesV1, CanonicalNodeCapacityV1,
+        CanonicalNodePlatformV1,
     };
     use crate::core::canonical_dgraph::{
-        CanonicalDGraphV1, CanonicalDServExecutionRequirementV1, CanonicalDServResourceRequirementV1,
-        CanonicalDServV1,
+        CanonicalDGraphV1, CanonicalDServExecutionRequirementV1,
+        CanonicalDServResourceRequirementV1, CanonicalDServV1,
     };
     use crate::core::canonical_dmap::{CanonicalDMapV1, CanonicalDServPlacementV1};
+    use crate::core::dcode_registry::{declare_dserv_artifact, DCodeArtifactRegistryStateV1};
     use crate::core::ddeploy::{
         application_key, canonical_dmap_id, ActiveApplicationDeployment, ProposalRecord,
     };
-    use crate::core::operational_dgraph::OperationalDesiredService;
-    use crate::core::dcode_registry::{declare_dserv_artifact, DCodeArtifactRegistryStateV1};
-    use crate::core::dserv_artifact::{
-        CanonicalDServArtifactV1, DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1,
-        DServArtifactLimitsV1, DServArtifactPortsV1, DServArtifactSafetyV1, CANONICAL_DSERV_ARTIFACT_SCHEMA,
-        DNODE_ABI_V0_REQUIRED_EXPORTS,
-    };
     use crate::core::dnode_registry::{declare_dnode, DNodeRegistryStateV1};
+    use crate::core::dserv_artifact::{
+        CanonicalDServArtifactV1, DServArtifactAbiV1, DServArtifactConstraintsV1,
+        DServArtifactDCodeV1, DServArtifactLimitsV1, DServArtifactPortsV1, DServArtifactSafetyV1,
+        CANONICAL_DSERV_ARTIFACT_SCHEMA, DNODE_ABI_V0_REQUIRED_EXPORTS,
+    };
+    use crate::core::operational_dgraph::OperationalDesiredService;
     use serde_json::Value;
     use std::collections::BTreeMap;
 
@@ -327,8 +354,13 @@ mod tests {
             revision: 1,
             services: vec![CanonicalDServV1 {
                 service_id: SVC.to_string(),
-                execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
-                resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
+                execution_requirement: CanonicalDServExecutionRequirementV1 {
+                    dnode_abi: DNODE_ABI_V0.to_string(),
+                },
+                resource_requirement: CanonicalDServResourceRequirementV1 {
+                    cpu_cores: 1,
+                    memory_bytes: 1,
+                },
             }],
             calls: Vec::new(),
         }
@@ -337,9 +369,17 @@ mod tests {
     fn node() -> CanonicalDNodeV1 {
         CanonicalDNodeV1 {
             node_id: NODE.to_string(),
-            platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "x86_64".to_string() },
-            capacity: CanonicalNodeCapacityV1 { cpu_cores: 4, memory_bytes: 4_000_000_000 },
-            capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] },
+            platform: CanonicalNodePlatformV1 {
+                os: "linux".to_string(),
+                architecture: "x86_64".to_string(),
+            },
+            capacity: CanonicalNodeCapacityV1 {
+                cpu_cores: 4,
+                memory_bytes: 4_000_000_000,
+            },
+            capabilities: CanonicalNodeCapabilitiesV1 {
+                dnode_abi_versions: vec![DNODE_ABI_V0.to_string()],
+            },
         }
     }
 
@@ -359,7 +399,10 @@ mod tests {
             abi: DServArtifactAbiV1 {
                 name: "datum-dnode".to_string(),
                 version: "0".to_string(),
-                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS.iter().map(|s| s.to_string()).collect(),
+                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 allowed_imports: Vec::new(),
             },
             ports: DServArtifactPortsV1::default(),
@@ -381,7 +424,11 @@ mod tests {
         }
     }
 
-    fn setup() -> (DDeployStateV1, DNodeRegistryStateV1, DCodeArtifactRegistryStateV1) {
+    fn setup() -> (
+        DDeployStateV1,
+        DNodeRegistryStateV1,
+        DCodeArtifactRegistryStateV1,
+    ) {
         let proposal_id = "prop-1".to_string();
         let mut ddeploy_state = DDeployStateV1::empty();
         ddeploy_state.proposals.insert(
@@ -405,13 +452,17 @@ mod tests {
                         revision: 1,
                         digest: format!("sha256:{}", "1".repeat(64)),
                     },
-                    placements: vec![CanonicalDServPlacementV1 { service_id: SVC.to_string(), node_id: NODE.to_string() }],
+                    placements: vec![CanonicalDServPlacementV1 {
+                        service_id: SVC.to_string(),
+                        node_id: NODE.to_string(),
+                    }],
                 },
                 planner_provenance: None,
                 proposal_digest: String::new(),
                 dgraph_snapshot: dgraph(),
                 dcontinuum_snapshot: crate::core::canonical_dcontinuum::CanonicalDContinuumV1 {
-                    schema: crate::core::canonical_dcontinuum::CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+                    schema: crate::core::canonical_dcontinuum::CANONICAL_DCONTINUUM_SCHEMA
+                        .to_string(),
                     project_id: PROJECT.to_string(),
                     dcontinuum_id: "dcontinuum:lab".to_string(),
                     revision: 1,
@@ -439,7 +490,10 @@ mod tests {
                 revision: 1,
                 digest: format!("sha256:{}", "1".repeat(64)),
             },
-            placements: vec![CanonicalDServPlacementV1 { service_id: SVC.to_string(), node_id: NODE.to_string() }],
+            placements: vec![CanonicalDServPlacementV1 {
+                service_id: SVC.to_string(),
+                node_id: NODE.to_string(),
+            }],
         };
         let dmap_digest = crate::core::canonical_dmap::recompute_dmap_digest(&dmap).unwrap();
 
@@ -478,8 +532,15 @@ mod tests {
     #[test]
     fn correctly_placed_service_authorization_succeeds() {
         let (ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
-        let authorization =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let authorization = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .expect("authorization should succeed");
         assert_eq!(authorization.node_id, NODE);
         assert_eq!(authorization.dserv_artifact_digest, "a".repeat(64));
@@ -488,8 +549,15 @@ mod tests {
     #[test]
     fn service_not_active_is_rejected() {
         let (ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
-        let error =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, "app:unknown", SVC, NODE)
+        let error = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            "app:unknown",
+            SVC,
+            NODE,
+        )
                 .unwrap_err();
         assert_eq!(error.code, F_DCODE_APPLICATION_NOT_ACTIVE);
     }
@@ -497,8 +565,15 @@ mod tests {
     #[test]
     fn service_active_on_different_node_is_rejected() {
         let (ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
-        let error =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, "cloud-01")
+        let error = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            "cloud-01",
+        )
                 .unwrap_err();
         assert_eq!(error.code, F_DCODE_SERVICE_NOT_PLACED_ON_NODE);
     }
@@ -510,8 +585,15 @@ mod tests {
         let mut wrong = artifact();
         wrong.dserv_id = "other-service".to_string();
         declare_dserv_artifact(&mut dcode_registry_state, wrong).unwrap();
-        let error =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let error = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap_err();
         assert_eq!(error.code, F_DCODE_ARTIFACT_NOT_FOUND);
     }
@@ -519,9 +601,22 @@ mod tests {
     #[test]
     fn dnode_lacking_abi_is_rejected() {
         let (ddeploy_state, mut dnode_registry_state, dcode_registry_state) = setup();
-        dnode_registry_state.nodes.get_mut(NODE).unwrap().capabilities.dnode_abi_versions.clear();
-        let error =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        dnode_registry_state
+            .nodes
+            .get_mut(NODE)
+            .unwrap()
+            .capabilities
+            .dnode_abi_versions
+            .clear();
+        let error = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap_err();
         assert_eq!(error.code, F_DCODE_NODE_ABI_UNSUPPORTED);
     }
@@ -552,8 +647,15 @@ mod tests {
     #[test]
     fn artifact_changing_after_authorization_is_detected_as_stale() {
         let (ddeploy_state, dnode_registry_state, mut dcode_registry_state) = setup();
-        let authorization =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let authorization = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap();
 
         // Replace the registered artifact with a different-content one
@@ -585,8 +687,15 @@ mod tests {
     #[test]
     fn changing_only_limits_invalidates_the_descriptor_digest_binding() {
         let (ddeploy_state, dnode_registry_state, mut dcode_registry_state) = setup();
-        let authorization =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let authorization = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap();
 
         dcode_registry_state.artifacts.clear();
@@ -657,8 +766,15 @@ mod tests {
     #[test]
     fn changing_only_qos_invalidates_the_descriptor_digest_binding() {
         let (ddeploy_state, dnode_registry_state, mut dcode_registry_state) = setup();
-        let authorization =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let authorization = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap();
 
         dcode_registry_state.artifacts.clear();
@@ -684,9 +800,19 @@ mod tests {
     fn empty_allowed_stages_can_authorize() {
         let (ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
         assert!(artifact().constraints.allowed_stages.is_empty());
-        let result =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE);
-        assert!(result.is_ok(), "empty allowed_stages must not restrict authorization");
+        let result = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        );
+        assert!(
+            result.is_ok(),
+            "empty allowed_stages must not restrict authorization"
+        );
     }
 
     /// F1 regressions 2+3: a non-empty `allowed_stages` fails closed as
@@ -698,12 +824,23 @@ mod tests {
         let (ddeploy_state, dnode_registry_state, mut dcode_registry_state) = setup();
         dcode_registry_state.artifacts.clear();
         let mut restricted = artifact();
-        restricted.constraints.allowed_stages.push("S3-Fog".to_string());
+        restricted
+            .constraints
+            .allowed_stages
+            .push("S3-Fog".to_string());
         declare_dserv_artifact(&mut dcode_registry_state, restricted).unwrap();
 
-        let result =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE);
-        let error = result.expect_err("non-empty allowed_stages must fail closed, never return an authorization");
+        let result = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        );
+        let error = result
+            .expect_err("non-empty allowed_stages must fail closed, never return an authorization");
         assert_eq!(error.code, F_DCODE_ARTIFACT_STAGE_CONSTRAINT_UNVERIFIABLE);
     }
 
@@ -737,9 +874,18 @@ mod tests {
             "the #[cfg(test)] split boundary must actually be found, or this guard checks nothing"
         );
         let lower = production_code.to_lowercase();
-        assert!(!lower.contains("sentinel_registration"), "must never consult Sentinel registration state");
-        assert!(!lower.contains("target_stages"), "must never consult ServiceArtifact target_stages");
-        assert!(!lower.contains("resource_observation"), "must never consult live telemetry/resource observation");
+        assert!(
+            !lower.contains("sentinel_registration"),
+            "must never consult Sentinel registration state"
+        );
+        assert!(
+            !lower.contains("target_stages"),
+            "must never consult ServiceArtifact target_stages"
+        );
+        assert!(
+            !lower.contains("resource_observation"),
+            "must never consult live telemetry/resource observation"
+        );
     }
 
     /// F1 regression 5: the descriptor digest persisted in the authorization
@@ -754,7 +900,10 @@ mod tests {
     fn descriptor_digest_still_binds_allowed_stages() {
         let base = artifact();
         let mut changed = artifact();
-        changed.constraints.allowed_stages.push("S3-Fog".to_string());
+        changed
+            .constraints
+            .allowed_stages
+            .push("S3-Fog".to_string());
         assert_ne!(
             crate::core::dserv_artifact::recompute_dserv_artifact_digest(&base).unwrap(),
             crate::core::dserv_artifact::recompute_dserv_artifact_digest(&changed).unwrap(),
@@ -765,8 +914,15 @@ mod tests {
     #[test]
     fn unchanged_authority_remains_current() {
         let (ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
-        let authorization =
-            authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE)
+        let authorization = authorize_dcode_invocation(
+            &ddeploy_state,
+            &dnode_registry_state,
+            &dcode_registry_state,
+            PROJECT,
+            APP,
+            SVC,
+            NODE,
+        )
                 .unwrap();
         assert!(verify_dcode_authorization_still_current(
             &authorization,

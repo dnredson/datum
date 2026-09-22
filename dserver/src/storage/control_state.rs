@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -126,7 +125,9 @@ pub fn persist_domain_json<T: Serialize>(
                  updated_at_utc = excluded.updated_at_utc",
             params![domain, &payload, &now],
         )
-        .map_err(|error| format!("persist SQLite control-state current domain '{domain}': {error}"))?;
+        .map_err(|error| {
+            format!("persist SQLite control-state current domain '{domain}': {error}")
+        })?;
 
     transaction
         .execute(
@@ -134,7 +135,9 @@ pub fn persist_domain_json<T: Serialize>(
              VALUES (?1, ?2, ?3)",
             params![domain, &payload, &now],
         )
-        .map_err(|error| format!("append SQLite control-state history domain '{domain}': {error}"))?;
+        .map_err(|error| {
+            format!("append SQLite control-state history domain '{domain}': {error}")
+        })?;
 
     transaction
         .commit()
@@ -150,7 +153,9 @@ pub fn domain_history_count(db_path: &Path, domain: &str) -> Result<u64, String>
             params![domain],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|error| format!("count SQLite control-state history domain '{domain}': {error}"))?;
+        .map_err(|error| {
+            format!("count SQLite control-state history domain '{domain}': {error}")
+        })?;
     u64::try_from(count).map_err(|_| {
         format!("SQLite control-state history domain '{domain}' returned a negative count")
     })
@@ -185,16 +190,17 @@ pub fn load_domain_history(
                 row.get::<_, String>(3)?,
             ))
         })
-        .map_err(|error| format!("query SQLite control-state history domain '{domain}': {error}"))?;
+        .map_err(|error| {
+            format!("query SQLite control-state history domain '{domain}': {error}")
+        })?;
 
     let mut entries = Vec::new();
     for row in rows {
-        let (id, row_domain, payload_json, recorded_at_utc) = row
-            .map_err(|error| format!("read SQLite control-state history domain '{domain}': {error}"))?;
+        let (id, row_domain, payload_json, recorded_at_utc) = row.map_err(|error| {
+            format!("read SQLite control-state history domain '{domain}': {error}")
+        })?;
         let payload = serde_json::from_str(&payload_json).map_err(|error| {
-            format!(
-                "parse SQLite control-state history domain '{domain}' entry {id}: {error}"
-            )
+            format!("parse SQLite control-state history domain '{domain}' entry {id}: {error}")
         })?;
         entries.push(ControlStateHistoryEntry {
             id,
@@ -217,7 +223,9 @@ pub fn list_current_domains(db_path: &Path) -> Result<Vec<(String, String)>, Str
         )
         .map_err(|error| format!("prepare SQLite control-state domain list: {error}"))?;
     let rows = statement
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|error| format!("query SQLite control-state domain list: {error}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -225,7 +233,10 @@ pub fn list_current_domains(db_path: &Path) -> Result<Vec<(String, String)>, Str
 }
 
 fn open_database(path: &Path) -> Result<Connection, String> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "create SQLite control-state directory '{}': {error}",
@@ -310,10 +321,8 @@ mod tests {
 
     #[test]
     fn sqlite_control_state_round_trips_and_keeps_history() {
-        let path = std::env::temp_dir().join(format!(
-            "datum-control-state-test-{}.db",
-            Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("datum-control-state-test-{}.db", Uuid::new_v4()));
         let first = SampleState {
             revision: 1,
             label: "first".to_string(),

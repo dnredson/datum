@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dmap/2",
+  "schema": "datum.dmap/999",
   "project_id": "monitor-f49c8",
   "application_id": "app:smart-sentinel-lab",
   "dmap_id": "dmap:smart-sentinel-lab:v1",

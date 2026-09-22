@@ -1,0 +1,82 @@
+{
+  "schema": "datum.dmap/2",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "dmap_id": "dmap:smart-sentinel-lab",
+  "revision": 1,
+  "dgraph_ref": {
+    "id": "dgraph:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:6883f30cd4846bb30572abfa833fe139be3f220d0d8db4890430d86c740127b9"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:ff3f02ac17aad4ff576a50c075b0a788a583ac586d4faa652f712ea94110b502"
+  },
+  "dforward_ref": {
+    "id": "dforward:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:a2aaf6a429c85ae76d2c5095bac8ccf09289408cdd4d74ec1e203bfd471d92d6"
+  },
+  "placements": [
+    { "service_id": "chirpstack-gateway-bridge", "node_id": "fog-01" },
+    { "service_id": "smart-adapter", "node_id": "fog-01" },
+    { "service_id": "atom-controller", "node_id": "cloud-01" }
+  ],
+  "diot_placements": [
+    {
+      "placement_id": "diotplace:mqtt-broker-fog01",
+      "diot_id": "mqtt-broker",
+      "node_id": "fog-01",
+      "artifact_binding": {
+        "artifact_id": "mosquitto",
+        "descriptor_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "content_digest": null
+      }
+    }
+  ],
+  "dcall_realizations": [
+    {
+      "call_id": "bridge-to-adapter",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/bridge-to-adapter"
+    },
+    {
+      "call_id": "adapter-to-atom",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/adapter-to-atom"
+    },
+    {
+      "call_id": "atom-to-adapter-feedback",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/atom-feedback"
+    }
+  ],
+  "external_port_bindings": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "port": "ingress",
+      "endpoint_id": "sensor-ingress",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/ingress"
+    },
+    {
+      "service_id": "atom-controller",
+      "port": "egress",
+      "endpoint_id": "alert-egress",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/egress"
+    }
+  ],
+  "x_note": "Real Phase 113A DMap/2 bundle fixture (closure pass 5): reuses the already-real canonical-v1 dgraph.smart-sentinel-lab.json/dcontinuum.smart-sentinel-lab.json (DGraph/DContinuum schemas are unchanged by Phase 113A) and dforward.smart-sentinel-lab.json verbatim. Every digest above (dgraph_ref/dcontinuum_ref/dforward_ref/expected_digest_sha256) was computed by the actual production Rust canonicalization functions (CanonicalDForwardV1::digest / CanonicalDMapV2::digest), not hand-typed. Replaces the prior placeholder.json, which contained fake sha256:0000... digests and unrelated dummy refs.",
+  "expected_digest_sha256": "sha256:b38a2aa111f358cb92fda232d6a5f707f798b6e4dca278626a7e0dd5a7e39851"
+}

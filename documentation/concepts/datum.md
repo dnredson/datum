@@ -44,15 +44,16 @@ the current codebase:
 - **SmartSentinel currently implements *D-Agent* plus the *deployment executor*.**
   "D-Agent" is a project extension, not a DATUM-paper term; it continues the
   IoTMan Agent lineage of the IoTManA / IoTManS thesis. A separate **D-Node**
-  runtime — which actually executes application code — does not exist yet.
+  runtime — which executes application code through the governed Phase-111 D-Code
+  path — now exists; full middleware and engine orchestration remain later phases.
 
 ## D-Code and Management WASM
 
 Three uses of "WASM" must be kept apart (ADR-0005):
 
 - **D-Code** is the executable of an application service (D-Serv). WASM is the
-  prototype target (ABI `datum-dnode/0`). Nothing in the repository executes
-  application code as a service yet.
+  prototype target (ABI `datum-dnode/0`). Phase 111 executes D-Code as a governed
+  service invocation; Phase 112 realizes one semantic DCall edge.
 - **Management WASM** is the small `desired AND NOT observed` reconciler embedded
   in the agent, plus the artifact `wasm_decision` policy. It is legacy v1
   compatibility only and **is not D-Code**.

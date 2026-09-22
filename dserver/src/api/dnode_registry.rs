@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use crate::core::canonical_dcontinuum::{CanonicalDContinuumV1, CanonicalDNodeV1};
 use crate::core::canonical_dgraph::CanonicalValidationFinding;
 use crate::core::dnode_registry::{
-    build_canonical_dcontinuum, declare_dnode, load_state, persist_state, remove_dnode, DeclareOutcome,
+    build_canonical_dcontinuum, declare_dnode, load_state, persist_state, remove_dnode,
+    DeclareOutcome,
 };
 use crate::storage::control_state::default_control_state_db_path;
 
@@ -56,26 +57,40 @@ fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
 }
 
 fn bad_request(message: impl Into<String>) -> ApiError {
-    (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message.into()})))
+    (
+        StatusCode::BAD_REQUEST,
+        JsonResponse(json!({"error": message.into()})),
+    )
 }
 
 fn unprocessable(findings: &[CanonicalValidationFinding]) -> ApiError {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
-        JsonResponse(json!({"error": "dnode_declaration_invalid", "findings": findings_json(findings)})),
+        JsonResponse(
+            json!({"error": "dnode_declaration_invalid", "findings": findings_json(findings)}),
+        ),
     )
 }
 
 fn internal_error(message: impl Into<String>) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message.into()})))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({"error": message.into()})),
+    )
 }
 
 fn persistence_failure(message: impl Into<String>) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": "persistence_conflict", "message": message.into()})))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        JsonResponse(json!({"error": "persistence_conflict", "message": message.into()})),
+    )
 }
 
 fn findings_json(findings: &[CanonicalValidationFinding]) -> Vec<Value> {
-    findings.iter().map(|finding| json!({"code": finding.code, "message": finding.message})).collect()
+    findings
+        .iter()
+        .map(|finding| json!({"code": finding.code, "message": finding.message}))
+        .collect()
 }
 
 fn lock_error<T>(_: T) -> ApiError {
@@ -107,12 +122,17 @@ pub async fn put_dnode(
     let _transaction = dnode_transaction().lock().map_err(lock_error)?;
     let db_path = dnode_db_path();
     let mut state = load_state(&db_path).map_err(internal_error)?;
-    let outcome = declare_dnode(&mut state, payload).map_err(|findings| unprocessable(&findings))?;
+    let outcome =
+        declare_dnode(&mut state, payload).map_err(|findings| unprocessable(&findings))?;
     if matches!(outcome, DeclareOutcome::Inserted) {
         persist_state(&db_path, &state).map_err(persistence_failure)?;
     }
 
-    let node = state.nodes.get(path_node).cloned().expect("just declared or already present");
+    let node = state
+        .nodes
+        .get(path_node)
+        .cloned()
+        .expect("just declared or already present");
     Ok(JsonResponse(DNodeDeclareResponse {
         node,
         inserted: matches!(outcome, DeclareOutcome::Inserted),
@@ -120,7 +140,9 @@ pub async fn put_dnode(
     }))
 }
 
-pub async fn get_dnode(Path(node_id): Path<String>) -> Result<JsonResponse<CanonicalDNodeV1>, ApiError> {
+pub async fn get_dnode(
+    Path(node_id): Path<String>,
+) -> Result<JsonResponse<CanonicalDNodeV1>, ApiError> {
     let db_path = dnode_db_path();
     let state = load_state(&db_path).map_err(internal_error)?;
     state
@@ -128,7 +150,12 @@ pub async fn get_dnode(Path(node_id): Path<String>) -> Result<JsonResponse<Canon
         .get(node_id.trim())
         .cloned()
         .map(JsonResponse)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, JsonResponse(json!({"error": format!("D-Node '{}' is not declared", node_id)}))))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({"error": format!("D-Node '{}' is not declared", node_id)})),
+            )
+        })
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -142,7 +169,11 @@ pub async fn list_dnodes() -> Result<JsonResponse<DNodeListResponse>, ApiError> 
     let db_path = dnode_db_path();
     let state = load_state(&db_path).map_err(internal_error)?;
     let nodes: Vec<CanonicalDNodeV1> = state.nodes.values().cloned().collect();
-    Ok(JsonResponse(DNodeListResponse { count: nodes.len(), registry_revision: state.revision, nodes }))
+    Ok(JsonResponse(DNodeListResponse {
+        count: nodes.len(),
+        registry_revision: state.revision,
+        nodes,
+    }))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -151,7 +182,9 @@ pub struct DNodeRemoveResponse {
     pub registry_revision: u64,
 }
 
-pub async fn delete_dnode(Path(node_id): Path<String>) -> Result<JsonResponse<DNodeRemoveResponse>, ApiError> {
+pub async fn delete_dnode(
+    Path(node_id): Path<String>,
+) -> Result<JsonResponse<DNodeRemoveResponse>, ApiError> {
     let _transaction = dnode_transaction().lock().map_err(lock_error)?;
     let db_path = dnode_db_path();
     let mut state = load_state(&db_path).map_err(internal_error)?;
@@ -159,7 +192,10 @@ pub async fn delete_dnode(Path(node_id): Path<String>) -> Result<JsonResponse<DN
     if removed {
         persist_state(&db_path, &state).map_err(persistence_failure)?;
     }
-    Ok(JsonResponse(DNodeRemoveResponse { removed, registry_revision: state.revision }))
+    Ok(JsonResponse(DNodeRemoveResponse {
+        removed,
+        registry_revision: state.revision,
+    }))
 }
 
 /// The authoritative `datum.dcontinuum/1` for `X-Datum-Project`, derived
@@ -168,10 +204,13 @@ pub async fn delete_dnode(Path(node_id): Path<String>) -> Result<JsonResponse<DN
 /// (`api::ddeploy::authoritative_dcontinuum_for_project`) -- fetching it
 /// here first is the intended client workflow for constructing a proposal
 /// that will pass the authority check.
-pub async fn get_authoritative_dcontinuum(headers: HeaderMap) -> Result<JsonResponse<CanonicalDContinuumV1>, ApiError> {
+pub async fn get_authoritative_dcontinuum(
+    headers: HeaderMap,
+) -> Result<JsonResponse<CanonicalDContinuumV1>, ApiError> {
     let project_id = extract_project_id(&headers)?;
     let db_path = dnode_db_path();
     let state = load_state(&db_path).map_err(internal_error)?;
-    let dcontinuum = build_canonical_dcontinuum(&state, &project_id).map_err(|findings| unprocessable(&findings))?;
+    let dcontinuum = build_canonical_dcontinuum(&state, &project_id)
+        .map_err(|findings| unprocessable(&findings))?;
     Ok(JsonResponse(dcontinuum))
 }

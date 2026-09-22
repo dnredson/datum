@@ -37,10 +37,12 @@ use uuid::Uuid;
 
 use crate::core::canonical_dgraph::CanonicalValidationFinding;
 use crate::core::canonical_dmap::CanonicalContractReferenceV1;
-use crate::core::dcall_endpoint::{DCallEndpointRegistryStateV1, DNodeTransportEndpointV1, TRANSPORT_HTTP};
+use crate::core::dcall_endpoint::{
+    DCallEndpointRegistryStateV1, DNodeTransportEndpointV1, TRANSPORT_HTTP,
+};
 use crate::core::dcode_authorization::authorize_dcode_invocation;
 use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
-use crate::core::ddeploy::{application_key, DDeployStateV1};
+use crate::core::ddeploy::DDeployStateV1;
 use crate::core::dnode_registry::DNodeRegistryStateV1;
 use crate::core::jcs::is_canonical_digest_format;
 use crate::core::sha256::sha256_hex;
@@ -57,9 +59,14 @@ use crate::core::sha256::sha256_hex;
 /// only `is_ascii_hexdigit()` (which also accepts uppercase A-F) while their
 /// error messages claimed "lowercase" -- this closes that inconsistency too.
 pub(crate) fn is_valid_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
-use crate::storage::control_state::{load_domain_json, persist_domain_json, DOMAIN_DCALL_GRANT_STATE};
+use crate::storage::control_state::{
+    load_domain_json, persist_domain_json, DOMAIN_DCALL_GRANT_STATE,
+};
 
 pub const DCALL_GRANT_STATE_VERSION: &str = "dcall_grant_state_v1";
 /// v0.1 fixed grant lifetime. A grant is meant to be redeemed within one
@@ -72,7 +79,10 @@ pub const ROUTE_KIND_LOCAL: &str = "local";
 pub const ROUTE_KIND_REMOTE: &str = "remote";
 
 fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidationFinding {
-    CanonicalValidationFinding { code, message: message.into() }
+    CanonicalValidationFinding {
+        code,
+        message: message.into(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +107,15 @@ pub struct DCallRouteV1 {
     /// `"local"` (`ROUTE_KIND_LOCAL`) or `"remote"` (`ROUTE_KIND_REMOTE`) --
     /// derived, never caller-supplied.
     pub route_kind: String,
+    /// Phase 113A (ADR-0023): `Some(realization_kind)` when this D-Call is
+    /// governed under an ACTIVE DMap/2 (always `"via_diot_pubsub"` in v0.1 --
+    /// the only value DMap/2 validation accepts), `None` under DMap/1. A
+    /// route can always be DERIVED under DMap/2 (DGraph/DMap authority is
+    /// unaffected -- see `derive_dcall_route`'s doc comment), but
+    /// `issue_grant` refuses to issue a grant when this is `Some`, since
+    /// Phase 113A implements no runtime transport for any realization
+    /// (Phase 113B). Never caller-supplied.
+    pub v2_dcall_realization_kind: Option<String>,
 }
 
 /// Independent review fix v4 (K2A): the authority a real source D-Code
@@ -135,30 +154,79 @@ pub struct SourceExecutionBindingV1 {
 /// be called (and must succeed) BEFORE `issue_grant` -- a mismatch means
 /// the emit being dispatched was produced under authority that is no
 /// longer current, so no grant may be issued for it at all.
-pub fn check_source_execution_binding(route: &DCallRouteV1, binding: &SourceExecutionBindingV1) -> Result<(), CanonicalValidationFinding> {
+pub fn check_source_execution_binding(
+    route: &DCallRouteV1,
+    binding: &SourceExecutionBindingV1,
+) -> Result<(), CanonicalValidationFinding> {
     let mismatch = |field: &str, expected: &str, actual: &str| {
         finding("dcall_source_execution_stale", format!("source execution authority is stale: {field} was '{expected}' at source execution but is now '{actual}' -- create a new source emit under current authority"))
     };
     if binding.service_id != route.source.service_id {
-        return Err(mismatch("source service_id", &binding.service_id, &route.source.service_id));
+        return Err(mismatch(
+            "source service_id",
+            &binding.service_id,
+            &route.source.service_id,
+        ));
     }
     if binding.node_id != route.source.node_id {
-        return Err(mismatch("source node_id", &binding.node_id, &route.source.node_id));
+        return Err(mismatch(
+            "source node_id",
+            &binding.node_id,
+            &route.source.node_id,
+        ));
     }
-    if binding.dgraph_id != route.dgraph_ref.id || binding.dgraph_revision != route.dgraph_ref.revision || binding.dgraph_digest != route.dgraph_ref.digest {
-        return Err(mismatch("DGraph ref", &format!("{}@{}#{}", binding.dgraph_id, binding.dgraph_revision, binding.dgraph_digest), &format!("{}@{}#{}", route.dgraph_ref.id, route.dgraph_ref.revision, route.dgraph_ref.digest)));
+    if binding.dgraph_id != route.dgraph_ref.id
+        || binding.dgraph_revision != route.dgraph_ref.revision
+        || binding.dgraph_digest != route.dgraph_ref.digest
+    {
+        return Err(mismatch(
+            "DGraph ref",
+            &format!(
+                "{}@{}#{}",
+                binding.dgraph_id, binding.dgraph_revision, binding.dgraph_digest
+            ),
+            &format!(
+                "{}@{}#{}",
+                route.dgraph_ref.id, route.dgraph_ref.revision, route.dgraph_ref.digest
+            ),
+        ));
     }
-    if binding.dmap_id != route.dmap_ref.id || binding.dmap_revision != route.dmap_ref.revision || binding.dmap_digest != route.dmap_ref.digest {
-        return Err(mismatch("DMap ref", &format!("{}@{}#{}", binding.dmap_id, binding.dmap_revision, binding.dmap_digest), &format!("{}@{}#{}", route.dmap_ref.id, route.dmap_ref.revision, route.dmap_ref.digest)));
+    if binding.dmap_id != route.dmap_ref.id
+        || binding.dmap_revision != route.dmap_ref.revision
+        || binding.dmap_digest != route.dmap_ref.digest
+    {
+        return Err(mismatch(
+            "DMap ref",
+            &format!(
+                "{}@{}#{}",
+                binding.dmap_id, binding.dmap_revision, binding.dmap_digest
+            ),
+            &format!(
+                "{}@{}#{}",
+                route.dmap_ref.id, route.dmap_ref.revision, route.dmap_ref.digest
+            ),
+        ));
     }
     if binding.dserv_artifact_id != route.source.dserv_artifact_id {
-        return Err(mismatch("source dserv_artifact_id", &binding.dserv_artifact_id, &route.source.dserv_artifact_id));
+        return Err(mismatch(
+            "source dserv_artifact_id",
+            &binding.dserv_artifact_id,
+            &route.source.dserv_artifact_id,
+        ));
     }
     if binding.dserv_artifact_digest != route.source.dserv_artifact_digest {
-        return Err(mismatch("source module digest", &binding.dserv_artifact_digest, &route.source.dserv_artifact_digest));
+        return Err(mismatch(
+            "source module digest",
+            &binding.dserv_artifact_digest,
+            &route.source.dserv_artifact_digest,
+        ));
     }
     if binding.dserv_artifact_descriptor_digest != route.source.dserv_artifact_descriptor_digest {
-        return Err(mismatch("source artifact descriptor digest", &binding.dserv_artifact_descriptor_digest, &route.source.dserv_artifact_descriptor_digest));
+        return Err(mismatch(
+            "source artifact descriptor digest",
+            &binding.dserv_artifact_descriptor_digest,
+            &route.source.dserv_artifact_descriptor_digest,
+        ));
     }
     Ok(())
 }
@@ -186,23 +254,34 @@ pub fn derive_dcall_route(
     // Full Phase-111 authority chain for the SOURCE (this also proves the
     // emitting invocation's own node/service/artifact are still currently
     // authoritative, not merely that they once were).
-    let source_auth =
-        authorize_dcode_invocation(ddeploy_state, dnode_registry_state, dcode_registry_state, project_id, application_id, source_service_id, source_node_id)?;
+    let source_auth = authorize_dcode_invocation(
+        ddeploy_state,
+        dnode_registry_state,
+        dcode_registry_state,
+        project_id,
+        application_id,
+        source_service_id,
+        source_node_id,
+    )?;
 
-    let active = ddeploy_state
-        .active_by_application
-        .get(&application_key(project_id, application_id))
+    // Phase 113A closure pass 2: sourced EXCLUSIVELY from the shared v1/v2
+    // authority accessor -- this function no longer reads
+    // `active_by_application`/`proposals` directly, so route derivation is
+    // identical whether the active authority is DMap/1 or DMap/2.
+    let active = crate::core::ddeploy::active_placement_authority(ddeploy_state, project_id, application_id)
+        .map_err(|error| finding("dcall_not_found", error))?
         .ok_or_else(|| finding("dcall_not_found", format!("project '{project_id}' application '{application_id}' has no active accepted D-Map")))?;
-    let proposal = ddeploy_state
-        .proposals
-        .get(&active.proposal_id)
-        .ok_or_else(|| finding("dcall_not_found", "active application references a missing proposal record"))?;
+    let dgraph_snapshot = active.dgraph_snapshot.as_ref().ok_or_else(|| {
+        finding(
+            "dcall_not_found",
+            "active application authority carries no D-Graph snapshot",
+        )
+    })?;
 
     // The DGraph edge is resolved by (call_id, source_service_id) -- NOT by
     // call_id alone -- so a caller cannot claim a real call_id belongs to a
     // service it does not actually source from.
-    let call = proposal
-        .dgraph_snapshot
+    let call = dgraph_snapshot
         .calls
         .iter()
         .find(|call| call.call_id == call_id && call.source_service_id == source_service_id)
@@ -214,10 +293,29 @@ pub fn derive_dcall_route(
         })?;
     let destination_service_id = call.target_service_id.clone();
 
+    // Phase 113A (ADR-0023) realization boundary preparation: route
+    // derivation itself still succeeds under an active DMap/2 (DGraph stays
+    // sole semantic authority, DMap/2 stays sole placement authority --
+    // section 7), but if this D-Call is governed under DMap/2 the caller
+    // (`issue_grant`, the ONE authoritative production dispatch boundary --
+    // see its own doc comment) must refuse to issue a grant for it, since
+    // Phase 113A defines no runtime transport for ANY canonical realization
+    // (`via_diot_pubsub` is the only value `CanonicalDMapV2::validate` ever
+    // accepts, and it is governed desired-state authority only -- no MQTT/
+    // broker/listener/publisher exists yet; "Real middleware transport is
+    // Phase 113B" per ADR-0023). `None` here means the active authority is
+    // DMap/1 and is entirely unaffected.
+    let v2_dcall_realization_kind = active.v2.as_ref().map(|v2| {
+        v2.dcall_realizations
+            .iter()
+            .find(|r| r.call_id == call_id)
+            .map(|r| r.realization_kind.clone())
+            .unwrap_or_else(|| "via_diot_pubsub".to_string())
+    });
+
     // Destination node: DERIVED from the active D-Map's own placements,
     // never from any caller input.
     let destination_placement = active
-        .active_dmap
         .placements
         .iter()
         .find(|placement| placement.service_id == destination_service_id)
@@ -245,7 +343,12 @@ pub fn derive_dcall_route(
     // payload_schema -> unique destination input port.
     let source_artifact = dcode_registry_state
         .get(application_id, source_service_id)
-        .ok_or_else(|| finding("dcall_source_port_invalid", "source D-Serv artifact is not registered"))?;
+        .ok_or_else(|| {
+            finding(
+                "dcall_source_port_invalid",
+                "source D-Serv artifact is not registered",
+            )
+        })?;
     let source_port_decl = source_artifact
         .ports
         .outputs
@@ -260,8 +363,14 @@ pub fn derive_dcall_route(
 
     let destination_artifact = dcode_registry_state
         .get(application_id, &destination_service_id)
-        .ok_or_else(|| finding("dcall_destination_port_invalid", "destination D-Serv artifact is not registered"))?;
-    let matching_inputs: Vec<&crate::core::dserv_artifact::DServArtifactPortV1> = destination_artifact
+        .ok_or_else(|| {
+            finding(
+                "dcall_destination_port_invalid",
+                "destination D-Serv artifact is not registered",
+            )
+        })?;
+    let matching_inputs: Vec<&crate::core::dserv_artifact::DServArtifactPortV1> =
+        destination_artifact
         .ports
         .inputs
         .iter()
@@ -289,7 +398,11 @@ pub fn derive_dcall_route(
         }
     };
 
-    let route_kind = if source_node_id == destination_node_id { ROUTE_KIND_LOCAL } else { ROUTE_KIND_REMOTE };
+    let route_kind = if source_node_id == destination_node_id {
+        ROUTE_KIND_LOCAL
+    } else {
+        ROUTE_KIND_REMOTE
+    };
 
     Ok(DCallRouteV1 {
         project_id: project_id.to_string(),
@@ -314,6 +427,7 @@ pub fn derive_dcall_route(
             dserv_artifact_descriptor_digest: dest_auth.dserv_artifact_descriptor_digest,
         },
         route_kind: route_kind.to_string(),
+        v2_dcall_realization_kind,
     })
 }
 
@@ -324,7 +438,11 @@ pub fn resolve_dcalls_for_emit<'a>(
     dgraph: &'a crate::core::canonical_dgraph::CanonicalDGraphV1,
     source_service_id: &str,
 ) -> Vec<&'a crate::core::canonical_dgraph::CanonicalDCallV1> {
-    let mut matches: Vec<_> = dgraph.calls.iter().filter(|call| call.source_service_id == source_service_id).collect();
+    let mut matches: Vec<_> = dgraph
+        .calls
+        .iter()
+        .filter(|call| call.source_service_id == source_service_id)
+        .collect();
     matches.sort_by(|a, b| a.call_id.cmp(&b.call_id));
     matches
 }
@@ -398,7 +516,10 @@ pub struct DCallGrantStateV1 {
 
 impl DCallGrantStateV1 {
     pub fn empty() -> Self {
-        Self { state_version: DCALL_GRANT_STATE_VERSION.to_string(), grants: BTreeMap::new() }
+        Self {
+            state_version: DCALL_GRANT_STATE_VERSION.to_string(),
+            grants: BTreeMap::new(),
+        }
     }
 }
 
@@ -431,7 +552,10 @@ pub fn issue_grant(
             )
         })?;
         if endpoint.node_id != route.destination.node_id {
-            return Err(finding("dcall_destination_endpoint_missing", "resolved endpoint does not belong to the destination node"));
+            return Err(finding(
+                "dcall_destination_endpoint_missing",
+                "resolved endpoint does not belong to the destination node",
+            ));
         }
     }
 
@@ -473,9 +597,15 @@ pub fn issue_grant(
         expires_at,
     };
 
-    grant_state
-        .grants
-        .insert(grant_id, DCallGrantRecord { grant: grant.clone(), token_hash, status: DCallGrantStatus::Pending, redeemed_at: None });
+    grant_state.grants.insert(
+        grant_id,
+        DCallGrantRecord {
+            grant: grant.clone(),
+            token_hash,
+            status: DCallGrantStatus::Pending,
+            redeemed_at: None,
+        },
+    );
 
     Ok(IssuedGrant { grant, token })
 }
@@ -513,7 +643,10 @@ pub fn redeem_grant(
     payload_size: u64,
     now: DateTime<Utc>,
 ) -> Result<DCallDeliveryGrantV1, RedeemError> {
-    let record = grant_state.grants.get(grant_id).ok_or(RedeemError::NotFound)?;
+    let record = grant_state
+        .grants
+        .get(grant_id)
+        .ok_or(RedeemError::NotFound)?;
 
     if record.status == DCallGrantStatus::Redeemed {
         return Err(RedeemError::AlreadyRedeemed);
@@ -522,7 +655,8 @@ pub fn redeem_grant(
     if token_hash != record.token_hash {
         return Err(RedeemError::TokenInvalid);
     }
-    let expires_at = DateTime::parse_from_rfc3339(&record.grant.expires_at).map_err(|_| RedeemError::Expired)?;
+    let expires_at =
+        DateTime::parse_from_rfc3339(&record.grant.expires_at).map_err(|_| RedeemError::Expired)?;
     if now > expires_at {
         return Err(RedeemError::Expired);
     }
@@ -554,7 +688,8 @@ pub fn redeem_grant(
     if current_source_auth.dmap_ref != record.grant.dmap_ref
         || current_source_auth.dgraph_ref != record.grant.dgraph_ref
         || current_source_auth.dserv_artifact_digest != record.grant.source.dserv_artifact_digest
-        || current_source_auth.dserv_artifact_descriptor_digest != record.grant.source.dserv_artifact_descriptor_digest
+        || current_source_auth.dserv_artifact_descriptor_digest
+            != record.grant.source.dserv_artifact_descriptor_digest
     {
         return Err(RedeemError::StaleAuthority(finding(
             "dcall_stale_authority",
@@ -575,7 +710,8 @@ pub fn redeem_grant(
     if current_dest_auth.dmap_ref != record.grant.dmap_ref
         || current_dest_auth.dgraph_ref != record.grant.dgraph_ref
         || current_dest_auth.dserv_artifact_digest != record.grant.destination.dserv_artifact_digest
-        || current_dest_auth.dserv_artifact_descriptor_digest != record.grant.destination.dserv_artifact_descriptor_digest
+        || current_dest_auth.dserv_artifact_descriptor_digest
+            != record.grant.destination.dserv_artifact_descriptor_digest
     {
         return Err(RedeemError::StaleAuthority(finding(
             "dcall_stale_authority",
@@ -583,18 +719,24 @@ pub fn redeem_grant(
         )));
     }
     if record.grant.route_kind == ROUTE_KIND_REMOTE {
-        let current_endpoint = dcall_endpoint_state.get(&record.grant.destination.node_id, TRANSPORT_HTTP);
+        let current_endpoint =
+            dcall_endpoint_state.get(&record.grant.destination.node_id, TRANSPORT_HTTP);
         let current_digest = current_endpoint.map(|endpoint| endpoint.descriptor_digest.clone());
         if current_digest != record.grant.endpoint_descriptor_digest {
             return Err(RedeemError::StaleAuthority(finding(
                 "dcall_stale_authority",
-                format!("grant '{grant_id}' destination endpoint changed or was removed since issuance"),
+                format!(
+                    "grant '{grant_id}' destination endpoint changed or was removed since issuance"
+                ),
             )));
         }
     }
 
     let grant = record.grant.clone();
-    let entry = grant_state.grants.get_mut(grant_id).expect("grant existence already confirmed above");
+    let entry = grant_state
+        .grants
+        .get_mut(grant_id)
+        .expect("grant existence already confirmed above");
     entry.status = DCallGrantStatus::Redeemed;
     entry.redeemed_at = Some(now.to_rfc3339());
     Ok(grant)
@@ -604,7 +746,9 @@ pub fn redeem_grant(
 /// Never repairs corruption; never allows a `Redeemed` grant to silently
 /// revert (there is no code path here or in `redeem_grant` that ever
 /// writes `Pending` over an existing `Redeemed` record).
-pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1) -> Result<(), String> {
+pub fn validate_persisted_dcall_grant_state_integrity(
+    state: &DCallGrantStateV1,
+) -> Result<(), String> {
     if state.state_version != DCALL_GRANT_STATE_VERSION {
         return Err(format!(
             "unsupported dcall grant state_version '{}', expected '{DCALL_GRANT_STATE_VERSION}'",
@@ -613,13 +757,20 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
     }
     for (key, record) in &state.grants {
         if record.grant.grant_id.trim().is_empty() {
-            return Err(format!("dcall grant stored under key '{key}' has an empty grant_id"));
+            return Err(format!(
+                "dcall grant stored under key '{key}' has an empty grant_id"
+            ));
         }
         if *key != record.grant.grant_id {
-            return Err(format!("dcall grant stored under key '{key}' does not match its own grant_id '{}'", record.grant.grant_id));
+            return Err(format!(
+                "dcall grant stored under key '{key}' does not match its own grant_id '{}'",
+                record.grant.grant_id
+            ));
         }
         if !is_valid_sha256_hex(&record.token_hash) {
-            return Err(format!("dcall grant '{key}' has a malformed token_hash (expected 64 lowercase hex chars)"));
+            return Err(format!(
+                "dcall grant '{key}' has a malformed token_hash (expected 64 lowercase hex chars)"
+            ));
         }
         let issued_at = DateTime::parse_from_rfc3339(&record.grant.issued_at)
             .map_err(|_| format!("dcall grant '{key}' has an unparseable issued_at timestamp"))?;
@@ -631,15 +782,22 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
         }
         match &record.status {
             DCallGrantStatus::Pending if record.redeemed_at.is_some() => {
-                return Err(format!("dcall grant '{key}' is Pending but has a redeemed_at timestamp"));
+                return Err(format!(
+                    "dcall grant '{key}' is Pending but has a redeemed_at timestamp"
+                ));
             }
             DCallGrantStatus::Pending => {}
             DCallGrantStatus::Redeemed => {
-                let redeemed_at_str = record.redeemed_at.as_ref().ok_or_else(|| format!("dcall grant '{key}' is Redeemed but has no redeemed_at timestamp"))?;
-                let redeemed_at = DateTime::parse_from_rfc3339(redeemed_at_str)
-                    .map_err(|_| format!("dcall grant '{key}' has an unparseable redeemed_at timestamp"))?;
+                let redeemed_at_str = record.redeemed_at.as_ref().ok_or_else(|| {
+                    format!("dcall grant '{key}' is Redeemed but has no redeemed_at timestamp")
+                })?;
+                let redeemed_at = DateTime::parse_from_rfc3339(redeemed_at_str).map_err(|_| {
+                    format!("dcall grant '{key}' has an unparseable redeemed_at timestamp")
+                })?;
                 if redeemed_at < issued_at || redeemed_at > expires_at {
-                    return Err(format!("dcall grant '{key}' has redeemed_at outside [issued_at, expires_at]"));
+                    return Err(format!(
+                        "dcall grant '{key}' has redeemed_at outside [issued_at, expires_at]"
+                    ));
                 }
             }
         }
@@ -649,8 +807,13 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
         // repaired.
         match record.grant.route_kind.as_str() {
             ROUTE_KIND_LOCAL => {
-                if record.grant.endpoint_id.is_some() || record.grant.endpoint_revision.is_some() || record.grant.endpoint_descriptor_digest.is_some() {
-                    return Err(format!("dcall grant '{key}' has route_kind=local but carries endpoint fields"));
+                if record.grant.endpoint_id.is_some()
+                    || record.grant.endpoint_revision.is_some()
+                    || record.grant.endpoint_descriptor_digest.is_some()
+                {
+                    return Err(format!(
+                        "dcall grant '{key}' has route_kind=local but carries endpoint fields"
+                    ));
                 }
                 // Independent review fix v5 (section 15): a local route
                 // means source and destination are structurally the SAME
@@ -664,7 +827,9 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
                 }
             }
             ROUTE_KIND_REMOTE => {
-                let endpoint_id = record.grant.endpoint_id.as_deref().ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_id"))?;
+                let endpoint_id = record.grant.endpoint_id.as_deref().ok_or_else(|| {
+                    format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_id")
+                })?;
                 let endpoint_revision = record.grant.endpoint_revision.ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_revision"))?;
                 let endpoint_descriptor_digest =
                     record.grant.endpoint_descriptor_digest.as_deref().ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_descriptor_digest"))?;
@@ -673,7 +838,9 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
                     return Err(format!("dcall grant '{key}' has an empty endpoint_id"));
                 }
                 if endpoint_revision < 1 {
-                    return Err(format!("dcall grant '{key}' has endpoint_revision {endpoint_revision} < 1"));
+                    return Err(format!(
+                        "dcall grant '{key}' has endpoint_revision {endpoint_revision} < 1"
+                    ));
                 }
                 if !is_canonical_digest_format(endpoint_descriptor_digest) {
                     return Err(format!("dcall grant '{key}' has a malformed endpoint_descriptor_digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
@@ -685,16 +852,26 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
                     return Err(format!("dcall grant '{key}' has route_kind=remote but source.node_id == destination.node_id '{}'", record.grant.source.node_id));
                 }
             }
-            other => return Err(format!("dcall grant '{key}' has unsupported route_kind '{other}'")),
+            other => {
+                return Err(format!(
+                    "dcall grant '{key}' has unsupported route_kind '{other}'"
+                ))
+            }
         }
         // J4: `dgraph_ref`/`dmap_ref` must themselves be structurally valid
         // canonical contract references, not merely present.
-        for (label, contract_ref) in [("dgraph_ref", &record.grant.dgraph_ref), ("dmap_ref", &record.grant.dmap_ref)] {
+        for (label, contract_ref) in [
+            ("dgraph_ref", &record.grant.dgraph_ref),
+            ("dmap_ref", &record.grant.dmap_ref),
+        ] {
             if contract_ref.id.trim().is_empty() {
                 return Err(format!("dcall grant '{key}' has an empty {label}.id"));
             }
             if contract_ref.revision < 1 {
-                return Err(format!("dcall grant '{key}' has {label}.revision {} < 1", contract_ref.revision));
+                return Err(format!(
+                    "dcall grant '{key}' has {label}.revision {} < 1",
+                    contract_ref.revision
+                ));
             }
             if !is_canonical_digest_format(&contract_ref.digest) {
                 return Err(format!("dcall grant '{key}' has a malformed {label}.digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
@@ -703,12 +880,17 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
         // J4: source/destination endpoint identity -- non-empty port/artifact
         // id, shape-valid module digest (bare hex) and descriptor digest
         // (canonical prefixed form).
-        for (label, endpoint) in [("source", &record.grant.source), ("destination", &record.grant.destination)] {
+        for (label, endpoint) in [
+            ("source", &record.grant.source),
+            ("destination", &record.grant.destination),
+        ] {
             if endpoint.port.trim().is_empty() {
                 return Err(format!("dcall grant '{key}' has an empty {label}.port"));
             }
             if endpoint.dserv_artifact_id.trim().is_empty() {
-                return Err(format!("dcall grant '{key}' has an empty {label}.dserv_artifact_id"));
+                return Err(format!(
+                    "dcall grant '{key}' has an empty {label}.dserv_artifact_id"
+                ));
             }
             if !is_valid_sha256_hex(&endpoint.dserv_artifact_digest) {
                 return Err(format!("dcall grant '{key}' has a malformed {label}.dserv_artifact_digest (expected 64 lowercase hex chars)"));
@@ -735,11 +917,16 @@ pub fn validate_persisted_dcall_grant_state_integrity(state: &DCallGrantStateV1)
             ("correlation_id", &record.grant.correlation_id),
             ("source.service_id", &record.grant.source.service_id),
             ("source.node_id", &record.grant.source.node_id),
-            ("destination.service_id", &record.grant.destination.service_id),
+            (
+                "destination.service_id",
+                &record.grant.destination.service_id,
+            ),
             ("destination.node_id", &record.grant.destination.node_id),
         ] {
             if value.trim().is_empty() {
-                return Err(format!("dcall grant '{key}' has an empty required identifier '{label}'"));
+                return Err(format!(
+                    "dcall grant '{key}' has an empty required identifier '{label}'"
+                ));
             }
         }
     }

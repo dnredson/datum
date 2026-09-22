@@ -23,7 +23,9 @@ use datum::dcode::local_identity::load_local_identity;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-dcall-listen")]
-#[command(about = "Governed cross-D-Node D-Call delivery listener (ADR-0022) -- destination side of a remote D-Call delivery")]
+#[command(
+    about = "Governed cross-D-Node D-Call delivery listener (ADR-0022) -- destination side of a remote D-Call delivery"
+)]
 struct Args {
     /// Base URL of the DServer instance this D-Node belongs to.
     #[arg(long)]
@@ -55,22 +57,26 @@ struct Args {
     advertise_url: Option<String>,
 }
 
-
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // G1-equivalent for D-Call: local D-Node identity comes ONLY from this
     // installation's own identity file, never from a CLI/request override.
-    let identity = load_local_identity(std::path::Path::new(&args.dnode_root)).map_err(|error| anyhow::anyhow!(error)).context("load local D-Node identity (run smartsentinel-dcode-init first)")?;
+    let identity = load_local_identity(std::path::Path::new(&args.dnode_root))
+        .map_err(|error| anyhow::anyhow!(error))
+        .context("load local D-Node identity (run smartsentinel-dcode-init first)")?;
     let local_node_id = identity.node_id;
 
-    let listener = TcpListener::bind(&args.bind).with_context(|| format!("bind D-Call listener to {}", args.bind))?;
-    let bound_addr = listener.local_addr().context("resolve bound listener address")?;
+    let listener = TcpListener::bind(&args.bind)
+        .with_context(|| format!("bind D-Call listener to {}", args.bind))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("resolve bound listener address")?;
 
     match &args.advertise_url {
         Some(advertise_url) => {
-            client::declare_endpoint(&args.dserver_url, &local_node_id, "http", advertise_url).context("declare this D-Node's D-Call transport endpoint with DServer")?;
+            client::declare_endpoint(&args.dserver_url, &local_node_id, "http", advertise_url)
+                .context("declare this D-Node's D-Call transport endpoint with DServer")?;
             println!("mode=smartsentinel-dcall-listen status=ok node_id={local_node_id} bound={bound_addr} advertised={advertise_url} endpoint_declared=true");
         }
         None => {
@@ -83,7 +89,8 @@ fn main() -> Result<()> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_signal = stop.clone();
-    ctrlc::set_handler(move || stop_for_signal.store(true, Ordering::SeqCst)).context("install Ctrl-C handler")?;
+    ctrlc::set_handler(move || stop_for_signal.store(true, Ordering::SeqCst))
+        .context("install Ctrl-C handler")?;
 
     run(
         listener,
@@ -101,11 +108,25 @@ fn main() -> Result<()> {
 /// re-verifies token/expiry/destination-node/payload-identity/current
 /// canonical authority server-side) BEFORE ever invoking D-Code -- a
 /// request is never executed merely because it claims a grant_id/token.
-fn handle_delivery(dserver_url: &str, dnode_root: &str, request: DeliverRequest) -> (u16, DeliverResponse) {
+fn handle_delivery(
+    dserver_url: &str,
+    dnode_root: &str,
+    request: DeliverRequest,
+) -> (u16, DeliverResponse) {
     use base64::Engine;
     let payload = match base64::engine::general_purpose::STANDARD.decode(&request.payload_b64) {
         Ok(bytes) => bytes,
-        Err(_) => return (200, DeliverResponse { outcome: "failed".to_string(), error_code: Some("dcall_malformed_payload".to_string()), message: Some("payload_b64 is not valid base64".to_string()), dcode_evidence: None }),
+        Err(_) => {
+            return (
+                200,
+                DeliverResponse {
+                    outcome: "failed".to_string(),
+                    error_code: Some("dcall_malformed_payload".to_string()),
+                    message: Some("payload_b64 is not valid base64".to_string()),
+                    dcode_evidence: None,
+                },
+            )
+        }
     };
 
     // Self-review finding (dcall-payload-leakage-audit.txt): `redeem_grant`
@@ -124,20 +145,42 @@ fn handle_delivery(dserver_url: &str, dnode_root: &str, request: DeliverRequest)
             DeliverResponse {
                 outcome: "failed".to_string(),
                 error_code: Some("dcall_payload_digest_mismatch".to_string()),
-                message: Some("decoded payload_b64 does not match the declared payload_sha256/payload_size".to_string()),
+                message: Some(
+                    "decoded payload_b64 does not match the declared payload_sha256/payload_size"
+                        .to_string(),
+                ),
                 dcode_evidence: None,
             },
         );
     }
 
-    match receive_governed_delivery(dserver_url, dnode_root, &request.grant_id, &request.token, &payload) {
+    match receive_governed_delivery(
+        dserver_url,
+        dnode_root,
+        &request.grant_id,
+        &request.token,
+        &payload,
+    ) {
         Ok(evidence) => {
             let evidence_json = serde_json::to_value(&evidence).unwrap_or(serde_json::Value::Null);
-            (200, DeliverResponse { outcome: "success".to_string(), error_code: None, message: None, dcode_evidence: Some(evidence_json) })
+            (
+                200,
+                DeliverResponse {
+                    outcome: "success".to_string(),
+                    error_code: None,
+                    message: None,
+                    dcode_evidence: Some(evidence_json),
+                },
+            )
         }
         Err(error) => (
             200,
-            DeliverResponse { outcome: "failed".to_string(), error_code: Some("dcall_destination_execution_failed".to_string()), message: Some(error.to_string()), dcode_evidence: None },
+            DeliverResponse {
+                outcome: "failed".to_string(),
+                error_code: Some("dcall_destination_execution_failed".to_string()),
+                message: Some(error.to_string()),
+                dcode_evidence: None,
+            },
         ),
     }
 }

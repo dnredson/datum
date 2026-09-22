@@ -1,0 +1,19 @@
+{
+  "schema": "datum.ddeploy-acceptance/2",
+  "acceptance_id": "acceptance:smart-sentinel-lab",
+  "proposal_id": "proposal:smart-sentinel-lab",
+  "proposal_digest": "sha256:c253c203fa92ef10c43977c0ad3448ee515b4d504d7e10d24afa11fdf9ff861f",
+  "project_id": "a-different-project",
+  "application_id": "app:smart-sentinel-lab",
+  "accepted_at_utc": "2026-09-15T00:05:00Z",
+  "accepted_by": "operator:dana",
+  "materialized_dmap_ref": {
+    "id": "dmap:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:b38a2aa111f358cb92fda232d6a5f707f798b6e4dca278626a7e0dd5a7e39851"
+  },
+  "x_note": "project_id ('a-different-project') does not match the referenced proposal's own project_id ('monitor-f49c8'), even though proposal_id/proposal_digest are otherwise correct.",
+  "x_expect_reject": {
+    "case": "acceptance_project_application_mismatch"
+  }
+}

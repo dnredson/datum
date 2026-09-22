@@ -24,40 +24,75 @@ impl GrantRequestRejection {
     fn from_response(status: u16, body: &str) -> Self {
         use crate::dcall::evidence::DCallDeliveryErrorCode::*;
         let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-        let code = match parsed.as_ref().and_then(|value| value.get("error")).and_then(|value| value.as_str()) {
+        let code = match parsed
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|value| value.as_str())
+        {
             Some("dcall_source_execution_stale") => Some(DCallSourceExecutionStale),
-            Some("dcall_payload_exceeds_source_message_limit") => Some(DCallPayloadExceedsSourceMessageLimit),
-            Some("dcall_payload_exceeds_destination_message_limit") => Some(DCallPayloadExceedsDestinationMessageLimit),
+            Some("dcall_payload_exceeds_source_message_limit") => {
+                Some(DCallPayloadExceedsSourceMessageLimit)
+            }
+            Some("dcall_payload_exceeds_destination_message_limit") => {
+                Some(DCallPayloadExceedsDestinationMessageLimit)
+            }
             _ => None,
         };
-        Self { code, status, body_sha256: crate::dcode::identity::sha256_hex(body.as_bytes()) }
+        Self {
+            code,
+            status,
+            body_sha256: crate::dcode::identity::sha256_hex(body.as_bytes()),
+        }
     }
 }
 
 impl std::fmt::Display for GrantRequestRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "D-Call grant request rejected: status={} code={} body_sha256={}", self.status,
-            self.code.map(|code| code.as_str()).unwrap_or("dcall_grant_request_failed"), self.body_sha256)
+        write!(
+            f,
+            "D-Call grant request rejected: status={} code={} body_sha256={}",
+            self.status,
+            self.code
+                .map(|code| code.as_str())
+                .unwrap_or("dcall_grant_request_failed"),
+            self.body_sha256
+        )
     }
 }
 
 impl std::error::Error for GrantRequestRejection {}
 
 fn client() -> Result<Client> {
-    Client::builder().timeout(REQUEST_TIMEOUT).build().context("build blocking reqwest client")
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .context("build blocking reqwest client")
 }
 
 /// Lists the `call_id`s of every D-Call edge sourced from
 /// `source_service_id` in the application's CURRENT active D-Graph. The
 /// caller never supplies a destination -- only which SOURCE service/emit it
 /// is dispatching for.
-pub fn list_calls_for_source_service(base_url: &str, project_id: &str, application_id: &str, source_service_id: &str) -> Result<Vec<String>> {
-    let url = format!("{}/api/v1/dcall/calls/{project_id}/{application_id}/{source_service_id}", base_url.trim_end_matches('/'));
-    let response = client()?.get(&url).send().with_context(|| format!("GET {url}"))?;
+pub fn list_calls_for_source_service(
+    base_url: &str,
+    project_id: &str,
+    application_id: &str,
+    source_service_id: &str,
+) -> Result<Vec<String>> {
+    let url = format!(
+        "{}/api/v1/dcall/calls/{project_id}/{application_id}/{source_service_id}",
+        base_url.trim_end_matches('/')
+    );
+    let response = client()?
+        .get(&url)
+        .send()
+        .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(anyhow!("list D-Calls for source service failed: status={status} body={body}"));
+        return Err(anyhow!(
+            "list D-Calls for source service failed: status={status} body={body}"
+        ));
     }
     serde_json::from_str(&body).with_context(|| format!("parse call_id list JSON: {body}"))
 }
@@ -115,7 +150,11 @@ pub fn request_grant(
         source_execution,
         source_dcode_evidence_sha256,
     };
-    let response = client()?.post(&url).json(&payload).send().with_context(|| format!("POST {url}"))?;
+    let response = client()?
+        .post(&url)
+        .json(&payload)
+        .send()
+        .with_context(|| format!("POST {url}"))?;
     let status = response.status();
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
@@ -143,22 +182,45 @@ pub fn redeem_grant(
     payload_sha256: &str,
     payload_size: u64,
 ) -> Result<DCallDeliveryGrantV1> {
-    let url = format!("{}/api/v1/dcall/grants/{grant_id}/redeem", base_url.trim_end_matches('/'));
-    let payload = RedeemGrantPayload { token, destination_node_id, payload_sha256, payload_size };
-    let response = client()?.post(&url).json(&payload).send().with_context(|| format!("POST {url}"))?;
+    let url = format!(
+        "{}/api/v1/dcall/grants/{grant_id}/redeem",
+        base_url.trim_end_matches('/')
+    );
+    let payload = RedeemGrantPayload {
+        token,
+        destination_node_id,
+        payload_sha256,
+        payload_size,
+    };
+    let response = client()?
+        .post(&url)
+        .json(&payload)
+        .send()
+        .with_context(|| format!("POST {url}"))?;
     let status = response.status();
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(anyhow!("D-Call grant redemption failed: status={status} body={body}"));
+        return Err(anyhow!(
+            "D-Call grant redemption failed: status={status} body={body}"
+        ));
     }
-    serde_json::from_str(&body).with_context(|| format!("parse redeemed DCallDeliveryGrantV1 JSON: {body}"))
+    serde_json::from_str(&body)
+        .with_context(|| format!("parse redeemed DCallDeliveryGrantV1 JSON: {body}"))
 }
 
 /// `PUT /api/v1/dcall/endpoints/:node_id/:transport` -- used only by
 /// `smartsentinel-dcall-listen` to register/update its own reachable
 /// address at startup.
-pub fn declare_endpoint(base_url: &str, node_id: &str, transport: &str, endpoint_base_url: &str) -> Result<()> {
-    let url = format!("{}/api/v1/dcall/endpoints/{node_id}/{transport}", base_url.trim_end_matches('/'));
+pub fn declare_endpoint(
+    base_url: &str,
+    node_id: &str,
+    transport: &str,
+    endpoint_base_url: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/api/v1/dcall/endpoints/{node_id}/{transport}",
+        base_url.trim_end_matches('/')
+    );
     let response = client()?
         .put(&url)
         .json(&serde_json::json!({"base_url": endpoint_base_url}))
@@ -167,7 +229,9 @@ pub fn declare_endpoint(base_url: &str, node_id: &str, transport: &str, endpoint
     let status = response.status();
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
-        return Err(anyhow!("D-Call endpoint declaration failed: status={status} body={body}"));
+        return Err(anyhow!(
+            "D-Call endpoint declaration failed: status={status} body={body}"
+        ));
     }
     Ok(())
 }
@@ -189,12 +253,20 @@ pub struct EndpointResponse {
 /// id/revision/digest, not its raw URL, mirroring the evidence-payload
 /// discipline elsewhere in this codebase).
 pub fn fetch_endpoint(base_url: &str, node_id: &str, transport: &str) -> Result<EndpointResponse> {
-    let url = format!("{}/api/v1/dcall/endpoints/{node_id}/{transport}", base_url.trim_end_matches('/'));
-    let response = client()?.get(&url).send().with_context(|| format!("GET {url}"))?;
+    let url = format!(
+        "{}/api/v1/dcall/endpoints/{node_id}/{transport}",
+        base_url.trim_end_matches('/')
+    );
+    let response = client()?
+        .get(&url)
+        .send()
+        .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(anyhow!("D-Call endpoint fetch failed: status={status} body={body}"));
+        return Err(anyhow!(
+            "D-Call endpoint fetch failed: status={status} body={body}"
+        ));
     }
     serde_json::from_str(&body).with_context(|| format!("parse endpoint JSON: {body}"))
 }
@@ -224,7 +296,10 @@ mod tests {
 
     #[test]
     fn list_calls_parses_a_real_http_success_response() {
-        let base_url = serve_one_http_response("HTTP/1.1 200 OK", serde_json::json!(["call-a", "call-b"]).to_string());
+        let base_url = serve_one_http_response(
+            "HTTP/1.1 200 OK",
+            serde_json::json!(["call-a", "call-b"]).to_string(),
+        );
         let calls = list_calls_for_source_service(&base_url, "proj:lab", "app:a", "svc").unwrap();
         assert_eq!(calls, vec!["call-a".to_string(), "call-b".to_string()]);
     }
@@ -244,12 +319,36 @@ mod tests {
             dserv_artifact_digest: "a".repeat(64),
             dserv_artifact_descriptor_digest: format!("sha256:{}", "a".repeat(64)),
         };
-        for code in ["dcall_source_execution_stale", "dcall_payload_exceeds_source_message_limit", "dcall_payload_exceeds_destination_message_limit", "arbitrary-secret-server-code"] {
-            let base_url = serve_one_http_response("HTTP/1.1 422 Unprocessable Entity",
-                serde_json::json!({"error":code, "message":"secret-server-message"}).to_string());
-            let error = request_grant(&base_url, "proj", "app", "call", "fog-01", "out", "m1", "c1", &"a".repeat(64), 4, &source_execution, &"b".repeat(64)).unwrap_err();
+        for code in [
+            "dcall_source_execution_stale",
+            "dcall_payload_exceeds_source_message_limit",
+            "dcall_payload_exceeds_destination_message_limit",
+            "arbitrary-secret-server-code",
+        ] {
+            let base_url = serve_one_http_response(
+                "HTTP/1.1 422 Unprocessable Entity",
+                serde_json::json!({"error":code, "message":"secret-server-message"}).to_string(),
+            );
+            let error = request_grant(
+                &base_url,
+                "proj",
+                "app",
+                "call",
+                "fog-01",
+                "out",
+                "m1",
+                "c1",
+                &"a".repeat(64),
+                4,
+                &source_execution,
+                &"b".repeat(64),
+            )
+            .unwrap_err();
             let rejection = error.downcast_ref::<GrantRequestRejection>().unwrap();
-            assert_eq!(rejection.code.map(|value| value.as_str()), (!code.starts_with("arbitrary")).then_some(code));
+            assert_eq!(
+                rejection.code.map(|value| value.as_str()),
+                (!code.starts_with("arbitrary")).then_some(code)
+            );
             assert!(error.to_string().contains("422"));
             assert!(!error.to_string().contains("secret"));
         }

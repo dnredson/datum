@@ -1,0 +1,169 @@
+Phase 113A — Pass 6.2 (manual three-file diff-hygiene + final revalidation) — test results
+============================================================================================
+Branch: agent/canonical-dforward-diot-v1
+HEAD: 1d7ec64f434ddc9ef5a952c4fd05262c03db07eb (== origin/main, unchanged)
+
+This supersedes the prior Pass 6.1 test-results.txt content, which left three files
+(dserver/src/core/ddeploy.rs, dserver/src/api/ddeploy.rs,
+DATUM/src/dcall/delivery/tests/endpoint_authority.rs) with accidental Pass-6 cargo-fmt
+incident churn still layered on top of their real Phase-113A content, because automated
+`git apply` / `patch --fuzz` reconstruction failed on all three. This pass manually,
+semantically reconstructed all three files -- NOT via automated fuzzy patching, per this
+pass's explicit instruction -- using a text-marker-based splice technique: take HEAD's
+content as the formatting baseline, identify genuinely new/changed content via a
+Rust-aware tokenizer (comment/string/char-literal aware, whitespace- and
+trailing-comma-insensitive) that distinguishes real semantic edits from rustfmt-only
+reformatting, and reapply ONLY the real edits onto HEAD's original formatting.
+
+MANUAL THREE-FILE RECONSTRUCTION RESULTS
+  DATUM/src/dcall/delivery/tests/endpoint_authority.rs
+    Finding: 100% pure reformatting churn -- zero semantic difference from HEAD
+    (confirmed by full side-by-side read of all 4 tests + HttpObserver helper).
+    Action: restored to HEAD's exact bytes (git show HEAD:<path>, binary-safe write).
+    Verification: SHA-256 of the restored file == SHA-256 of the HEAD blob
+    (bbb12cab074ce9b143cebb5d49977ee09657d43661b1cf87a4f64714485a208d). git diff: EMPTY.
+    Tests: cargo test --locked --lib --features dcall-test-support endpoint_authority
+      -> 4 passed, 0 failed.
+
+  dserver/src/api/ddeploy.rs
+    Finding: all pre-existing v1 handlers/helpers were pure reformatting, EXCEPT one
+    deliberate Pass-6.1 robustness fix inside
+    post_plan_proposal_holds_the_same_lock_order_accept_proposal_uses (a source-text-
+    scanning test whose search string was shortened from
+    "dnode_registry::dnode_transaction().lock()" to
+    "dnode_registry::dnode_transaction()" so it survives rustfmt line-wrapping of
+    `.lock()`) -- this fix was identified and PRESERVED, not reverted.
+    Action: reconstructed via text-marker splicing (HEAD's v1 body + current's v2
+    additions + the preserved lock-order-test fix + current's new v2 test module).
+    Verification: git diff --numstat == git diff -w --numstat exactly (1690/11 both),
+    proving the remaining diff is 100% semantic with zero whitespace-only churn.
+    git diff --check: clean.
+    Tests: cargo test --locked api::ddeploy:: -- --test-threads=1
+      -> 24 passed, 0 failed.
+
+  dserver/src/core/ddeploy.rs (the highest-risk file: 214 diff hunks, ~9700 dirty lines
+  before this pass, both genuine Phase 113A additions and residual formatting churn
+  tightly interleaved throughout production code AND the ~200-function test module)
+    Method: built a Rust-aware tokenizer (string/char-literal/comment aware) and used it
+    to token-diff every top-level item (consts, structs, impls, free functions, and --
+    critically -- every one of the 159 pre-existing test functions individually, using a
+    brace-depth scanner that correctly skips braces inside string/format literals) between
+    HEAD and the dirty worktree file, after normalizing away whitespace and rustfmt's
+    trailing-comma-on-wrap artifact. This proved, function-by-function, exactly which
+    content was genuinely new/changed versus pure reformatting -- not an assumption.
+    Findings:
+      - All 159 pre-existing test functions: reformatting only, zero semantic change
+        (spot-verified findings: rustfmt-driven `use` import resorting, comment
+        repositioning around inserted commas, and closure-body brace-wrapping --
+        confirmed via character-multiset-equality, not just visual inspection).
+      - Genuinely new/changed production code (6 items): a new constant
+        (F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE), the phase113_v2 field on
+        DDeployStateV1, the impl DDeployStateV1 block (phase113_v2 default in empty(),
+        has_active_authority() extended to check v2, and the new create_v2_proposal /
+        accept_v2_proposal bridge methods), validate_persisted_state_integrity (a new
+        dual v1/v2 active-authority guard plus a rewritten version-aware "latest
+        accepted revision" consistency check -- the Pass-3.1 dangling-proposal-id fix
+        lives here), and 3 new free functions (active_placement_authority,
+        resolve_diot_artifact_authority, compute_project_node_commitments_versioned).
+      - 50 genuinely new top-level test functions (matching the Pass 1/3/3.1/4/4.1/5
+        additions), correctly distinguishing them from 4 same-named LOCAL helper
+        functions nested inside those tests' own bodies (an indentation-based
+        top-level-vs-nested distinction, since a naive by-name diff would have
+        double-counted or mis-extracted these).
+    Action: reconstructed via text-marker splicing -- HEAD's exact formatting for every
+    unchanged region, current's exact content for every genuinely new/changed region
+    (including preserving its own internal formatting, since there is no HEAD baseline
+    to "restore" for content that never existed in HEAD).
+    Verification: token-level content-multiset comparison against the pre-reconstruction
+    dirty file showed ZERO extra tokens and only cosmetic-wrap-artifact tokens missing
+    (7 trivial closure-brace pairs + 1 semicolon + rustfmt trailing commas) -- i.e. the
+    reconstruction is provably content-complete. git diff --numstat: 2625/21 (down from
+    7134/847 pre-reconstruction, a 63x reduction); git diff -w --numstat: 2624/20 (a
+    1-line cosmetic alignment artifact from the dropped trivial brace-wraps, not a
+    content gap -- confirmed by the token-multiset check above). git diff --check: clean.
+    Tests: cargo test --locked core::ddeploy:: -- --test-threads=1
+      -> 181 passed, 0 failed (unchanged from the pre-reconstruction baseline).
+
+CROSS-CHECK: no other file touched
+  All 39 OTHER genuinely-dirty tracked files from before this pass's edits were
+  SHA-256-verified unchanged (byte-for-byte identical to their pre-Pass-6.2 snapshot)
+  after the three-file reconstruction -- confirmed via direct hash comparison against a
+  snapshot taken before any edit in this pass.
+
+FULL FRESH VALIDATION (re-run after all three files were reconstructed; not reused from
+Pass 6.1)
+------------------------------------------------------------------------------
+Canonical DDeploy focused counts (three separate filters, never combined):
+  core::ddeploy::           181 passed, 0 failed
+  core::ddeploy_v2::          0 dedicated tests (coverage lives inside core::ddeploy's
+                               test module -- established convention, not a gap)
+  api::ddeploy::              24 passed, 0 failed
+
+Targeted three-file regression:
+  DATUM lib --features dcall-test-support endpoint_authority:  4 passed, 0 failed
+  dserver core::ddeploy::                                    181 passed, 0 failed
+  dserver api::ddeploy::                                       24 passed, 0 failed
+
+Full broad DServer suite (cargo check + cargo test --locked, freshly re-run):
+  cargo check --locked:          clean, 0 errors
+  cargo check --locked --tests:  clean, 0 errors
+  cargo test --locked:           1317 passed, 0 failed  (lib)
+                                     1 passed, 0 failed  (control-state-inspect)
+
+Full broad DATUM suite (cargo check + cargo test, freshly re-run):
+  cargo check --locked:          clean, 0 errors
+  cargo check --locked --tests:  clean, 0 errors
+  cargo test --locked --lib:     1024 passed, 0 failed, 1 ignored
+  cargo test --locked --tests -- --test-threads=1:
+                                   481 passed, 0 failed, 7 ignored
+    (the 7 ignores are the real cross-node D-Call subprocess tests, gated behind the
+     non-default `dcall-test-support` feature -- run explicitly and separately below)
+
+Phase-112 real cross-node D-Call integration proof (freshly re-run after the three-file
+reconstruction, not carried forward):
+  $env:DATUM_PROOF_PYTHON='C:/Users/dnred/AppData/Local/Python/pythoncore-3.14-64/python.exe'
+  cargo test --locked --features dcall-test-support --test dcall_two_node_integration \
+    -- --ignored --test-threads=1
+    -> 7 passed, 0 failed   (REQUIRED closure target: 7/0 -- MET, not waived)
+
+All 11 root checkers (real process exit codes, verified individually):
+  check_dcall_default_provenance.py                PASS
+  check_canonical_datum_contracts_v1.py             PASS
+  check_canonical_datum_contracts_v1_selftest.py    PASS
+  check_ddeploy_contracts_v1.py                     PASS
+  check_ddeploy_contracts_v1_selftest.py            PASS
+  check_datum_contract_fixtures.py                  PASS
+  check_datum_contract_fixtures_selftest.py         PASS
+  check_real_catalog_oci_pinning.py                 PASS
+  check_real_catalog_oci_pinning_selftest.py        PASS
+  check_phase113a_contracts.py                      PASS
+  check_phase113a_contracts_selftest.py             PASS
+
+MkDocs --strict:  exit 0, "Documentation built in 2.28 seconds"
+git diff --check (repo-wide): exit 0, no real whitespace or conflict-marker errors
+
+FORMATTING STATUS
+  No repository-wide `cargo fmt` was run at any point in this pass (explicitly
+  forbidden). Only the 3 target files were edited; touching only them was verified by
+  SHA-256 snapshot comparison against all 39 other dirty files, unchanged.
+  All 3 files that were unresolved at the end of Pass 6.1 are now resolved:
+    - DATUM/src/dcall/delivery/tests/endpoint_authority.rs: byte-identical to HEAD.
+    - dserver/src/api/ddeploy.rs: git diff --numstat == git diff -w --numstat exactly
+      (100% semantic diff, zero whitespace-only churn remaining).
+    - dserver/src/core/ddeploy.rs: git diff --numstat (2625/21) and git diff -w --numstat
+      (2624/20) differ by one cosmetic line (a dropped trivial closure-brace-wrap pair),
+      NOT a content gap -- proven via exhaustive token-multiset comparison against the
+      pre-reconstruction dirty file (zero extra tokens, only cosmetic-wrap tokens
+      missing). This is the one honest, disclosed, non-zero residual in this file's
+      diff-hygiene state; every other file in the three-file set is exactly clean.
+  Repository-wide `cargo fmt --check` is still NOT expected to pass -- documented
+  pre-existing historical drift across the whole codebase since Pass 1, not a
+  Phase-113 obligation.
+
+CLOSURE STATUS: every functional, test, checker, and documentation gate is GREEN. All
+three files targeted by this pass for manual diff-hygiene reconstruction are resolved:
+two are diff-clean by the raw==-w numstat criterion (or byte-identical to HEAD), and the
+third (dserver/src/core/ddeploy.rs) carries one honestly-disclosed single-line cosmetic
+residual (not a content gap, proven by token-level verification) rather than the
+"accidental formatting churn layered on real content" state it was in before this pass.
+See the final report for the explicit closure determination this requires.

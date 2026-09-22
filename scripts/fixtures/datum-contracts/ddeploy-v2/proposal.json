@@ -1,0 +1,91 @@
+{
+  "schema": "datum.ddeploy-proposal/2",
+  "proposal_id": "proposal:smart-sentinel-lab",
+  "project_id": "monitor-f49c8",
+  "application_id": "app:smart-sentinel-lab",
+  "source": "operator",
+  "created_at_utc": "2026-09-15T00:00:00Z",
+  "dgraph_ref": {
+    "id": "dgraph:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:6883f30cd4846bb30572abfa833fe139be3f220d0d8db4890430d86c740127b9"
+  },
+  "dcontinuum_ref": {
+    "id": "continuum:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:ff3f02ac17aad4ff576a50c075b0a788a583ac586d4faa652f712ea94110b502"
+  },
+  "dforward_ref": {
+    "id": "dforward:smart-sentinel-lab",
+    "revision": 1,
+    "digest": "sha256:a2aaf6a429c85ae76d2c5095bac8ccf09289408cdd4d74ec1e203bfd471d92d6"
+  },
+  "placements": [
+    { "service_id": "chirpstack-gateway-bridge", "node_id": "fog-01" },
+    { "service_id": "smart-adapter", "node_id": "fog-01" },
+    { "service_id": "atom-controller", "node_id": "cloud-01" }
+  ],
+  "diot_placements": [
+    {
+      "placement_id": "diotplace:mqtt-broker-fog01",
+      "diot_id": "mqtt-broker",
+      "node_id": "fog-01",
+      "artifact_binding": {
+        "artifact_id": "mosquitto",
+        "descriptor_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "content_digest": null
+      }
+    }
+  ],
+  "dcall_realizations": [
+    {
+      "call_id": "bridge-to-adapter",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/bridge-to-adapter"
+    },
+    {
+      "call_id": "adapter-to-atom",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/adapter-to-atom"
+    },
+    {
+      "call_id": "atom-to-adapter-feedback",
+      "realization_kind": "via_diot_pubsub",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/atom-feedback"
+    }
+  ],
+  "external_port_bindings": [
+    {
+      "service_id": "chirpstack-gateway-bridge",
+      "port": "ingress",
+      "endpoint_id": "sensor-ingress",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/ingress"
+    },
+    {
+      "service_id": "atom-controller",
+      "port": "egress",
+      "endpoint_id": "alert-egress",
+      "diot_placement_id": "diotplace:mqtt-broker-fog01",
+      "interface": "mqtt.pubsub/3.1.1",
+      "channel": "iot/egress"
+    }
+  ],
+  "expected_active_dmap_revision": null,
+  "diot_artifact_authority": {
+    "mosquitto": {
+      "artifact_id": "mosquitto",
+      "execution_generation": 1,
+      "execution_projection_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "x_note": "Real Phase 113A DDeployProposalV2 bundle fixture (closure pass 5), mutually consistent with dmap-v2/dmap.smart-sentinel-lab.json and ddeploy-v2/acceptance.json. expected_digest_sha256 was computed by the actual production DDeployStateV2::proposal_digest function, not hand-typed. The ServiceArtifact authority values (execution_generation/execution_projection_digest) under diot_artifact_authority are self-consistent example values illustrating the server-owned binding shape; this repository has no standalone on-disk fixture convention for the live ServiceArtifact registry record itself (that type is exercised via Rust tests that construct it programmatically, e.g. minimal_native_service_artifact in ddeploy.rs's test module), so none was invented here. Replaces the prior stale placeholder, which additionally predated the source/created_at_utc fields Pass 4.1 added and would fail to deserialize into the current DDeployProposalV2 Rust type.",
+  "expected_digest_sha256": "sha256:c253c203fa92ef10c43977c0ad3448ee515b4d504d7e10d24afa11fdf9ff861f"
+}

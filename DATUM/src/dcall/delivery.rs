@@ -54,7 +54,10 @@ use uuid::Uuid;
 
 use crate::dcall::client;
 use crate::dcall::evidence::{self, DCallDeliveryErrorCode, DCallDeliveryEvidenceV1};
-use crate::dcall::grant::{DCallDeliveryGrantV1, SourceExecutionBindingV1, ROUTE_KIND_LOCAL, ROUTE_KIND_REMOTE, TRANSPORT_HTTP};
+use crate::dcall::grant::{
+    DCallDeliveryGrantV1, SourceExecutionBindingV1, ROUTE_KIND_LOCAL, ROUTE_KIND_REMOTE,
+    TRANSPORT_HTTP,
+};
 use crate::dcall::listener::{DeliverRequest, DELIVER_PATH};
 use crate::dcode::authorization::DCodeInvocationAuthorizationV1;
 use crate::dcode::dserv_artifact::CanonicalDServArtifactV1;
@@ -130,7 +133,12 @@ pub fn dispatch_validated_emit(
     source_result: &GovernedDCodeInvocationResult,
     emit_index: usize,
 ) -> Vec<DCallDeliveryEvidenceV1> {
-    dispatch_validated_emit_impl(context, source_result, emit_index, &default_worker_binary_path())
+    dispatch_validated_emit_impl(
+        context,
+        source_result,
+        emit_index,
+        &default_worker_binary_path(),
+    )
 }
 
 /// INTERNAL/TEST-ONLY (independent review fix v5, K1D): identical to
@@ -172,7 +180,10 @@ fn dispatch_validated_emit_impl(
             &source_evidence.application_id,
             "",
             DCallDeliveryErrorCode::DCallSourceInvocationNotSuccessful,
-            Some(&format!("source invocation outcome was {:?}, not Success", source_evidence.outcome)),
+            Some(&format!(
+                "source invocation outcome was {:?}, not Success",
+                source_evidence.outcome
+            )),
             elapsed_ms(start),
         )];
     }
@@ -237,7 +248,12 @@ fn dispatch_validated_emit_impl(
         )];
     }
 
-    let call_ids = match client::list_calls_for_source_service(&context.dserver_url, &source_evidence.project_id, &source_evidence.application_id, &source_evidence.service_id) {
+    let call_ids = match client::list_calls_for_source_service(
+        &context.dserver_url,
+        &source_evidence.project_id,
+        &source_evidence.application_id,
+        &source_evidence.service_id,
+    ) {
         Ok(ids) => ids,
         Err(error) => {
             let diagnostic = error.to_string();
@@ -261,7 +277,16 @@ fn dispatch_validated_emit_impl(
             // -- the source invocation's OWN host-generated correlation_id,
             // never guest/caller-supplied.
             let message_id = format!("dcall-msg:{}", Uuid::new_v4());
-            dispatch_one_call(context, source_evidence, &call_id, &emit_port, emit_payload, &actual_sha256, &message_id, worker_binary)
+            dispatch_one_call(
+                context,
+                source_evidence,
+                &call_id,
+                &emit_port,
+                emit_payload,
+                &actual_sha256,
+                &message_id,
+                worker_binary,
+            )
         })
         .collect()
 }
@@ -305,7 +330,8 @@ fn dispatch_one_call(
     // evidence that produced this emit, computed with the same deterministic
     // algorithm used for the destination side (`dcode::evidence::dcode_evidence_sha256`)
     // -- never two subtly different evidence-digest algorithms.
-    let source_dcode_evidence_sha256 = crate::dcode::evidence::dcode_evidence_sha256(source_evidence);
+    let source_dcode_evidence_sha256 =
+        crate::dcode::evidence::dcode_evidence_sha256(source_evidence);
 
     let issued = match client::request_grant(
         &context.dserver_url,
@@ -324,7 +350,8 @@ fn dispatch_one_call(
         Ok(response) => response,
         Err(error) => {
             let diagnostic = error.to_string();
-            let code = error.downcast_ref::<client::GrantRequestRejection>()
+            let code = error
+                .downcast_ref::<client::GrantRequestRejection>()
                 .and_then(|rejection| rejection.code)
                 .unwrap_or(DCallDeliveryErrorCode::DCallGrantRequestFailed);
             return evidence::build_pre_grant_failure_evidence(
@@ -345,15 +372,39 @@ fn dispatch_one_call(
     // reference as evidence for this invocation, even if it has valid shape.
     if grant.source_dcode_evidence_sha256 != source_dcode_evidence_sha256 {
         return evidence::build_grant_bound_failure_evidence(
-            id, &grant, None, DCallDeliveryErrorCode::DCallSourceEvidenceMismatch,
-            Some("issued grant substituted the source evidence digest"), elapsed_ms(start),
+            id,
+            &grant,
+            None,
+            DCallDeliveryErrorCode::DCallSourceEvidenceMismatch,
+            Some("issued grant substituted the source evidence digest"),
+            elapsed_ms(start),
         );
     }
 
-    let result: Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> = match grant.route_kind.as_str() {
-        ROUTE_KIND_LOCAL => deliver_local(context, &grant, &token, payload, payload_sha256, worker_binary),
-        ROUTE_KIND_REMOTE => deliver_remote(&context.dserver_url, &grant, &token, payload, payload_sha256),
-        other => Err(DeliveryFailure { code: DCallDeliveryErrorCode::DCallUnsupportedRouteKind, diagnostic: Some(format!("unsupported route_kind '{other}' returned by DServer")), redeemed_at: None }),
+    let result: Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> =
+        match grant.route_kind.as_str() {
+            ROUTE_KIND_LOCAL => deliver_local(
+                context,
+                &grant,
+                &token,
+                payload,
+                payload_sha256,
+                worker_binary,
+            ),
+            ROUTE_KIND_REMOTE => deliver_remote(
+                &context.dserver_url,
+                &grant,
+                &token,
+                payload,
+                payload_sha256,
+            ),
+            other => Err(DeliveryFailure {
+                code: DCallDeliveryErrorCode::DCallUnsupportedRouteKind,
+                diagnostic: Some(format!(
+                    "unsupported route_kind '{other}' returned by DServer"
+                )),
+                redeemed_at: None,
+            }),
     };
 
     match result {
@@ -361,7 +412,9 @@ fn dispatch_one_call(
             // I3: never trust destination evidence merely because it
             // deserialized -- prove it actually corresponds to the grant
             // just redeemed (every load-bearing identity/digest field).
-            if let Err(mismatch) = validate_destination_dcode_evidence_against_grant(&dcode_evidence, &grant) {
+            if let Err(mismatch) =
+                validate_destination_dcode_evidence_against_grant(&dcode_evidence, &grant)
+            {
                 return evidence::build_grant_bound_failure_evidence(
                     id,
                     &grant,
@@ -373,7 +426,13 @@ fn dispatch_one_call(
             }
             let evidence_json = serde_json::to_vec(&dcode_evidence).unwrap_or_default();
             if dcode_evidence.outcome == DCodeInvocationOutcome::Success {
-                evidence::build_success_evidence(id, &grant, redeemed_at, &evidence_json, elapsed_ms(start))
+                evidence::build_success_evidence(
+                    id,
+                    &grant,
+                    redeemed_at,
+                    &evidence_json,
+                    elapsed_ms(start),
+                )
             } else {
                 let mut record = evidence::build_grant_bound_failure_evidence(
                     id,
@@ -387,7 +446,14 @@ fn dispatch_one_call(
                 record
             }
         }
-        Err(failure) => evidence::build_grant_bound_failure_evidence(id, &grant, failure.redeemed_at, failure.code, failure.diagnostic.as_deref(), elapsed_ms(start)),
+        Err(failure) => evidence::build_grant_bound_failure_evidence(
+            id,
+            &grant,
+            failure.redeemed_at,
+            failure.code,
+            failure.diagnostic.as_deref(),
+            elapsed_ms(start),
+        ),
     }
 }
 
@@ -399,51 +465,101 @@ fn dispatch_one_call(
 /// A buggy or compromised listener returning a structurally valid evidence
 /// record for a DIFFERENT service/node/DMap/DGraph/artifact/port/payload/
 /// message would otherwise be silently accepted.
-fn validate_destination_dcode_evidence_against_grant(evidence: &DCodeInvocationEvidenceV1, grant: &DCallDeliveryGrantV1) -> Result<(), String> {
-    if evidence.schema != crate::dcode::evidence::DCODE_EVIDENCE_SCHEMA || evidence.dserv_artifact_id != grant.destination.dserv_artifact_id {
-        return Err("destination evidence schema or artifact id does not match the grant".to_string());
+fn validate_destination_dcode_evidence_against_grant(
+    evidence: &DCodeInvocationEvidenceV1,
+    grant: &DCallDeliveryGrantV1,
+) -> Result<(), String> {
+    if evidence.schema != crate::dcode::evidence::DCODE_EVIDENCE_SCHEMA
+        || evidence.dserv_artifact_id != grant.destination.dserv_artifact_id
+    {
+        return Err(
+            "destination evidence schema or artifact id does not match the grant".to_string(),
+        );
     }
     if evidence.project_id != grant.project_id {
-        return Err(format!("destination evidence project_id '{}' != grant project_id '{}'", evidence.project_id, grant.project_id));
+        return Err(format!(
+            "destination evidence project_id '{}' != grant project_id '{}'",
+            evidence.project_id, grant.project_id
+        ));
     }
     if evidence.application_id != grant.application_id {
-        return Err(format!("destination evidence application_id '{}' != grant application_id '{}'", evidence.application_id, grant.application_id));
+        return Err(format!(
+            "destination evidence application_id '{}' != grant application_id '{}'",
+            evidence.application_id, grant.application_id
+        ));
     }
     if evidence.service_id != grant.destination.service_id {
-        return Err(format!("destination evidence service_id '{}' != grant destination.service_id '{}'", evidence.service_id, grant.destination.service_id));
+        return Err(format!(
+            "destination evidence service_id '{}' != grant destination.service_id '{}'",
+            evidence.service_id, grant.destination.service_id
+        ));
     }
     if evidence.node_id != grant.destination.node_id {
-        return Err(format!("destination evidence node_id '{}' != grant destination.node_id '{}'", evidence.node_id, grant.destination.node_id));
+        return Err(format!(
+            "destination evidence node_id '{}' != grant destination.node_id '{}'",
+            evidence.node_id, grant.destination.node_id
+        ));
     }
-    if evidence.dgraph_id != grant.dgraph_ref.id || evidence.dgraph_revision != grant.dgraph_ref.revision || evidence.dgraph_digest != grant.dgraph_ref.digest {
-        return Err("destination evidence DGraph ref does not match the grant's bound DGraph ref".to_string());
+    if evidence.dgraph_id != grant.dgraph_ref.id
+        || evidence.dgraph_revision != grant.dgraph_ref.revision
+        || evidence.dgraph_digest != grant.dgraph_ref.digest
+    {
+        return Err(
+            "destination evidence DGraph ref does not match the grant's bound DGraph ref"
+                .to_string(),
+        );
     }
-    if evidence.dmap_id != grant.dmap_ref.id || evidence.dmap_revision != grant.dmap_ref.revision || evidence.dmap_digest != grant.dmap_ref.digest {
-        return Err("destination evidence DMap ref does not match the grant's bound DMap ref".to_string());
+    if evidence.dmap_id != grant.dmap_ref.id
+        || evidence.dmap_revision != grant.dmap_ref.revision
+        || evidence.dmap_digest != grant.dmap_ref.digest
+    {
+        return Err(
+            "destination evidence DMap ref does not match the grant's bound DMap ref".to_string(),
+        );
     }
     if evidence.dserv_artifact_id != grant.destination.dserv_artifact_id {
         return Err(format!("destination evidence dserv_artifact_id '{}' != grant destination.dserv_artifact_id '{}'", evidence.dserv_artifact_id, grant.destination.dserv_artifact_id));
     }
     if evidence.dserv_artifact_digest != grant.destination.dserv_artifact_digest {
-        return Err("destination evidence module digest does not match the grant's bound module digest".to_string());
+        return Err(
+            "destination evidence module digest does not match the grant's bound module digest"
+                .to_string(),
+        );
     }
-    if evidence.dserv_artifact_descriptor_digest != grant.destination.dserv_artifact_descriptor_digest {
+    if evidence.dserv_artifact_descriptor_digest
+        != grant.destination.dserv_artifact_descriptor_digest
+    {
         return Err("destination evidence descriptor digest does not match the grant's bound descriptor digest".to_string());
     }
     if evidence.input_port != grant.destination.port {
-        return Err(format!("destination evidence input_port '{}' != grant destination.port '{}'", evidence.input_port, grant.destination.port));
+        return Err(format!(
+            "destination evidence input_port '{}' != grant destination.port '{}'",
+            evidence.input_port, grant.destination.port
+        ));
     }
     if evidence.input_sha256 != grant.payload_sha256 {
-        return Err("destination evidence input_sha256 does not match the grant's bound payload_sha256".to_string());
+        return Err(
+            "destination evidence input_sha256 does not match the grant's bound payload_sha256"
+                .to_string(),
+        );
     }
     if evidence.input_size as u64 != grant.payload_size {
-        return Err("destination evidence input_size does not match the grant's bound payload_size".to_string());
+        return Err(
+            "destination evidence input_size does not match the grant's bound payload_size"
+                .to_string(),
+        );
     }
     if evidence.message_id != grant.message_id {
-        return Err(format!("destination evidence message_id '{}' != grant message_id '{}'", evidence.message_id, grant.message_id));
+        return Err(format!(
+            "destination evidence message_id '{}' != grant message_id '{}'",
+            evidence.message_id, grant.message_id
+        ));
     }
     if evidence.correlation_id != grant.correlation_id {
-        return Err(format!("destination evidence correlation_id '{}' != grant correlation_id '{}'", evidence.correlation_id, grant.correlation_id));
+        return Err(format!(
+            "destination evidence correlation_id '{}' != grant correlation_id '{}'",
+            evidence.correlation_id, grant.correlation_id
+        ));
     }
     Ok(())
 }
@@ -459,11 +575,33 @@ fn deliver_local(
     // Section 15: local delivery still goes through grant redemption --
     // never bypassed merely because the destination happens to be this
     // same node.
-    let redeemed = client::redeem_grant(&context.dserver_url, &grant.grant_id, token, &grant.destination.node_id, payload_sha256, payload.len() as u64)
-        .map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallGrantRedeemFailed, diagnostic: Some(error.to_string()), redeemed_at: None })?;
+    let redeemed = client::redeem_grant(
+        &context.dserver_url,
+        &grant.grant_id,
+        token,
+        &grant.destination.node_id,
+        payload_sha256,
+        payload.len() as u64,
+    )
+    .map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallGrantRedeemFailed,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: None,
+    })?;
     let redeemed_at = now_rfc3339();
-    let evidence = execute_destination_delivery(&context.dserver_url, &context.dnode_root, worker_binary, &redeemed.destination.node_id, &redeemed, payload)
-        .map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallDestinationExecutionFailed, diagnostic: Some(error.to_string()), redeemed_at: Some(redeemed_at.clone()) })?;
+    let evidence = execute_destination_delivery(
+        &context.dserver_url,
+        &context.dnode_root,
+        worker_binary,
+        &redeemed.destination.node_id,
+        &redeemed,
+        payload,
+    )
+    .map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallDestinationExecutionFailed,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: Some(redeemed_at.clone()),
+    })?;
     Ok((evidence, redeemed_at))
 }
 
@@ -472,7 +610,9 @@ fn deliver_local(
 /// (without reading anything), and separately caps the actual bytes read
 /// via `Read::take` so a listener that declares no/short Content-Length but
 /// then streams unboundedly cannot force unbounded allocation either.
-fn read_bounded_response_body(response: reqwest::blocking::Response) -> Result<String, DeliveryFailure> {
+fn read_bounded_response_body(
+    response: reqwest::blocking::Response,
+) -> Result<String, DeliveryFailure> {
     if let Some(declared_len) = response.content_length() {
         if declared_len > MAX_REMOTE_RESPONSE_BYTES as u64 {
             return Err(DeliveryFailure {
@@ -484,7 +624,13 @@ fn read_bounded_response_body(response: reqwest::blocking::Response) -> Result<S
     }
     let mut limited = response.take((MAX_REMOTE_RESPONSE_BYTES + 1) as u64);
     let mut buffer = Vec::new();
-    limited.read_to_end(&mut buffer).map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallTransportError, diagnostic: Some(error.to_string()), redeemed_at: None })?;
+    limited
+        .read_to_end(&mut buffer)
+        .map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallTransportError,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
     if buffer.len() > MAX_REMOTE_RESPONSE_BYTES {
         return Err(DeliveryFailure {
             code: DCallDeliveryErrorCode::DCallRemoteResponseTooLarge,
@@ -495,9 +641,19 @@ fn read_bounded_response_body(response: reqwest::blocking::Response) -> Result<S
     Ok(String::from_utf8_lossy(&buffer).to_string())
 }
 
-fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, payload: &[u8], payload_sha256: &str) -> Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> {
+fn deliver_remote(
+    dserver_url: &str,
+    grant: &DCallDeliveryGrantV1,
+    token: &str,
+    payload: &[u8],
+    payload_sha256: &str,
+) -> Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> {
     let endpoint = client::fetch_endpoint(dserver_url, &grant.destination.node_id, TRANSPORT_HTTP)
-        .map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallEndpointFetchFailed, diagnostic: Some(error.to_string()), redeemed_at: None })?;
+        .map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallEndpointFetchFailed,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
     // Transport authority must match before even constructing the bearer/payload
     // request. Redemption independently rechecks current registry authority.
     let recomputed = crate::agent::jcs::canonical_digest_sha256_hex(&serde_json::json!({
@@ -516,7 +672,9 @@ fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, 
     {
         return Err(DeliveryFailure {
             code: DCallDeliveryErrorCode::DCallEndpointAuthorityMismatch,
-            diagnostic: Some("fetched endpoint does not match grant-bound transport authority".to_string()),
+            diagnostic: Some(
+                "fetched endpoint does not match grant-bound transport authority".to_string(),
+            ),
             redeemed_at: None,
         });
     }
@@ -531,12 +689,24 @@ fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, 
     let http_client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallTransportError, diagnostic: Some(error.to_string()), redeemed_at: None })?;
+        .map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallTransportError,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
     let response = match http_client.post(&url).json(&request).send() {
         Ok(response) => response,
         Err(error) => {
-            let code = if error.is_timeout() { DCallDeliveryErrorCode::DCallTransportTimeout } else { DCallDeliveryErrorCode::DCallTransportError };
-            return Err(DeliveryFailure { code, diagnostic: Some(error.to_string()), redeemed_at: None });
+            let code = if error.is_timeout() {
+                DCallDeliveryErrorCode::DCallTransportTimeout
+            } else {
+                DCallDeliveryErrorCode::DCallTransportError
+            };
+            return Err(DeliveryFailure {
+                code,
+                diagnostic: Some(error.to_string()),
+                redeemed_at: None,
+            });
         }
     };
     let status = response.status();
@@ -544,15 +714,28 @@ fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, 
     if !status.is_success() {
         return Err(DeliveryFailure {
             code: DCallDeliveryErrorCode::DCallTransportError,
-            diagnostic: Some(format!("remote D-Call delivery to {url} failed: status={status} body={body_text}")),
+            diagnostic: Some(format!(
+                "remote D-Call delivery to {url} failed: status={status} body={body_text}"
+            )),
             redeemed_at: None,
         });
     }
-    let body: serde_json::Value = serde_json::from_str(&body_text)
-        .map_err(|_| DeliveryFailure { code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed, diagnostic: Some("remote success response is not JSON".to_string()), redeemed_at: None })?;
-    let outcome = body.as_object().and_then(|object| object.get("outcome")).and_then(|value| value.as_str())
+    let body: serde_json::Value =
+        serde_json::from_str(&body_text).map_err(|_| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
+            diagnostic: Some("remote success response is not JSON".to_string()),
+            redeemed_at: None,
+        })?;
+    let outcome = body
+        .as_object()
+        .and_then(|object| object.get("outcome"))
+        .and_then(|value| value.as_str())
         .filter(|outcome| matches!(*outcome, "success" | "failed"))
-        .ok_or_else(|| DeliveryFailure { code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed, diagnostic: Some("remote success response has invalid outcome".to_string()), redeemed_at: None })?;
+        .ok_or_else(|| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
+            diagnostic: Some("remote success response has invalid outcome".to_string()),
+            redeemed_at: None,
+        })?;
     if outcome != "success" {
         // We honestly do not know from here whether the listener redeemed
         // the grant before failing (e.g. a validation error after
@@ -560,7 +743,9 @@ fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, 
         // unknown (`None`) rather than guessing either way.
         return Err(DeliveryFailure {
             code: DCallDeliveryErrorCode::DCallDestinationExecutionFailed,
-            diagnostic: Some(format!("remote D-Call delivery reported outcome='{outcome}': {body_text}")),
+            diagnostic: Some(format!(
+                "remote D-Call delivery reported outcome='{outcome}': {body_text}"
+            )),
             redeemed_at: None,
         });
     }
@@ -569,13 +754,19 @@ fn deliver_remote(dserver_url: &str, grant: &DCallDeliveryGrantV1, token: &str, 
         None => {
             return Err(DeliveryFailure {
                 code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
-                diagnostic: Some("remote D-Call delivery response missing dcode_evidence".to_string()),
+                diagnostic: Some(
+                    "remote D-Call delivery response missing dcode_evidence".to_string(),
+                ),
                 redeemed_at: None,
             })
         }
     };
-    let evidence: DCodeInvocationEvidenceV1 = serde_json::from_value(evidence_json)
-        .map_err(|error| DeliveryFailure { code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed, diagnostic: Some(error.to_string()), redeemed_at: None })?;
+    let evidence: DCodeInvocationEvidenceV1 =
+        serde_json::from_value(evidence_json).map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
     // The listener redeemed the grant server-side; we only know it
     // succeeded as of when THIS response arrived, not DServer's own
     // internal timestamp (which round-trips through `dserver`'s response
@@ -606,16 +797,31 @@ fn execute_destination_delivery(
         // two independently-declared (but wire-identical) types -- fetch
         // through the real `dcode::client` so the exact same governed
         // preflight Phase 111 already established applies here unchanged.
-        crate::dcode::client::fetch_dcode_authorization(dserver_url, &grant.project_id, &grant.application_id, &grant.destination.service_id, this_node_id)?
+        crate::dcode::client::fetch_dcode_authorization(
+            dserver_url,
+            &grant.project_id,
+            &grant.application_id,
+            &grant.destination.service_id,
+            this_node_id,
+        )?
     };
-    let artifact: CanonicalDServArtifactV1 = crate::dcode::client::fetch_dserv_artifact(dserver_url, &grant.application_id, &grant.destination.service_id)?;
+    let artifact: CanonicalDServArtifactV1 = crate::dcode::client::fetch_dserv_artifact(
+        dserver_url,
+        &grant.application_id,
+        &grant.destination.service_id,
+    )?;
 
     if !artifact.validate().is_empty() {
-        return Err(anyhow!("fetched destination D-Serv artifact fails structural validation"));
+        return Err(anyhow!(
+            "fetched destination D-Serv artifact fails structural validation"
+        ));
     }
 
     let module_store = DCodeModuleStore::new(dnode_root);
-    let executor = IsolatedWorkerExecutor { worker_binary, module_store_root: std::path::Path::new(dnode_root) };
+    let executor = IsolatedWorkerExecutor {
+        worker_binary,
+        module_store_root: std::path::Path::new(dnode_root),
+    };
 
     Ok(invoke_dcode_with_delivery_identity(
         &executor,
@@ -640,8 +846,22 @@ pub fn receive_governed_delivery(
     payload: &[u8],
 ) -> Result<DCodeInvocationEvidenceV1> {
     let identity = load_local_identity(Path::new(dnode_root)).map_err(|error| anyhow!(error))?;
-    let grant = client::redeem_grant(dserver_url, grant_id, token, &identity.node_id, &sha256_hex(payload), payload.len() as u64)?;
-    execute_destination_delivery(dserver_url, dnode_root, &default_worker_binary_path(), &identity.node_id, &grant, payload)
+    let grant = client::redeem_grant(
+        dserver_url,
+        grant_id,
+        token,
+        &identity.node_id,
+        &sha256_hex(payload),
+        payload.len() as u64,
+    )?;
+    execute_destination_delivery(
+        dserver_url,
+        dnode_root,
+        &default_worker_binary_path(),
+        &identity.node_id,
+        &grant,
+        payload,
+    )
 }
 
 #[cfg(all(test, feature = "dcall-test-support"))]
@@ -663,12 +883,13 @@ mod tests {
     // strictly stronger test evidence than the old hand-built fixture, since
     // it exercises the exact same construction path production code does.
 
+    use crate::dcode::abi::DNODE_ABI_V0_REQUIRED_EXPORTS;
     use crate::dcode::authorization::CanonicalContractReferenceV1;
     use crate::dcode::dserv_artifact::{
-        recompute_dserv_artifact_digest, DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1, DServArtifactLimitsV1, DServArtifactPortV1, DServArtifactPortsV1,
+        recompute_dserv_artifact_digest, DServArtifactAbiV1, DServArtifactConstraintsV1,
+        DServArtifactDCodeV1, DServArtifactLimitsV1, DServArtifactPortV1, DServArtifactPortsV1,
         DServArtifactSafetyV1, CANONICAL_DSERV_ARTIFACT_SCHEMA,
     };
-    use crate::dcode::abi::DNODE_ABI_V0_REQUIRED_EXPORTS;
     use crate::dcode::invoke::{invoke_dcode_governed_capturing_emits_for_test, InProcessExecutor};
     use crate::dcode::runtime::DCodeModuleCache;
 
@@ -697,10 +918,16 @@ mod tests {
     /// returns the genuine `DCodeInvocationResult` it produces -- the only
     /// way any caller (including this test module) can obtain one, now that
     /// J1 made the type opaque.
-    fn real_source_result(authorization_node_id: &str, this_node_id: &str, output_body: &str) -> GovernedDCodeInvocationResult {
+    fn real_source_result(
+        authorization_node_id: &str,
+        this_node_id: &str,
+        output_body: &str,
+    ) -> GovernedDCodeInvocationResult {
         let module_bytes = respond_wat(output_body);
         let digest = sha256_hex(&module_bytes);
-        let store = DCodeModuleStore::new(std::env::temp_dir().join(format!("dcall-delivery-source-{}", Uuid::new_v4())));
+        let store = DCodeModuleStore::new(
+            std::env::temp_dir().join(format!("dcall-delivery-source-{}", Uuid::new_v4())),
+        );
         store.install(&module_bytes, &digest).unwrap();
         let cache = DCodeModuleCache::new().unwrap();
 
@@ -710,13 +937,40 @@ mod tests {
             version: "0.1.0".to_string(),
             application_id: "app:a".to_string(),
             dserv_id: "source".to_string(),
-            dcode: DServArtifactDCodeV1 { uri: format!("datum-blob://sha256/{digest}"), sha256: digest.clone(), content_id: format!("sha256:{digest}"), size_bytes: module_bytes.len() as u64 },
-            abi: DServArtifactAbiV1 { name: "datum-dnode".to_string(), version: "0".to_string(), required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS.iter().map(|s| s.to_string()).collect(), allowed_imports: Vec::new() },
-            ports: DServArtifactPortsV1 {
-                inputs: vec![DServArtifactPortV1 { port: "in".to_string(), payload_schema: "s".to_string(), external: true }],
-                outputs: vec![DServArtifactPortV1 { port: "out".to_string(), payload_schema: "s".to_string(), external: false }],
+            dcode: DServArtifactDCodeV1 {
+                uri: format!("datum-blob://sha256/{digest}"),
+                sha256: digest.clone(),
+                content_id: format!("sha256:{digest}"),
+                size_bytes: module_bytes.len() as u64,
             },
-            limits: DServArtifactLimitsV1 { fuel_per_invocation: 5_000_000, timeout_ms: 200, max_memory_pages: 4, max_message_bytes: 65536, max_emits_per_invocation: 8 },
+            abi: DServArtifactAbiV1 {
+                name: "datum-dnode".to_string(),
+                version: "0".to_string(),
+                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                allowed_imports: Vec::new(),
+            },
+            ports: DServArtifactPortsV1 {
+                inputs: vec![DServArtifactPortV1 {
+                    port: "in".to_string(),
+                    payload_schema: "s".to_string(),
+                    external: true,
+                }],
+                outputs: vec![DServArtifactPortV1 {
+                    port: "out".to_string(),
+                    payload_schema: "s".to_string(),
+                    external: false,
+                }],
+            },
+            limits: DServArtifactLimitsV1 {
+                fuel_per_invocation: 5_000_000,
+                timeout_ms: 200,
+                max_memory_pages: 4,
+                max_message_bytes: 65536,
+                max_emits_per_invocation: 8,
+            },
             safety: DServArtifactSafetyV1::default(),
             state_model: "stateless".to_string(),
             instantiation: "fresh_instance_per_invocation".to_string(),
@@ -733,15 +987,34 @@ mod tests {
             application_id: "app:a".to_string(),
             service_id: "source".to_string(),
             node_id: authorization_node_id.to_string(),
-            dmap_ref: CanonicalContractReferenceV1 { id: "dmap:1".to_string(), revision: 1, digest: format!("sha256:{}", "1".repeat(64)) },
-            dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:1".to_string(), revision: 1, digest: format!("sha256:{}", "2".repeat(64)) },
+            dmap_ref: CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "1".repeat(64)),
+            },
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: "dgraph:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "2".repeat(64)),
+            },
             dserv_artifact_id: "dserv:pipeline:source".to_string(),
             dserv_artifact_digest: digest,
             dserv_artifact_descriptor_digest: descriptor_digest,
             dnode_abi: "datum-dnode/0".to_string(),
         };
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        invoke_dcode_governed_capturing_emits_for_test(&executor, &store, &authorization, &artifact, this_node_id, "in", b"trigger")
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        invoke_dcode_governed_capturing_emits_for_test(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            this_node_id,
+            "in",
+            b"trigger",
+        )
     }
 
     fn fanout_grant_response(call_id: &str, message_id: &str, correlation_id: &str) -> String {
@@ -775,7 +1048,8 @@ mod tests {
     }
 
     #[test]
-    fn fan_out_gives_each_call_a_unique_message_id_but_shares_one_correlation_id_and_one_failure_does_not_erase_another() {
+    fn fan_out_gives_each_call_a_unique_message_id_but_shares_one_correlation_id_and_one_failure_does_not_erase_another(
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -806,12 +1080,31 @@ mod tests {
                     }
                     let text = String::from_utf8_lossy(&buffer);
                     let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
-                    let request_body: serde_json::Value = serde_json::from_str(&text[body_start..]).unwrap_or(serde_json::Value::Null);
-                    let call_id = request_body.get("call_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                    let message_id = request_body.get("message_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                    let correlation_id = request_body.get("correlation_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                    let mut body: serde_json::Value = serde_json::from_str(&fanout_grant_response(&call_id, &message_id, &correlation_id)).unwrap();
-                    body["grant"]["source_dcode_evidence_sha256"] = request_body["source_dcode_evidence_sha256"].clone();
+                    let request_body: serde_json::Value = serde_json::from_str(&text[body_start..])
+                        .unwrap_or(serde_json::Value::Null);
+                    let call_id = request_body
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let message_id = request_body
+                        .get("message_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let correlation_id = request_body
+                        .get("correlation_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let mut body: serde_json::Value = serde_json::from_str(&fanout_grant_response(
+                        &call_id,
+                        &message_id,
+                        &correlation_id,
+                    ))
+                    .unwrap();
+                    body["grant"]["source_dcode_evidence_sha256"] =
+                        request_body["source_dcode_evidence_sha256"].clone();
                     let body = body.to_string();
                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     let _ = stream.write_all(response.as_bytes());
@@ -819,50 +1112,100 @@ mod tests {
             }
         });
 
-        let context = SourceExecutionContext { dserver_url: format!("http://{addr}"), dnode_root: "unused".to_string() };
+        let context = SourceExecutionContext {
+            dserver_url: format!("http://{addr}"),
+            dnode_root: "unused".to_string(),
+        };
 
         let dnode_root = std::env::temp_dir().join(format!("dcall-fanout-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dnode_root: dnode_root.to_string_lossy().to_string(), ..context };
+        let context = SourceExecutionContext {
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+            ..context
+        };
 
-        let source_result = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#);
-        assert_eq!(source_result.evidence().outcome, DCodeInvocationOutcome::Success);
+        let source_result = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        assert_eq!(
+            source_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
         assert_eq!(source_result.validated_emits().len(), 1);
         let expected_correlation_id = source_result.evidence().correlation_id.clone();
 
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
-        assert_eq!(results.len(), 2, "one delivery attempt per resolved call, results: {results:?}");
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        assert_eq!(
+            results.len(),
+            2,
+            "one delivery attempt per resolved call, results: {results:?}"
+        );
 
         for evidence in &results {
             assert!(matches!(evidence.outcome, DCallDeliveryOutcome::Failed));
-            assert_eq!(evidence.error_code.as_deref(), Some("dcall_unsupported_route_kind"));
+            assert_eq!(
+                evidence.error_code.as_deref(),
+                Some("dcall_unsupported_route_kind")
+            );
         }
 
-        let call_ids: std::collections::BTreeSet<_> = results.iter().map(|e| e.call_id.clone()).collect();
-        assert_eq!(call_ids, ["call-a".to_string(), "call-b".to_string()].into_iter().collect());
+        let call_ids: std::collections::BTreeSet<_> =
+            results.iter().map(|e| e.call_id.clone()).collect();
+        assert_eq!(
+            call_ids,
+            ["call-a".to_string(), "call-b".to_string()]
+                .into_iter()
+                .collect()
+        );
 
         for evidence in &results {
-            assert_eq!(evidence.correlation_id, expected_correlation_id, "every fan-out delivery must share the SOURCE invocation's own correlation_id");
+            assert_eq!(
+                evidence.correlation_id, expected_correlation_id,
+                "every fan-out delivery must share the SOURCE invocation's own correlation_id"
+            );
         }
-        let message_ids: std::collections::BTreeSet<_> = results.iter().map(|e| e.message_id.clone()).collect();
-        assert_eq!(message_ids.len(), 2, "expected two distinct message_ids, got: {message_ids:?}");
+        let message_ids: std::collections::BTreeSet<_> =
+            results.iter().map(|e| e.message_id.clone()).collect();
+        assert_eq!(
+            message_ids.len(),
+            2,
+            "expected two distinct message_ids, got: {message_ids:?}"
+        );
     }
 
     #[test]
     fn dispatch_reports_a_sanitized_lookup_failure_when_dserver_is_unreachable() {
-        let dnode_root = std::env::temp_dir().join(format!("dcall-unreachable-test-{}", Uuid::new_v4()));
+        let dnode_root =
+            std::env::temp_dir().join(format!("dcall-unreachable-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
-        let source_result = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#);
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
+        let source_result = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].outcome, DCallDeliveryOutcome::Failed));
-        assert_eq!(results[0].error_code.as_deref(), Some("dcall_lookup_failed"));
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_lookup_failed")
+        );
         assert!(results[0].error_diagnostic_sha256.is_some());
         let serialized = serde_json::to_string(&results[0]).unwrap();
-        assert!(!serialized.contains("Connection refused") || results[0].error_diagnostic_sha256.is_some());
+        assert!(
+            !serialized.contains("Connection refused")
+                || results[0].error_diagnostic_sha256.is_some()
+        );
     }
 
     // -- J1: source emit provenance (opaque `DCodeInvocationResult`) --------
@@ -881,7 +1224,12 @@ mod tests {
     /// fabricates a syntactically valid ADR-0003 success envelope.
     struct FakeExecutor;
     impl DCodeExecutor for FakeExecutor {
-        fn execute(&self, _digest: &str, _limits: &InvocationLimits, _input: &[u8]) -> ExecutionOutcome {
+        fn execute(
+            &self,
+            _digest: &str,
+            _limits: &InvocationLimits,
+            _input: &[u8],
+        ) -> ExecutionOutcome {
             let body = r#"{"status":"ok","emits":[]}"#;
             ExecutionOutcome::Success(ExecutionOutput::Bytes(body.as_bytes().to_vec()))
         }
@@ -901,14 +1249,30 @@ mod tests {
             // fake never has to touch a real module at all (`_digest` and
             // `_input` are ignored by `FakeExecutor::execute`).
             let cache = DCodeModuleCache::new().unwrap();
-            (cache, (), authorization_for_fake_test(&digest, &module_bytes), artifact_for_fake_test(&digest, &module_bytes))
+            (
+                cache,
+                (),
+                authorization_for_fake_test(&digest, &module_bytes),
+                artifact_for_fake_test(&digest, &module_bytes),
+            )
         };
         let executor = FakeExecutor;
         // This compiles and succeeds: a generic `DCodeInvocationResult` is
         // genuinely obtainable from a fake, non-isolated, non-real-Wasmtime
         // executor -- J1's opacity alone does not prevent this.
-        let fake_result = invoke_dcode_capturing_emits(&executor, &store, &authorization, &artifact, "fog-01", "in", b"trigger");
-        assert_eq!(fake_result.evidence().outcome, DCodeInvocationOutcome::Success);
+        let fake_result = invoke_dcode_capturing_emits(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "fog-01",
+            "in",
+            b"trigger",
+        );
+        assert_eq!(
+            fake_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
 
         // K1: `dispatch_validated_emit`/`dispatch_validated_emit_for_test`
         // require `&GovernedDCodeInvocationResult`, a DIFFERENT type with no
@@ -928,17 +1292,29 @@ mod tests {
         drop(dnode_root);
     }
 
-    fn authorization_for_fake_test(digest: &str, module_bytes: &[u8]) -> DCodeInvocationAuthorizationV1 {
+    fn authorization_for_fake_test(
+        digest: &str,
+        module_bytes: &[u8],
+    ) -> DCodeInvocationAuthorizationV1 {
         let artifact = artifact_for_fake_test(digest, module_bytes);
-        let descriptor_digest = crate::dcode::dserv_artifact::recompute_dserv_artifact_digest(&artifact).unwrap();
+        let descriptor_digest =
+            crate::dcode::dserv_artifact::recompute_dserv_artifact_digest(&artifact).unwrap();
         DCodeInvocationAuthorizationV1 {
             authorization_id: "auth-fake".to_string(),
             project_id: "proj:lab".to_string(),
             application_id: "app:a".to_string(),
             service_id: "source".to_string(),
             node_id: "fog-01".to_string(),
-            dmap_ref: CanonicalContractReferenceV1 { id: "dmap:1".to_string(), revision: 1, digest: format!("sha256:{}", "1".repeat(64)) },
-            dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:1".to_string(), revision: 1, digest: format!("sha256:{}", "2".repeat(64)) },
+            dmap_ref: CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "1".repeat(64)),
+            },
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: "dgraph:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "2".repeat(64)),
+            },
             dserv_artifact_id: "dserv:pipeline:source".to_string(),
             dserv_artifact_digest: digest.to_string(),
             dserv_artifact_descriptor_digest: descriptor_digest,
@@ -953,13 +1329,36 @@ mod tests {
             version: "0.1.0".to_string(),
             application_id: "app:a".to_string(),
             dserv_id: "source".to_string(),
-            dcode: DServArtifactDCodeV1 { uri: format!("datum-blob://sha256/{digest}"), sha256: digest.to_string(), content_id: format!("sha256:{digest}"), size_bytes: module_bytes.len() as u64 },
-            abi: DServArtifactAbiV1 { name: "datum-dnode".to_string(), version: "0".to_string(), required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS.iter().map(|s| s.to_string()).collect(), allowed_imports: Vec::new() },
+            dcode: DServArtifactDCodeV1 {
+                uri: format!("datum-blob://sha256/{digest}"),
+                sha256: digest.to_string(),
+                content_id: format!("sha256:{digest}"),
+                size_bytes: module_bytes.len() as u64,
+            },
+            abi: DServArtifactAbiV1 {
+                name: "datum-dnode".to_string(),
+                version: "0".to_string(),
+                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                allowed_imports: Vec::new(),
+            },
             ports: DServArtifactPortsV1 {
-                inputs: vec![DServArtifactPortV1 { port: "in".to_string(), payload_schema: "s".to_string(), external: true }],
+                inputs: vec![DServArtifactPortV1 {
+                    port: "in".to_string(),
+                    payload_schema: "s".to_string(),
+                    external: true,
+                }],
                 outputs: Vec::new(),
             },
-            limits: DServArtifactLimitsV1 { fuel_per_invocation: 5_000_000, timeout_ms: 200, max_memory_pages: 4, max_message_bytes: 65536, max_emits_per_invocation: 8 },
+            limits: DServArtifactLimitsV1 {
+                fuel_per_invocation: 5_000_000,
+                timeout_ms: 200,
+                max_memory_pages: 4,
+                max_message_bytes: 65536,
+                max_emits_per_invocation: 8,
+            },
             safety: DServArtifactSafetyV1::default(),
             state_model: "stateless".to_string(),
             instantiation: "fresh_instance_per_invocation".to_string(),
@@ -976,14 +1375,24 @@ mod tests {
         let dnode_root = std::env::temp_dir().join(format!("dcall-i1-a-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
         // authorization.node_id="node-x" but the invocation runs as "fog-01"
         // -> a REAL StaleAuthority failure, not a hand-set enum value.
         let source_result = real_source_result("node-x", "fog-01", r#"{"status":"ok","emits":[]}"#);
-        assert_ne!(source_result.evidence().outcome, DCodeInvocationOutcome::Success);
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        assert_ne!(
+            source_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].error_code.as_deref(), Some("dcall_source_invocation_not_successful"));
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_source_invocation_not_successful")
+        );
     }
 
     #[test]
@@ -991,15 +1400,25 @@ mod tests {
         let dnode_root = std::env::temp_dir().join(format!("dcall-i1-b-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
         // A real, successful invocation that emits NOTHING -- index 0 is out
         // of range for its (empty) `validated_emits()`.
         let source_result = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[]}"#);
-        assert_eq!(source_result.evidence().outcome, DCodeInvocationOutcome::Success);
+        assert_eq!(
+            source_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
         assert!(source_result.validated_emits().is_empty());
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].error_code.as_deref(), Some("dcall_source_emit_not_found"));
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_source_emit_not_found")
+        );
     }
 
     // J1: the old "arbitrary bytes with a mismatching digest" test is no
@@ -1014,29 +1433,55 @@ mod tests {
     /// source evidence claims a node other than this installation's own
     /// local D-Node identity, dispatch fails closed.
     #[test]
-    fn dispatch_rejects_source_evidence_claiming_a_different_node_than_this_installations_local_identity() {
+    fn dispatch_rejects_source_evidence_claiming_a_different_node_than_this_installations_local_identity(
+    ) {
         let dnode_root = std::env::temp_dir().join(format!("dcall-i1-d-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
         // Real invocation runs (and its evidence claims) node "cloud-99", but
         // this installation's own local identity is "fog-01".
-        let source_result = real_source_result("cloud-99", "cloud-99", r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#);
-        assert_eq!(source_result.evidence().outcome, DCodeInvocationOutcome::Success);
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        let source_result = real_source_result(
+            "cloud-99",
+            "cloud-99",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        assert_eq!(
+            source_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].error_code.as_deref(), Some("dcall_source_local_identity_mismatch"));
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_source_local_identity_mismatch")
+        );
     }
 
     #[test]
     fn dispatch_fails_closed_before_any_network_attempt_when_local_identity_is_not_provisioned() {
         let dnode_root = std::env::temp_dir().join(format!("dcall-i1-e-{}", Uuid::new_v4()));
         // deliberately NOT initialized
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
-        let source_result = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#);
-        let results = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
+        let source_result = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let results =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].error_code.as_deref(), Some("dcall_source_local_identity_load_failed"));
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_source_local_identity_load_failed")
+        );
     }
 
     /// J10: a source invocation producing TWO emits on the SAME output port
@@ -1048,14 +1493,20 @@ mod tests {
         let dnode_root = std::env::temp_dir().join(format!("dcall-j10-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dnode_root).unwrap();
         crate::dcode::local_identity::init_local_identity(&dnode_root, "fog-01").unwrap();
-        let context = SourceExecutionContext { dserver_url: "http://127.0.0.1:1".to_string(), dnode_root: dnode_root.to_string_lossy().to_string() };
+        let context = SourceExecutionContext {
+            dserver_url: "http://127.0.0.1:1".to_string(),
+            dnode_root: dnode_root.to_string_lossy().to_string(),
+        };
         // "out"/"A" (QQ==) and "out"/"B" (Qg==) -- same port, different payloads.
         let source_result = real_source_result(
             "fog-01",
             "fog-01",
             r#"{"status":"ok","emits":[{"port":"out","payload_b64":"QQ=="},{"port":"out","payload_b64":"Qg=="}]}"#,
         );
-        assert_eq!(source_result.evidence().outcome, DCodeInvocationOutcome::Success);
+        assert_eq!(
+            source_result.evidence().outcome,
+            DCodeInvocationOutcome::Success
+        );
         assert_eq!(source_result.validated_emits().len(), 2);
         assert_eq!(source_result.validated_emits()[0].payload(), b"A");
         assert_eq!(source_result.validated_emits()[1].payload(), b"B");
@@ -1066,12 +1517,20 @@ mod tests {
         // (`dcall_lookup_failed`), proving each independently passed the
         // provenance checks (source-invocation-successful, emit-index
         // resolution, local-identity match) before reaching the network.
-        let results_a = dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
-        let results_b = dispatch_validated_emit_for_test(&context, &source_result, 1, Path::new("unused"));
+        let results_a =
+            dispatch_validated_emit_for_test(&context, &source_result, 0, Path::new("unused"));
+        let results_b =
+            dispatch_validated_emit_for_test(&context, &source_result, 1, Path::new("unused"));
         assert_eq!(results_a.len(), 1);
         assert_eq!(results_b.len(), 1);
-        assert_eq!(results_a[0].error_code.as_deref(), Some("dcall_lookup_failed"));
-        assert_eq!(results_b[0].error_code.as_deref(), Some("dcall_lookup_failed"));
+        assert_eq!(
+            results_a[0].error_code.as_deref(),
+            Some("dcall_lookup_failed")
+        );
+        assert_eq!(
+            results_b[0].error_code.as_deref(),
+            Some("dcall_lookup_failed")
+        );
     }
 
     // -- I3: destination evidence must be validated against the grant -------
@@ -1091,8 +1550,16 @@ mod tests {
             project_id: "proj:lab".to_string(),
             application_id: "app:a".to_string(),
             call_id: "call:1".to_string(),
-            dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:1".to_string(), revision: 1, digest: "sha256:cc".to_string() },
-            dmap_ref: CanonicalContractReferenceV1 { id: "dmap:1".to_string(), revision: 1, digest: "sha256:dd".to_string() },
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: "dgraph:1".to_string(),
+                revision: 1,
+                digest: "sha256:cc".to_string(),
+            },
+            dmap_ref: CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: "sha256:dd".to_string(),
+            },
             source: endpoint.clone(),
             destination: endpoint,
             message_id: "dcall-msg:1".to_string(),
@@ -1125,7 +1592,10 @@ mod tests {
             dgraph_digest: grant.dgraph_ref.digest.clone(),
             dserv_artifact_id: grant.destination.dserv_artifact_id.clone(),
             dserv_artifact_digest: grant.destination.dserv_artifact_digest.clone(),
-            dserv_artifact_descriptor_digest: grant.destination.dserv_artifact_descriptor_digest.clone(),
+            dserv_artifact_descriptor_digest: grant
+                .destination
+                .dserv_artifact_descriptor_digest
+                .clone(),
             module_size_bytes: Some(64),
             dnode_abi: "datum-dnode/0".to_string(),
             fresh_instance_per_invocation: true,
@@ -1144,7 +1614,12 @@ mod tests {
             output_reason_sha256: None,
             output_reason_size: None,
             emits: Vec::new(),
-            limits_applied: DCodeAppliedLimits { fuel_per_invocation: 1_000_000, timeout_ms: 100, max_memory_pages: 4, max_message_bytes: 65536 },
+            limits_applied: DCodeAppliedLimits {
+                fuel_per_invocation: 1_000_000,
+                timeout_ms: 100,
+                max_memory_pages: 4,
+                max_message_bytes: 65536,
+            },
             outcome: DCodeInvocationOutcome::Success,
             error_code: None,
             error_message: None,
@@ -1197,15 +1672,38 @@ mod tests {
     fn every_destination_authority_and_delivery_identity_substitution_is_rejected() {
         let grant = sample_grant();
         let original = serde_json::to_value(matching_dcode_evidence(&grant)).unwrap();
-        for field in ["schema", "project_id", "application_id", "service_id", "node_id",
-            "dgraph_id", "dgraph_revision", "dgraph_digest", "dmap_id", "dmap_revision", "dmap_digest",
-            "dserv_artifact_id", "dserv_artifact_digest", "dserv_artifact_descriptor_digest",
-            "input_port", "input_sha256", "input_size", "message_id", "correlation_id"] {
+        for field in [
+            "schema",
+            "project_id",
+            "application_id",
+            "service_id",
+            "node_id",
+            "dgraph_id",
+            "dgraph_revision",
+            "dgraph_digest",
+            "dmap_id",
+            "dmap_revision",
+            "dmap_digest",
+            "dserv_artifact_id",
+            "dserv_artifact_digest",
+            "dserv_artifact_descriptor_digest",
+            "input_port",
+            "input_sha256",
+            "input_size",
+            "message_id",
+            "correlation_id",
+        ] {
             let mut value = original.clone();
-            value[field] = if field.ends_with("revision") || field == "input_size" { serde_json::json!(999) }
-                else { serde_json::json!("substitution") };
+            value[field] = if field.ends_with("revision") || field == "input_size" {
+                serde_json::json!(999)
+            } else {
+                serde_json::json!("substitution")
+            };
             let evidence = serde_json::from_value(value).unwrap();
-            assert!(validate_destination_dcode_evidence_against_grant(&evidence, &grant).is_err(), "{field}");
+            assert!(
+                validate_destination_dcode_evidence_against_grant(&evidence, &grant).is_err(),
+                "{field}"
+            );
         }
     }
 
@@ -1214,7 +1712,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
-            for body in [serde_json::json!(["call-a"]).to_string(), fanout_grant_response("call-a", "m1", "c1")] {
+            for body in [
+                serde_json::json!(["call-a"]).to_string(),
+                fanout_grant_response("call-a", "m1", "c1"),
+            ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut bytes = [0; 8192];
                 stream.read(&mut bytes).unwrap();
@@ -1224,12 +1725,23 @@ mod tests {
             // call fail; the returned specific mismatch proves that branch
             // was reached before transport or redemption.
         });
-        let root = std::env::temp_dir().join(format!("dcall-source-substitution-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dcall-source-substitution-{}", Uuid::new_v4()));
         crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
-        let source = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#);
-        let context = SourceExecutionContext { dserver_url: format!("http://{addr}"), dnode_root: root.to_str().unwrap().to_string() };
+        let source = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let context = SourceExecutionContext {
+            dserver_url: format!("http://{addr}"),
+            dnode_root: root.to_str().unwrap().to_string(),
+        };
         let result = dispatch_validated_emit_for_test(&context, &source, 0, Path::new("unused"));
-        assert_eq!(result[0].error_code.as_deref(), Some("dcall_source_evidence_mismatch"));
+        assert_eq!(
+            result[0].error_code.as_deref(),
+            Some("dcall_source_evidence_mismatch")
+        );
         assert!(result[0].redeemed_at.is_none());
         assert!(result[0].destination_dcode_evidence_sha256.is_none());
         thread.join().unwrap();
@@ -1261,7 +1773,10 @@ mod tests {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", MAX_REMOTE_RESPONSE_BYTES + 1);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    MAX_REMOTE_RESPONSE_BYTES + 1
+                );
                 let _ = stream.write_all(response.as_bytes());
                 // Deliberately never sends the (nonexistent) oversized body --
                 // if the client tried to read it, it would hang/fail rather
@@ -1272,7 +1787,10 @@ mod tests {
         let client = reqwest::blocking::Client::new();
         let response = client.get(format!("http://{addr}")).send().unwrap();
         let error = read_bounded_response_body(response).unwrap_err();
-        assert_eq!(error.code, DCallDeliveryErrorCode::DCallRemoteResponseTooLarge);
+        assert_eq!(
+            error.code,
+            DCallDeliveryErrorCode::DCallRemoteResponseTooLarge
+        );
     }
 
     #[test]
@@ -1293,7 +1811,10 @@ mod tests {
         let client = reqwest::blocking::Client::new();
         let response = client.get(format!("http://{addr}")).send().unwrap();
         let error = read_bounded_response_body(response).unwrap_err();
-        assert_eq!(error.code, DCallDeliveryErrorCode::DCallRemoteResponseTooLarge);
+        assert_eq!(
+            error.code,
+            DCallDeliveryErrorCode::DCallRemoteResponseTooLarge
+        );
     }
 
     #[test]

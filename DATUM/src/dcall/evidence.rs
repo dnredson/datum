@@ -83,8 +83,12 @@ impl DCallDeliveryErrorCode {
             Self::DCallLookupFailed => "dcall_lookup_failed",
             Self::DCallGrantRequestFailed => "dcall_grant_request_failed",
             Self::DCallSourceExecutionStale => "dcall_source_execution_stale",
-            Self::DCallPayloadExceedsSourceMessageLimit => "dcall_payload_exceeds_source_message_limit",
-            Self::DCallPayloadExceedsDestinationMessageLimit => "dcall_payload_exceeds_destination_message_limit",
+            Self::DCallPayloadExceedsSourceMessageLimit => {
+                "dcall_payload_exceeds_source_message_limit"
+            }
+            Self::DCallPayloadExceedsDestinationMessageLimit => {
+                "dcall_payload_exceeds_destination_message_limit"
+            }
             Self::DCallGrantRedeemFailed => "dcall_grant_redeem_failed",
             Self::DCallUnsupportedRouteKind => "dcall_unsupported_route_kind",
             Self::DCallEndpointFetchFailed => "dcall_endpoint_fetch_failed",
@@ -263,9 +267,19 @@ pub fn build_pre_grant_failure_evidence(
     raw_diagnostic: Option<&str>,
     duration_ms: u64,
 ) -> DCallDeliveryEvidenceV1 {
-    let empty_endpoint =
-        DCallRouteEndpointV1 { service_id: String::new(), port: String::new(), node_id: String::new(), dserv_artifact_id: String::new(), dserv_artifact_digest: String::new(), dserv_artifact_descriptor_digest: String::new() };
-    let empty_ref = CanonicalContractReferenceV1 { id: String::new(), revision: 0, digest: String::new() };
+    let empty_endpoint = DCallRouteEndpointV1 {
+        service_id: String::new(),
+        port: String::new(),
+        node_id: String::new(),
+        dserv_artifact_id: String::new(),
+        dserv_artifact_digest: String::new(),
+        dserv_artifact_descriptor_digest: String::new(),
+    };
+    let empty_ref = CanonicalContractReferenceV1 {
+        id: String::new(),
+        revision: 0,
+        digest: String::new(),
+    };
     DCallDeliveryEvidenceV1 {
         schema: DCALL_DELIVERY_EVIDENCE_SCHEMA.to_string(),
         delivery_id,
@@ -314,8 +328,16 @@ mod tests {
             project_id: "proj:lab".to_string(),
             application_id: "app:a".to_string(),
             call_id: "call:1".to_string(),
-            dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:1".to_string(), revision: 1, digest: "sha256:cc".to_string() },
-            dmap_ref: CanonicalContractReferenceV1 { id: "dmap:1".to_string(), revision: 1, digest: "sha256:dd".to_string() },
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: "dgraph:1".to_string(),
+                revision: 1,
+                digest: "sha256:cc".to_string(),
+            },
+            dmap_ref: CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: "sha256:dd".to_string(),
+            },
             source: endpoint.clone(),
             destination: endpoint,
             message_id: "dcall-msg:1".to_string(),
@@ -335,11 +357,21 @@ mod tests {
     #[test]
     fn success_evidence_never_contains_the_destination_evidence_payload_itself() {
         let grant = sample_grant();
-        let dcode_evidence_json = br#"{"outcome":"success","some_field":"not evidence content, just json bytes"}"#;
-        let evidence = build_success_evidence("delivery-1".to_string(), &grant, "2026-01-01T00:00:01Z".to_string(), dcode_evidence_json, 12);
+        let dcode_evidence_json =
+            br#"{"outcome":"success","some_field":"not evidence content, just json bytes"}"#;
+        let evidence = build_success_evidence(
+            "delivery-1".to_string(),
+            &grant,
+            "2026-01-01T00:00:01Z".to_string(),
+            dcode_evidence_json,
+            12,
+        );
         let serialized = serde_json::to_string(&evidence).unwrap();
         assert!(!serialized.contains("not evidence content"));
-        assert_eq!(evidence.destination_dcode_evidence_sha256, Some(sha256_hex(dcode_evidence_json)));
+        assert_eq!(
+            evidence.destination_dcode_evidence_sha256,
+            Some(sha256_hex(dcode_evidence_json))
+        );
         assert!(matches!(evidence.outcome, DCallDeliveryOutcome::Success));
     }
 
@@ -347,7 +379,8 @@ mod tests {
     fn failure_evidence_never_leaks_a_marker_from_a_raw_remote_diagnostic() {
         let grant = sample_grant();
         let marker = "SUPER_SECRET_DCALL_DIAGNOSTIC_MARKER_1234567890";
-        let raw_diagnostic = format!("remote listener returned status=500 body={{\"reason\":\"{marker}\"}}");
+        let raw_diagnostic =
+            format!("remote listener returned status=500 body={{\"reason\":\"{marker}\"}}");
         let evidence = build_grant_bound_failure_evidence(
             "delivery-2".to_string(),
             &grant,
@@ -357,16 +390,33 @@ mod tests {
             5,
         );
         let serialized = serde_json::to_string(&evidence).unwrap();
-        assert!(!serialized.contains(marker), "evidence JSON leaked the marker: {serialized}");
-        assert_eq!(evidence.error_code.as_deref(), Some("dcall_transport_error"));
-        assert_eq!(evidence.error_diagnostic_sha256, Some(sha256_hex(raw_diagnostic.as_bytes())));
+        assert!(
+            !serialized.contains(marker),
+            "evidence JSON leaked the marker: {serialized}"
+        );
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("dcall_transport_error")
+        );
+        assert_eq!(
+            evidence.error_diagnostic_sha256,
+            Some(sha256_hex(raw_diagnostic.as_bytes()))
+        );
     }
 
     #[test]
     fn pre_grant_failure_evidence_has_no_grant_fields_but_still_no_leak() {
         let marker = "SUPER_SECRET_DCALL_PRE_GRANT_MARKER";
         let raw = format!("lookup failed: {marker}");
-        let evidence = build_pre_grant_failure_evidence("delivery-3".to_string(), "proj:lab", "app:a", "", DCallDeliveryErrorCode::DCallLookupFailed, Some(&raw), 1);
+        let evidence = build_pre_grant_failure_evidence(
+            "delivery-3".to_string(),
+            "proj:lab",
+            "app:a",
+            "",
+            DCallDeliveryErrorCode::DCallLookupFailed,
+            Some(&raw),
+            1,
+        );
         let serialized = serde_json::to_string(&evidence).unwrap();
         assert!(!serialized.contains(marker));
         assert_eq!(evidence.grant_id, "");
@@ -375,8 +425,17 @@ mod tests {
 
     #[test]
     fn error_code_strings_are_stable() {
-        assert_eq!(DCallDeliveryErrorCode::DCallTransportTimeout.as_str(), "dcall_transport_timeout");
-        assert_eq!(DCallDeliveryErrorCode::DCallGrantRedeemFailed.as_str(), "dcall_grant_redeem_failed");
-        assert_eq!(DCallDeliveryErrorCode::DCallDestinationExecutionFailed.as_str(), "dcall_destination_execution_failed");
+        assert_eq!(
+            DCallDeliveryErrorCode::DCallTransportTimeout.as_str(),
+            "dcall_transport_timeout"
+        );
+        assert_eq!(
+            DCallDeliveryErrorCode::DCallGrantRedeemFailed.as_str(),
+            "dcall_grant_redeem_failed"
+        );
+        assert_eq!(
+            DCallDeliveryErrorCode::DCallDestinationExecutionFailed.as_str(),
+            "dcall_destination_execution_failed"
+        );
     }
 }

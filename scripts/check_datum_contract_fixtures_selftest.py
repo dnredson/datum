@@ -247,7 +247,7 @@ class DForwardChainHops(unittest.TestCase):
 
     def test_dangling_chain_hop_is_reported(self):
         obj = {
-            "schema": "datum.dforward/1", "dforward_id": "dforward:x", "revision": 1,
+            "schema": "datum.x-fixture.vs1-dforward/1", "dforward_id": "dforward:x", "revision": 1,
             "diots": [{"diot_id": "a", "diot_kind": "k", "artifact": {}, "provides": [], "requires": []}],
             "external_endpoints": [],
             "chains": [{"chain_id": "c", "hops": [{"from": "a", "to": "ghost", "interface": "i"}]}],
@@ -257,7 +257,7 @@ class DForwardChainHops(unittest.TestCase):
 
     def test_external_endpoint_resolves_a_hop(self):
         obj = {
-            "schema": "datum.dforward/1", "dforward_id": "dforward:x", "revision": 1,
+            "schema": "datum.x-fixture.vs1-dforward/1", "dforward_id": "dforward:x", "revision": 1,
             "diots": [{"diot_id": "a", "diot_kind": "k", "artifact": {}, "provides": [], "requires": []}],
             "external_endpoints": [{"endpoint_id": "field-radio", "note": "real gateway"}],
             "chains": [{"chain_id": "c", "hops": [{"from": "field-radio", "to": "a", "interface": "i"}]}],
@@ -276,7 +276,7 @@ def _load_positive_index() -> dict:
             idx["dgraph"][(obj.get("dgraph_id"), obj.get("revision"))] = obj
         elif s == chk.VS1_DCONTINUUM_SCHEMA:
             idx["dcontinuum"][(obj.get("continuum_id"), obj.get("revision"))] = obj
-        elif s == "datum.dforward/1":
+        elif s == "datum.x-fixture.vs1-dforward/1":
             idx["dforward"][(obj.get("dforward_id"), obj.get("revision"))] = obj
         elif s == "datum.dserv-artifact/1":
             idx["dserv_artifact"][obj.get("artifact_id")] = obj

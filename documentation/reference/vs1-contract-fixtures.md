@@ -58,7 +58,7 @@ digest exactly as before.
 | `dgraph.dcall-cycle.json` | `datum.x-fixture.vs1-dgraph/1` — a graph with a D-Call cycle, which is **accepted** (D-4). |
 | `dcontinuum.monitor-f49c8.json` | `datum.x-fixture.vs1-dcontinuum/1` — S2-Mist / S3-Fog / S5-Cloud, elements `fog-01` and `cloud-01`. |
 | `dcontinuum.host-invariance.json` | `datum.x-fixture.vs1-dcontinuum/1` — test-only: `fog-01` supports `container` and `native_process`. |
-| `dforward.monitor-f49c8.json` | `datum.dforward/1` — D-IoT elements, interfaces, chains. |
+| `dforward.monitor-f49c8.json` | `datum.x-fixture.vs1-dforward/1` — historical D-IoT elements, interfaces, chains. |
 | `dmap.sensor-pipeline.fog-only.json` | `datum.x-fixture.vs1-dmap/1` — VS1a: `decode` + `alert` on `fog-01`. |
 | `dmap.sensor-pipeline.fog-cloud.json` | `datum.x-fixture.vs1-dmap/1` — VS1b: `decode@fog-01`, `alert@cloud-01`. |
 | `dmap.sensor-pipeline.native-dnode.json` | `datum.x-fixture.vs1-dmap/1` — host-invariance pair of `fog-only`, native D-Node host. |
@@ -94,7 +94,7 @@ mode.
 
 ## D-Forward chain-hop resolution
 
-In `datum.dforward/1`, every chain hop's `from`/`to` identifier must resolve to a
+In `datum.x-fixture.vs1-dforward/1`, every chain hop's `from`/`to` identifier must resolve to a
 declared `diots[].diot_id` or to an entry in the optional `external_endpoints[]`
 array. The checker rejects dangling identifiers. `dforward.monitor-f49c8.json`
 declares `lora-packet-forwarder` and `chirpstack-gateway-bridge` as D-IoT elements

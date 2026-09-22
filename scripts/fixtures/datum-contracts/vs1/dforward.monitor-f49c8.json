@@ -1,5 +1,5 @@
 {
-  "schema": "datum.dforward/1",
+  "schema": "datum.x-fixture.vs1-dforward/1",
   "project_id": "monitor-f49c8",
   "dforward_id": "dforward:monitor-f49c8",
   "revision": 1,

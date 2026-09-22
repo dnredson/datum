@@ -4,17 +4,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use datum::dcode::authorization::DCodeInvocationAuthorizationV1;
+use datum::dcode::client;
 use datum::dcode::dserv_artifact::CanonicalDServArtifactV1;
 use datum::dcode::evidence::DCodeInvocationOutcome;
 use datum::dcode::invoke::invoke_dcode;
-use datum::dcode::module_store::DCodeModuleStore;
-use datum::dcode::client;
 use datum::dcode::local_identity::load_local_identity;
+use datum::dcode::module_store::DCodeModuleStore;
 use datum::dcode::worker::IsolatedWorkerExecutor;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-dcode-invoke")]
-#[command(about = "Invoke one canonical D-Code D-Serv locally (ADR-0021) -- v0.1: input is supplied directly, no D-Call")]
+#[command(
+    about = "Invoke one canonical D-Code D-Serv locally (ADR-0021) -- v0.1: input is supplied directly, no D-Call"
+)]
 struct Cli {
     #[command(subcommand)]
     mode: Mode,
@@ -116,7 +118,9 @@ fn read_input(input_path: &str) -> Result<Vec<u8>> {
     if input_path == "-" {
         use std::io::Read;
         let mut buffer = Vec::new();
-        std::io::stdin().read_to_end(&mut buffer).context("read input bytes from stdin")?;
+        std::io::stdin()
+            .read_to_end(&mut buffer)
+            .context("read input bytes from stdin")?;
         Ok(buffer)
     } else {
         fs::read(input_path).with_context(|| format!("read input bytes from {input_path}"))
@@ -148,7 +152,11 @@ fn main() -> Result<()> {
                 &local_node_id,
             )
             .context("fetch D-Code authorization from DServer (governed path)")?;
-            let artifact = client::fetch_dserv_artifact(&args.dserver_url, &args.application_id, &args.service_id)
+            let artifact = client::fetch_dserv_artifact(
+                &args.dserver_url,
+                &args.application_id,
+                &args.service_id,
+            )
                 .context("fetch canonical D-Serv artifact from DServer (governed path)")?;
             Resolved {
                 authorization,
@@ -171,11 +179,12 @@ fn main() -> Result<()> {
             let authorization_json = fs::read_to_string(&args.authorization_path)
                 .with_context(|| format!("read authorization {}", args.authorization_path))?;
             let authorization: DCodeInvocationAuthorizationV1 =
-                serde_json::from_str(&authorization_json).context("parse DCodeInvocationAuthorizationV1")?;
+                serde_json::from_str(&authorization_json)
+                    .context("parse DCodeInvocationAuthorizationV1")?;
             let artifact_json = fs::read_to_string(&args.artifact_path)
                 .with_context(|| format!("read artifact {}", args.artifact_path))?;
-            let artifact: CanonicalDServArtifactV1 =
-                serde_json::from_str(&artifact_json).context("parse datum.dserv-artifact/1 for invocation")?;
+            let artifact: CanonicalDServArtifactV1 = serde_json::from_str(&artifact_json)
+                .context("parse datum.dserv-artifact/1 for invocation")?;
             Resolved {
                 authorization,
                 artifact,
@@ -190,10 +199,16 @@ fn main() -> Result<()> {
     };
 
     let input = read_input(&resolved.input_path)?;
-    let worker_binary = resolved.worker_binary.map(PathBuf::from).unwrap_or_else(default_worker_binary_path);
+    let worker_binary = resolved
+        .worker_binary
+        .map(PathBuf::from)
+        .unwrap_or_else(default_worker_binary_path);
     let store_root: &Path = Path::new(&resolved.store_root);
     let module_store = DCodeModuleStore::new(store_root);
-    let executor = IsolatedWorkerExecutor { worker_binary: &worker_binary, module_store_root: store_root };
+    let executor = IsolatedWorkerExecutor {
+        worker_binary: &worker_binary,
+        module_store_root: store_root,
+    };
 
     let evidence = invoke_dcode(
         &executor,
@@ -205,9 +220,11 @@ fn main() -> Result<()> {
         &input,
     );
 
-    let evidence_json = serde_json::to_string_pretty(&evidence).context("serialize D-Code invocation evidence")?;
+    let evidence_json =
+        serde_json::to_string_pretty(&evidence).context("serialize D-Code invocation evidence")?;
     match &resolved.evidence_out {
-        Some(path) => fs::write(path, format!("{evidence_json}\n")).with_context(|| format!("write evidence to {path}"))?,
+        Some(path) => fs::write(path, format!("{evidence_json}\n"))
+            .with_context(|| format!("write evidence to {path}"))?,
         None => println!("{evidence_json}"),
     }
 

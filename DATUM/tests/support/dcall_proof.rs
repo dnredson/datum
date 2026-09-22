@@ -1,6 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -31,18 +34,30 @@ impl RecordingProxy {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).build().unwrap();
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .build()
+                .unwrap();
             while !stopped.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => forward(stream, &upstream, &client, &recorded),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
                     Err(e) => panic!("observer accept: {e}"),
                 }
             }
         });
-        Self { url, exchanges, stop, thread: Some(thread) }
+        Self {
+            url,
+            exchanges,
+            stop,
+            thread: Some(thread),
+        }
     }
-    pub fn records(&self) -> Vec<Exchange> { self.exchanges.lock().unwrap().clone() }
+    pub fn records(&self) -> Vec<Exchange> {
+        self.exchanges.lock().unwrap().clone()
+    }
 }
 
 impl Drop for RecordingProxy {
@@ -61,16 +76,27 @@ impl Drop for RecordingProxy {
     }
 }
 
-fn forward(mut stream: TcpStream, upstream: &str, client: &reqwest::blocking::Client, recorded: &Arc<Mutex<Vec<Exchange>>>) {
+fn forward(
+    mut stream: TcpStream,
+    upstream: &str,
+    client: &reqwest::blocking::Client,
+    recorded: &Arc<Mutex<Vec<Exchange>>>,
+) {
     stream.set_nonblocking(false).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     let mut bytes = Vec::new();
     let mut chunk = [0; 4096];
     let end = loop {
         let n = stream.read(&mut chunk).unwrap();
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         bytes.extend_from_slice(&chunk[..n]);
-        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4; }
+        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
         assert!(bytes.len() <= 65536);
     };
     let headers = String::from_utf8(bytes[..end].to_vec()).unwrap();
@@ -85,7 +111,7 @@ fn forward(mut stream: TcpStream, upstream: &str, client: &reqwest::blocking::Cl
         if let Some((name, value)) = line.split_once(':') {
             match name.to_ascii_lowercase().as_str() {
                 "content-length" => length = value.trim().parse::<usize>().unwrap(),
-                "host" | "connection" => {},
+                "host" | "connection" => {}
                 _ => request = request.header(name, value.trim()),
             }
         }
@@ -101,8 +127,10 @@ fn forward(mut stream: TcpStream, upstream: &str, client: &reqwest::blocking::Cl
     let status = response.status();
     let response_body = response.bytes().unwrap();
     recorded.lock().unwrap().push(Exchange {
-        path, request: serde_json::from_slice(body).unwrap_or(serde_json::Value::Null),
-        status: status.as_u16(), response: serde_json::from_slice(&response_body).unwrap_or(serde_json::Value::Null),
+        path,
+        request: serde_json::from_slice(body).unwrap_or(serde_json::Value::Null),
+        status: status.as_u16(),
+        response: serde_json::from_slice(&response_body).unwrap_or(serde_json::Value::Null),
     });
     write!(stream, "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", status.as_u16(), status.canonical_reason().unwrap_or("Response"), response_body.len()).unwrap();
     stream.write_all(&response_body).unwrap();

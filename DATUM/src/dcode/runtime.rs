@@ -30,7 +30,9 @@ use std::sync::Mutex;
 
 use wasmtime::{Config, Engine, Instance, Memory, Module, ResourceLimiter, Store};
 
-use crate::dcode::abi::{has_forbidden_imports, DNODE_ABI_V0_REQUIRED_EXPORTS, DNODE_ABI_V0_VERSION_NUMBER};
+use crate::dcode::abi::{
+    has_forbidden_imports, DNODE_ABI_V0_REQUIRED_EXPORTS, DNODE_ABI_V0_VERSION_NUMBER,
+};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct InvocationLimits {
@@ -71,7 +73,12 @@ struct MemoryLimiter {
 }
 
 impl ResourceLimiter for MemoryLimiter {
-    fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> anyhow::Result<bool> {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> anyhow::Result<bool> {
         if desired > self.max_bytes {
             self.denied = true;
             Ok(false)
@@ -80,7 +87,12 @@ impl ResourceLimiter for MemoryLimiter {
         }
     }
 
-    fn table_growing(&mut self, _current: usize, desired: usize, maximum: Option<usize>) -> anyhow::Result<bool> {
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> anyhow::Result<bool> {
         Ok(maximum.map_or(true, |max| desired <= max))
     }
 }
@@ -121,16 +133,24 @@ impl DCodeModuleCache {
         // child, so a crash here cannot take down the SmartSentinel parent.
         // See `wasmtime-platform-defect-audit.txt`.
         config.wasm_backtrace(false);
-        let engine = Engine::new(&config).map_err(|error| format!("build D-Code engine: {error}"))?;
-        Ok(Self { engine, compiled: Mutex::new(HashMap::new()) })
+        let engine =
+            Engine::new(&config).map_err(|error| format!("build D-Code engine: {error}"))?;
+        Ok(Self {
+            engine,
+            compiled: Mutex::new(HashMap::new()),
+        })
     }
 
     fn module_for(&self, digest: &str, bytes: &[u8]) -> Result<Module, String> {
-        let mut compiled = self.compiled.lock().map_err(|_| "D-Code module cache lock poisoned".to_string())?;
+        let mut compiled = self
+            .compiled
+            .lock()
+            .map_err(|_| "D-Code module cache lock poisoned".to_string())?;
         if let Some(module) = compiled.get(digest) {
             return Ok(module.clone());
         }
-        let module = Module::new(&self.engine, bytes).map_err(|error| format!("compile D-Code module: {error}"))?;
+        let module = Module::new(&self.engine, bytes)
+            .map_err(|error| format!("compile D-Code module: {error}"))?;
         compiled.insert(digest.to_string(), module.clone());
         Ok(module)
     }
@@ -138,7 +158,13 @@ impl DCodeModuleCache {
     /// Executes exactly one `datum_handle` invocation against a FRESH
     /// `Store`/`Instance` (ADR-0008) -- never reused across calls, even for
     /// the same cached module.
-    pub fn invoke(&self, digest: &str, bytes: &[u8], limits: &InvocationLimits, input: &[u8]) -> ExecutionOutcome {
+    pub fn invoke(
+        &self,
+        digest: &str,
+        bytes: &[u8],
+        limits: &InvocationLimits,
+        input: &[u8],
+    ) -> ExecutionOutcome {
         if input.len() > limits.max_message_bytes as usize {
             return ExecutionOutcome::ValidationFailed(format!(
                 "input {} bytes exceeds max_message_bytes {}",
@@ -167,7 +193,15 @@ impl DCodeModuleCache {
         }
 
         let max_bytes = limits.max_memory_pages as usize * 65536;
-        let mut store = Store::new(&self.engine, HostState { limiter: MemoryLimiter { max_bytes, denied: false } });
+        let mut store = Store::new(
+            &self.engine,
+            HostState {
+                limiter: MemoryLimiter {
+                    max_bytes,
+                    denied: false,
+                },
+            },
+        );
         store.limiter(|state| &mut state.limiter);
         if let Err(error) = store.set_fuel(limits.fuel_per_invocation) {
             return ExecutionOutcome::ValidationFailed(format!("configure fuel budget: {error}"));
@@ -177,7 +211,9 @@ impl DCodeModuleCache {
             Ok(instance) => instance,
             Err(error) => {
                 return if store.data().limiter.denied {
-                    ExecutionOutcome::ResourceLimit(format!("instantiation exceeded max_memory_pages: {error}"))
+                    ExecutionOutcome::ResourceLimit(format!(
+                        "instantiation exceeded max_memory_pages: {error}"
+                    ))
                 } else {
                     classify_trap(error)
                 };
@@ -186,12 +222,21 @@ impl DCodeModuleCache {
 
         let memory = match instance.get_memory(&mut store, "memory") {
             Some(memory) => memory,
-            None => return ExecutionOutcome::ValidationFailed("D-Code module does not export 'memory'".to_string()),
+            None => {
+                return ExecutionOutcome::ValidationFailed(
+                    "D-Code module does not export 'memory'".to_string(),
+                )
+            }
         };
 
-        let abi_version = match instance.get_typed_func::<(), i32>(&mut store, "datum_abi_version") {
+        let abi_version = match instance.get_typed_func::<(), i32>(&mut store, "datum_abi_version")
+        {
             Ok(func) => func,
-            Err(error) => return ExecutionOutcome::ValidationFailed(format!("resolve datum_abi_version: {error}")),
+            Err(error) => {
+                return ExecutionOutcome::ValidationFailed(format!(
+                    "resolve datum_abi_version: {error}"
+                ))
+            }
         };
         match abi_version.call(&mut store, ()) {
             Ok(version) if version == DNODE_ABI_V0_VERSION_NUMBER => {}
@@ -205,7 +250,9 @@ impl DCodeModuleCache {
 
         let alloc = match instance.get_typed_func::<i32, i32>(&mut store, "datum_alloc") {
             Ok(func) => func,
-            Err(error) => return ExecutionOutcome::ValidationFailed(format!("resolve datum_alloc: {error}")),
+            Err(error) => {
+                return ExecutionOutcome::ValidationFailed(format!("resolve datum_alloc: {error}"))
+            }
         };
         let input_ptr = match alloc.call(&mut store, input.len() as i32) {
             Ok(ptr) => ptr,
@@ -232,12 +279,18 @@ impl DCodeModuleCache {
         // post-success trap).
         let dealloc = match instance.get_typed_func::<(i32, i32), ()>(&mut store, "datum_dealloc") {
             Ok(func) => func,
-            Err(error) => return ExecutionOutcome::ValidationFailed(format!("resolve datum_dealloc: {error}")),
+            Err(error) => {
+                return ExecutionOutcome::ValidationFailed(format!(
+                    "resolve datum_dealloc: {error}"
+                ))
+            }
         };
 
         let handle = match instance.get_typed_func::<(i32, i32), i64>(&mut store, "datum_handle") {
             Ok(func) => func,
-            Err(error) => return ExecutionOutcome::ValidationFailed(format!("resolve datum_handle: {error}")),
+            Err(error) => {
+                return ExecutionOutcome::ValidationFailed(format!("resolve datum_handle: {error}"))
+            }
         };
         let packed = match handle.call(&mut store, (input_ptr, input.len() as i32)) {
             Ok(packed) => packed,
@@ -302,12 +355,19 @@ fn classify_trap(error: anyhow::Error) -> ExecutionOutcome {
     }
 }
 
-fn write_guest_memory(memory: &Memory, store: &mut Store<HostState>, ptr: i32, bytes: &[u8]) -> Result<(), String> {
+fn write_guest_memory(
+    memory: &Memory,
+    store: &mut Store<HostState>,
+    ptr: i32,
+    bytes: &[u8],
+) -> Result<(), String> {
     if ptr < 0 {
         return Err("datum_alloc returned a negative pointer".to_string());
     }
     let ptr = ptr as usize;
-    let end = ptr.checked_add(bytes.len()).ok_or_else(|| "input pointer+length overflow".to_string())?;
+    let end = ptr
+        .checked_add(bytes.len())
+        .ok_or_else(|| "input pointer+length overflow".to_string())?;
     let data = memory.data_mut(store);
     if end > data.len() {
         return Err(format!(
@@ -320,10 +380,17 @@ fn write_guest_memory(memory: &Memory, store: &mut Store<HostState>, ptr: i32, b
     Ok(())
 }
 
-fn read_guest_memory(memory: &Memory, store: &Store<HostState>, ptr: u32, len: u32) -> Result<Vec<u8>, String> {
+fn read_guest_memory(
+    memory: &Memory,
+    store: &Store<HostState>,
+    ptr: u32,
+    len: u32,
+) -> Result<Vec<u8>, String> {
     let ptr = ptr as usize;
     let len = len as usize;
-    let end = ptr.checked_add(len).ok_or_else(|| "output pointer+length overflow".to_string())?;
+    let end = ptr
+        .checked_add(len)
+        .ok_or_else(|| "output pointer+length overflow".to_string())?;
     let data = memory.data(store);
     if end > data.len() {
         return Err(format!(
@@ -340,7 +407,12 @@ mod tests {
     use crate::dcode::identity::sha256_hex;
 
     fn default_limits() -> InvocationLimits {
-        InvocationLimits { fuel_per_invocation: 5_000_000, timeout_ms: 200, max_memory_pages: 4, max_message_bytes: 65536 }
+        InvocationLimits {
+            fuel_per_invocation: 5_000_000,
+            timeout_ms: 200,
+            max_memory_pages: 4,
+            max_message_bytes: 65536,
+        }
     }
 
     fn compile(wat: &str) -> Vec<u8> {
@@ -508,7 +580,9 @@ mod tests {
         let digest = sha256_hex(&bytes);
         let outcome = cache.invoke(&digest, &bytes, &default_limits(), b"hello dcode");
         match outcome {
-            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"hello dcode"),
+            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => {
+                assert_eq!(output, b"hello dcode")
+            }
             other => panic!("expected success, got {other:?}"),
         }
     }
@@ -565,9 +639,14 @@ mod tests {
         let cache = DCodeModuleCache::new().unwrap();
         let bytes = compile(INFINITE_LOOP_WAT);
         let digest = sha256_hex(&bytes);
-        let limits = InvocationLimits { fuel_per_invocation: 10_000, ..default_limits() };
+        let limits = InvocationLimits {
+            fuel_per_invocation: 10_000,
+            ..default_limits()
+        };
         match cache.invoke(&digest, &bytes, &limits, b"") {
-            ExecutionOutcome::ResourceLimit(message) => assert!(message.to_ascii_lowercase().contains("fuel")),
+            ExecutionOutcome::ResourceLimit(message) => {
+                assert!(message.to_ascii_lowercase().contains("fuel"))
+            }
             other => panic!("expected ResourceLimit(fuel), got {other:?}"),
         }
     }
@@ -611,7 +690,10 @@ mod tests {
         // (each iteration is a handful of cheap integer ops), never
         // exhausted -- proving consumption without approaching the crash
         // above.
-        let limits = InvocationLimits { fuel_per_invocation: 5_000_000, ..default_limits() };
+        let limits = InvocationLimits {
+            fuel_per_invocation: 5_000_000,
+            ..default_limits()
+        };
         match cache.invoke(&digest, &bytes, &limits, b"ok") {
             ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"ok"),
             other => panic!("expected success, got {other:?}"),
@@ -623,9 +705,14 @@ mod tests {
         let cache = DCodeModuleCache::new().unwrap();
         let bytes = compile(MEMORY_GROWTH_WAT);
         let digest = sha256_hex(&bytes);
-        let limits = InvocationLimits { max_memory_pages: 1, ..default_limits() };
+        let limits = InvocationLimits {
+            max_memory_pages: 1,
+            ..default_limits()
+        };
         match cache.invoke(&digest, &bytes, &limits, b"") {
-            ExecutionOutcome::ResourceLimit(message) => assert!(message.contains("max_memory_pages")),
+            ExecutionOutcome::ResourceLimit(message) => {
+                assert!(message.contains("max_memory_pages"))
+            }
             other => panic!("expected ResourceLimit(memory), got {other:?}"),
         }
     }
@@ -636,7 +723,9 @@ mod tests {
         let bytes = compile(FORBIDDEN_IMPORT_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("imports host item")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("imports host item"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -647,7 +736,9 @@ mod tests {
         let bytes = compile(MALFORMED_OUTPUT_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("out-of-bounds")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("out-of-bounds"))
+            }
             other => panic!("expected ValidationFailed(bounds), got {other:?}"),
         }
     }
@@ -658,7 +749,9 @@ mod tests {
         let bytes = compile(MISSING_MEMORY_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("missing required export 'memory'")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("missing required export 'memory'"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -680,7 +773,9 @@ mod tests {
         let bytes = compile(MISSING_HANDLE_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("datum_handle")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("datum_handle"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -690,9 +785,14 @@ mod tests {
         let cache = DCodeModuleCache::new().unwrap();
         let bytes = compile(ECHO_WAT);
         let digest = sha256_hex(&bytes);
-        let limits = InvocationLimits { max_message_bytes: 4, ..default_limits() };
+        let limits = InvocationLimits {
+            max_message_bytes: 4,
+            ..default_limits()
+        };
         match cache.invoke(&digest, &bytes, &limits, b"way too long") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("max_message_bytes")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("max_message_bytes"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -702,7 +802,10 @@ mod tests {
         let cache = DCodeModuleCache::new().unwrap();
         let bytes = compile(ECHO_WAT);
         let digest = sha256_hex(&bytes);
-        let limits = InvocationLimits { max_message_bytes: 4, ..default_limits() };
+        let limits = InvocationLimits {
+            max_message_bytes: 4,
+            ..default_limits()
+        };
         match cache.invoke(&digest, &bytes, &limits, b"ab") {
             ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"ab"),
             other => panic!("expected success for input within limit, got {other:?}"),
@@ -720,7 +823,9 @@ mod tests {
         let digest = sha256_hex(&bytes);
         for _ in 0..5 {
             match cache.invoke(&digest, &bytes, &default_limits(), b"x") {
-                ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"x"),
+                ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => {
+                    assert_eq!(output, b"x")
+                }
                 other => panic!("expected success, got {other:?}"),
             }
         }
@@ -733,7 +838,9 @@ mod tests {
         let bytes = compile(MISSING_DEALLOC_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("missing required export 'datum_dealloc'")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("missing required export 'datum_dealloc'"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -804,7 +911,9 @@ mod tests {
         let bytes = compile(WRONG_DEALLOC_PARAM_TYPE_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("datum_dealloc")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("datum_dealloc"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -816,7 +925,9 @@ mod tests {
         let bytes = compile(WRONG_DEALLOC_PARAM_COUNT_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("datum_dealloc")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("datum_dealloc"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -828,7 +939,9 @@ mod tests {
         let bytes = compile(WRONG_DEALLOC_RESULT_TYPE_WAT);
         let digest = sha256_hex(&bytes);
         match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-            ExecutionOutcome::ValidationFailed(message) => assert!(message.contains("datum_dealloc")),
+            ExecutionOutcome::ValidationFailed(message) => {
+                assert!(message.contains("datum_dealloc"))
+            }
             other => panic!("expected ValidationFailed, got {other:?}"),
         }
     }
@@ -866,7 +979,9 @@ mod tests {
             let bytes = compile(wat);
             let digest = sha256_hex(&bytes);
             match cache.invoke(&digest, &bytes, &default_limits(), b"") {
-                ExecutionOutcome::ValidationFailed(message) => assert!(message.contains(expected_substring)),
+                ExecutionOutcome::ValidationFailed(message) => {
+                    assert!(message.contains(expected_substring))
+                }
                 other => panic!("expected ValidationFailed({expected_substring}), got {other:?}"),
             }
         }
@@ -875,9 +990,21 @@ mod tests {
     #[test]
     fn source_guard_keeps_dcode_runtime_free_of_management_wasm_and_wasi() {
         let source = include_str!("runtime.rs");
-        let implementation = source.split("#[cfg(test)]").next().expect("implementation section should exist");
-        for forbidden in ["use crate::wasm_runtime", "wasmtime_wasi", "WasiCtx", "std::process::Command", "TcpStream"] {
-            assert!(!implementation.contains(forbidden), "dcode::runtime must not contain '{forbidden}'");
+        let implementation = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("implementation section should exist");
+        for forbidden in [
+            "use crate::wasm_runtime",
+            "wasmtime_wasi",
+            "WasiCtx",
+            "std::process::Command",
+            "TcpStream",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "dcode::runtime must not contain '{forbidden}'"
+            );
         }
     }
 }

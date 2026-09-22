@@ -1,6 +1,6 @@
 # ADR-0022 — Canonical D-Call realization v0.1
 
-- Status: **Accepted architecture; implemented, v7 endpoint transport-authority closure, awaiting independent review.**
+- Status: **Accepted and independently reviewed; Phase 112 CLOSED (v7 endpoint transport-authority closure).**
 - Decision refs: ADR-0002, ADR-0003, ADR-0005, ADR-0009, ADR-0017, ADR-0018, ADR-0019, ADR-0020, ADR-0021.
 - Conceptual roadmap phase: 112 — real D-Call.
 

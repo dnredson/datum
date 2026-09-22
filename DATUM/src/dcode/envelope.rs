@@ -66,16 +66,27 @@ impl std::fmt::Display for EnvelopeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EnvelopeError::InvalidUtf8 => write!(f, "output envelope bytes are not valid UTF-8"),
-            EnvelopeError::InvalidJson(message) => write!(f, "output envelope is not valid JSON: {message}"),
-            EnvelopeError::InvalidStatus(status) => {
-                write!(f, "output envelope status '{status}' is not 'ok' or 'rejected'")
+            EnvelopeError::InvalidJson(message) => {
+                write!(f, "output envelope is not valid JSON: {message}")
             }
-            EnvelopeError::MalformedBase64(message) => write!(f, "output envelope emit payload_b64 is malformed: {message}"),
+            EnvelopeError::InvalidStatus(status) => {
+                write!(
+                    f,
+                    "output envelope status '{status}' is not 'ok' or 'rejected'"
+                )
+            }
+            EnvelopeError::MalformedBase64(message) => write!(
+                f,
+                "output envelope emit payload_b64 is malformed: {message}"
+            ),
             EnvelopeError::TooManyEmits { max, actual } => {
                 write!(f, "output envelope declares {actual} emits, exceeding max_emits_per_invocation {max}")
             }
             EnvelopeError::UndeclaredInputPort(port) => {
-                write!(f, "input port '{port}' is not declared in artifact.ports.inputs")
+                write!(
+                    f,
+                    "input port '{port}' is not declared in artifact.ports.inputs"
+                )
             }
             EnvelopeError::UndeclaredOutputPort(port) => {
                 write!(f, "output envelope emits on port '{port}', which is not declared in artifact.ports.outputs")
@@ -95,22 +106,33 @@ impl std::fmt::Display for EnvelopeError {
 /// unaffected.
 pub fn safe_error_message(error: &EnvelopeError) -> (String, Option<Vec<u8>>) {
     match error {
-        EnvelopeError::InvalidUtf8 => ("output envelope bytes are not valid UTF-8".to_string(), None),
+        EnvelopeError::InvalidUtf8 => (
+            "output envelope bytes are not valid UTF-8".to_string(),
+            None,
+        ),
         EnvelopeError::InvalidJson(_) => ("output envelope is not valid JSON".to_string(), None),
         EnvelopeError::InvalidStatus(status) => (
             "output envelope status is not 'ok' or 'rejected'".to_string(),
             Some(status.clone().into_bytes()),
         ),
-        EnvelopeError::MalformedBase64(_) => ("output envelope emit payload_b64 is malformed".to_string(), None),
+        EnvelopeError::MalformedBase64(_) => (
+            "output envelope emit payload_b64 is malformed".to_string(),
+            None,
+        ),
         EnvelopeError::TooManyEmits { max, actual } => (
-            format!("output envelope declares {actual} emits, exceeding max_emits_per_invocation {max}"),
+            format!(
+                "output envelope declares {actual} emits, exceeding max_emits_per_invocation {max}"
+            ),
             None,
         ),
         EnvelopeError::UndeclaredInputPort(port) => {
             // Not guest-controlled -- this is the CALLER's own chosen input
             // port, validated before any guest code ever runs. Safe to keep
             // dynamic.
-            (format!("input port '{port}' is not declared in artifact.ports.inputs"), None)
+            (
+                format!("input port '{port}' is not declared in artifact.ports.inputs"),
+                None,
+            )
         }
         EnvelopeError::UndeclaredOutputPort(port) => (
             "output envelope emits on a port not declared in artifact.ports.outputs".to_string(),
@@ -204,13 +226,17 @@ pub fn build_input_envelope_with_identity(
         received_at_utc: received_at_utc.clone(),
         payload_b64: base64::engine::general_purpose::STANDARD.encode(payload),
     };
-    let bytes = serde_json::to_vec(&envelope).expect("DCodeInputEnvelopeV1 serialization cannot fail");
+    let bytes =
+        serde_json::to_vec(&envelope).expect("DCodeInputEnvelopeV1 serialization cannot fail");
     (bytes, message_id, correlation_id, received_at_utc)
 }
 
 /// R4C: the input port must be one the artifact actually declares as an
 /// input.
-pub fn validate_input_port(declared_input_ports: &[String], port: &str) -> Result<(), EnvelopeError> {
+pub fn validate_input_port(
+    declared_input_ports: &[String],
+    port: &str,
+) -> Result<(), EnvelopeError> {
     if declared_input_ports.iter().any(|declared| declared == port) {
         Ok(())
     } else {
@@ -228,28 +254,41 @@ pub fn parse_and_validate_output(
     max_emits: u32,
 ) -> Result<ValidatedOutput, EnvelopeError> {
     let text = std::str::from_utf8(raw).map_err(|_| EnvelopeError::InvalidUtf8)?;
-    let envelope: DCodeOutputEnvelopeV1 =
-        serde_json::from_str(text).map_err(|error| EnvelopeError::InvalidJson(error.to_string()))?;
+    let envelope: DCodeOutputEnvelopeV1 = serde_json::from_str(text)
+        .map_err(|error| EnvelopeError::InvalidJson(error.to_string()))?;
 
     if envelope.status != "ok" && envelope.status != "rejected" {
         return Err(EnvelopeError::InvalidStatus(envelope.status));
     }
     if envelope.emits.len() > max_emits as usize {
-        return Err(EnvelopeError::TooManyEmits { max: max_emits, actual: envelope.emits.len() });
+        return Err(EnvelopeError::TooManyEmits {
+            max: max_emits,
+            actual: envelope.emits.len(),
+        });
     }
 
     let mut emits = Vec::with_capacity(envelope.emits.len());
     for emit in envelope.emits {
-        if !declared_output_ports.iter().any(|declared| declared == &emit.port) {
+        if !declared_output_ports
+            .iter()
+            .any(|declared| declared == &emit.port)
+        {
             return Err(EnvelopeError::UndeclaredOutputPort(emit.port));
         }
         let payload = base64::engine::general_purpose::STANDARD
             .decode(&emit.payload_b64)
             .map_err(|error| EnvelopeError::MalformedBase64(error.to_string()))?;
-        emits.push(ValidatedEmit { port: emit.port, payload });
+        emits.push(ValidatedEmit {
+            port: emit.port,
+            payload,
+        });
     }
 
-    Ok(ValidatedOutput { status: envelope.status, reason: envelope.reason, emits })
+    Ok(ValidatedOutput {
+        status: envelope.status,
+        reason: envelope.reason,
+        emits,
+    })
 }
 
 #[cfg(test)]
@@ -258,7 +297,8 @@ mod tests {
 
     #[test]
     fn input_envelope_carries_the_given_port_and_payload() {
-        let (bytes, message_id, correlation_id, received_at_utc) = build_input_envelope("uplink", b"hello");
+        let (bytes, message_id, correlation_id, received_at_utc) =
+            build_input_envelope("uplink", b"hello");
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["abi"], DNODE_ENVELOPE_ABI);
         assert_eq!(value["port"], "uplink");
@@ -295,7 +335,8 @@ mod tests {
 
     #[test]
     fn valid_output_envelope_with_no_emits_parses() {
-        let output = parse_and_validate_output(&ok_envelope(""), &["reading".to_string()], 8).unwrap();
+        let output =
+            parse_and_validate_output(&ok_envelope(""), &["reading".to_string()], 8).unwrap();
         assert_eq!(output.status, "ok");
         assert!(output.emits.is_empty());
     }
@@ -303,8 +344,11 @@ mod tests {
     #[test]
     fn valid_output_envelope_with_one_emit_parses_and_decodes() {
         let payload_b64 = base64::engine::general_purpose::STANDARD.encode(b"emitted-bytes");
-        let raw = format!(r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#);
-        let output = parse_and_validate_output(raw.as_bytes(), &["reading".to_string()], 8).unwrap();
+        let raw = format!(
+            r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#
+        );
+        let output =
+            parse_and_validate_output(raw.as_bytes(), &["reading".to_string()], 8).unwrap();
         assert_eq!(output.emits.len(), 1);
         assert_eq!(output.emits[0].port, "reading");
         assert_eq!(output.emits[0].payload, b"emitted-bytes");
@@ -321,19 +365,28 @@ mod tests {
     #[test]
     fn invalid_utf8_is_rejected() {
         let raw = [0xff, 0xfe, 0xfd];
-        assert_eq!(parse_and_validate_output(&raw, &[], 8).unwrap_err(), EnvelopeError::InvalidUtf8);
+        assert_eq!(
+            parse_and_validate_output(&raw, &[], 8).unwrap_err(),
+            EnvelopeError::InvalidUtf8
+        );
     }
 
     #[test]
     fn malformed_json_is_rejected() {
         let raw = b"not json at all";
-        assert!(matches!(parse_and_validate_output(raw, &[], 8).unwrap_err(), EnvelopeError::InvalidJson(_)));
+        assert!(matches!(
+            parse_and_validate_output(raw, &[], 8).unwrap_err(),
+            EnvelopeError::InvalidJson(_)
+        ));
     }
 
     #[test]
     fn invalid_status_is_rejected() {
         let raw = br#"{"status":"maybe"}"#;
-        assert!(matches!(parse_and_validate_output(raw, &[], 8).unwrap_err(), EnvelopeError::InvalidStatus(_)));
+        assert!(matches!(
+            parse_and_validate_output(raw, &[], 8).unwrap_err(),
+            EnvelopeError::InvalidStatus(_)
+        ));
     }
 
     #[test]
@@ -351,13 +404,18 @@ mod tests {
             r#"{{"status":"ok","emits":[{{"port":"undeclared","payload_b64":"{}"}}]}}"#,
             base64::engine::general_purpose::STANDARD.encode(b"x")
         );
-        let error = parse_and_validate_output(raw.as_bytes(), &["reading".to_string()], 8).unwrap_err();
-        assert_eq!(error, EnvelopeError::UndeclaredOutputPort("undeclared".to_string()));
+        let error =
+            parse_and_validate_output(raw.as_bytes(), &["reading".to_string()], 8).unwrap_err();
+        assert_eq!(
+            error,
+            EnvelopeError::UndeclaredOutputPort("undeclared".to_string())
+        );
     }
 
     #[test]
     fn malformed_base64_emit_payload_is_rejected() {
-        let raw = br#"{"status":"ok","emits":[{"port":"reading","payload_b64":"not-valid-base64!!"}]}"#;
+        let raw =
+            br#"{"status":"ok","emits":[{"port":"reading","payload_b64":"not-valid-base64!!"}]}"#;
         assert!(matches!(
             parse_and_validate_output(raw, &["reading".to_string()], 8).unwrap_err(),
             EnvelopeError::MalformedBase64(_)
@@ -370,11 +428,13 @@ mod tests {
     #[test]
     fn safe_error_message_never_embeds_guest_value_in_the_static_text() {
         let marker = "SENSITIVE_MARKER_should_never_appear_in_static_text";
-        let (message, offending) = safe_error_message(&EnvelopeError::InvalidStatus(marker.to_string()));
+        let (message, offending) =
+            safe_error_message(&EnvelopeError::InvalidStatus(marker.to_string()));
         assert!(!message.contains(marker));
         assert_eq!(offending, Some(marker.as_bytes().to_vec()));
 
-        let (message, offending) = safe_error_message(&EnvelopeError::UndeclaredOutputPort(marker.to_string()));
+        let (message, offending) =
+            safe_error_message(&EnvelopeError::UndeclaredOutputPort(marker.to_string()));
         assert!(!message.contains(marker));
         assert_eq!(offending, Some(marker.as_bytes().to_vec()));
     }
@@ -387,6 +447,9 @@ mod tests {
     #[test]
     fn guest_cannot_inject_its_own_message_or_correlation_id_into_output() {
         let raw = br#"{"status":"ok","message_id":"guest-forged-id","emits":[]}"#;
-        assert!(matches!(parse_and_validate_output(raw, &[], 8).unwrap_err(), EnvelopeError::InvalidJson(_)));
+        assert!(matches!(
+            parse_and_validate_output(raw, &[], 8).unwrap_err(),
+            EnvelopeError::InvalidJson(_)
+        ));
     }
 }

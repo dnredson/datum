@@ -75,11 +75,14 @@ use crate::dcode::authorization::DCodeInvocationAuthorizationV1;
 use crate::dcode::dserv_artifact::{recompute_dserv_artifact_digest, CanonicalDServArtifactV1};
 use crate::dcode::envelope::{self, EnvelopeError};
 use crate::dcode::evidence::{
-    DCodeAppliedLimits, DCodeEmitEvidenceV1, DCodeInvocationEvidenceV1, DCodeInvocationOutcome, DCODE_EVIDENCE_SCHEMA,
+    DCodeAppliedLimits, DCodeEmitEvidenceV1, DCodeInvocationEvidenceV1, DCodeInvocationOutcome,
+    DCODE_EVIDENCE_SCHEMA,
 };
 use crate::dcode::identity::sha256_hex;
 use crate::dcode::module_store::DCodeModuleStore;
-use crate::dcode::runtime::{DCodeModuleCache, ExecutionOutcome, ExecutionOutput, InvocationLimits};
+use crate::dcode::runtime::{
+    DCodeModuleCache, ExecutionOutcome, ExecutionOutput, InvocationLimits,
+};
 
 /// Executes one D-Code invocation given a digest, limits, and raw (already
 /// envelope-wrapped) input bytes. `InProcessExecutor` is for fast unit
@@ -205,8 +208,19 @@ pub fn invoke_dcode_governed_capturing_emits(
 ) -> Result<GovernedDCodeInvocationResult, String> {
     let local_identity = crate::dcode::local_identity::load_local_identity(dnode_root)?;
     let worker_binary = crate::dcode::worker::trusted_sibling_worker_binary_path();
-    let executor = crate::dcode::worker::IsolatedWorkerExecutor { worker_binary: &worker_binary, module_store_root: dnode_root };
-    let inner = invoke_dcode_capturing_emits(&executor, module_store, authorization, artifact, &local_identity.node_id, input_port, input);
+    let executor = crate::dcode::worker::IsolatedWorkerExecutor {
+        worker_binary: &worker_binary,
+        module_store_root: dnode_root,
+    };
+    let inner = invoke_dcode_capturing_emits(
+        &executor,
+        module_store,
+        authorization,
+        artifact,
+        &local_identity.node_id,
+        input_port,
+        input,
+    );
     Ok(GovernedDCodeInvocationResult { inner })
 }
 
@@ -231,7 +245,15 @@ pub fn invoke_dcode_governed_capturing_emits_for_test(
     input_port: &str,
     input: &[u8],
 ) -> GovernedDCodeInvocationResult {
-    let inner = invoke_dcode_capturing_emits(executor, module_store, authorization, artifact, this_node_id, input_port, input);
+    let inner = invoke_dcode_capturing_emits(
+        executor,
+        module_store,
+        authorization,
+        artifact,
+        this_node_id,
+        input_port,
+        input,
+    );
     GovernedDCodeInvocationResult { inner }
 }
 
@@ -244,7 +266,18 @@ pub fn invoke_dcode(
     input_port: &str,
     input: &[u8],
 ) -> DCodeInvocationEvidenceV1 {
-    invoke_dcode_impl(executor, module_store, authorization, artifact, this_node_id, input_port, input, None, None).evidence
+    invoke_dcode_impl(
+        executor,
+        module_store,
+        authorization,
+        artifact,
+        this_node_id,
+        input_port,
+        input,
+        None,
+        None,
+    )
+    .evidence
 }
 
 /// Independent review fix v2 (I1A/I1B): identical to `invoke_dcode` except it
@@ -265,7 +298,17 @@ pub fn invoke_dcode_capturing_emits(
     input_port: &str,
     input: &[u8],
 ) -> DCodeInvocationResult {
-    invoke_dcode_impl(executor, module_store, authorization, artifact, this_node_id, input_port, input, None, None)
+    invoke_dcode_impl(
+        executor,
+        module_store,
+        authorization,
+        artifact,
+        this_node_id,
+        input_port,
+        input,
+        None,
+        None,
+    )
 }
 
 /// Independent review fix v2 (I2A): identical to `invoke_dcode` except BOTH
@@ -401,7 +444,10 @@ fn invoke_dcode_impl(
             evidence.error_code = Some($code.to_string());
             evidence.error_message = Some($message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
+            return DCodeInvocationResult {
+                evidence,
+                validated_emits: Vec::new(),
+            };
         }};
     }
 
@@ -409,7 +455,10 @@ fn invoke_dcode_impl(
         fail!(
             DCodeInvocationOutcome::StaleAuthority,
             "authorization_wrong_node",
-            format!("authorization targets node '{}', not this node '{this_node_id}'", authorization.node_id)
+            format!(
+                "authorization targets node '{}', not this node '{this_node_id}'",
+                authorization.node_id
+            )
         );
     }
 
@@ -449,7 +498,10 @@ fn invoke_dcode_impl(
         fail!(
             DCodeInvocationOutcome::ValidationFailed,
             "artifact_abi_mismatch",
-            format!("artifact ABI '{artifact_abi}' does not match authorization ABI '{}'", authorization.dnode_abi)
+            format!(
+                "artifact ABI '{artifact_abi}' does not match authorization ABI '{}'",
+                authorization.dnode_abi
+            )
         );
     }
     if artifact.dcode.sha256 != authorization.dserv_artifact_digest {
@@ -502,14 +554,27 @@ fn invoke_dcode_impl(
     }
 
     // R4C: the input port must be one the artifact actually declares.
-    let declared_input_ports: Vec<String> = artifact.ports.inputs.iter().map(|port| port.port.clone()).collect();
+    let declared_input_ports: Vec<String> = artifact
+        .ports
+        .inputs
+        .iter()
+        .map(|port| port.port.clone())
+        .collect();
     if let Err(error) = envelope::validate_input_port(&declared_input_ports, input_port) {
-        fail!(DCodeInvocationOutcome::ValidationFailed, "undeclared_input_port", error.to_string());
+        fail!(
+            DCodeInvocationOutcome::ValidationFailed,
+            "undeclared_input_port",
+            error.to_string()
+        );
     }
 
     let module_bytes = match module_store.load(&authorization.dserv_artifact_digest) {
         Ok(bytes) => bytes,
-        Err(error) => fail!(DCodeInvocationOutcome::ValidationFailed, "module_load_failed", error),
+        Err(error) => fail!(
+            DCodeInvocationOutcome::ValidationFailed,
+            "module_load_failed",
+            error
+        ),
     };
     // F3: record the ACTUAL loaded module length directly, before the R3
     // check below can early-return -- so even a size-mismatch failure's
@@ -544,9 +609,19 @@ fn invoke_dcode_impl(
     // `invoke_dcode_with_delivery_identity`) supplies BOTH host-owned
     // identities so a D-Call delivery grant's own bound message_id/
     // correlation_id are the exact values the guest actually receives.
-    let (envelope_bytes, message_id, correlation_id, received_at_utc) = match (identity_override, correlation_override) {
-        (Some((message_id, correlation_id)), _) => envelope::build_input_envelope_with_identity(input_port, input, message_id, correlation_id),
-        (None, Some(correlation_id)) => envelope::build_input_envelope_with_correlation(input_port, input, correlation_id),
+    let (envelope_bytes, message_id, correlation_id, received_at_utc) =
+        match (identity_override, correlation_override) {
+            (Some((message_id, correlation_id)), _) => {
+                envelope::build_input_envelope_with_identity(
+                    input_port,
+                    input,
+                    message_id,
+                    correlation_id,
+                )
+            }
+            (None, Some(correlation_id)) => {
+                envelope::build_input_envelope_with_correlation(input_port, input, correlation_id)
+            }
         (None, None) => envelope::build_input_envelope(input_port, input),
     };
     evidence.message_id = message_id;
@@ -558,28 +633,41 @@ fn invoke_dcode_impl(
     evidence.input_envelope_size = envelope_bytes.len();
     evidence.received_at_utc = received_at_utc;
 
-    let raw_output = match executor.execute(&authorization.dserv_artifact_digest, &limits, &envelope_bytes) {
+    let raw_output = match executor.execute(
+        &authorization.dserv_artifact_digest,
+        &limits,
+        &envelope_bytes,
+    ) {
         ExecutionOutcome::Success(output) => output,
         ExecutionOutcome::ValidationFailed(message) => {
             evidence.outcome = DCodeInvocationOutcome::ValidationFailed;
             evidence.error_code = Some("validation_failed".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
+            return DCodeInvocationResult {
+                evidence,
+                validated_emits: Vec::new(),
+            };
         }
         ExecutionOutcome::ResourceLimit(message) => {
             evidence.outcome = DCodeInvocationOutcome::ResourceLimit;
             evidence.error_code = Some("resource_limit".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
+            return DCodeInvocationResult {
+                evidence,
+                validated_emits: Vec::new(),
+            };
         }
         ExecutionOutcome::Trap(message) => {
             evidence.outcome = DCodeInvocationOutcome::Trap;
             evidence.error_code = Some("trap".to_string());
             evidence.error_message = Some(message);
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
+            return DCodeInvocationResult {
+                evidence,
+                validated_emits: Vec::new(),
+            };
         }
     };
 
@@ -594,7 +682,10 @@ fn invoke_dcode_impl(
         ExecutionOutput::NoOutput => {
             evidence.outcome = DCodeInvocationOutcome::Success;
             evidence.duration_ms = started.elapsed().as_millis() as u64;
-            return DCodeInvocationResult { evidence, validated_emits: Vec::new() };
+            return DCodeInvocationResult {
+                evidence,
+                validated_emits: Vec::new(),
+            };
         }
         ExecutionOutput::Bytes(bytes) => bytes,
     };
@@ -604,9 +695,17 @@ fn invoke_dcode_impl(
 
     // R4B/R4C: parse and fail-closed-validate the output envelope.
     let mut validated_emits: Vec<ValidatedDCodeEmit> = Vec::new();
-    let declared_output_ports: Vec<String> = artifact.ports.outputs.iter().map(|port| port.port.clone()).collect();
-    match envelope::parse_and_validate_output(&raw_output, &declared_output_ports, artifact.limits.max_emits_per_invocation)
-    {
+    let declared_output_ports: Vec<String> = artifact
+        .ports
+        .outputs
+        .iter()
+        .map(|port| port.port.clone())
+        .collect();
+    match envelope::parse_and_validate_output(
+        &raw_output,
+        &declared_output_ports,
+        artifact.limits.max_emits_per_invocation,
+    ) {
         Ok(validated) => {
             evidence.output_status = Some(validated.status.clone());
             // G3A: never persist the guest-controlled `reason` string
@@ -638,7 +737,8 @@ fn invoke_dcode_impl(
         }
         Err(error) => {
             evidence.outcome = DCodeInvocationOutcome::ValidationFailed;
-            evidence.error_code = Some(match error {
+            evidence.error_code = Some(
+                match error {
                 EnvelopeError::InvalidUtf8 => "output_invalid_utf8",
                 EnvelopeError::InvalidJson(_) => "output_invalid_json",
                 EnvelopeError::InvalidStatus(_) => "output_invalid_status",
@@ -646,7 +746,9 @@ fn invoke_dcode_impl(
                 EnvelopeError::TooManyEmits { .. } => "output_too_many_emits",
                 EnvelopeError::UndeclaredInputPort(_) => "output_undeclared_input_port",
                 EnvelopeError::UndeclaredOutputPort(_) => "output_undeclared_output_port",
-            }.to_string());
+                }
+                .to_string(),
+            );
             // G3B: `error_message` is now a STATIC, safe classification --
             // never the guest-controlled offending value (e.g. an invalid
             // `status` string, or an undeclared emit `port` name) verbatim.
@@ -663,18 +765,22 @@ fn invoke_dcode_impl(
     }
 
     evidence.duration_ms = started.elapsed().as_millis() as u64;
-    DCodeInvocationResult { evidence, validated_emits }
+    DCodeInvocationResult {
+        evidence,
+        validated_emits,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dcode::abi::DNODE_ABI_V0_REQUIRED_EXPORTS;
     use crate::dcode::authorization::CanonicalContractReferenceV1;
     use crate::dcode::dserv_artifact::{
-        DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1, DServArtifactLimitsV1,
-        DServArtifactPortV1, DServArtifactPortsV1, DServArtifactSafetyV1, CANONICAL_DSERV_ARTIFACT_SCHEMA,
+        DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1,
+        DServArtifactLimitsV1, DServArtifactPortV1, DServArtifactPortsV1, DServArtifactSafetyV1,
+        CANONICAL_DSERV_ARTIFACT_SCHEMA,
     };
-    use crate::dcode::abi::DNODE_ABI_V0_REQUIRED_EXPORTS;
 
     const ECHO_WAT: &str = r#"
 (module
@@ -706,10 +812,7 @@ mod tests {
     /// ADR-0003 output envelope with the given emits (as a literal JSON
     /// array snippet) baked into the returned bytes via a data segment.
     fn respond_wat(body: &str) -> Vec<u8> {
-        let escaped: String = body
-            .bytes()
-            .map(|b| format!("\\{:02x}", b))
-            .collect();
+        let escaped: String = body.bytes().map(|b| format!("\\{:02x}", b)).collect();
         let module = format!(
             r#"
 (module
@@ -726,9 +829,18 @@ mod tests {
         wat::parse_str(&module).unwrap()
     }
 
-    fn setup_with_module(module_bytes: Vec<u8>) -> (DCodeModuleCache, DCodeModuleStore, DCodeInvocationAuthorizationV1, CanonicalDServArtifactV1) {
+    fn setup_with_module(
+        module_bytes: Vec<u8>,
+    ) -> (
+        DCodeModuleCache,
+        DCodeModuleStore,
+        DCodeInvocationAuthorizationV1,
+        CanonicalDServArtifactV1,
+    ) {
         let digest = sha256_hex(&module_bytes);
-        let store = DCodeModuleStore::new(std::env::temp_dir().join(format!("datum-dcode-invoke-{}", uuid::Uuid::new_v4())));
+        let store = DCodeModuleStore::new(
+            std::env::temp_dir().join(format!("datum-dcode-invoke-{}", uuid::Uuid::new_v4())),
+        );
         store.install(&module_bytes, &digest).unwrap();
         let cache = DCodeModuleCache::new().unwrap();
 
@@ -747,12 +859,23 @@ mod tests {
             abi: DServArtifactAbiV1 {
                 name: "datum-dnode".to_string(),
                 version: "0".to_string(),
-                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS.iter().map(|s| s.to_string()).collect(),
+                required_exports: DNODE_ABI_V0_REQUIRED_EXPORTS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 allowed_imports: Vec::new(),
             },
             ports: DServArtifactPortsV1 {
-                inputs: vec![DServArtifactPortV1 { port: "uplink".to_string(), payload_schema: "s".to_string(), external: true }],
-                outputs: vec![DServArtifactPortV1 { port: "reading".to_string(), payload_schema: "s".to_string(), external: false }],
+                inputs: vec![DServArtifactPortV1 {
+                    port: "uplink".to_string(),
+                    payload_schema: "s".to_string(),
+                    external: true,
+                }],
+                outputs: vec![DServArtifactPortV1 {
+                    port: "reading".to_string(),
+                    payload_schema: "s".to_string(),
+                    external: false,
+                }],
             },
             limits: DServArtifactLimitsV1 {
                 fuel_per_invocation: 5_000_000,
@@ -778,8 +901,16 @@ mod tests {
             application_id: "app:sensor-pipeline".to_string(),
             service_id: "decode".to_string(),
             node_id: "node-1".to_string(),
-            dmap_ref: CanonicalContractReferenceV1 { id: "dmap:1".to_string(), revision: 1, digest: format!("sha256:{}", "1".repeat(64)) },
-            dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:1".to_string(), revision: 1, digest: format!("sha256:{}", "2".repeat(64)) },
+            dmap_ref: CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "1".repeat(64)),
+            },
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: "dgraph:1".to_string(),
+                revision: 1,
+                digest: format!("sha256:{}", "2".repeat(64)),
+            },
             dserv_artifact_id: "dserv:sensor-pipeline:decode".to_string(),
             dserv_artifact_digest: digest,
             dserv_artifact_descriptor_digest: descriptor_digest,
@@ -788,15 +919,31 @@ mod tests {
         (cache, store, authorization, artifact)
     }
 
-    fn setup() -> (DCodeModuleCache, DCodeModuleStore, DCodeInvocationAuthorizationV1, CanonicalDServArtifactV1) {
+    fn setup() -> (
+        DCodeModuleCache,
+        DCodeModuleStore,
+        DCodeInvocationAuthorizationV1,
+        CanonicalDServArtifactV1,
+    ) {
         setup_with_module(respond_wat(r#"{"status":"ok","emits":[]}"#))
     }
 
     #[test]
     fn authorized_invocation_with_locally_installed_module_succeeds() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert_eq!(evidence.output_status.as_deref(), Some("ok"));
         assert!(evidence.fresh_instance_per_invocation);
@@ -811,10 +958,22 @@ mod tests {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(b"emitted!")
         };
-        let (cache, store, authorization, artifact) =
-            setup_with_module(respond_wat(&format!(r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#)));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let (cache, store, authorization, artifact) = setup_with_module(respond_wat(&format!(
+            r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#
+        )));
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert_eq!(evidence.emits.len(), 1);
         assert_eq!(evidence.emits[0].port, "reading");
@@ -824,17 +983,35 @@ mod tests {
 
     #[test]
     fn rejected_status_is_still_an_infrastructure_success() {
-        let (cache, store, authorization, artifact) =
-            setup_with_module(respond_wat(r#"{"status":"rejected","reason":"business rule declined"}"#));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let (cache, store, authorization, artifact) = setup_with_module(respond_wat(
+            r#"{"status":"rejected","reason":"business rule declined"}"#,
+        ));
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert_eq!(evidence.output_status.as_deref(), Some("rejected"));
         // G3A: the reason TEXT is never persisted -- only its presence and
         // digest/size.
         assert!(evidence.output_reason_present);
-        assert_eq!(evidence.output_reason_sha256, Some(sha256_hex(b"business rule declined")));
-        assert_eq!(evidence.output_reason_size, Some("business rule declined".len()));
+        assert_eq!(
+            evidence.output_reason_sha256,
+            Some(sha256_hex(b"business rule declined"))
+        );
+        assert_eq!(
+            evidence.output_reason_size,
+            Some("business rule declined".len())
+        );
     }
 
     // -- H1: canonical "no output" (exact packed `i64` 0) --------------------
@@ -862,8 +1039,19 @@ mod tests {
     #[test]
     fn exact_no_output_succeeds_without_pretending_a_payload_existed() {
         let (cache, store, authorization, artifact) = setup_with_module(no_output_bytes());
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert_eq!(evidence.error_code, None);
         assert_eq!(evidence.output_status, None);
@@ -880,8 +1068,19 @@ mod tests {
     #[test]
     fn ordinary_json_output_is_unaffected_by_the_no_output_fix() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert_eq!(evidence.output_status.as_deref(), Some("ok"));
     }
@@ -892,8 +1091,19 @@ mod tests {
     #[test]
     fn malformed_non_empty_json_output_still_fails() {
         let (cache, store, authorization, artifact) = setup_with_module(echo_bytes());
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
         assert_eq!(evidence.error_code.as_deref(), Some("output_invalid_json"));
     }
@@ -901,11 +1111,22 @@ mod tests {
     #[test]
     fn malformed_output_envelope_is_rejected() {
         let (cache, store, authorization, artifact) = setup_with_module(echo_bytes());
-        let executor = InProcessExecutor { cache: &cache, store: &store };
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
         // Echo module returns whatever bytes it was given -- since input is
         // now envelope-wrapped JSON with no top-level "status" field, this
         // is NOT a valid output envelope.
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
         assert_eq!(evidence.error_code.as_deref(), Some("output_invalid_json"));
     }
@@ -913,8 +1134,19 @@ mod tests {
     #[test]
     fn wrong_node_is_rejected_as_stale_authority() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-2", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-2",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::StaleAuthority);
     }
 
@@ -922,10 +1154,24 @@ mod tests {
     fn artifact_digest_mismatch_is_rejected() {
         let (cache, store, authorization, mut artifact) = setup();
         artifact.dcode.sha256 = "0".repeat(64);
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("artifact_digest_mismatch"));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("artifact_digest_mismatch")
+        );
     }
 
     /// R2 regression: changing only a descriptor field (limits) while the
@@ -935,10 +1181,24 @@ mod tests {
     fn changing_only_limits_is_caught_by_the_real_invocation_path() {
         let (cache, store, authorization, mut artifact) = setup();
         artifact.limits.fuel_per_invocation *= 2; // module bytes/sha256 unchanged
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("artifact_descriptor_digest_mismatch"));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("artifact_descriptor_digest_mismatch")
+        );
     }
 
     /// R3 regression: declared size_bytes not matching the real module.
@@ -950,9 +1210,21 @@ mod tests {
         // authorization's descriptor digest to match, so this test isolates
         // the R3 byte-length check specifically, not the (already separately
         // tested) R2 descriptor-digest binding.
-        authorization.dserv_artifact_descriptor_digest = recompute_dserv_artifact_digest(&artifact).unwrap();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        authorization.dserv_artifact_descriptor_digest =
+            recompute_dserv_artifact_digest(&artifact).unwrap();
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
         assert_eq!(evidence.error_code.as_deref(), Some("module_size_mismatch"));
     }
@@ -961,20 +1233,49 @@ mod tests {
     #[test]
     fn undeclared_input_port_is_rejected() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "not-a-real-port", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "not-a-real-port",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("undeclared_input_port"));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("undeclared_input_port")
+        );
     }
 
     #[test]
     fn undeclared_emit_port_is_rejected() {
-        let (cache, store, authorization, artifact) =
-            setup_with_module(respond_wat(r#"{"status":"ok","emits":[{"port":"not-declared","payload_b64":""}]}"#));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let (cache, store, authorization, artifact) = setup_with_module(respond_wat(
+            r#"{"status":"ok","emits":[{"port":"not-declared","payload_b64":""}]}"#,
+        ));
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("output_undeclared_output_port"));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("output_undeclared_output_port")
+        );
     }
 
     #[test]
@@ -982,27 +1283,75 @@ mod tests {
         let (cache, store, authorization, artifact) = setup_with_module(respond_wat(
             r#"{"status":"ok","emits":[{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""},{"port":"reading","payload_b64":""}]}"#,
         ));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("output_too_many_emits"));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("output_too_many_emits")
+        );
     }
 
     #[test]
     fn invocation_creates_no_dmap_or_placement_mutation() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
         let before = format!("{authorization:?}");
-        let _ = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
-        assert_eq!(format!("{authorization:?}"), before, "authorization must remain byte-for-byte unchanged");
+        let _ = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
+        assert_eq!(
+            format!("{authorization:?}"),
+            before,
+            "authorization must remain byte-for-byte unchanged"
+        );
     }
 
     #[test]
     fn host_generated_message_and_correlation_id_are_never_equal_across_two_calls() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let e1 = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
-        let e2 = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let e1 = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
+        let e2 = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_ne!(e1.message_id, e2.message_id);
         assert_ne!(e1.correlation_id, e2.correlation_id);
     }
@@ -1012,8 +1361,19 @@ mod tests {
     #[test]
     fn evidence_carries_exact_authorization_dmap_and_dgraph_digests() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.dmap_digest, authorization.dmap_ref.digest);
         assert_eq!(evidence.dgraph_digest, authorization.dgraph_ref.digest);
         assert!(!evidence.dmap_digest.is_empty());
@@ -1023,10 +1383,27 @@ mod tests {
     #[test]
     fn evidence_carries_exact_artifact_descriptor_digest_separate_from_module_digest() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
-        assert_eq!(evidence.dserv_artifact_descriptor_digest, authorization.dserv_artifact_descriptor_digest);
-        assert_eq!(evidence.dserv_artifact_digest, authorization.dserv_artifact_digest);
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
+        assert_eq!(
+            evidence.dserv_artifact_descriptor_digest,
+            authorization.dserv_artifact_descriptor_digest
+        );
+        assert_eq!(
+            evidence.dserv_artifact_digest,
+            authorization.dserv_artifact_digest
+        );
         assert_ne!(
             evidence.dserv_artifact_descriptor_digest, evidence.dserv_artifact_digest,
             "descriptor digest and module digest must remain two separate identities in evidence too"
@@ -1036,17 +1413,39 @@ mod tests {
     #[test]
     fn evidence_module_size_equals_actual_loaded_module_length() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.module_size_bytes, Some(artifact.dcode.size_bytes));
     }
 
     #[test]
     fn evidence_module_size_is_absent_when_invocation_fails_before_module_load() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
         // Wrong node fails BEFORE the module is ever loaded.
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-2", "uplink", b"hello");
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-2",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::StaleAuthority);
         assert_eq!(evidence.module_size_bytes, None);
     }
@@ -1062,7 +1461,12 @@ mod tests {
     }
 
     impl DCodeExecutor for CapturingExecutor<'_> {
-        fn execute(&self, digest: &str, limits: &InvocationLimits, input: &[u8]) -> ExecutionOutcome {
+        fn execute(
+            &self,
+            digest: &str,
+            limits: &InvocationLimits,
+            input: &[u8],
+        ) -> ExecutionOutcome {
             *self.captured_input.borrow_mut() = Some(input.to_vec());
             self.inner.execute(digest, limits, input)
         }
@@ -1071,10 +1475,27 @@ mod tests {
     #[test]
     fn evidence_envelope_digest_and_size_match_the_exact_bytes_sent_to_the_executor() {
         let (cache, store, authorization, artifact) = setup();
-        let executor =
-            CapturingExecutor { inner: InProcessExecutor { cache: &cache, store: &store }, captured_input: std::cell::RefCell::new(None) };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
-        let captured = executor.captured_input.borrow().clone().expect("executor must have been called");
+        let executor = CapturingExecutor {
+            inner: InProcessExecutor {
+                cache: &cache,
+                store: &store,
+            },
+            captured_input: std::cell::RefCell::new(None),
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
+        let captured = executor
+            .captured_input
+            .borrow()
+            .clone()
+            .expect("executor must have been called");
 
         assert_eq!(evidence.input_envelope_sha256, sha256_hex(&captured));
         assert_eq!(evidence.input_envelope_size, captured.len());
@@ -1090,8 +1511,19 @@ mod tests {
     #[test]
     fn raw_payload_digest_remains_distinct_from_envelope_digest() {
         let (cache, store, authorization, artifact) = setup();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.input_sha256, sha256_hex(b"hello"));
         assert_ne!(
             evidence.input_sha256, evidence.input_envelope_sha256,
@@ -1111,9 +1543,21 @@ mod tests {
     fn structurally_invalid_artifact_is_rejected_before_use() {
         let (cache, store, mut authorization, mut artifact) = setup();
         artifact.limits.max_emits_per_invocation = 0; // validate() rejects this
-        authorization.dserv_artifact_descriptor_digest = recompute_dserv_artifact_digest(&artifact).unwrap();
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"hello");
+        authorization.dserv_artifact_descriptor_digest =
+            recompute_dserv_artifact_digest(&artifact).unwrap();
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"hello",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
         assert_eq!(evidence.error_code.as_deref(), Some("artifact_invalid"));
     }
@@ -1126,16 +1570,37 @@ mod tests {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(emit_marker.as_bytes())
         };
-        let (cache, store, authorization, artifact) =
-            setup_with_module(respond_wat(&format!(r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#)));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", payload_marker.as_bytes());
+        let (cache, store, authorization, artifact) = setup_with_module(respond_wat(&format!(
+            r#"{{"status":"ok","emits":[{{"port":"reading","payload_b64":"{payload_b64}"}}]}}"#
+        )));
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            payload_marker.as_bytes(),
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
 
         let evidence_json = serde_json::to_string(&evidence).unwrap();
-        assert!(!evidence_json.contains(payload_marker), "the full raw caller payload must never appear in evidence JSON");
-        assert!(!evidence_json.contains(emit_marker), "the full emitted payload must never appear in evidence JSON");
-        assert!(!evidence_json.contains(&payload_b64), "the base64 emitted payload must never appear in evidence JSON");
+        assert!(
+            !evidence_json.contains(payload_marker),
+            "the full raw caller payload must never appear in evidence JSON"
+        );
+        assert!(
+            !evidence_json.contains(emit_marker),
+            "the full emitted payload must never appear in evidence JSON"
+        );
+        assert!(
+            !evidence_json.contains(&payload_b64),
+            "the base64 emitted payload must never appear in evidence JSON"
+        );
     }
 
     // -- G3C: adversarial evidence-exfiltration tests ------------------------
@@ -1144,16 +1609,29 @@ mod tests {
     // must succeed -- evidence may record that something guest-controlled
     // existed (a digest/size/boolean), never the value itself.
 
-    const EXFIL_MARKER: &str = "SUPER_SECRET_DCODE_PAYLOAD_MARKER_should_never_appear_in_evidence_json";
+    const EXFIL_MARKER: &str =
+        "SUPER_SECRET_DCODE_PAYLOAD_MARKER_should_never_appear_in_evidence_json";
 
     /// G3C-1/7/8/9/10: exfiltration attempt via the output envelope `reason`
     /// field.
     #[test]
     fn evidence_never_leaks_a_marker_via_output_reason() {
-        let (cache, store, authorization, artifact) =
-            setup_with_module(respond_wat(&format!(r#"{{"status":"rejected","reason":"{EXFIL_MARKER}"}}"#)));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let (cache, store, authorization, artifact) = setup_with_module(respond_wat(&format!(
+            r#"{{"status":"rejected","reason":"{EXFIL_MARKER}"}}"#
+        )));
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
         assert!(evidence.output_reason_present);
         // 7/8: digest/size correctly identify the REAL reason bytes, without
@@ -1162,7 +1640,10 @@ mod tests {
         assert!(evidence.output_reason_size.unwrap() > 0);
 
         let evidence_json = serde_json::to_string(&evidence).unwrap();
-        assert!(!evidence_json.contains(EXFIL_MARKER), "the reason marker must never appear verbatim in evidence JSON");
+        assert!(
+            !evidence_json.contains(EXFIL_MARKER),
+            "the reason marker must never appear verbatim in evidence JSON"
+        );
     }
 
     /// G3C-2/10: exfiltration attempt via an invalid `status` value.
@@ -1170,16 +1651,39 @@ mod tests {
     fn evidence_never_leaks_a_marker_via_invalid_status() {
         let (cache, store, authorization, artifact) =
             setup_with_module(respond_wat(&format!(r#"{{"status":"{EXFIL_MARKER}"}}"#)));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
         // 10: error_code is a deterministic, non-content-bearing classifier.
-        assert_eq!(evidence.error_code.as_deref(), Some("output_invalid_status"));
-        assert_eq!(evidence.error_offending_value_sha256, Some(sha256_hex(EXFIL_MARKER.as_bytes())));
-        assert_eq!(evidence.error_offending_value_size, Some(EXFIL_MARKER.len()));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("output_invalid_status")
+        );
+        assert_eq!(
+            evidence.error_offending_value_sha256,
+            Some(sha256_hex(EXFIL_MARKER.as_bytes()))
+        );
+        assert_eq!(
+            evidence.error_offending_value_size,
+            Some(EXFIL_MARKER.len())
+        );
 
         let evidence_json = serde_json::to_string(&evidence).unwrap();
-        assert!(!evidence_json.contains(EXFIL_MARKER), "the invalid status marker must never appear verbatim in evidence JSON");
+        assert!(
+            !evidence_json.contains(EXFIL_MARKER),
+            "the invalid status marker must never appear verbatim in evidence JSON"
+        );
     }
 
     /// G3C-3/10: exfiltration attempt via an undeclared output port name.
@@ -1188,13 +1692,33 @@ mod tests {
         let (cache, store, authorization, artifact) = setup_with_module(respond_wat(&format!(
             r#"{{"status":"ok","emits":[{{"port":"{EXFIL_MARKER}","payload_b64":""}}]}}"#
         )));
-        let executor = InProcessExecutor { cache: &cache, store: &store };
-        let evidence = invoke_dcode(&executor, &store, &authorization, &artifact, "node-1", "uplink", b"x");
+        let executor = InProcessExecutor {
+            cache: &cache,
+            store: &store,
+        };
+        let evidence = invoke_dcode(
+            &executor,
+            &store,
+            &authorization,
+            &artifact,
+            "node-1",
+            "uplink",
+            b"x",
+        );
         assert_eq!(evidence.outcome, DCodeInvocationOutcome::ValidationFailed);
-        assert_eq!(evidence.error_code.as_deref(), Some("output_undeclared_output_port"));
-        assert_eq!(evidence.error_offending_value_sha256, Some(sha256_hex(EXFIL_MARKER.as_bytes())));
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("output_undeclared_output_port")
+        );
+        assert_eq!(
+            evidence.error_offending_value_sha256,
+            Some(sha256_hex(EXFIL_MARKER.as_bytes()))
+        );
 
         let evidence_json = serde_json::to_string(&evidence).unwrap();
-        assert!(!evidence_json.contains(EXFIL_MARKER), "the undeclared-port marker must never appear verbatim in evidence JSON");
+        assert!(
+            !evidence_json.contains(EXFIL_MARKER),
+            "the undeclared-port marker must never appear verbatim in evidence JSON"
+        );
     }
 }

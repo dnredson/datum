@@ -41,8 +41,12 @@ impl DCodeModuleStore {
         if final_path.is_file() {
             // Idempotent: verify what's already there is not corrupted,
             // rather than trusting its mere presence.
-            let existing = fs::read(&final_path)
-                .map_err(|error| format!("read existing D-Code module {}: {error}", final_path.display()))?;
+            let existing = fs::read(&final_path).map_err(|error| {
+                format!(
+                    "read existing D-Code module {}: {error}",
+                    final_path.display()
+                )
+            })?;
             if sha256_hex(&existing) == digest {
                 return Ok(digest);
             }
@@ -53,18 +57,36 @@ impl DCodeModuleStore {
         }
 
         let dir = self.sha256_dir();
-        fs::create_dir_all(&dir).map_err(|error| format!("create D-Code module store dir {}: {error}", dir.display()))?;
+        fs::create_dir_all(&dir).map_err(|error| {
+            format!("create D-Code module store dir {}: {error}", dir.display())
+        })?;
         let tmp_path = dir.join(format!(".{digest}.{}.tmp", std::process::id()));
         {
-            let mut file = fs::File::create(&tmp_path)
-                .map_err(|error| format!("create temp D-Code module file {}: {error}", tmp_path.display()))?;
-            file.write_all(bytes)
-                .map_err(|error| format!("write temp D-Code module file {}: {error}", tmp_path.display()))?;
-            file.sync_all().map_err(|error| format!("fsync temp D-Code module file {}: {error}", tmp_path.display()))?;
+            let mut file = fs::File::create(&tmp_path).map_err(|error| {
+                format!(
+                    "create temp D-Code module file {}: {error}",
+                    tmp_path.display()
+                )
+            })?;
+            file.write_all(bytes).map_err(|error| {
+                format!(
+                    "write temp D-Code module file {}: {error}",
+                    tmp_path.display()
+                )
+            })?;
+            file.sync_all().map_err(|error| {
+                format!(
+                    "fsync temp D-Code module file {}: {error}",
+                    tmp_path.display()
+                )
+            })?;
         }
         fs::rename(&tmp_path, &final_path).map_err(|error| {
             let _ = fs::remove_file(&tmp_path);
-            format!("atomically install D-Code module {}: {error}", final_path.display())
+            format!(
+                "atomically install D-Code module {}: {error}",
+                final_path.display()
+            )
         })?;
 
         Ok(digest)
@@ -77,7 +99,8 @@ impl DCodeModuleStore {
     pub fn load(&self, digest: &str) -> Result<Vec<u8>, String> {
         let normalized = crate::dcode::identity::normalize_expected_sha256(digest)?;
         let path = self.module_path(&normalized);
-        let bytes = fs::read(&path).map_err(|error| format!("read D-Code module {}: {error}", path.display()))?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("read D-Code module {}: {error}", path.display()))?;
         let actual = sha256_hex(&bytes);
         if actual != normalized {
             return Err(format!(
@@ -87,7 +110,6 @@ impl DCodeModuleStore {
         }
         Ok(bytes)
     }
-
 }
 
 #[cfg(test)]
@@ -96,7 +118,9 @@ mod tests {
     use uuid::Uuid;
 
     fn fresh_store() -> DCodeModuleStore {
-        DCodeModuleStore::new(std::env::temp_dir().join(format!("datum-dcode-store-{}", Uuid::new_v4())))
+        DCodeModuleStore::new(
+            std::env::temp_dir().join(format!("datum-dcode-store-{}", Uuid::new_v4())),
+        )
     }
 
     #[test]
@@ -104,7 +128,9 @@ mod tests {
         let store = fresh_store();
         let bytes = b"\0asm-fake-module-bytes".to_vec();
         let digest = sha256_hex(&bytes);
-        let installed = store.install(&bytes, &digest).expect("install should succeed");
+        let installed = store
+            .install(&bytes, &digest)
+            .expect("install should succeed");
         assert_eq!(installed, digest);
         assert_eq!(store.load(&digest).unwrap(), bytes);
     }
@@ -152,6 +178,10 @@ mod tests {
         let digest = sha256_hex(&bytes);
         store.install(&bytes, &digest).unwrap();
         let entries: Vec<_> = std::fs::read_dir(store.sha256_dir()).unwrap().collect();
-        assert_eq!(entries.len(), 1, "only the final content-addressed file should remain");
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the final content-addressed file should remain"
+        );
     }
 }

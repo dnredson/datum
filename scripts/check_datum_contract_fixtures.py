@@ -106,7 +106,8 @@ V2_CONTRACT_SHAPE_IDS = [
 # migrated to these explicit `datum.x-fixture.vs1-*` spellings (this checker
 # and its fixtures were updated together; the validators below are otherwise
 # UNCHANGED -- same fields, same finding codes, same rejection rules, only
-# the expected `schema` literal moved). `datum.dforward/1` was NOT touched:
+# the expected `schema` literal moved). DForward is also relabelled now that
+# the compiled production contract owns datum.dforward/1.
 # it never collided with anything Stage 110 introduces.
 VS1_DGRAPH_SCHEMA = "datum.x-fixture.vs1-dgraph/1"
 VS1_DCONTINUUM_SCHEMA = "datum.x-fixture.vs1-dcontinuum/1"
@@ -323,8 +324,8 @@ def v_dcontinuum(obj: dict) -> list[dict]:
 
 def v_dforward(obj: dict) -> list[dict]:
     e: list[dict] = []
-    if obj.get("schema") != "datum.dforward/1":
-        e.append(F("schema_invalid", "schema must be datum.dforward/1"))
+    if obj.get("schema") != "datum.x-fixture.vs1-dforward/1":
+        e.append(F("schema_invalid", "schema must be datum.x-fixture.vs1-dforward/1"))
     for field in ("dforward_id", "revision"):
         if field not in obj:
             e.append(F("missing_field", f"missing '{field}'"))
@@ -586,7 +587,7 @@ def check_fixtures(rep: Report) -> None:
             idx["dgraph"][(obj.get("dgraph_id"), obj.get("revision"))] = obj
         elif schema == VS1_DCONTINUUM_SCHEMA:
             idx["dcontinuum"][(obj.get("continuum_id"), obj.get("revision"))] = obj
-        elif schema == "datum.dforward/1":
+        elif schema == "datum.x-fixture.vs1-dforward/1":
             idx["dforward"][(obj.get("dforward_id"), obj.get("revision"))] = obj
         elif schema == "datum.dserv-artifact/1":
             idx["dserv_artifact"][obj.get("artifact_id")] = obj
@@ -653,7 +654,7 @@ def dispatch_findings(obj: dict, idx: dict) -> list[dict]:
         return v_dgraph(obj)
     if schema == VS1_DCONTINUUM_SCHEMA:
         return v_dcontinuum(obj)
-    if schema == "datum.dforward/1":
+    if schema == "datum.x-fixture.vs1-dforward/1":
         return v_dforward(obj)
     if schema == VS1_DMAP_SCHEMA:
         return v_dmap(obj, idx)

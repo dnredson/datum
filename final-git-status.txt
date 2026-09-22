@@ -1,0 +1,207 @@
+On branch agent/canonical-dforward-diot-v1
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   DATUM/src/agent/bootstrap.rs
+	modified:   DATUM/src/agent/canonical_dcontinuum.rs
+	modified:   DATUM/src/agent/canonical_dgraph.rs
+	modified:   DATUM/src/agent/canonical_dmap.rs
+	modified:   DATUM/src/agent/discovery.rs
+	modified:   DATUM/src/agent/discovery_collectors.rs
+	modified:   DATUM/src/agent/execution_projection.rs
+	modified:   DATUM/src/agent/image_identity_verification.rs
+	modified:   DATUM/src/agent/integrated_service_evidence.rs
+	modified:   DATUM/src/agent/jcs.rs
+	modified:   DATUM/src/agent/mod.rs
+	modified:   DATUM/src/agent/native_process_acquisition.rs
+	modified:   DATUM/src/agent/native_process_runtime.rs
+	modified:   DATUM/src/agent/native_process_state.rs
+	modified:   DATUM/src/agent/operational_evidence.rs
+	modified:   DATUM/src/agent/operational_reconciliation.rs
+	modified:   DATUM/src/agent/operational_service_loop.rs
+	modified:   DATUM/src/agent/resource_discovery.rs
+	modified:   DATUM/src/agent/runtime_artifact.rs
+	modified:   DATUM/src/agent/runtime_kind.rs
+	modified:   DATUM/src/agent/service_artifact.rs
+	modified:   DATUM/src/agent/service_loop.rs
+	modified:   DATUM/src/agent/stage107a_enforcement.rs
+	modified:   DATUM/src/bin/smartsentinel-bootstrap.rs
+	modified:   DATUM/src/bin/smartsentinel-dcall-listen.rs
+	modified:   DATUM/src/bin/smartsentinel-dcode-init.rs
+	modified:   DATUM/src/bin/smartsentinel-dcode-install.rs
+	modified:   DATUM/src/bin/smartsentinel-dcode-invoke.rs
+	modified:   DATUM/src/bin/smartsentinel-dcode-worker.rs
+	modified:   DATUM/src/bin/smartsentinel-discovery.rs
+	modified:   DATUM/src/bin/smartsentinel-observe.rs
+	modified:   DATUM/src/bin/smartsentinel-operational-reconcile.rs
+	modified:   DATUM/src/bin/smartsentinel-runtime-prerequisite.rs
+	modified:   DATUM/src/bin/smartsentinel-service-evidence.rs
+	modified:   DATUM/src/bin/smartsentinel-service-probe.rs
+	modified:   DATUM/src/cli/dgraph_snapshot.rs
+	modified:   DATUM/src/cli/dispatch.rs
+	modified:   DATUM/src/cli/wasm_deploy_live.rs
+	modified:   DATUM/src/core/plugins/host_telemetry_linux.rs
+	modified:   DATUM/src/dcall/client.rs
+	modified:   DATUM/src/dcall/delivery.rs
+	modified:   DATUM/src/dcall/delivery/tests/endpoint_authority.rs
+	modified:   DATUM/src/dcall/evidence.rs
+	modified:   DATUM/src/dcall/listener.rs
+	modified:   DATUM/src/dcode/abi.rs
+	modified:   DATUM/src/dcode/authorization.rs
+	modified:   DATUM/src/dcode/client.rs
+	modified:   DATUM/src/dcode/dserv_artifact.rs
+	modified:   DATUM/src/dcode/envelope.rs
+	modified:   DATUM/src/dcode/evidence.rs
+	modified:   DATUM/src/dcode/identity.rs
+	modified:   DATUM/src/dcode/invoke.rs
+	modified:   DATUM/src/dcode/local_identity.rs
+	modified:   DATUM/src/dcode/module_store.rs
+	modified:   DATUM/src/dcode/runtime.rs
+	modified:   DATUM/src/dcode/worker.rs
+	modified:   DATUM/src/dgraph_snapshot/observed_health.rs
+	modified:   DATUM/src/telemetry.rs
+	modified:   DATUM/src/wasm_runtime/artifact.rs
+	modified:   DATUM/src/wasm_runtime/deployment.rs
+	modified:   DATUM/src/wasm_runtime/generic_runner.rs
+	modified:   DATUM/src/wasm_runtime/integrity.rs
+	modified:   DATUM/src/wasm_runtime/live_deployment.rs
+	modified:   DATUM/tests/dcall_two_node_integration.rs
+	modified:   DATUM/tests/dcode_cli_end_to_end.rs
+	modified:   DATUM/tests/dcode_worker_isolation.rs
+	modified:   DATUM/tests/smartsentinel_fog_bundle_contract.rs
+	modified:   DATUM/tests/smartsentinel_mist_gateway_contract.rs
+	modified:   DATUM/tests/smartsentinel_o2_discovery.rs
+	modified:   DATUM/tests/smartsentinel_o2_operational_wasm.rs
+	modified:   DATUM/tests/smartsentinel_o2_service_artifact.rs
+	modified:   DATUM/tests/smartsentinel_o2_service_deployment_reconciliation.rs
+	modified:   DATUM/tests/support/dcall_proof.rs
+	modified:   MANUAL_VALIDATION_COMMANDS.md
+	modified:   documentation/adr/ADR-0022-canonical-dcall-realization-v0.1.md
+	modified:   documentation/adr/README.md
+	modified:   documentation/architecture/overview.md
+	modified:   documentation/concepts/datum.md
+	modified:   documentation/reference/vs1-contract-fixtures.md
+	modified:   dserver/src/api/alternative_paths.rs
+	modified:   dserver/src/api/artifact_reconciliation.rs
+	modified:   dserver/src/api/controlled_wasm_deployment.rs
+	modified:   dserver/src/api/dcall.rs
+	modified:   dserver/src/api/dcode.rs
+	modified:   dserver/src/api/ddeploy.rs
+	modified:   dserver/src/api/deployment_lifecycle.rs
+	modified:   dserver/src/api/dgraph_capability_negotiation.rs
+	modified:   dserver/src/api/dgraph_rollback_audit.rs
+	modified:   dserver/src/api/dnode_registry.rs
+	modified:   dserver/src/api/external_ai_inference.rs
+	modified:   dserver/src/api/governed_deployment_preflight.rs
+	modified:   dserver/src/api/graphql.rs
+	modified:   dserver/src/api/ingest.rs
+	modified:   dserver/src/api/live_dashboard.rs
+	modified:   dserver/src/api/mod.rs
+	modified:   dserver/src/api/nodes.rs
+	modified:   dserver/src/api/operational_analysis_context.rs
+	modified:   dserver/src/api/operational_dgraph.rs
+	modified:   dserver/src/api/operational_dgraph_acquisition.rs
+	modified:   dserver/src/api/operational_evidence.rs
+	modified:   dserver/src/api/passive_observation_trigger.rs
+	modified:   dserver/src/api/resource_registry.rs
+	modified:   dserver/src/api/secret_preflight.rs
+	modified:   dserver/src/api/secret_resolver_contract.rs
+	modified:   dserver/src/api/sentinel_registration.rs
+	modified:   dserver/src/api/sentinel_telemetry.rs
+	modified:   dserver/src/api/service_artifacts.rs
+	modified:   dserver/src/bin/control-state-inspect.rs
+	modified:   dserver/src/core/active_ai_context.rs
+	modified:   dserver/src/core/ai_gnn_data_contract.rs
+	modified:   dserver/src/core/alternative_path_planner.rs
+	modified:   dserver/src/core/artifact_reconciliation_context.rs
+	modified:   dserver/src/core/canonical_dcontinuum.rs
+	modified:   dserver/src/core/canonical_dgraph.rs
+	modified:   dserver/src/core/canonical_dmap.rs
+	modified:   dserver/src/core/canonical_placement.rs
+	modified:   dserver/src/core/controlled_dgraph_deployment.rs
+	modified:   dserver/src/core/controlled_dgraph_deployment_tests.rs
+	modified:   dserver/src/core/controlled_wasm_deployment.rs
+	modified:   dserver/src/core/controlled_wasm_persistence.rs
+	modified:   dserver/src/core/dcall.rs
+	modified:   dserver/src/core/dcall/tests.rs
+	modified:   dserver/src/core/dcall_endpoint.rs
+	modified:   dserver/src/core/dcode_authorization.rs
+	modified:   dserver/src/core/dcode_registry.rs
+	modified:   dserver/src/core/ddeploy.rs
+	modified:   dserver/src/core/deployment_assignment.rs
+	modified:   dserver/src/core/deployment_dependency.rs
+	modified:   dserver/src/core/deployment_lifecycle.rs
+	modified:   dserver/src/core/deployment_lifecycle_observed.rs
+	modified:   dserver/src/core/deployment_manifest.rs
+	modified:   dserver/src/core/deployment_readiness.rs
+	modified:   dserver/src/core/dgraph_capability_negotiation.rs
+	modified:   dserver/src/core/dgraph_resource_limits.rs
+	modified:   dserver/src/core/dgraph_rollback_audit.rs
+	modified:   dserver/src/core/dnode_registry.rs
+	modified:   dserver/src/core/dserv_artifact.rs
+	modified:   dserver/src/core/execution_projection.rs
+	modified:   dserver/src/core/external_ai_inference.rs
+	modified:   dserver/src/core/gnn_dry_run.rs
+	modified:   dserver/src/core/governed_deployment_preflight.rs
+	modified:   dserver/src/core/jcs.rs
+	modified:   dserver/src/core/mod.rs
+	modified:   dserver/src/core/multinode_dgraph.rs
+	modified:   dserver/src/core/oci_image_pinning.rs
+	modified:   dserver/src/core/oci_registry_resolver.rs
+	modified:   dserver/src/core/operational_analysis_context.rs
+	modified:   dserver/src/core/operational_dgraph.rs
+	modified:   dserver/src/core/operational_dgraph_acquisition.rs
+	modified:   dserver/src/core/operational_dgraph_persistence.rs
+	modified:   dserver/src/core/operational_dgraph_recovery.rs
+	modified:   dserver/src/core/operational_evidence.rs
+	modified:   dserver/src/core/resource_observation.rs
+	modified:   dserver/src/core/resource_registry.rs
+	modified:   dserver/src/core/resource_registry_persistence.rs
+	modified:   dserver/src/core/runtime_kind.rs
+	modified:   dserver/src/core/secret_preflight.rs
+	modified:   dserver/src/core/secret_resolver_contract.rs
+	modified:   dserver/src/core/sentinel_registration.rs
+	modified:   dserver/src/core/sentinel_telemetry.rs
+	modified:   dserver/src/core/service_artifact_registry.rs
+	modified:   dserver/src/main.rs
+	modified:   dserver/src/storage/control_state.rs
+	modified:   dserver/src/storage/operational_evidence.rs
+	modified:   scripts/check_canonical_datum_contracts_v1.py
+	modified:   scripts/check_datum_contract_fixtures.py
+	modified:   scripts/check_datum_contract_fixtures_selftest.py
+	modified:   scripts/fixtures/datum-contracts/canonical-v1/negative/dmap.wrong-schema.json
+	modified:   scripts/fixtures/datum-contracts/vs1/README.md
+	modified:   scripts/fixtures/datum-contracts/vs1/dforward.monitor-f49c8.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	DATUM/src/agent/canonical_dforward.rs
+	DATUM/src/agent/canonical_dmap_v2.rs
+	MANIFEST.txt
+	PHASE113A_REVIEW.md
+	complete-changed-paths.txt
+	documentation/adr/ADR-0023-canonical-dforward-diot-dmap-v2.md
+	dserver/src/core/canonical_dforward.rs
+	dserver/src/core/canonical_dmap_v2.rs
+	dserver/src/core/ddeploy_v2.rs
+	dserver/src/core/dforward_projection.rs
+	final-git-status.txt
+	scripts/__pycache__/
+	scripts/check_phase113a_contracts.py
+	scripts/check_phase113a_contracts_selftest.py
+	scripts/fixtures/datum-contracts/canonical-v1/dforward.smart-sentinel-lab.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.adjacent-diot-interface-mismatch.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.dangling-hop-source.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.dangling-hop-target.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.duplicate-diot.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.external-direction-mismatch.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.incompatible-interface.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.unknown-field.json
+	scripts/fixtures/datum-contracts/canonical-v1/negative/dforward.wrong-schema.json
+	scripts/fixtures/datum-contracts/ddeploy-v2/
+	scripts/fixtures/datum-contracts/dmap-v2/
+	test-results.txt
+
+no changes added to commit (use "git add" and/or "git commit -a")

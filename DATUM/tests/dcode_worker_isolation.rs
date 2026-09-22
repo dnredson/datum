@@ -30,7 +30,8 @@ fn worker_binary() -> std::path::PathBuf {
 }
 
 fn install(module_bytes: &[u8]) -> (std::path::PathBuf, String) {
-    let store_root = std::env::temp_dir().join(format!("datum-dcode-worker-isolation-{}", Uuid::new_v4()));
+    let store_root =
+        std::env::temp_dir().join(format!("datum-dcode-worker-isolation-{}", Uuid::new_v4()));
     let store = datum::dcode::module_store::DCodeModuleStore::new(&store_root);
     let digest = sha256_hex(module_bytes);
     store.install(module_bytes, &digest).unwrap();
@@ -38,7 +39,12 @@ fn install(module_bytes: &[u8]) -> (std::path::PathBuf, String) {
 }
 
 fn default_limits() -> InvocationLimits {
-    InvocationLimits { fuel_per_invocation: 5_000_000, timeout_ms: 2_000, max_memory_pages: 4, max_message_bytes: 65536 }
+    InvocationLimits {
+        fuel_per_invocation: 5_000_000,
+        timeout_ms: 2_000,
+        max_memory_pages: 4,
+        max_message_bytes: 65536,
+    }
 }
 
 /// Independent review v3 (F2): test-assertion tolerance ONLY, for scheduler
@@ -92,7 +98,13 @@ const INFINITE_LOOP_WAT: &str = r#"
 fn echo_module_succeeds_through_the_isolated_worker() {
     let bytes = wat::parse_str(ECHO_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
-    let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &default_limits(), b"hello");
+    let outcome = invoke_isolated(
+        &worker_binary(),
+        &store_root,
+        &digest,
+        &default_limits(),
+        b"hello",
+    );
     match outcome {
         ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"hello"),
         other => panic!("expected Success, got {other:?}"),
@@ -105,10 +117,19 @@ fn stateful_module_still_proves_fresh_instance_per_invocation_across_worker_proc
     let bytes = wat::parse_str(STATEFUL_COUNTER_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
     for _ in 0..3 {
-        match invoke_isolated(&worker_binary(), &store_root, &digest, &default_limits(), b"") {
+        match invoke_isolated(
+            &worker_binary(),
+            &store_root,
+            &digest,
+            &default_limits(),
+            b"",
+        ) {
             ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => {
                 let counter = u32::from_le_bytes(output.try_into().unwrap());
-                assert_eq!(counter, 1, "each separate WORKER PROCESS invocation must observe fresh initial state");
+                assert_eq!(
+                    counter, 1,
+                    "each separate WORKER PROCESS invocation must observe fresh initial state"
+                );
             }
             other => panic!("expected Success, got {other:?}"),
         }
@@ -124,7 +145,10 @@ fn stateful_module_still_proves_fresh_instance_per_invocation_across_worker_proc
 fn infinite_loop_cannot_crash_the_parent_process() {
     let bytes = wat::parse_str(INFINITE_LOOP_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
-    let limits = InvocationLimits { fuel_per_invocation: 10_000, ..default_limits() };
+    let limits = InvocationLimits {
+        fuel_per_invocation: 10_000,
+        ..default_limits()
+    };
 
     // If this call ever crashes THIS process, the test binary itself would
     // abort -- the mere fact that we reach the assertion below, in the SAME
@@ -172,13 +196,20 @@ fn infinite_loop_is_terminated_within_bounded_wall_time_via_timeout() {
     // ever fire -- either way, the parent must return within a bounded time
     // near timeout_ms, not hang indefinitely.
     let timeout_ms = 500;
-    let limits = InvocationLimits { fuel_per_invocation: u64::MAX / 2, timeout_ms, ..default_limits() };
+    let limits = InvocationLimits {
+        fuel_per_invocation: u64::MAX / 2,
+        timeout_ms,
+        ..default_limits()
+    };
 
     let started = Instant::now();
     let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &limits, b"");
     let elapsed = started.elapsed();
 
-    assert!(matches!(outcome, ExecutionOutcome::ResourceLimit(_)), "expected ResourceLimit, got {outcome:?}");
+    assert!(
+        matches!(outcome, ExecutionOutcome::ResourceLimit(_)),
+        "expected ResourceLimit, got {outcome:?}"
+    );
     assert!(
         elapsed < Duration::from_millis(timeout_ms + TEST_TIMEOUT_TOLERANCE_MS),
         "invoke_isolated must return within timeout_ms={timeout_ms}ms plus test tolerance, took {elapsed:?} -- \
@@ -196,7 +227,11 @@ fn very_small_timeout_fails_closed_rather_than_silently_granting_a_grace_period(
     let bytes = wat::parse_str(INFINITE_LOOP_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
     let timeout_ms = 1;
-    let limits = InvocationLimits { fuel_per_invocation: u64::MAX / 2, timeout_ms, ..default_limits() };
+    let limits = InvocationLimits {
+        fuel_per_invocation: u64::MAX / 2,
+        timeout_ms,
+        ..default_limits()
+    };
 
     let started = Instant::now();
     let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &limits, b"");
@@ -220,7 +255,10 @@ fn very_small_timeout_fails_closed_rather_than_silently_granting_a_grace_period(
 fn success_well_inside_timeout_remains_green() {
     let bytes = wat::parse_str(ECHO_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
-    let limits = InvocationLimits { timeout_ms: 2_000, ..default_limits() };
+    let limits = InvocationLimits {
+        timeout_ms: 2_000,
+        ..default_limits()
+    };
     let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &limits, b"hello");
     match outcome {
         ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => assert_eq!(output, b"hello"),
@@ -245,7 +283,13 @@ fn no_output_module_succeeds_through_the_isolated_worker_without_being_parsed_as
 "#;
     let bytes = wat::parse_str(NO_OUTPUT_WAT).unwrap();
     let (store_root, digest) = install(&bytes);
-    let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &default_limits(), b"anything");
+    let outcome = invoke_isolated(
+        &worker_binary(),
+        &store_root,
+        &digest,
+        &default_limits(),
+        b"anything",
+    );
     match outcome {
         ExecutionOutcome::Success(ExecutionOutput::NoOutput) => {}
         other => panic!("expected Success(NoOutput) through the real worker, got {other:?}"),
@@ -257,7 +301,13 @@ fn no_output_module_succeeds_through_the_isolated_worker_without_being_parsed_as
 fn malformed_module_cannot_crash_the_parent_process() {
     let bytes = b"this is not a valid wasm module at all".to_vec();
     let (store_root, digest) = install(&bytes);
-    let outcome = invoke_isolated(&worker_binary(), &store_root, &digest, &default_limits(), b"");
+    let outcome = invoke_isolated(
+        &worker_binary(),
+        &store_root,
+        &digest,
+        &default_limits(),
+        b"",
+    );
     match outcome {
         ExecutionOutcome::ValidationFailed(_) | ExecutionOutcome::ResourceLimit(_) => {}
         other => panic!("expected a safe failure outcome, got {other:?}"),
@@ -270,8 +320,17 @@ fn malformed_module_cannot_crash_the_parent_process() {
 /// success `ExecutionOutcome`, never a panic propagated into this process.
 #[test]
 fn missing_module_produces_a_captured_failure_not_a_panic() {
-    let store_root = std::env::temp_dir().join(format!("datum-dcode-worker-isolation-missing-{}", Uuid::new_v4()));
-    let outcome = invoke_isolated(&worker_binary(), &store_root, &"a".repeat(64), &default_limits(), b"");
+    let store_root = std::env::temp_dir().join(format!(
+        "datum-dcode-worker-isolation-missing-{}",
+        Uuid::new_v4()
+    ));
+    let outcome = invoke_isolated(
+        &worker_binary(),
+        &store_root,
+        &"a".repeat(64),
+        &default_limits(),
+        b"",
+    );
     match outcome {
         ExecutionOutcome::ValidationFailed(_) | ExecutionOutcome::ResourceLimit(_) => {}
         other => panic!("expected a safe failure outcome, got {other:?}"),
@@ -287,11 +346,22 @@ fn repeated_invocations_do_not_leak_worker_state() {
     let (store_root, digest) = install(&bytes);
     let mut counters = Vec::new();
     for _ in 0..5 {
-        match invoke_isolated(&worker_binary(), &store_root, &digest, &default_limits(), b"") {
-            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => counters.push(u32::from_le_bytes(output.try_into().unwrap())),
+        match invoke_isolated(
+            &worker_binary(),
+            &store_root,
+            &digest,
+            &default_limits(),
+            b"",
+        ) {
+            ExecutionOutcome::Success(ExecutionOutput::Bytes(output)) => {
+                counters.push(u32::from_le_bytes(output.try_into().unwrap()))
+            }
             other => panic!("expected Success, got {other:?}"),
         }
     }
-    assert!(counters.iter().all(|&c| c == 1), "every independent worker process must observe fresh state: {counters:?}");
+    assert!(
+        counters.iter().all(|&c| c == 1),
+        "every independent worker process must observe fresh state: {counters:?}"
+    );
     let _ = std::fs::remove_dir_all(&store_root);
 }

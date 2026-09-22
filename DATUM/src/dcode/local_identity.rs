@@ -100,17 +100,30 @@ pub fn init_local_identity(root: &Path, node_id: &str) -> Result<(), String> {
         return Err("local D-Node identity node_id must not be empty".to_string());
     }
 
-    fs::create_dir_all(root).map_err(|error| format!("create D-Node local identity root {}: {error}", root.display()))?;
+    fs::create_dir_all(root).map_err(|error| {
+        format!(
+            "create D-Node local identity root {}: {error}",
+            root.display()
+        )
+    })?;
 
     let lock_file_path = identity_lock_path(root);
     let lock_file = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .open(&lock_file_path)
-        .map_err(|error| format!("open D-Node local identity lock {}: {error}", lock_file_path.display()))?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|error| format!("acquire D-Node local identity lock {}: {error}", lock_file_path.display()))?;
+        .map_err(|error| {
+            format!(
+                "open D-Node local identity lock {}: {error}",
+                lock_file_path.display()
+            )
+        })?;
+    lock_file.lock_exclusive().map_err(|error| {
+        format!(
+            "acquire D-Node local identity lock {}: {error}",
+            lock_file_path.display()
+        )
+    })?;
 
     let result = init_local_identity_while_locked(root, node_id);
 
@@ -144,8 +157,12 @@ fn init_local_identity_while_locked(root: &Path, node_id: &str) -> Result<(), St
         ));
     }
 
-    let identity = DNodeLocalIdentityV1 { schema: DNODE_LOCAL_IDENTITY_SCHEMA.to_string(), node_id: node_id.to_string() };
-    let bytes = serde_json::to_vec_pretty(&identity).map_err(|error| format!("serialize local D-Node identity: {error}"))?;
+    let identity = DNodeLocalIdentityV1 {
+        schema: DNODE_LOCAL_IDENTITY_SCHEMA.to_string(),
+        node_id: node_id.to_string(),
+    };
+    let bytes = serde_json::to_vec_pretty(&identity)
+        .map_err(|error| format!("serialize local D-Node identity: {error}"))?;
 
     // Independent review v5 (H3): the tmp filename embeds this process's PID,
     // which two THREADS in the same process would share -- harmless here
@@ -155,15 +172,31 @@ fn init_local_identity_while_locked(root: &Path, node_id: &str) -> Result<(), St
     // point.
     let tmp_path = root.join(format!(".dnode-local-identity.{}.tmp", std::process::id()));
     {
-        let mut file = fs::File::create(&tmp_path)
-            .map_err(|error| format!("create temp local D-Node identity file {}: {error}", tmp_path.display()))?;
-        file.write_all(&bytes)
-            .map_err(|error| format!("write temp local D-Node identity file {}: {error}", tmp_path.display()))?;
-        file.sync_all().map_err(|error| format!("fsync temp local D-Node identity file {}: {error}", tmp_path.display()))?;
+        let mut file = fs::File::create(&tmp_path).map_err(|error| {
+            format!(
+                "create temp local D-Node identity file {}: {error}",
+                tmp_path.display()
+            )
+        })?;
+        file.write_all(&bytes).map_err(|error| {
+            format!(
+                "write temp local D-Node identity file {}: {error}",
+                tmp_path.display()
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            format!(
+                "fsync temp local D-Node identity file {}: {error}",
+                tmp_path.display()
+            )
+        })?;
     }
     fs::rename(&tmp_path, &path).map_err(|error| {
         let _ = fs::remove_file(&tmp_path);
-        format!("atomically install local D-Node identity {}: {error}", path.display())
+        format!(
+            "atomically install local D-Node identity {}: {error}",
+            path.display()
+        )
     })?;
 
     // H3: verify what is actually on disk after the rename, still while
@@ -185,9 +218,14 @@ fn init_local_identity_while_locked(root: &Path, node_id: &str) -> Result<(), St
 /// JSON, an unsupported schema, or an empty `node_id`.
 pub fn load_local_identity(root: &Path) -> Result<DNodeLocalIdentityV1, String> {
     let path = identity_path(root);
-    let bytes = fs::read(&path).map_err(|error| format!("read local D-Node identity {}: {error}", path.display()))?;
-    let identity: DNodeLocalIdentityV1 = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("local D-Node identity {} is not valid JSON: {error}", path.display()))?;
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("read local D-Node identity {}: {error}", path.display()))?;
+    let identity: DNodeLocalIdentityV1 = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "local D-Node identity {} is not valid JSON: {error}",
+            path.display()
+        )
+    })?;
     if identity.schema != DNODE_LOCAL_IDENTITY_SCHEMA {
         return Err(format!(
             "local D-Node identity {} declares unsupported schema '{}', expected '{DNODE_LOCAL_IDENTITY_SCHEMA}'",
@@ -196,7 +234,10 @@ pub fn load_local_identity(root: &Path) -> Result<DNodeLocalIdentityV1, String> 
         ));
     }
     if identity.node_id.trim().is_empty() {
-        return Err(format!("local D-Node identity {} has an empty node_id", path.display()));
+        return Err(format!(
+            "local D-Node identity {} has an empty node_id",
+            path.display()
+        ));
     }
     Ok(identity)
 }
@@ -267,7 +308,11 @@ mod tests {
     fn unsupported_schema_fails_closed_on_load() {
         let root = fresh_root();
         fs::create_dir_all(&root).unwrap();
-        fs::write(identity_path(&root), br#"{"schema":"datum.dnode-local-identity/9","node_id":"fog-01"}"#).unwrap();
+        fs::write(
+            identity_path(&root),
+            br#"{"schema":"datum.dnode-local-identity/9","node_id":"fog-01"}"#,
+        )
+        .unwrap();
         let error = load_local_identity(&root).unwrap_err();
         assert!(error.contains("unsupported schema"));
     }
@@ -321,9 +366,13 @@ mod tests {
                 })
             })
             .collect();
-        let results: Vec<Result<(), String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let results: Vec<Result<(), String>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
         for result in &results {
-            assert!(result.is_ok(), "every identical concurrent init must succeed, got: {results:?}");
+            assert!(
+                result.is_ok(),
+                "every identical concurrent init must succeed, got: {results:?}"
+            );
         }
         assert_eq!(load_local_identity(&root).unwrap().node_id, "fog-01");
     }
@@ -360,11 +409,25 @@ mod tests {
         assert_eq!(ok_count, 1, "exactly one of two conflicting concurrent inits must win, got: a={result_a:?} b={result_b:?}");
 
         let persisted = load_local_identity(&root).unwrap().node_id;
-        let winner_requested = if result_a.is_ok() { "fog-01" } else { "cloud-01" };
-        assert_eq!(persisted, winner_requested, "the persisted identity must be exactly what the WINNING call requested");
+        let winner_requested = if result_a.is_ok() {
+            "fog-01"
+        } else {
+            "cloud-01"
+        };
+        assert_eq!(
+            persisted, winner_requested,
+            "the persisted identity must be exactly what the WINNING call requested"
+        );
 
-        let loser_error = if result_a.is_ok() { result_b.unwrap_err() } else { result_a.unwrap_err() };
-        assert!(loser_error.contains("conflicting"), "the losing call's error must identify itself as a conflict: {loser_error}");
+        let loser_error = if result_a.is_ok() {
+            result_b.unwrap_err()
+        } else {
+            result_a.unwrap_err()
+        };
+        assert!(
+            loser_error.contains("conflicting"),
+            "the losing call's error must identify itself as a conflict: {loser_error}"
+        );
     }
 
     /// H3 regression 3: after a concurrent race, the final identity file is
@@ -396,7 +459,11 @@ mod tests {
 
         let raw = fs::read(identity_path(&root)).expect("identity file must exist after the race");
         let parsed: Result<DNodeLocalIdentityV1, _> = serde_json::from_slice(&raw);
-        assert!(parsed.is_ok(), "final identity file must be valid JSON, got bytes: {:?}", String::from_utf8_lossy(&raw));
+        assert!(
+            parsed.is_ok(),
+            "final identity file must be valid JSON, got bytes: {:?}",
+            String::from_utf8_lossy(&raw)
+        );
     }
 
     /// H3 regression 4: after a concurrent race, no partial/temporary
@@ -432,6 +499,9 @@ mod tests {
                 name.starts_with(".dnode-local-identity.") && name.ends_with(".tmp")
             })
             .collect();
-        assert!(leftover_tmp_files.is_empty(), "no partial temp identity file may survive a race, found: {leftover_tmp_files:?}");
+        assert!(
+            leftover_tmp_files.is_empty(),
+            "no partial temp identity file may survive a race, found: {leftover_tmp_files:?}"
+        );
     }
 }
