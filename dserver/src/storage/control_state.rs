@@ -60,6 +60,19 @@ pub const DOMAIN_DCALL_ENDPOINT_REGISTRY: &str = "dcall_endpoint_registry";
 /// `final-acceptance-gate.txt` in the review package for the regression
 /// proving this).
 pub const DOMAIN_DCALL_GRANT_STATE: &str = "dcall_grant_state";
+/// DIoT runtime-binding registry (Phase 113B1, ADR-0023): server-owned
+/// OPERATIONAL record of which DIoT placement a D-Call realization actually
+/// resolves to at the transport layer -- broker URI, transport kind, and the
+/// exact DMap/2 + DForward + artifact-authority identity the binding was
+/// registered under. Deliberately a SEPARATE domain from
+/// `DOMAIN_DCALL_ENDPOINT_REGISTRY` (that registry is HTTP-shaped, keyed by
+/// `(node_id, transport)`, and has no notion of a DIoT placement or a
+/// DForward-governed realization) and from canonical DMap/2 itself (which
+/// carries only the caller-declared, format-checked-only
+/// `DIoTArtifactBindingV2` -- never a resolved runtime broker address). No
+/// MQTT network I/O is implemented against this domain yet; it exists purely
+/// to make the governed binding identity durable ahead of that closure.
+pub const DOMAIN_DIOT_RUNTIME_BINDING_REGISTRY: &str = "diot_runtime_binding_registry";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {

@@ -371,15 +371,15 @@ pub async fn post_request_grant(
     // (grant/token/endpoint lookup/network send) has occurred yet, and no
     // duplicate copy of this check exists anywhere else (client/listener
     // code never re-derives a route). A DMap/1 active authority is entirely
-    // unaffected (`v2_dcall_realization_kind` is `None`).
-    if let Some(kind) = &route.v2_dcall_realization_kind {
+    // unaffected (`v2_dcall_realization` is `None`).
+    if let Some(realization) = &route.v2_dcall_realization {
         return Err(finding_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             CanonicalValidationFinding {
                 code: "dcall_realization_transport_not_implemented",
                 message: format!(
-                    "D-Call '{}' is governed under the active DMap/2 with realization kind '{kind}', but Phase 113A implements no runtime transport for it (Phase 113B) -- no grant can be issued yet",
-                    route.call_id
+                    "D-Call '{}' is governed under the active DMap/2 with realization kind '{}', but no runtime transport is implemented for it yet -- no grant can be issued yet",
+                    route.call_id, realization.realization_kind
                 ),
             },
         ));

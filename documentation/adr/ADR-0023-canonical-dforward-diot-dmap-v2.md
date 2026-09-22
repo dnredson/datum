@@ -35,9 +35,17 @@ across schema versions, and never down-converts a DMap/2 digest. These
 invariants are implemented in the new state module and persisted additively
 inside the existing `DDeployStateV1` / `DOMAIN_DDEPLOY_STATE` blob. The
 common accessor rejects simultaneous v1/v2 active authorities. Phase-112
-authority consumers and the HTTP surface remain v1-only; wiring v2 into those
-callers is a follow-on closure item. Cross-version integrity evaluates both
-accepted histories and rejects a missing, stale, or dual active authority.
+authority consumers (D-Code authorization, D-Call route derivation, grant
+issuance) and the HTTP surface consume this common accessor directly and are
+identical whether the active authority is DMap/1 or DMap/2; this wiring is
+complete, not a follow-on item. D-Call route derivation additionally carries
+an exact, typed D-Call realization authority (`DCallRealizationAuthorityV1`)
+whenever the active authority is DMap/2, sourced exclusively from the
+matching `DCallRealizationV2` and the governing DForward's own identity --
+fabricating one when absent is a defect, not an acceptable fallback, since a
+validated DMap/2 always carries exactly one realization per DGraph call.
+Cross-version integrity evaluates both accepted histories and rejects a
+missing, stale, or dual active authority.
 
 DIoT artifact requirements are logical. The v2 record carries binding fields
 (the pre-existing, canonical-`datum.dmap/2` `DIoTArtifactBindingV2`, still
@@ -73,3 +81,22 @@ exact DForward references before deriving a node-local view. It may repeat place
 logical dependencies, realization identities, and external logical bindings;
 it may not originate placement or claim runtime health. Real middleware
 transport is Phase 113B.
+
+Phase 113B1 adds the DIoT runtime-binding registry (`diot_runtime_binding`,
+`DOMAIN_DIOT_RUNTIME_BINDING_REGISTRY`): a server-owned OPERATIONAL record of
+which broker URI a governed DIoT placement's realization resolves to,
+mirroring the Phase-112 D-Call endpoint registry's structural pattern
+(mutable, monotonic revision, JCS+SHA-256 descriptor digest, full structural
+re-validation on reload) rather than its HTTP-specific shape. Every identity
+field except the broker URI is derived exclusively from the active DMap/2
+placement authority; a fail-closed staleness check
+(`verify_runtime_binding_still_current`) proves a previously-registered
+binding's DMap/DForward/artifact-authority identity is still current before
+any consumer may treat it as authoritative, exactly mirroring Phase 112's
+`check_source_execution_binding` philosophy. This registry performs NO MQTT
+network I/O -- no client, connection, publish, subscribe, or credential
+handling exists yet anywhere in DServer. The evolution needed to actually
+authorize a DIoT-realized delivery (extending `DCallDeliveryGrantV1` with the
+realization authority rather than introducing a parallel MQTT-specific grant
+type) is a locked design decision, not yet implemented; `issue_grant` still
+unconditionally refuses any D-Call governed under DMap/2.

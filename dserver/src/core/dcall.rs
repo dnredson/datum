@@ -107,15 +107,34 @@ pub struct DCallRouteV1 {
     /// `"local"` (`ROUTE_KIND_LOCAL`) or `"remote"` (`ROUTE_KIND_REMOTE`) --
     /// derived, never caller-supplied.
     pub route_kind: String,
-    /// Phase 113A (ADR-0023): `Some(realization_kind)` when this D-Call is
-    /// governed under an ACTIVE DMap/2 (always `"via_diot_pubsub"` in v0.1 --
-    /// the only value DMap/2 validation accepts), `None` under DMap/1. A
-    /// route can always be DERIVED under DMap/2 (DGraph/DMap authority is
-    /// unaffected -- see `derive_dcall_route`'s doc comment), but
-    /// `issue_grant` refuses to issue a grant when this is `Some`, since
-    /// Phase 113A implements no runtime transport for any realization
-    /// (Phase 113B). Never caller-supplied.
-    pub v2_dcall_realization_kind: Option<String>,
+    /// Phase 113A/113B1 (ADR-0023): `Some(..)` when this D-Call is governed
+    /// under an ACTIVE DMap/2, `None` under DMap/1. A route can always be
+    /// DERIVED under DMap/2 (DGraph/DMap authority is unaffected -- see
+    /// `derive_dcall_route`'s doc comment), but `issue_grant` refuses to
+    /// issue a grant when this is `Some`, since no runtime transport exists
+    /// for any realization yet (the MQTT wire path is a later closure).
+    /// Never caller-supplied.
+    pub v2_dcall_realization: Option<DCallRealizationAuthorityV1>,
+}
+
+/// Phase 113B1: the exact D-Call realization authority for one D-Call under
+/// an active DMap/2, sourced EXCLUSIVELY from `active_placement_authority()`
+/// (the `DCallRealizationV2` entry matching this route's `call_id`, plus the
+/// governing DForward's own identity) -- never caller input. `realization_kind`
+/// is always `"via_diot_pubsub"` in v0.1 (the only value
+/// `CanonicalDMapV2::validate` ever accepts). `dforward_id`/`dforward_revision`/
+/// `dforward_digest` are carried so a consumer (the DIoT runtime-binding
+/// registry) can detect staleness against the DForward that was active at
+/// registration time without a second lookup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DCallRealizationAuthorityV1 {
+    pub realization_kind: String,
+    pub diot_placement_id: String,
+    pub interface: String,
+    pub channel: String,
+    pub dforward_id: String,
+    pub dforward_revision: u64,
+    pub dforward_digest: String,
 }
 
 /// Independent review fix v4 (K2A): the authority a real source D-Code
@@ -293,25 +312,49 @@ pub fn derive_dcall_route(
         })?;
     let destination_service_id = call.target_service_id.clone();
 
-    // Phase 113A (ADR-0023) realization boundary preparation: route
-    // derivation itself still succeeds under an active DMap/2 (DGraph stays
-    // sole semantic authority, DMap/2 stays sole placement authority --
-    // section 7), but if this D-Call is governed under DMap/2 the caller
+    // Phase 113A/113B1 (ADR-0023) realization boundary: route derivation
+    // itself still succeeds under an active DMap/2 (DGraph stays sole
+    // semantic authority, DMap/2 stays sole placement authority -- section
+    // 7), but if this D-Call is governed under DMap/2 the caller
     // (`issue_grant`, the ONE authoritative production dispatch boundary --
-    // see its own doc comment) must refuse to issue a grant for it, since
-    // Phase 113A defines no runtime transport for ANY canonical realization
-    // (`via_diot_pubsub` is the only value `CanonicalDMapV2::validate` ever
-    // accepts, and it is governed desired-state authority only -- no MQTT/
-    // broker/listener/publisher exists yet; "Real middleware transport is
-    // Phase 113B" per ADR-0023). `None` here means the active authority is
-    // DMap/1 and is entirely unaffected.
-    let v2_dcall_realization_kind = active.v2.as_ref().map(|v2| {
-        v2.dcall_realizations
-            .iter()
-            .find(|r| r.call_id == call_id)
-            .map(|r| r.realization_kind.clone())
-            .unwrap_or_else(|| "via_diot_pubsub".to_string())
-    });
+    // see its own doc comment) must refuse to issue a grant for it, since no
+    // runtime transport exists for ANY canonical realization yet. `None`
+    // here means the active authority is DMap/1 and is entirely unaffected.
+    //
+    // `CanonicalDMapV2::validate` requires EXACTLY ONE `DCallRealizationV2`
+    // per DGraph call (`missing_dcall_realization`), so a validated,
+    // currently-accepted DMap/2 can never be missing one for a call_id that
+    // its own governing DGraph declares. If this lookup nonetheless finds
+    // none, that is persisted-authority corruption/inconsistency -- not a
+    // caller error and not a gap to paper over -- so this fails closed
+    // rather than fabricating a realization (independent review fix: an
+    // earlier version silently invented `"via_diot_pubsub"` here).
+    let v2_dcall_realization = match active.v2.as_ref() {
+        None => None,
+        Some(v2) => {
+            let realization = v2
+                .dcall_realizations
+                .iter()
+                .find(|r| r.call_id == call_id)
+                .ok_or_else(|| {
+                    finding(
+                        "dcall_v2_realization_missing",
+                        format!(
+                            "active DMap/2 governs D-Call '{call_id}' but declares no matching D-Call realization -- this is a persisted-authority inconsistency, not a caller error"
+                        ),
+                    )
+                })?;
+            Some(DCallRealizationAuthorityV1 {
+                realization_kind: realization.realization_kind.clone(),
+                diot_placement_id: realization.diot_placement_id.clone(),
+                interface: realization.interface.clone(),
+                channel: realization.channel.clone(),
+                dforward_id: v2.dforward_id.clone(),
+                dforward_revision: v2.dforward_revision,
+                dforward_digest: v2.dforward_digest.clone(),
+            })
+        }
+    };
 
     // Destination node: DERIVED from the active D-Map's own placements,
     // never from any caller input.
@@ -427,7 +470,7 @@ pub fn derive_dcall_route(
             dserv_artifact_descriptor_digest: dest_auth.dserv_artifact_descriptor_digest,
         },
         route_kind: route_kind.to_string(),
-        v2_dcall_realization_kind,
+        v2_dcall_realization,
     })
 }
 

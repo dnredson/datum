@@ -1789,10 +1789,47 @@ fn v2_route_derives_source_and_destination_from_dgraph_and_dmap2_placement() {
     assert_eq!(route.route_kind, ROUTE_KIND_REMOTE);
     // The realization boundary (section 11/12) is recorded on the route but
     // does NOT prevent route derivation itself from succeeding.
-    assert_eq!(
-        route.v2_dcall_realization_kind.as_deref(),
-        Some("via_diot_pubsub")
-    );
+    let realization = route
+        .v2_dcall_realization
+        .as_ref()
+        .expect("route governed under active DMap/2 must carry a realization authority");
+    assert_eq!(realization.realization_kind, "via_diot_pubsub");
+    assert_eq!(realization.diot_placement_id, "diotp:broker");
+    assert_eq!(realization.interface, "sensor-bus");
+    assert_eq!(realization.channel, "pipeline/sensor-to-decoder");
+}
+
+/// Independent review fix (Phase 113B1): an earlier version of
+/// `derive_dcall_route` silently FABRICATED `"via_diot_pubsub"` when no
+/// `DCallRealizationV2` matched `call_id`, instead of treating that as the
+/// persisted-authority inconsistency it actually is (a validated DMap/2 can
+/// never legitimately reach this state -- `CanonicalDMapV2::validate`
+/// requires exactly one realization per DGraph call). This test forces that
+/// otherwise-unreachable state directly on the in-memory active authority
+/// (mirroring the stale-authority tests' own technique of mutating
+/// `active.map` to simulate persisted-state corruption) and proves route
+/// derivation now fails closed instead.
+#[test]
+fn v2_route_derivation_fails_closed_when_active_dmap2_is_missing_a_realization_for_the_call() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let mut ddeploy = fixture.ddeploy.clone();
+    let key = application_key(PROJECT, APP);
+    let active = ddeploy.phase113_v2.active.get_mut(&key).unwrap();
+    active.map.dcall_realizations.clear();
+    active.digest = active.map.digest().unwrap();
+    let error = derive_dcall_route(
+        &ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        PROJECT,
+        APP,
+        CALL_ID,
+        SOURCE_SVC,
+        "fog-01",
+        OUTPUT_PORT,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "dcall_v2_realization_missing");
 }
 
 #[test]
@@ -1805,11 +1842,15 @@ fn v2_route_carries_exact_dmap2_digest() {
     assert_eq!(route.dmap_ref.id, active.dmap_id);
     assert_eq!(route.dmap_ref.revision, active.revision);
     assert_eq!(route.dmap_ref.digest, active.digest);
-    assert_eq!(
-        route.v2_dcall_realization_kind.as_deref(),
-        Some("via_diot_pubsub"),
-        "same-node route is STILL governed under DMap/2 realization boundary"
-    );
+    let realization = route
+        .v2_dcall_realization
+        .as_ref()
+        .expect("same-node route is STILL governed under DMap/2 realization boundary");
+    assert_eq!(realization.realization_kind, "via_diot_pubsub");
+    let v2_extras = active.v2.as_ref().unwrap();
+    assert_eq!(realization.dforward_id, v2_extras.dforward_id);
+    assert_eq!(realization.dforward_revision, v2_extras.dforward_revision);
+    assert_eq!(realization.dforward_digest, v2_extras.dforward_digest);
 }
 
 // ---------------------------------------------------- STALE AUTHORITY (section 16)
@@ -1934,7 +1975,7 @@ fn v2_grant_issued_before_a_placement_change_fails_redemption() {
 // own doc comment above for the same long-standing limitation). What CAN be
 // proven at this layer -- and is proven here -- is the exact library-level
 // signal the handler branches on: a route derived under an active DMap/2
-// always carries `v2_dcall_realization_kind = Some(..)`, is structurally
+// always carries `v2_dcall_realization = Some(..)`, is structurally
 // available BEFORE any endpoint/grant/redemption call the handler would
 // otherwise make, and NOTHING in the core route/grant/redeem functions
 // themselves ever performs a network send, endpoint lookup, or destination
@@ -1948,11 +1989,10 @@ fn v2_route_derivation_alone_signals_the_realization_boundary_before_any_deliver
     // returns a plain value).
     let route =
         derive(&fixture, "fog-01").expect("route derivation must succeed and be side-effect-free");
-    assert_eq!(
-        route.v2_dcall_realization_kind.as_deref(),
-        Some("via_diot_pubsub"),
-        "the handler's fail-closed check keys off exactly this field, checked before it does anything else"
+    let realization = route.v2_dcall_realization.as_ref().expect(
+        "the handler's fail-closed check keys off exactly this field, checked before it does anything else",
     );
+    assert_eq!(realization.realization_kind, "via_diot_pubsub");
     // No grant exists anywhere yet -- deriving a route never inserts one.
     let empty_grants = DCallGrantStateV1::empty();
     assert!(empty_grants.grants.is_empty());
@@ -1963,7 +2003,7 @@ fn v2_dmap1_route_never_signals_the_realization_boundary() {
     let fixture = build_fixture("fog-01", "cloud-01");
     let route = derive(&fixture, "fog-01").unwrap();
     assert_eq!(
-        route.v2_dcall_realization_kind, None,
+        route.v2_dcall_realization, None,
         "a DMap/1 active authority must never trigger the DMap/2-only realization boundary"
     );
 }

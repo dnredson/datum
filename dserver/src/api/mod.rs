@@ -22,6 +22,7 @@ pub mod dgraph_planner;
 pub mod dgraph_readiness;
 pub mod dgraph_resource_limits;
 pub mod dgraph_rollback_audit;
+pub mod diot_runtime_binding;
 pub mod dispatch;
 pub mod dmap;
 pub mod dnode_registry;
