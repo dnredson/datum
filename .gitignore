@@ -36,3 +36,7 @@ datum-control-plane.db-shm
 *.datum-control-plane.db
 *.datum-control-plane.db-wal
 *.datum-control-plane.db-shm
+
+# Python bytecode / interpreter caches
+__pycache__/
+*.py[cod]
