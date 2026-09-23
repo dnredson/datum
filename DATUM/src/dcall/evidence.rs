@@ -77,10 +77,32 @@ pub enum DCallDeliveryErrorCode {
     /// Phase 113B2 (section 19, mandatory fail-closed seam): the grant
     /// carries typed DMap/2 `via_diot_pubsub` transport authority --
     /// realization authorization succeeded, but no MQTT runtime transport
-    /// is implemented until Phase 113B3. Delivery stops here: no local
-    /// D-Code invocation, no HTTP request, no grant redemption, no network
-    /// action of any kind.
+    /// was implemented until Phase 113B3 wired real delivery. Retained
+    /// (never removed) for reload compatibility with any evidence persisted
+    /// during 113B2 and as a defensive code for a realization_kind DServer
+    /// might accept in the future that still has no implemented transport --
+    /// it is no longer reachable for `via_diot_pubsub` specifically, since
+    /// that path now has real MQTT delivery.
     DCallDiotTransportNotImplemented,
+    /// Phase 113B3: `deliver_via_diot_pubsub` was invoked for a grant with no
+    /// `v2_dcall_transport_authority` -- an internal-consistency guard, not
+    /// expected to be reachable in production (the dispatch seam only calls
+    /// this function when the authority is `Some`).
+    DCallDiotTransportAuthorityMissing,
+    /// Phase 113B3 (section 8): fetching the CURRENT DIoT runtime binding
+    /// failed (network error, or DServer reports it missing/stale).
+    DCallDiotRuntimeBindingFetchFailed,
+    /// Phase 113B3 (section 8): the CURRENT runtime binding's identity
+    /// (binding_id/binding_revision/descriptor_digest/transport/placement)
+    /// does not match the grant's bound transport authority -- closes the
+    /// "grant issued under binding N, binding becomes N+1" race BEFORE any
+    /// MQTT connection is opened.
+    DCallDiotRuntimeBindingAuthorityMismatch,
+    /// Phase 113B3 (section 4): the current binding's `broker_uri` declares
+    /// a scheme (e.g. `mqtts://`) not yet supported for actual delivery in
+    /// this release -- deterministic, distinct from a generic transport
+    /// error.
+    DCallDiotBrokerSchemeUnsupported,
 }
 
 impl DCallDeliveryErrorCode {
@@ -112,6 +134,12 @@ impl DCallDeliveryErrorCode {
             Self::DCallDestinationEvidenceMismatch => "dcall_destination_evidence_mismatch",
             Self::DCallRemoteResponseTooLarge => "dcall_remote_response_too_large",
             Self::DCallDiotTransportNotImplemented => "dcall_diot_transport_not_implemented",
+            Self::DCallDiotTransportAuthorityMissing => "dcall_diot_transport_authority_missing",
+            Self::DCallDiotRuntimeBindingFetchFailed => "dcall_diot_runtime_binding_fetch_failed",
+            Self::DCallDiotRuntimeBindingAuthorityMismatch => {
+                "dcall_diot_runtime_binding_authority_mismatch"
+            }
+            Self::DCallDiotBrokerSchemeUnsupported => "dcall_diot_broker_scheme_unsupported",
         }
     }
 }

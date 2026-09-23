@@ -601,6 +601,16 @@ pub struct RedeemGrantRequest {
     pub destination_node_id: String,
     pub payload_sha256: String,
     pub payload_size: u64,
+    /// Phase 113B3 (section 17): the destination's OBSERVED physical MQTT
+    /// topic. Historical DMap/1 HTTP callers omit this entirely --
+    /// `#[serde(default)]` so their existing requests keep deserializing
+    /// unchanged. REQUIRED (enforced inside `core::dcall::redeem_grant`,
+    /// never here) for a DMap/2 `via_diot_pubsub` grant; DServer
+    /// independently recomputes the EXPECTED topic from the grant's own
+    /// bound identity and requires an exact match -- this is a caller
+    /// OBSERVATION to verify, never caller-supplied authority.
+    #[serde(default)]
+    pub observed_mqtt_topic: Option<String>,
 }
 
 /// `POST /api/v1/dcall/grants/:grant_id/redeem`. Atomic, one-time,
@@ -649,12 +659,21 @@ pub async fn post_redeem_grant(
         &request.destination_node_id,
         &request.payload_sha256,
         request.payload_size,
+        request.observed_mqtt_topic.as_deref(),
         Utc::now(),
     )
     .map_err(|error| match error {
         RedeemError::NotFound => (
             StatusCode::NOT_FOUND,
             JsonResponse(json!({"error": "dcall_grant_not_found"})),
+        ),
+        RedeemError::ObservedTopicMissing => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            JsonResponse(json!({"error": "dcall_observed_mqtt_topic_missing"})),
+        ),
+        RedeemError::ObservedTopicMismatch => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            JsonResponse(json!({"error": "dcall_observed_mqtt_topic_mismatch"})),
         ),
         RedeemError::TokenInvalid => (
             StatusCode::FORBIDDEN,

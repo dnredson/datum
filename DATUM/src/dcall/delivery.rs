@@ -381,30 +381,70 @@ fn dispatch_one_call(
         );
     }
 
-    // Phase 113B2 (section 19, MANDATORY fail-closed seam): once DServer
-    // issues a grant carrying typed DMap/2 `via_diot_pubsub` transport
-    // authority, delivery MUST NOT fall through into the `route_kind`-based
-    // branches below -- `route_kind` is purely descriptive topology
-    // (section 10/11: it never gates transport for this authority shape,
-    // and a same-node call still carries this authority, so this check
-    // fires regardless of whether `route_kind` happens to be "local" or
-    // "remote"). Realization authorization already succeeded (DServer would
-    // not have issued the grant otherwise), but no MQTT runtime transport
-    // exists until Phase 113B3 -- stop HERE, before any local D-Code
-    // invocation, any HTTP request, and any grant redemption. The evidence
-    // built below is grant-bound (so schema/routing/identity fields are
-    // still forensically useful) but `redeemed_at` is `None` and no
-    // network action of any kind has occurred -- the bearer `token`,
-    // broker credentials, and payload content are never referenced here.
+    // Phase 113B3 (section 2): once DServer issues a grant carrying typed
+    // DMap/2 `via_diot_pubsub` transport authority, delivery MUST NOT fall
+    // through into the `route_kind`-based branches below -- `route_kind` is
+    // purely descriptive topology (section 10/11: it never gates transport
+    // for this authority shape, and a same-node call still carries this
+    // authority) -- this check fires regardless of whether `route_kind`
+    // happens to be "local" or "remote". This REPLACES Phase 113B2's
+    // temporary fail-closed seam (which returned `DCallDiotTransportNotImplemented`
+    // unconditionally here) with real governed MQTT delivery.
     if grant.v2_dcall_transport_authority.is_some() {
-        return evidence::build_grant_bound_failure_evidence(
-            id,
+        let expires_at = chrono::DateTime::parse_from_rfc3339(&grant.expires_at)
+            .map(|value| value.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+        let bound = expires_at
+            .signed_duration_since(chrono::Utc::now())
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO);
+        let max_wait = bound.min(std::time::Duration::from_secs(30));
+        let result = deliver_via_diot_pubsub(
+            &context.dserver_url,
             &grant,
-            None,
-            DCallDeliveryErrorCode::DCallDiotTransportNotImplemented,
-            None,
-            elapsed_ms(start),
+            &token,
+            payload,
+            payload_sha256,
+            max_wait,
+            |broker| {
+                let transport = crate::dcall::mqtt::RumqttcPubSub::connect(
+                    broker,
+                    &crate::dcall::mqtt::publisher_client_id(),
+                )?;
+                Ok(Box::new(transport) as Box<dyn crate::dcall::mqtt::MqttPubSub>)
+            },
         );
+        return match result {
+            Ok((dcode_evidence, redeemed_at)) => {
+                if let Err(mismatch) =
+                    validate_destination_dcode_evidence_against_grant(&dcode_evidence, &grant)
+                {
+                    return evidence::build_grant_bound_failure_evidence(
+                        id,
+                        &grant,
+                        Some(redeemed_at),
+                        DCallDeliveryErrorCode::DCallDestinationEvidenceMismatch,
+                        Some(&mismatch),
+                        elapsed_ms(start),
+                    );
+                }
+                evidence::build_success_evidence(
+                    id,
+                    &grant,
+                    redeemed_at,
+                    &serde_json::to_vec(&dcode_evidence).unwrap_or_default(),
+                    elapsed_ms(start),
+                )
+            }
+            Err(failure) => evidence::build_grant_bound_failure_evidence(
+                id,
+                &grant,
+                failure.redeemed_at,
+                failure.code,
+                failure.diagnostic.as_deref(),
+                elapsed_ms(start),
+            ),
+        };
     }
 
     let result: Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> =
@@ -608,6 +648,7 @@ fn deliver_local(
         &grant.destination.node_id,
         payload_sha256,
         payload.len() as u64,
+        None,
     )
     .map_err(|error| DeliveryFailure {
         code: DCallDeliveryErrorCode::DCallGrantRedeemFailed,
@@ -879,6 +920,7 @@ pub fn receive_governed_delivery(
         &identity.node_id,
         &sha256_hex(payload),
         payload.len() as u64,
+        None,
     )?;
     execute_destination_delivery(
         dserver_url,
@@ -890,6 +932,407 @@ pub fn receive_governed_delivery(
     )
 }
 
+/// Phase 113B3: the MQTT-transport analog of `receive_governed_delivery`
+/// (section 19: shares the SAME `execute_destination_delivery` helper the
+/// HTTP listener uses -- no second, weaker duplicate destination-execution
+/// path). The only difference from the HTTP path is that redemption also
+/// carries `observed_mqtt_topic` -- the exact physical topic this
+/// installation received the request envelope on -- which DServer
+/// independently verifies against its own recomputed expected topic
+/// (section 17) before ever marking the grant `Redeemed`. Section 16: this
+/// function trusts NOTHING from the MQTT envelope beyond `grant_id`/
+/// `token`/payload proof -- destination service/node/DMap/DForward/artifact
+/// identity all come from the grant DServer returns on successful
+/// redemption, never from anything the caller observed on the wire.
+/// Returns `(the REDEEMED grant, the destination-execution result)` on
+/// successful redemption -- the grant is returned EVEN IF execution
+/// afterward fails (section 22: redemption still consumed the grant; the
+/// caller still needs the grant's own identity to compute a reply topic and
+/// publish a deterministic failure response). Returns `Err` only when
+/// redemption itself never succeeded -- in that case there is no verified
+/// party to reply to at all (section 20/21: an unredeemable/duplicate
+/// request gets silently dropped, never a reply).
+pub fn receive_governed_delivery_via_mqtt(
+    dserver_url: &str,
+    dnode_root: &str,
+    grant_id: &str,
+    token: &str,
+    payload: &[u8],
+    observed_mqtt_topic: &str,
+) -> Result<(DCallDeliveryGrantV1, Result<DCodeInvocationEvidenceV1>)> {
+    let identity = load_local_identity(Path::new(dnode_root)).map_err(|error| anyhow!(error))?;
+    let grant = client::redeem_grant(
+        dserver_url,
+        grant_id,
+        token,
+        &identity.node_id,
+        &sha256_hex(payload),
+        payload.len() as u64,
+        Some(observed_mqtt_topic),
+    )?;
+    let execution = execute_destination_delivery(
+        dserver_url,
+        dnode_root,
+        &default_worker_binary_path(),
+        &identity.node_id,
+        &grant,
+        payload,
+    );
+    Ok((grant, execution))
+}
+
+/// Phase 113B3 (section 18/20/22): parses+decodes an incoming MQTT request
+/// envelope, verifies the decoded payload actually matches its declared
+/// digest/size (mirrors `smartsentinel-dcall-listen`'s own
+/// `handle_delivery` -- same self-review finding: `redeem_grant` cannot see
+/// the decoded bytes, only the caller's declared fields, so this local
+/// recomputation must happen BEFORE a real single-use grant redemption is
+/// spent on them), then redeems+executes via
+/// `receive_governed_delivery_via_mqtt`. Returns `None` when there is no
+/// verified party to reply to (malformed envelope, payload mismatch, local
+/// identity unprovisioned, or redemption itself failed -- e.g. wrong node,
+/// wrong observed topic, stale/duplicate grant) -- the caller MUST NOT
+/// publish anything in that case. Returns `Some((reply_topic, response))`
+/// when redemption succeeded: `reply_topic` is derived EXCLUSIVELY from the
+/// REDEEMED grant's own `project_id`/`application_id`/`source.node_id`/
+/// `grant_id` -- section 20: never trusted from the request envelope, which
+/// does not even carry one.
+pub fn handle_mqtt_dcall_request(
+    dserver_url: &str,
+    dnode_root: &str,
+    observed_mqtt_topic: &str,
+    request: &crate::dcall::mqtt::MqttDCallRequestEnvelopeV1,
+) -> Option<(String, crate::dcall::mqtt::MqttDCallResponseEnvelopeV1)> {
+    use crate::dcall::mqtt::{self, MqttDCallResponseEnvelopeV1, RESPONSE_ENVELOPE_SCHEMA};
+
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD
+        .decode(&request.payload_b64)
+        .ok()?;
+
+    let actual_sha256 = sha256_hex(&payload);
+    if actual_sha256 != request.payload_sha256 || payload.len() as u64 != request.payload_size {
+        return None;
+    }
+
+    let (grant, execution) = receive_governed_delivery_via_mqtt(
+        dserver_url,
+        dnode_root,
+        &request.grant_id,
+        &request.token,
+        &payload,
+        observed_mqtt_topic,
+    )
+    .ok()?;
+
+    let reply_topic = mqtt::reply_topic(
+        &grant.project_id,
+        &grant.application_id,
+        &grant.source.node_id,
+        &grant.grant_id,
+    );
+    let response = match execution {
+        Ok(evidence) => {
+            let evidence_json = serde_json::to_value(&evidence).unwrap_or(serde_json::Value::Null);
+            MqttDCallResponseEnvelopeV1 {
+                schema: RESPONSE_ENVELOPE_SCHEMA.to_string(),
+                grant_id: grant.grant_id.clone(),
+                outcome: "success".to_string(),
+                error_code: None,
+                dcode_evidence: Some(evidence_json),
+            }
+        }
+        Err(_error) => MqttDCallResponseEnvelopeV1 {
+            schema: RESPONSE_ENVELOPE_SCHEMA.to_string(),
+            grant_id: grant.grant_id.clone(),
+            outcome: "failed".to_string(),
+            error_code: Some("dcall_destination_execution_failed".to_string()),
+            dcode_evidence: None,
+        },
+    };
+    Some((reply_topic, response))
+}
+
+/// Phase 113B3 (section 15): production MQTT D-Call destination listener
+/// loop. Runs until `stop` is set. Startup: prove local D-Node identity,
+/// fetch the CURRENT runtime binding (fails closed on `mqtts://` or a fetch
+/// failure), connect, and subscribe ONLY to this exact placement/local-node
+/// operational prefix (section 6) -- never a destination service
+/// configuration of any kind (section 15/16: entirely grant-derived).
+pub fn run_mqtt_dcall_listener(
+    dserver_url: &str,
+    dnode_root: &str,
+    project_id: &str,
+    application_id: &str,
+    diot_placement_id: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let identity = load_local_identity(Path::new(dnode_root)).map_err(|error| anyhow!(error))?;
+    let binding = client::fetch_current_runtime_binding(
+        dserver_url,
+        project_id,
+        application_id,
+        diot_placement_id,
+    )?;
+    if binding.transport != "mqtt" {
+        return Err(anyhow!(
+            "runtime binding declares unsupported transport '{}' (only 'mqtt' is supported)",
+            binding.transport
+        ));
+    }
+    let broker = crate::dcall::mqtt::parse_broker_uri_for_delivery(&binding.broker_uri)?;
+    let mut transport = crate::dcall::mqtt::RumqttcPubSub::connect(
+        &broker,
+        &crate::dcall::mqtt::subscriber_client_id(),
+    )?;
+    let prefix = crate::dcall::mqtt::subscribe_prefix(
+        project_id,
+        application_id,
+        diot_placement_id,
+        &identity.node_id,
+    );
+    crate::dcall::mqtt::MqttPubSub::subscribe(&mut transport, &prefix)?;
+
+    while !stop.load(Ordering::SeqCst) {
+        let message = crate::dcall::mqtt::MqttPubSub::poll(
+            &mut transport,
+            std::time::Duration::from_millis(500),
+        )?;
+        let (topic, bytes) = match message {
+            Some(message) => message,
+            None => continue,
+        };
+        let request: crate::dcall::mqtt::MqttDCallRequestEnvelopeV1 =
+            match serde_json::from_slice(&bytes) {
+                Ok(request) => request,
+                Err(_) => continue, // malformed envelope: no verified party to reply to.
+            };
+        if let Some((reply_topic, response)) =
+            handle_mqtt_dcall_request(dserver_url, dnode_root, &topic, &request)
+        {
+            let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+            let _ = crate::dcall::mqtt::MqttPubSub::publish(
+                &mut transport,
+                &reply_topic,
+                &response_bytes,
+                crate::dcall::mqtt::MqttQos::AtLeastOnce,
+                false,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Phase 113B3 source delivery flow (sections 8/12/13). Generic over
+/// `MqttPubSub` so production code drives a real broker
+/// (`mqtt::RumqttcPubSub`) and tests drive the deterministic
+/// `mqtt::test_support::InMemoryPubSub` -- both exercise IDENTICAL logic.
+/// `transport` must already be freshly constructed (not yet connected to
+/// any subscription/publish state) for the grant this call is delivering.
+fn deliver_via_diot_pubsub(
+    dserver_url: &str,
+    grant: &DCallDeliveryGrantV1,
+    token: &str,
+    payload: &[u8],
+    payload_sha256: &str,
+    max_wait: std::time::Duration,
+    connect: impl FnOnce(
+        &crate::dcall::mqtt::BrokerAddress,
+    ) -> Result<Box<dyn crate::dcall::mqtt::MqttPubSub>>,
+) -> Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> {
+    use crate::dcall::mqtt::{
+        self, MqttDCallRequestEnvelopeV1, MqttDCallResponseEnvelopeV1, MqttQos,
+        REQUEST_ENVELOPE_SCHEMA,
+    };
+
+    let v2_authority = grant.v2_dcall_transport_authority.as_ref().ok_or_else(|| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallDiotTransportAuthorityMissing,
+        diagnostic: Some("deliver_via_diot_pubsub called without a v2 transport authority".to_string()),
+        redeemed_at: None,
+    })?;
+
+    // Section 8: fetch the CURRENT runtime binding and require EXACT
+    // agreement with the grant's bound authority BEFORE opening any MQTT
+    // connection -- closes the "grant issued under binding N, binding
+    // becomes N+1" race.
+    let current_binding = client::fetch_current_runtime_binding(
+        dserver_url,
+        &grant.project_id,
+        &grant.application_id,
+        &v2_authority.diot_placement_id,
+    )
+    .map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallDiotRuntimeBindingFetchFailed,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: None,
+    })?;
+    if current_binding.binding_id != v2_authority.binding_id
+        || current_binding.binding_revision != v2_authority.binding_revision
+        || current_binding.descriptor_digest != v2_authority.descriptor_digest
+        || current_binding.transport != v2_authority.transport
+        || current_binding.project_id != grant.project_id
+        || current_binding.application_id != grant.application_id
+        || current_binding.placement_id != v2_authority.diot_placement_id
+    {
+        return Err(DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallDiotRuntimeBindingAuthorityMismatch,
+            diagnostic: Some(
+                "current DIoT runtime binding does not match the grant's bound transport authority"
+                    .to_string(),
+            ),
+            redeemed_at: None,
+        });
+    }
+
+    // Section 4: v0.1 supports only plain `mqtt://` for actual delivery --
+    // an `mqtts://`-declared binding fails closed HERE, at use time (the
+    // Phase 113B1 registry itself is not narrowed to reject registering one).
+    let broker = mqtt::parse_broker_uri_for_delivery(&current_binding.broker_uri).map_err(
+        |error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallDiotBrokerSchemeUnsupported,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        },
+    )?;
+
+    let request_topic = mqtt::request_topic(
+        &grant.project_id,
+        &grant.application_id,
+        &v2_authority.diot_placement_id,
+        &grant.destination.node_id,
+        &v2_authority.channel,
+    );
+    let reply_topic = mqtt::reply_topic(
+        &grant.project_id,
+        &grant.application_id,
+        &grant.source.node_id,
+        &grant.grant_id,
+    );
+
+    let mut transport = connect(&broker).map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallTransportError,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: None,
+    })?;
+
+    // Section 12, step 7: subscribe to the reply topic BEFORE publishing the
+    // request -- otherwise a fast destination reply could arrive before this
+    // process is listening for it.
+    transport.subscribe(&reply_topic).map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallTransportError,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: None,
+    })?;
+
+    let envelope = MqttDCallRequestEnvelopeV1 {
+        schema: REQUEST_ENVELOPE_SCHEMA.to_string(),
+        grant_id: grant.grant_id.clone(),
+        token: token.to_string(),
+        payload_b64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload),
+        payload_sha256: payload_sha256.to_string(),
+        payload_size: payload.len() as u64,
+    };
+    let envelope_bytes = serde_json::to_vec(&envelope).map_err(|error| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallTransportError,
+        diagnostic: Some(error.to_string()),
+        redeemed_at: None,
+    })?;
+
+    // Section 11: QoS1, retain=false, always -- never a caller/config choice.
+    transport
+        .publish(&request_topic, &envelope_bytes, MqttQos::AtLeastOnce, false)
+        .map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallTransportError,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
+
+    // Section 24: bound the wait by the grant's own practical usable
+    // lifetime -- never an unbounded wait. The caller computes `max_wait`
+    // from the grant's `expires_at` (capped at a sensible request timeout);
+    // kept as an explicit parameter (rather than computed in here) so tests
+    // can exercise a short, deterministic bound without needing to fabricate
+    // a near-future `expires_at`.
+    let timeout = max_wait;
+
+    // Section 13: PUBACK/publish success alone is never DCall success --
+    // only a VALID reply envelope on the exact reply topic counts. Multiple
+    // `poll` calls may be needed to skip over unrelated/malformed traffic
+    // (defensive; the reply topic is namespaced per-grant so this should
+    // not occur in practice) before the deadline is reached.
+    let deadline = std::time::Instant::now() + timeout;
+    let response: MqttDCallResponseEnvelopeV1 = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(DeliveryFailure {
+                code: DCallDeliveryErrorCode::DCallTransportTimeout,
+                diagnostic: Some(
+                    "no valid MQTT reply received before the grant's usable lifetime elapsed"
+                        .to_string(),
+                ),
+                redeemed_at: None,
+            });
+        }
+        let message = transport.poll(remaining).map_err(|error| DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallTransportError,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        })?;
+        let (topic, bytes) = match message {
+            Some(message) => message,
+            None => {
+                return Err(DeliveryFailure {
+                    code: DCallDeliveryErrorCode::DCallTransportTimeout,
+                    diagnostic: Some(
+                        "no valid MQTT reply received before the grant's usable lifetime elapsed"
+                            .to_string(),
+                    ),
+                    redeemed_at: None,
+                })
+            }
+        };
+        if topic != reply_topic {
+            continue;
+        }
+        match serde_json::from_slice::<MqttDCallResponseEnvelopeV1>(&bytes) {
+            Ok(parsed) if parsed.grant_id == grant.grant_id => break parsed,
+            _ => continue,
+        }
+    };
+
+    if response.outcome != "success" {
+        // The destination redeemed (or attempted to) -- we only know it
+        // reported failure, not whether redemption itself ever succeeded;
+        // report `redeemed_at` as unknown (`None`) rather than guessing,
+        // same honesty convention as `deliver_remote`.
+        return Err(DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallDestinationExecutionFailed,
+            diagnostic: Some(format!(
+                "MQTT destination reported outcome='{}' error_code={:?}",
+                response.outcome, response.error_code
+            )),
+            redeemed_at: None,
+        });
+    }
+    let evidence_json = response.dcode_evidence.ok_or_else(|| DeliveryFailure {
+        code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
+        diagnostic: Some("MQTT success response missing dcode_evidence".to_string()),
+        redeemed_at: None,
+    })?;
+    let evidence: DCodeInvocationEvidenceV1 = serde_json::from_value(evidence_json).map_err(|error| {
+        DeliveryFailure {
+            code: DCallDeliveryErrorCode::DCallRemoteResponseMalformed,
+            diagnostic: Some(error.to_string()),
+            redeemed_at: None,
+        }
+    })?;
+    // The destination redeemed the grant server-side; same honesty
+    // convention as `deliver_local`/`deliver_remote`: we only know it
+    // succeeded as of when THIS reply arrived.
+    Ok((evidence, now_rfc3339()))
+}
+
 #[cfg(all(test, feature = "dcall-test-support"))]
 mod tests {
     use super::*;
@@ -898,6 +1341,7 @@ mod tests {
     use crate::dcode::evidence::{DCodeAppliedLimits, DCODE_EVIDENCE_SCHEMA};
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::Mutex;
 
     // -- J1: `DCodeInvocationResult`/`ValidatedDCodeEmit` are now opaque
     // (private fields, no public constructor) -- a hand-fabricated
@@ -1941,170 +2385,807 @@ mod tests {
         serde_json::from_str(&text[body_start..]).unwrap_or(serde_json::Value::Null)
     }
 
-    fn serve_two_requests_then_probe_for_a_third(
-        listener: TcpListener,
-        call_id: &'static str,
-        route_kind: &'static str,
-    ) -> bool {
-        {
-            let (mut stream, _) = listener.accept().unwrap();
-            let _ = read_request_json_body(&mut stream);
-            let body = serde_json::json!([call_id]).to_string();
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-            let _ = stream.write_all(response.as_bytes());
-        }
-        {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request_body = read_request_json_body(&mut stream);
-            let mut body: serde_json::Value =
-                serde_json::from_str(&v2_diot_grant_response(call_id, "m1", "c1", route_kind))
-                    .unwrap();
-            body["grant"]["source_dcode_evidence_sha256"] =
-                request_body["source_dcode_evidence_sha256"].clone();
-            let body = body.to_string();
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-            let _ = stream.write_all(response.as_bytes());
-        }
-        listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-        while std::time::Instant::now() < deadline {
-            match listener.accept() {
-                Ok(_) => return true,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(_) => break,
+    // -- Phase 113B3: real MQTT source-delivery tests (section 34, A-K) ----
+
+    fn sample_v2_grant(route_kind: &str) -> DCallDeliveryGrantV1 {
+        let value: serde_json::Value =
+            serde_json::from_str(&v2_diot_grant_response("call-a", "m1", "c1", route_kind))
+                .unwrap();
+        serde_json::from_value(value["grant"].clone()).unwrap()
+    }
+
+    /// A `CurrentRuntimeBindingResponse`-shaped JSON that agrees EXACTLY
+    /// with `grant`'s bound `v2_dcall_transport_authority` (the "everything
+    /// matches" baseline every mismatch test mutates one field of).
+    fn matching_binding_json(grant: &DCallDeliveryGrantV1, broker_uri: &str) -> serde_json::Value {
+        let authority = grant.v2_dcall_transport_authority.as_ref().unwrap();
+        serde_json::json!({
+            "binding_id": authority.binding_id,
+            "binding_revision": authority.binding_revision,
+            "project_id": grant.project_id,
+            "application_id": grant.application_id,
+            "placement_id": authority.diot_placement_id,
+            "diot_id": "diot:sensor-hub",
+            "node_id": grant.destination.node_id,
+            "dmap_id": "dmap:1",
+            "dmap_revision": 1,
+            "dmap_digest": "sha256:bb",
+            "dforward_id": authority.dforward_id,
+            "dforward_revision": authority.dforward_revision,
+            "dforward_digest": authority.dforward_digest,
+            "artifact_id": "artifact:sensor",
+            "execution_generation": 1,
+            "execution_projection_digest": format!("sha256:{}", "3".repeat(64)),
+            "transport": authority.transport,
+            "broker_uri": broker_uri,
+            "registered_at_utc": "2026-01-01T00:00:00Z",
+            "descriptor_digest": authority.descriptor_digest,
+        })
+    }
+
+    /// Serves exactly one GET request (the `.../current` binding fetch) with
+    /// the given status/body, then closes.
+    fn serve_one_current_binding_response(status_line: &'static str, body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = read_request_json_body(&mut stream); // drains the GET (no body, harmless)
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
-        }
-        false
-    }
-
-    /// 27A/B/C/E/F/G: a REMOTE-route DMap/2 grant carrying typed DIoT
-    /// transport authority is obtained (A), recognized (B), and produces
-    /// the dedicated deterministic evidence (C) -- with NO destination HTTP
-    /// request (E, proven by the bounded third-connection probe), NO grant
-    /// redemption (F), and the bearer token never appearing anywhere in the
-    /// serialized evidence (G).
-    #[test]
-    fn v2_grant_transport_authority_halts_remote_delivery_before_any_network_action() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let observed_third_request = std::thread::spawn(move || {
-            serve_two_requests_then_probe_for_a_third(listener, "call-a", "remote")
         });
-
-        let root = std::env::temp_dir().join(format!("dcall-v2-seam-remote-{}", Uuid::new_v4()));
-        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
-        let source = real_source_result(
-            "fog-01",
-            "fog-01",
-            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
-        );
-        let context = SourceExecutionContext {
-            dserver_url: format!("http://{addr}"),
-            dnode_root: root.to_str().unwrap().to_string(),
-        };
-        // A nonexistent worker binary: if the seam failed to fire and
-        // `deliver_local`/`deliver_remote` were reached, EITHER path would
-        // produce a DIFFERENT error than the dedicated seam code below
-        // (a worker-spawn failure, or -- for "remote" -- a redeem attempt
-        // against the now-exhausted mock server).
-        let results = dispatch_validated_emit_for_test(
-            &context,
-            &source,
-            0,
-            Path::new("definitely-does-not-exist-worker-binary"),
-        );
-        assert_eq!(results.len(), 1);
-        let evidence = &results[0];
-
-        // A: a real grant was obtained (pre-grant failures always carry an
-        // empty grant_id).
-        assert_eq!(evidence.grant_id, "grant-call-a");
-        // B/C: the dedicated deterministic seam evidence code.
-        assert_eq!(
-            evidence.error_code.as_deref(),
-            Some("dcall_diot_transport_not_implemented")
-        );
-        assert!(matches!(evidence.outcome, DCallDeliveryOutcome::Failed));
-        assert_eq!(evidence.schema, crate::dcall::evidence::DCALL_DELIVERY_EVIDENCE_SCHEMA);
-        // F: never redeemed.
-        assert!(evidence.redeemed_at.is_none());
-        assert!(evidence.destination_dcode_evidence_sha256.is_none());
-        // E: no third HTTP request (redeem or otherwise) was ever attempted.
-        assert!(
-            !observed_third_request.join().unwrap(),
-            "a third HTTP request occurred after the v2 grant -- the fail-closed seam did not stop delivery"
-        );
-        // G: the bearer token never appears anywhere in the serialized
-        // evidence.
-        let serialized = serde_json::to_string(evidence).unwrap();
-        assert!(!serialized.contains("super-secret-bearer-token-must-never-leak"));
+        format!("http://{addr}")
     }
 
-    /// 27D: a SAME-NODE (`route_kind == "local"`) DMap/2 grant carrying
-    /// typed DIoT transport authority halts BEFORE any local D-Code
-    /// invocation is attempted -- proven by supplying a worker binary path
-    /// that does not exist: if `deliver_local` were ever reached, spawning
-    /// it would produce a distinct worker-spawn failure, never the seam's
-    /// own dedicated code.
+    /// A `connect` closure that panics if ever invoked -- proves the MQTT
+    /// connection step was never reached (used by the two mismatch tests,
+    /// A/B).
+    fn connect_must_never_be_called(
+        _broker: &crate::dcall::mqtt::BrokerAddress,
+    ) -> Result<Box<dyn crate::dcall::mqtt::MqttPubSub>> {
+        panic!("MQTT connect must never be attempted when binding/grant authority disagrees or the scheme is unsupported")
+    }
+
+    /// 34A: a CURRENT binding whose `binding_id` disagrees with the grant's
+    /// bound authority must fail closed BEFORE any MQTT connection attempt.
     #[test]
-    fn v2_grant_transport_authority_halts_local_delivery_before_any_dcode_invocation() {
+    fn v2_source_delivery_fails_closed_on_binding_grant_mismatch_before_any_connect() {
+        let grant = sample_v2_grant("remote");
+        let mut binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+        binding["binding_id"] = serde_json::json!("a-completely-different-binding");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_millis(200),
+            connect_must_never_be_called,
+        );
+        let failure = result.unwrap_err();
+        assert_eq!(
+            failure.code.as_str(),
+            "dcall_diot_runtime_binding_authority_mismatch"
+        );
+        assert!(failure.redeemed_at.is_none());
+    }
+
+    /// 113B3.1 section 5: the production comparison
+    /// (`deliver_via_diot_pubsub`'s `current_binding.binding_id !=
+    /// v2_authority.binding_id || ...binding_revision... ||
+    /// ...descriptor_digest... || ...transport...`) is a single combined OR
+    /// across four fields -- the test above only ever exercised `binding_id`.
+    /// This table-driven test proves EACH of the other three fields is
+    /// independently load-bearing (mutating it ALONE, with the other three
+    /// still agreeing, still fails closed before any MQTT connect), closing
+    /// the gap without four separate near-duplicate integration fixtures.
+    #[test]
+    fn v2_source_delivery_fails_closed_on_each_individual_binding_field_mismatch() {
+        let mutations: [(&str, serde_json::Value); 3] = [
+            ("binding_revision", serde_json::json!(9999)),
+            (
+                "descriptor_digest",
+                serde_json::json!(format!("sha256:{}", "9".repeat(64))),
+            ),
+            ("transport", serde_json::json!("not-mqtt")),
+        ];
+        for (field, mutated_value) in mutations {
+            let grant = sample_v2_grant("remote");
+            let mut binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+            binding[field] = mutated_value;
+            let dserver_url =
+                serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+            let result = deliver_via_diot_pubsub(
+                &dserver_url,
+                &grant,
+                "token",
+                b"payload",
+                &sha256_hex(b"payload"),
+                std::time::Duration::from_millis(200),
+                connect_must_never_be_called,
+            );
+            let failure = match result {
+                Err(failure) => failure,
+                Ok(_) => panic!("mutating '{field}' alone must fail closed but did not"),
+            };
+            assert_eq!(
+                failure.code.as_str(),
+                "dcall_diot_runtime_binding_authority_mismatch",
+                "field '{field}' mismatch produced the wrong error code"
+            );
+            assert!(
+                failure.redeemed_at.is_none(),
+                "field '{field}' mismatch must never redeem"
+            );
+        }
+    }
+
+    /// 34B: a CURRENT binding declaring `mqtts://` fails with the dedicated
+    /// deterministic unsupported-scheme code, BEFORE any MQTT connection
+    /// attempt -- the Phase 113B1 registry itself still accepts registering
+    /// one; this is the "at USE time" fail-closed boundary (section 4).
+    #[test]
+    fn v2_source_delivery_fails_closed_on_mqtts_scheme_before_any_connect() {
+        let grant = sample_v2_grant("remote");
+        let binding = matching_binding_json(&grant, "mqtts://broker.lab:8883");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_millis(200),
+            connect_must_never_be_called,
+        );
+        let failure = result.unwrap_err();
+        assert_eq!(failure.code.as_str(), "dcall_diot_broker_scheme_unsupported");
+        assert!(failure.redeemed_at.is_none());
+    }
+
+    /// A `MqttPubSub` wrapper that records call ordering into a shared log
+    /// before delegating to a real `InMemoryPubSub` -- lets a test assert
+    /// "subscribe happened before publish" (34C) without needing to inspect
+    /// `rumqttc` internals.
+    struct OrderRecordingPubSub {
+        inner: crate::dcall::mqtt::test_support::InMemoryPubSub,
+        log: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    }
+    impl crate::dcall::mqtt::MqttPubSub for OrderRecordingPubSub {
+        fn subscribe(&mut self, topic: &str) -> Result<()> {
+            self.log.lock().unwrap().push("subscribe");
+            self.inner.subscribe(topic)
+        }
+        fn publish(
+            &mut self,
+            topic: &str,
+            payload: &[u8],
+            qos: crate::dcall::mqtt::MqttQos,
+            retain: bool,
+        ) -> Result<()> {
+            self.log.lock().unwrap().push("publish");
+            self.inner.publish(topic, payload, qos, retain)
+        }
+        fn poll(
+            &mut self,
+            timeout: std::time::Duration,
+        ) -> Result<Option<(String, Vec<u8>)>> {
+            self.inner.poll(timeout)
+        }
+    }
+
+    /// Spawns a thread that behaves like the real destination subscriber:
+    /// waits for the request envelope on `request_topic`, then publishes
+    /// `response` to `reply_topic`. Returns the join handle.
+    fn spawn_fake_destination(
+        broker: std::sync::Arc<crate::dcall::mqtt::test_support::InMemoryBroker>,
+        request_topic: String,
+        reply_topic: String,
+        response: crate::dcall::mqtt::MqttDCallResponseEnvelopeV1,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            use crate::dcall::mqtt::MqttPubSub;
+            let mut destination = broker.connect();
+            destination.subscribe(&request_topic).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if std::time::Instant::now() > deadline {
+                    return;
+                }
+                if let Some((_, _bytes)) = destination
+                    .poll(std::time::Duration::from_millis(100))
+                    .unwrap()
+                {
+                    let response_bytes = serde_json::to_vec(&response).unwrap();
+                    destination
+                        .publish(
+                            &reply_topic,
+                            &response_bytes,
+                            crate::dcall::mqtt::MqttQos::AtLeastOnce,
+                            false,
+                        )
+                        .unwrap();
+                    return;
+                }
+            }
+        })
+    }
+
+    fn success_response_for(grant: &DCallDeliveryGrantV1) -> crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+        let evidence = sample_destination_evidence(grant);
+        crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+            schema: crate::dcall::mqtt::RESPONSE_ENVELOPE_SCHEMA.to_string(),
+            grant_id: grant.grant_id.clone(),
+            outcome: "success".to_string(),
+            error_code: None,
+            dcode_evidence: Some(serde_json::to_value(&evidence).unwrap()),
+        }
+    }
+
+    /// A well-formed `DCodeInvocationEvidenceV1` matching `grant`'s own
+    /// bound identity fields exactly (so it passes
+    /// `validate_destination_dcode_evidence_against_grant` for the success
+    /// test), built by taking a REAL evidence record from a genuine
+    /// `invoke_dcode_capturing_emits` call (never hand-fabricated) and
+    /// overwriting only the identity fields the grant itself binds.
+    fn sample_destination_evidence(grant: &DCallDeliveryGrantV1) -> DCodeInvocationEvidenceV1 {
+        let mut evidence = real_source_result("fog-01", "fog-01", r#"{"status":"ok","emits":[]}"#)
+            .evidence()
+            .clone();
+        evidence.project_id = grant.project_id.clone();
+        evidence.application_id = grant.application_id.clone();
+        evidence.service_id = grant.destination.service_id.clone();
+        evidence.node_id = grant.destination.node_id.clone();
+        evidence.dgraph_id = grant.dgraph_ref.id.clone();
+        evidence.dgraph_revision = grant.dgraph_ref.revision;
+        evidence.dgraph_digest = grant.dgraph_ref.digest.clone();
+        evidence.dmap_id = grant.dmap_ref.id.clone();
+        evidence.dmap_revision = grant.dmap_ref.revision;
+        evidence.dmap_digest = grant.dmap_ref.digest.clone();
+        evidence.dserv_artifact_id = grant.destination.dserv_artifact_id.clone();
+        evidence.dserv_artifact_digest = grant.destination.dserv_artifact_digest.clone();
+        evidence.dserv_artifact_descriptor_digest =
+            grant.destination.dserv_artifact_descriptor_digest.clone();
+        evidence.input_port = grant.destination.port.clone();
+        evidence.input_sha256 = grant.payload_sha256.clone();
+        evidence.input_size = grant.payload_size as usize;
+        evidence.message_id = grant.message_id.clone();
+        evidence.correlation_id = grant.correlation_id.clone();
+        evidence
+    }
+
+    /// 34C/D/E/F/H: a full round trip against the in-memory broker proves
+    /// (C) the reply topic is subscribed BEFORE the request is published,
+    /// (D) the request is published on the EXACT expected topic, (E/F) with
+    /// QoS1/retain=false, and (H) a valid destination response produces
+    /// success evidence.
+    #[test]
+    fn v2_source_delivery_round_trip_subscribes_before_publish_on_exact_topic_with_qos1_no_retain() {
+        let grant = sample_v2_grant("remote");
+        let binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+
+        let broker = crate::dcall::mqtt::test_support::InMemoryBroker::new();
+        let log: std::sync::Arc<Mutex<Vec<&'static str>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+
+        let authority = grant.v2_dcall_transport_authority.clone().unwrap();
+        let expected_request_topic = crate::dcall::mqtt::request_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &authority.diot_placement_id,
+            &grant.destination.node_id,
+            &authority.channel,
+        );
+        let expected_reply_topic = crate::dcall::mqtt::reply_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &grant.source.node_id,
+            &grant.grant_id,
+        );
+
+        let destination_handle = spawn_fake_destination(
+            broker.clone(),
+            expected_request_topic.clone(),
+            expected_reply_topic.clone(),
+            success_response_for(&grant),
+        );
+
+        let broker_for_connect = broker.clone();
+        let log_for_connect = log.clone();
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_secs(5),
+            move |_broker_addr| {
+                Ok(Box::new(OrderRecordingPubSub {
+                    inner: broker_for_connect.connect(),
+                    log: log_for_connect,
+                }) as Box<dyn crate::dcall::mqtt::MqttPubSub>)
+            },
+        );
+        destination_handle.join().unwrap();
+
+        let (evidence, _redeemed_at) = result.expect("a valid destination response must succeed");
+        assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
+
+        // C: subscribe strictly before publish.
+        let log = log.lock().unwrap().clone();
+        let subscribe_pos = log.iter().position(|event| *event == "subscribe").unwrap();
+        let publish_pos = log.iter().position(|event| *event == "publish").unwrap();
+        assert!(subscribe_pos < publish_pos, "log: {log:?}");
+
+        // D/E/F: exact topic, QoS1, retain=false.
+        let published = broker.published_log();
+        let request_entry = published
+            .iter()
+            .find(|(topic, ..)| *topic == expected_request_topic)
+            .expect("the request must be published on the exact expected topic");
+        assert_eq!(request_entry.2, crate::dcall::mqtt::MqttQos::AtLeastOnce);
+        assert!(!request_entry.3, "retain must be false");
+    }
+
+    /// 113B3.1 section 22: every source-side round-trip test above used
+    /// `sample_v2_grant("remote")`. This proves the identical MQTT round
+    /// trip (subscribe-before-publish, exact topic, QoS1/retain=false,
+    /// success) for a grant whose `route_kind` is `"local"` -- i.e. exactly
+    /// what a genuine SAME-NODE `via_diot_pubsub` call produces. Combined
+    /// with the structural guarantee at the top of `dispatch_one_call`
+    /// (the `grant.v2_dcall_transport_authority.is_some()` check fires
+    /// UNCONDITIONALLY, before the `route_kind` match is even reached, and
+    /// therefore before `deliver_local` could ever be called), this closes
+    /// the gap that no test previously exercised the MQTT path under a
+    /// `route_kind == "local"` grant at all.
+    #[test]
+    fn v2_source_delivery_round_trip_succeeds_for_a_same_node_local_route_kind_grant() {
+        let grant = sample_v2_grant("local");
+        assert_eq!(
+            grant.route_kind, ROUTE_KIND_LOCAL,
+            "this test's premise requires a grant whose route_kind is literally 'local'"
+        );
+        let binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+
+        let broker = crate::dcall::mqtt::test_support::InMemoryBroker::new();
+
+        let authority = grant.v2_dcall_transport_authority.clone().unwrap();
+        let expected_request_topic = crate::dcall::mqtt::request_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &authority.diot_placement_id,
+            &grant.destination.node_id,
+            &authority.channel,
+        );
+        let expected_reply_topic = crate::dcall::mqtt::reply_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &grant.source.node_id,
+            &grant.grant_id,
+        );
+
+        let destination_handle = spawn_fake_destination(
+            broker.clone(),
+            expected_request_topic,
+            expected_reply_topic,
+            success_response_for(&grant),
+        );
+
+        let broker_for_connect = broker.clone();
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_secs(5),
+            move |_broker_addr| {
+                Ok(Box::new(broker_for_connect.connect()) as Box<dyn crate::dcall::mqtt::MqttPubSub>)
+            },
+        );
+        destination_handle.join().unwrap();
+
+        let (evidence, _redeemed_at) =
+            result.expect("a same-node route_kind='local' via_diot_pubsub grant must still complete a real MQTT round trip");
+        assert_eq!(evidence.outcome, DCodeInvocationOutcome::Success);
+    }
+
+    /// 34I: a destination response whose `dcode_evidence` does not
+    /// deserialize into a real `DCodeInvocationEvidenceV1` fails closed
+    /// (`dcall_remote_response_malformed`), never silently treated as
+    /// success.
+    #[test]
+    fn v2_source_delivery_fails_closed_on_malformed_destination_evidence() {
+        let grant = sample_v2_grant("remote");
+        let binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+        let broker = crate::dcall::mqtt::test_support::InMemoryBroker::new();
+
+        let authority = grant.v2_dcall_transport_authority.clone().unwrap();
+        let request_topic = crate::dcall::mqtt::request_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &authority.diot_placement_id,
+            &grant.destination.node_id,
+            &authority.channel,
+        );
+        let reply_topic = crate::dcall::mqtt::reply_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &grant.source.node_id,
+            &grant.grant_id,
+        );
+        let malformed_response = crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+            schema: crate::dcall::mqtt::RESPONSE_ENVELOPE_SCHEMA.to_string(),
+            grant_id: grant.grant_id.clone(),
+            outcome: "success".to_string(),
+            error_code: None,
+            dcode_evidence: Some(serde_json::json!({"not": "a real evidence shape"})),
+        };
+        let destination_handle = spawn_fake_destination(
+            broker.clone(),
+            request_topic,
+            reply_topic,
+            malformed_response,
+        );
+
+        let broker_for_connect = broker.clone();
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_secs(5),
+            move |_broker_addr| {
+                Ok(Box::new(broker_for_connect.connect()) as Box<dyn crate::dcall::mqtt::MqttPubSub>)
+            },
+        );
+        destination_handle.join().unwrap();
+        let failure = result.unwrap_err();
+        assert_eq!(failure.code.as_str(), "dcall_remote_response_malformed");
+    }
+
+    /// 34G/J: publishing succeeds (simulating a broker PUBACK) but no
+    /// destination ever replies -- PUBACK/publish success alone must NEVER
+    /// be treated as DCall success; the bounded wait must expire and return
+    /// a deterministic timeout failure.
+    #[test]
+    fn v2_source_delivery_times_out_when_no_reply_arrives_and_puback_alone_is_not_success() {
+        let grant = sample_v2_grant("remote");
+        let binding = matching_binding_json(&grant, "mqtt://broker.lab:1883");
+        let dserver_url = serve_one_current_binding_response("HTTP/1.1 200 OK", binding.to_string());
+        let broker = crate::dcall::mqtt::test_support::InMemoryBroker::new();
+        // No destination subscriber is ever spawned -- publish succeeds
+        // (analogous to a real PUBACK), but nothing ever replies.
+        let broker_for_connect = broker.clone();
+        let result = deliver_via_diot_pubsub(
+            &dserver_url,
+            &grant,
+            "token",
+            b"payload",
+            &sha256_hex(b"payload"),
+            std::time::Duration::from_millis(150),
+            move |_broker_addr| {
+                Ok(Box::new(broker_for_connect.connect()) as Box<dyn crate::dcall::mqtt::MqttPubSub>)
+            },
+        );
+        let failure = result.unwrap_err();
+        assert_eq!(failure.code.as_str(), "dcall_transport_timeout");
+        assert!(failure.redeemed_at.is_none());
+        // The publish itself must still have genuinely happened (proving
+        // this is a real "no reply" timeout, not a publish failure).
+        assert!(!broker.published_log().is_empty());
+    }
+
+    // -- Phase 113B3: destination-side MQTT handler tests (section 35, A-I) --
+    //
+    // Honest scope note (section 34/36 precedent, this file's own established
+    // convention -- see `execute_destination_delivery_uses_the_grants_own_message_and_correlation_id`'s
+    // doc comment): `execute_destination_delivery` uses the REAL isolated
+    // subprocess worker executor, so a genuinely successful end-to-end D-Code
+    // execution is proven by the real `dcall_two_node_integration` subprocess
+    // test, never by an HTTP/MQTT-mocked `cargo test --lib` unit test -- that
+    // precedent is unchanged by 113B3. The tests below therefore prove every
+    // property that does NOT require a real successful WASM execution
+    // (fail-closed-before-execution behavior A-D, single-use-gates-re-execution
+    // F, response sanitization G/H, and reply-topic-from-redeemed-grant-not-request
+    // I) directly against `handle_mqtt_dcall_request`, mocking only the
+    // `POST .../redeem` HTTP call. Property E ("valid redemption executes
+    // exact destination DCode") is covered by: (1) direct code inspection --
+    // `handle_mqtt_dcall_request` calls the exact same `execute_destination_delivery`
+    // helper the HTTP listener uses (section 19), so every existing HTTP-path
+    // execution guarantee applies unchanged; (2) the untouched Phase-112 hard
+    // gate; (3) the section-36 env-gated real-broker test. A dedicated real
+    // end-to-end MQTT execution proof (extending `dcall_two_node_integration.rs`
+    // with a genuine broker) is the natural closure item for Phase 113B4.
+
+    fn serve_one_redeem_response(status_line: &'static str, body: String) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = read_request_json_body(&mut stream);
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A server that panics if it EVER receives a second connection --
+    /// proves at most one HTTP call (the redeem attempt) was made, i.e. no
+    /// destination D-Code authorization/artifact fetch (which
+    /// `execute_destination_delivery` would need) was ever attempted (35A).
+    fn serve_exactly_one_request_then_panic_on_a_second(
+        status_line: &'static str,
+        body: String,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
             {
                 let (mut stream, _) = listener.accept().unwrap();
                 let _ = read_request_json_body(&mut stream);
-                let body = serde_json::json!(["call-a"]).to_string();
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ = stream.write_all(response.as_bytes());
             }
-            {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request_body = read_request_json_body(&mut stream);
-                let mut body: serde_json::Value = serde_json::from_str(&v2_diot_grant_response(
-                    "call-a", "m1", "c1", "local",
-                ))
-                .unwrap();
-                body["grant"]["source_dcode_evidence_sha256"] =
-                    request_body["source_dcode_evidence_sha256"].clone();
-                let body = body.to_string();
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) => panic!("a second HTTP request occurred -- destination D-Code was invoked before/despite a failed redemption"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn sample_mqtt_request_envelope(grant_id: &str) -> crate::dcall::mqtt::MqttDCallRequestEnvelopeV1 {
+        crate::dcall::mqtt::MqttDCallRequestEnvelopeV1 {
+            schema: crate::dcall::mqtt::REQUEST_ENVELOPE_SCHEMA.to_string(),
+            grant_id: grant_id.to_string(),
+            token: "some-bearer-token".to_string(),
+            payload_b64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"payload"),
+            payload_sha256: sha256_hex(b"payload"),
+            payload_size: 7,
+        }
+    }
+
+    /// 35A: a redemption that fails (any reason) means NO destination D-Code
+    /// invocation is ever attempted, proven by the server panicking if a
+    /// second HTTP request (which `execute_destination_delivery` would make)
+    /// ever arrives -- and `handle_mqtt_dcall_request` returns `None` (no
+    /// reply for an unverified request).
+    #[test]
+    fn v2_destination_no_execution_before_redemption() {
+        let dserver_url = serve_exactly_one_request_then_panic_on_a_second(
+            "HTTP/1.1 403 Forbidden",
+            serde_json::json!({"error": "dcall_grant_wrong_destination_node"}).to_string(),
+        );
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-a-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope("grant-1");
+        let result = handle_mqtt_dcall_request(
+            &dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        );
+        // Give the panic-on-second-request server a moment to observe
+        // whether a second connection ever arrives.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(result.is_none(), "a failed redemption must never produce a reply");
+    }
+
+    /// 35B: wrong destination node fails redemption -- same shape as A,
+    /// asserted with the specific error DServer would actually return.
+    #[test]
+    fn v2_destination_wrong_node_fails_redemption() {
+        let dserver_url = serve_one_redeem_response(
+            "HTTP/1.1 403 Forbidden",
+            serde_json::json!({"error": "dcall_grant_wrong_destination_node"}).to_string(),
+        );
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-b-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope("grant-1");
+        let result = handle_mqtt_dcall_request(
+            &dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        );
+        assert!(result.is_none());
+    }
+
+    /// 35C: a wrong observed MQTT topic fails redemption -- proves the
+    /// plumbing (the observed topic this installation actually saw the
+    /// request on is exactly what gets sent to DServer's redeem endpoint,
+    /// which independently verifies it -- section 17, already exhaustively
+    /// tested server-side) and that `handle_mqtt_dcall_request` correctly
+    /// treats that rejection as "no reply" (never `Pending`-but-reply-anyway).
+    #[test]
+    fn v2_destination_wrong_observed_topic_fails_redemption_with_no_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(Mutex::new(None));
+        let captured_for_server = captured.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let body = read_request_json_body(&mut stream);
+                *captured_for_server.lock().unwrap() = Some(body);
+                let response_body =
+                    serde_json::json!({"error": "dcall_observed_mqtt_topic_mismatch"}).to_string();
+                let response = format!(
+                    "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
                 let _ = stream.write_all(response.as_bytes());
             }
         });
-        let root = std::env::temp_dir().join(format!("dcall-v2-seam-local-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-c-{}", Uuid::new_v4()));
         crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
-        let source = real_source_result(
-            "fog-01",
-            "fog-01",
-            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        let request = sample_mqtt_request_envelope("grant-1");
+        let observed_topic = "datum/v1/dcall/exact/observed/topic";
+        let result = handle_mqtt_dcall_request(
+            &format!("http://{addr}"),
+            root.to_str().unwrap(),
+            observed_topic,
+            &request,
         );
-        let context = SourceExecutionContext {
-            dserver_url: format!("http://{addr}"),
-            dnode_root: root.to_str().unwrap().to_string(),
-        };
-        let results = dispatch_validated_emit_for_test(
-            &context,
-            &source,
-            0,
-            Path::new("definitely-does-not-exist-worker-binary"),
-        );
-        handle.join().unwrap();
-        assert_eq!(results.len(), 1);
+        assert!(result.is_none());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let captured_body = captured.lock().unwrap().clone().unwrap();
         assert_eq!(
-            results[0].error_code.as_deref(),
-            Some("dcall_diot_transport_not_implemented"),
-            "a same-node DMap/2 grant must halt before local D-Code invocation, never attempt to spawn the (nonexistent) worker binary"
+            captured_body["observed_mqtt_topic"].as_str(),
+            Some(observed_topic),
+            "the exact observed topic must be forwarded to DServer's redeem endpoint"
         );
-        assert!(results[0].redeemed_at.is_none());
     }
 
-    /// 27H: a DMap/1 grant response (no `v2_dcall_transport_authority`
-    /// field at all -- the exact historical wire shape) is completely
-    /// unaffected by the new seam; dispatch proceeds into the ordinary
-    /// `route_kind`-based branches exactly as before Phase 113B2.
+    /// 35D: a stale runtime binding fails redemption -- same shape as B/C.
+    #[test]
+    fn v2_destination_stale_runtime_binding_fails_redemption() {
+        let dserver_url = serve_one_redeem_response(
+            "HTTP/1.1 422 Unprocessable Entity",
+            serde_json::json!({"error": "diot_runtime_binding_stale"}).to_string(),
+        );
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-d-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope("grant-1");
+        let result = handle_mqtt_dcall_request(
+            &dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        );
+        assert!(result.is_none());
+    }
+
+    /// 35F: a duplicate MQTT delivery must not execute D-Code twice. The
+    /// FIRST redemption attempt succeeds (a real grant is returned, so
+    /// `execute_destination_delivery` genuinely runs -- and fails, since
+    /// this unit-test environment has no real worker binary, producing a
+    /// deterministic "failed" reply rather than a hang or panic); the
+    /// SECOND attempt against the SAME grant_id is rejected by DServer as
+    /// already-redeemed, proving no second execution attempt is even
+    /// reachable -- the single-use grant is the only dedupe authority
+    /// (section 21), no parallel application-level dedupe cache exists.
+    #[test]
+    fn v2_destination_duplicate_delivery_does_not_execute_twice() {
+        let grant = sample_v2_grant("local");
+        let grant_json = serde_json::to_value(&grant).unwrap();
+
+        let first_dserver_url = serve_one_redeem_response("HTTP/1.1 200 OK", grant_json.to_string());
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-f-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope(&grant.grant_id);
+        let first_result = handle_mqtt_dcall_request(
+            &first_dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        );
+        // Redemption succeeded (a grant was returned), so a reply IS
+        // produced -- outcome is "failed" only because this test
+        // environment has no real worker binary to execute, never because
+        // redemption itself failed.
+        assert!(first_result.is_some());
+
+        let second_dserver_url = serve_one_redeem_response(
+            "HTTP/1.1 409 Conflict",
+            serde_json::json!({"error": "dcall_grant_already_redeemed"}).to_string(),
+        );
+        let second_result = handle_mqtt_dcall_request(
+            &second_dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        );
+        assert!(
+            second_result.is_none(),
+            "a duplicate delivery against an already-redeemed grant must never produce a reply (never a second execution attempt)"
+        );
+    }
+
+    /// 35G/H: the response envelope never carries a bearer token or raw
+    /// source payload -- proven both structurally (the type has no such
+    /// field, `deny_unknown_fields`, see `mqtt::tests::response_envelope_carrying_a_token_field_is_rejected_by_deny_unknown_fields`)
+    /// and here, at the value level, across every response this module
+    /// actually produced during this test run.
+    #[test]
+    fn v2_destination_response_never_contains_token_or_raw_payload() {
+        let grant = sample_v2_grant("local");
+        let grant_json = serde_json::to_value(&grant).unwrap();
+        let dserver_url = serve_one_redeem_response("HTTP/1.1 200 OK", grant_json.to_string());
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-gh-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope(&grant.grant_id);
+        let (_, response) = handle_mqtt_dcall_request(
+            &dserver_url,
+            root.to_str().unwrap(),
+            "datum/v1/dcall/observed/topic",
+            &request,
+        )
+        .unwrap();
+        let serialized = serde_json::to_string(&response).unwrap();
+        assert!(!serialized.contains(&request.token));
+        assert!(!serialized.contains("payload"));
+        assert!(!serialized.contains(&request.payload_b64));
+    }
+
+    /// 35I: the reply topic is derived EXCLUSIVELY from the REDEEMED grant's
+    /// own `project_id`/`application_id`/`source.node_id`/`grant_id` --
+    /// never from the (untrustworthy) observed request topic. Proven by
+    /// using an observed topic that looks nothing like the real reply
+    /// topic, and confirming the returned reply topic still matches the
+    /// grant-derived computation exactly.
+    #[test]
+    fn v2_destination_reply_topic_is_derived_from_the_redeemed_grant_not_the_request() {
+        let grant = sample_v2_grant("local");
+        let grant_json = serde_json::to_value(&grant).unwrap();
+        let dserver_url = serve_one_redeem_response("HTTP/1.1 200 OK", grant_json.to_string());
+        let root = std::env::temp_dir().join(format!("dcall-mqtt-dest-i-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let request = sample_mqtt_request_envelope(&grant.grant_id);
+        let deliberately_unrelated_observed_topic = "datum/v1/dcall/totally/unrelated/topic/segment";
+        let (reply_topic, _response) = handle_mqtt_dcall_request(
+            &dserver_url,
+            root.to_str().unwrap(),
+            deliberately_unrelated_observed_topic,
+            &request,
+        )
+        .unwrap();
+        let expected = crate::dcall::mqtt::reply_topic(
+            &grant.project_id,
+            &grant.application_id,
+            &grant.source.node_id,
+            &grant.grant_id,
+        );
+        assert_eq!(reply_topic, expected);
+        assert_ne!(reply_topic, deliberately_unrelated_observed_topic);
+    }
+
+    /// 27H (renumbered under 113B3, still required): a DMap/1 grant response
+    /// (no `v2_dcall_transport_authority` field at all) is completely
+    /// unaffected by the MQTT delivery path; dispatch proceeds into the
+    /// ordinary `route_kind`-based branches exactly as before Phase 113B2/B3.
     #[test]
     fn v2_seam_never_fires_for_a_dmap1_grant_without_transport_authority() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

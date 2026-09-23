@@ -17,6 +17,7 @@ pub mod controlled_wasm_deployment;
 pub mod controlled_wasm_persistence;
 pub mod dcall;
 pub mod dcall_endpoint;
+pub mod dcall_mqtt_topic;
 pub mod dcode_authorization;
 pub mod dcode_registry;
 pub mod ddeploy;

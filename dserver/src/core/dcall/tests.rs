@@ -599,9 +599,9 @@ fn first_redemption_succeeds_second_fails_with_already_redeemed() {
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
     let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
-    redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, None, now())
         .expect("first redemption should succeed");
-    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, None, now())
         .unwrap_err();
     assert!(matches!(error, RedeemError::AlreadyRedeemed));
 }
@@ -624,7 +624,7 @@ fn wrong_token_is_rejected() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::TokenInvalid));
@@ -649,6 +649,7 @@ fn expired_grant_is_rejected() {
         "fog-01",
         "deadbeef",
         4,
+        None,
         far_future,
     )
         .unwrap_err();
@@ -673,7 +674,7 @@ fn wrong_destination_node_is_rejected() {
         "cloud-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::DestinationNodeMismatch));
@@ -697,7 +698,7 @@ fn payload_digest_mismatch_is_rejected() {
         "fog-01",
         "not-the-real-digest",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::PayloadMismatch));
@@ -721,7 +722,7 @@ fn payload_size_mismatch_is_rejected() {
         "fog-01",
         "deadbeef",
         999,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::PayloadMismatch));
@@ -753,7 +754,7 @@ fn stale_dmap_after_grant_issuance_fails_redemption() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -790,7 +791,7 @@ fn moved_destination_after_grant_issuance_fails_redemption() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -814,7 +815,7 @@ fn source_artifact_descriptor_change_after_grant_issuance_fails_redemption() {
     dcode.artifacts.insert(key, changed_source);
     let endpoints = DCallEndpointRegistryStateV1::empty();
     let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
-    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, None, now())
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)), "expected StaleAuthority, got {error:?}");
 }
@@ -848,7 +849,7 @@ fn source_service_moved_after_grant_issuance_fails_redemption() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -875,7 +876,7 @@ fn unchanged_grant_redeems_normally_after_two_sided_recheck() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .expect("an unchanged grant must redeem successfully");
 }
@@ -920,7 +921,7 @@ fn changed_endpoint_revision_after_grant_issuance_fails_remote_redemption() {
         "cloud-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -1208,7 +1209,7 @@ fn redeemed_grant_state_survives_restart_and_cannot_be_replayed() {
         "fog-01",
         &payload_sha256,
         4,
-        now(),
+        None, now(),
     )
         .expect("redemption after reload should succeed");
     persist_state(&db_path, &reloaded).unwrap();
@@ -1229,7 +1230,7 @@ fn redeemed_grant_state_survives_restart_and_cannot_be_replayed() {
         "fog-01",
         &payload_sha256,
         4,
-        now(),
+        None, now(),
     )
         .unwrap_err();
     assert!(matches!(error, RedeemError::AlreadyRedeemed));
@@ -2168,7 +2169,7 @@ fn v2_grant_issued_under_stale_authority_fails_redemption_after_activation_chang
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -2219,7 +2220,7 @@ fn v2_grant_issued_before_a_placement_change_fails_redemption() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -2689,6 +2690,18 @@ fn v2_issue_grant_rejects_impossible_authority_combinations() {
 fn v2_redemption_succeeds_when_authority_and_binding_are_unchanged() {
     let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let v2_authority = issued
+        .grant
+        .v2_dcall_transport_authority
+        .as_ref()
+        .expect("a v2 grant must carry transport authority");
+    let observed_topic = crate::core::dcall_mqtt_topic::request_topic(
+        &issued.grant.project_id,
+        &issued.grant.application_id,
+        &v2_authority.diot_placement_id,
+        &issued.grant.destination.node_id,
+        &v2_authority.channel,
+    );
     let grant = redeem_grant(
         &mut grants,
         &fixture.ddeploy,
@@ -2701,10 +2714,175 @@ fn v2_redemption_succeeds_when_authority_and_binding_are_unchanged() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        Some(&observed_topic), now(),
     )
     .expect("unchanged v2 authority + binding must redeem");
     assert!(grant.v2_dcall_transport_authority.is_some());
+}
+
+/// Phase 113B3 (section 17): the destination's OBSERVED MQTT topic is
+/// REQUIRED for a DMap/2 grant and must exactly match DServer's own
+/// independent recomputation from the grant's bound identity -- a caller
+/// cannot substitute an arbitrary topic and still redeem.
+#[test]
+fn v2_redemption_requires_observed_mqtt_topic_and_rejects_a_missing_one() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        None,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::ObservedTopicMissing));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// Phase 113B3 (section 17): a wrong observed MQTT topic fails redemption
+/// and leaves the grant `Pending` -- never consumed by a bad observation.
+#[test]
+fn v2_redemption_rejects_a_wrong_observed_mqtt_topic_and_leaves_grant_pending() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let wrong_topic = "datum/v1/dcall/deadbeef/deadbeef/deadbeef/deadbeef/deadbeef".to_string();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        Some(&wrong_topic),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::ObservedTopicMismatch));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 113B3.1 section 11B: the test above uses a topic that is wrong in EVERY
+/// segment. This isolates the specific case of only the FINAL segment
+/// (the hashed `channel`) disagreeing -- every upstream namespace segment
+/// (project/application/placement/destination-node) still matches exactly --
+/// proving the comparison is a full-topic equality check, not merely a
+/// namespace-prefix check that would let a caller substitute an arbitrary
+/// channel while keeping the correct upstream prefix.
+#[test]
+fn v2_redemption_rejects_an_observed_topic_with_only_the_final_channel_segment_wrong() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let v2_authority = issued
+        .grant
+        .v2_dcall_transport_authority
+        .as_ref()
+        .expect("a v2 grant must carry transport authority");
+    let correct_topic = crate::core::dcall_mqtt_topic::request_topic(
+        &issued.grant.project_id,
+        &issued.grant.application_id,
+        &v2_authority.diot_placement_id,
+        &issued.grant.destination.node_id,
+        &v2_authority.channel,
+    );
+    let replacement = "0".repeat(64);
+    let mut segments: Vec<&str> = correct_topic.split('/').collect();
+    let last = segments.len() - 1;
+    segments[last] = replacement.as_str();
+    let wrong_final_segment_topic = segments.join("/");
+    assert_ne!(wrong_final_segment_topic, correct_topic);
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        Some(&wrong_final_segment_topic),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::ObservedTopicMismatch));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 113B3.1 section 11C: the mirror case -- only an UPSTREAM namespace
+/// segment (here, the hashed `project_id`, the first segment) disagrees,
+/// while the final (channel) segment is correct. Proves the namespace
+/// segments are independently load-bearing too, not merely validated as a
+/// group with the final segment.
+#[test]
+fn v2_redemption_rejects_an_observed_topic_with_only_an_upstream_namespace_segment_wrong() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let v2_authority = issued
+        .grant
+        .v2_dcall_transport_authority
+        .as_ref()
+        .expect("a v2 grant must carry transport authority");
+    let correct_topic = crate::core::dcall_mqtt_topic::request_topic(
+        &issued.grant.project_id,
+        &issued.grant.application_id,
+        &v2_authority.diot_placement_id,
+        &issued.grant.destination.node_id,
+        &v2_authority.channel,
+    );
+    let replacement = "0".repeat(64);
+    let mut segments: Vec<&str> = correct_topic.split('/').collect();
+    // Segment index 2 is the first hashed identifier (project_id) -- indices
+    // 0/1 are the literal "datum"/"v1" prefix, 2..=6 are the five hashed
+    // components ending in the channel hash at index 6.
+    segments[2] = replacement.as_str();
+    let wrong_namespace_segment_topic = segments.join("/");
+    assert_ne!(wrong_namespace_segment_topic, correct_topic);
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        Some(&wrong_namespace_segment_topic),
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::ObservedTopicMismatch));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
 }
 
 /// 26B: the DIoT runtime binding is re-registered at a NEW revision (a real
@@ -2738,7 +2916,7 @@ fn v2_redemption_fails_when_binding_revision_changes_after_issuance() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -2774,6 +2952,13 @@ fn v2_redemption_still_succeeds_after_an_idempotent_identical_reregistration() {
         "an identical re-registration must not bump the revision"
     );
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let observed_topic = crate::core::dcall_mqtt_topic::request_topic(
+        &issued.grant.project_id,
+        &issued.grant.application_id,
+        &bound.diot_placement_id,
+        &issued.grant.destination.node_id,
+        &bound.channel,
+    );
     redeem_grant(
         &mut grants,
         &fixture.ddeploy,
@@ -2786,7 +2971,7 @@ fn v2_redemption_still_succeeds_after_an_idempotent_identical_reregistration() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        Some(&observed_topic), now(),
     )
     .expect("redemption must still succeed after a genuinely idempotent re-registration");
 }
@@ -2816,7 +3001,7 @@ fn v2_redemption_fails_when_binding_descriptor_digest_is_tampered() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -2846,7 +3031,7 @@ fn v2_redemption_fails_when_dmap_revision_changes_after_issuance() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -2873,7 +3058,7 @@ fn v2_redemption_fails_when_realization_channel_changes_after_issuance() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -2911,7 +3096,7 @@ fn v2_redemption_fails_when_realization_interface_changes_after_issuance() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
@@ -2942,7 +3127,7 @@ fn v2_redemption_fails_when_realization_placement_moves_after_issuance() {
         "cloud-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -2969,7 +3154,7 @@ fn v2_redemption_fails_when_dforward_authority_changes_after_issuance() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -3000,7 +3185,7 @@ fn v2_redemption_fails_when_artifact_execution_generation_changes_after_issuance
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -3034,7 +3219,7 @@ fn v2_redemption_fails_when_artifact_execution_projection_digest_changes_after_i
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -3069,7 +3254,7 @@ fn v2_stale_redemption_leaves_grant_pending_not_redeemed() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     let record = grants.grants.get(&issued.grant.grant_id).unwrap();
@@ -3211,7 +3396,7 @@ fn v2_redemption_fails_closed_when_a_v1_authority_is_also_registered_for_the_app
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)));
@@ -3226,6 +3411,18 @@ fn v2_redemption_fails_closed_when_a_v1_authority_is_also_registered_for_the_app
 fn v2_redemption_is_single_use() {
     let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let v2_authority = issued
+        .grant
+        .v2_dcall_transport_authority
+        .as_ref()
+        .expect("a v2 grant must carry transport authority");
+    let observed_topic = crate::core::dcall_mqtt_topic::request_topic(
+        &issued.grant.project_id,
+        &issued.grant.application_id,
+        &v2_authority.diot_placement_id,
+        &issued.grant.destination.node_id,
+        &v2_authority.channel,
+    );
     redeem_grant(
         &mut grants,
         &fixture.ddeploy,
@@ -3238,7 +3435,7 @@ fn v2_redemption_is_single_use() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        Some(&observed_topic), now(),
     )
     .expect("first redemption should succeed");
     let error = redeem_grant(
@@ -3253,7 +3450,7 @@ fn v2_redemption_is_single_use() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(error, RedeemError::AlreadyRedeemed));
@@ -3278,7 +3475,7 @@ fn v2_redemption_rejects_wrong_token_and_payload_mismatch() {
         "fog-01",
         "deadbeef",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(wrong_token_error, RedeemError::TokenInvalid));
@@ -3294,7 +3491,7 @@ fn v2_redemption_rejects_wrong_token_and_payload_mismatch() {
         "fog-01",
         "wrongpayload",
         4,
-        now(),
+        None, now(),
     )
     .unwrap_err();
     assert!(matches!(payload_mismatch_error, RedeemError::PayloadMismatch));

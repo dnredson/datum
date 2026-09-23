@@ -1,6 +1,8 @@
 # ADR-0023 — Canonical DForward/DIoT and DMap v2 control-plane foundation
 
-- Status: Implemented Phase 113A foundation; runtime transport deferred.
+- Status: Implemented through Phase 113B3 (real MQTT transport for the
+  DMap/2 `via_diot_pubsub` D-Call realization). Broader convergence/recovery
+  and multi-hop DForward execution remain deferred.
 - Scope: canonical logical middleware composition, DIoT realization placement,
   DMap/2 validation, and deterministic derived projection inputs.
 
@@ -131,3 +133,73 @@ a runtime transport existing to act on it. Still no MQTT adapter, ingress
 listener, egress publisher, retry protocol, or exactly-once claim exists
 anywhere in either crate; actual MQTT publish/subscribe transport remains
 the next slice (Phase 113B3).
+
+Phase 113B3 replaces that temporary DATUM-side seam with real MQTT
+transport, using `rumqttc`'s synchronous `Client`/`Connection` API (DATUM's
+application code remains entirely synchronous; this avoids introducing
+`#[tokio::main]` into the architecture merely for MQTT). Canonical DMap/2
+`channel` is never used as a raw MQTT topic: a deterministic operational
+mapping (`H(value) = lowercase bare SHA-256 hex`) hashes every identifier
+independently into `datum/v1/dcall/H(project)/H(application)/H(placement)/
+H(destination_node)/H(channel)` (request) and `datum/v1/dcall-reply/
+H(project)/H(application)/H(source_node)/H(grant_id)` (reply) -- mirrored
+independently in both crates with golden-vector parity tests, never stored
+in DMap/2, DForward, or the runtime binding. A destination subscriber's
+operational subscription (`.../+`) is machinery only, never canonical.
+
+Before opening any MQTT connection, the source fetches the runtime binding
+through a NEW proof-of-currency read
+(`GET .../runtime-bindings/:project/:application/:placement/current`, reusing
+the one Phase-113B1 validator, never a duplicate check) and requires exact
+agreement with the grant's own bound `binding_id`/`binding_revision`/
+`descriptor_digest`/`transport` -- closing the "grant issued under binding N,
+binding becomes N+1" race before any network action. v0.1 delivers over
+plain `mqtt://` only; a binding currently declaring `mqtts://` (the Phase
+113B1 registry still accepts registering one) fails closed at USE time with a
+deterministic `dcall_diot_broker_scheme_unsupported` code -- this is the same
+plaintext/no-confidentiality trust boundary already acknowledged for
+Phase-112's bare HTTP transport, never silently upgraded or overclaimed.
+
+The request/response envelopes (`datum.dcall-mqtt-envelope/1` /
+`datum.dcall-mqtt-response/1`) are minimal and `deny_unknown_fields`: the
+request carries only `grant_id`/`token`/payload proof, never any
+destination/DMap/DForward/binding/broker/artifact field (all of that is
+already grant-side authority); the response carries only `grant_id`/
+`outcome`/an optional deterministic `error_code`/optional destination D-Code
+evidence -- never a token, broker URI, raw payload, or arbitrary diagnostic
+text. Publishing is always QoS1 with `retain=false`; a broker PUBACK is
+receipt-of-transport proof only, never DCall success -- success requires a
+VALID reply envelope whose destination evidence independently re-validates
+against the grant. Because the grant's single-use, atomic, re-proved-current
+redemption is the only dedupe authority, a QoS1 duplicate delivery fails
+redemption as already-redeemed rather than executing D-Code twice; no
+parallel application-level dedupe cache exists, and no exactly-once claim is
+made anywhere -- the honest guarantee is "at most one destination execution
+per successfully redeemed grant."
+
+Redemption itself is strengthened (not forked): a DMap/2 grant's redemption
+request now carries an OPTIONAL `observed_mqtt_topic` (historical DMap/1
+callers keep omitting it, `#[serde(default)]`); for a `via_diot_pubsub` grant
+it is REQUIRED, and DServer independently recomputes the expected topic from
+the grant's own bound identity and requires an exact match before the grant
+may become `Redeemed` -- a wrong or missing topic fails closed and leaves the
+grant `Pending`, exactly like every other stale-authority check in this
+chain. The destination subscriber never trusts MQTT topic or envelope
+content as proof of identity (section 16): it redeems first, then invokes
+destination D-Code via the SAME `execute_destination_delivery` helper the
+existing HTTP listener uses (section 19 -- no second, weaker duplicate
+execution path), and computes its reply topic EXCLUSIVELY from the REDEEMED
+grant's own `project_id`/`application_id`/`source.node_id`/`grant_id` --
+never from anything the request envelope or its physical MQTT topic claimed.
+
+Explicitly out of scope for 113B3, honestly disclosed rather than silently
+assumed: DMonitor and `any_element` readiness (runtime-binding existence or
+broker connectivity is never treated as readiness evidence); dynamic binding
+reconfiguration -- a subscriber binds to the binding observed at startup, and
+a later binding-authority change requires a listener restart, not silent
+rebinding (a Stage115/113B4 recovery boundary); `mqtts://`/TLS/broker
+authentication; and a real end-to-end genuinely-executed-D-Code proof of the
+MQTT path specifically (the existing real Phase-112 subprocess integration
+proof continues to cover the unchanged HTTP path; an env-gated real-broker
+transport-only seam exists for 113B3, but extending the full governed
+subprocess integration test to a real broker is left to Phase 113B4).

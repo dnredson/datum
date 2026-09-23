@@ -40,6 +40,7 @@ use crate::core::canonical_dmap::CanonicalContractReferenceV1;
 use crate::core::dcall_endpoint::{
     DCallEndpointRegistryStateV1, DNodeTransportEndpointV1, TRANSPORT_HTTP,
 };
+use crate::core::dcall_mqtt_topic::request_topic as compute_mqtt_request_topic;
 use crate::core::dcode_authorization::authorize_dcode_invocation;
 use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
 use crate::core::ddeploy::DDeployStateV1;
@@ -795,6 +796,20 @@ pub enum RedeemError {
     DestinationNodeMismatch,
     PayloadMismatch,
     StaleAuthority(CanonicalValidationFinding),
+    /// Phase 113B3 (section 17): a DMap/2 `via_diot_pubsub` grant requires
+    /// the caller to supply `observed_mqtt_topic` at redemption -- omitting
+    /// it is a distinct failure from a WRONG topic (`ObservedTopicMismatch`)
+    /// so an operator/log can tell "the destination listener never reported
+    /// what it saw" from "it reported something and it was wrong".
+    ObservedTopicMissing,
+    /// Phase 113B3 (section 17): the caller-observed MQTT topic does not
+    /// match the topic DServer independently recomputes from the grant's
+    /// OWN bound `project_id`/`application_id`/`diot_placement_id`/
+    /// `destination.node_id`/`channel`. This is a caller OBSERVATION to
+    /// verify, never caller-supplied authority -- the expected value is
+    /// never taken from the request. Leaves the grant `Pending` (this
+    /// function returns before the `Redeemed` mutation).
+    ObservedTopicMismatch,
 }
 
 /// Atomically redeems a grant: verifies token/expiry/destination/payload
@@ -818,6 +833,7 @@ pub fn redeem_grant(
     destination_node_id: &str,
     payload_sha256: &str,
     payload_size: u64,
+    observed_mqtt_topic: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<DCallDeliveryGrantV1, RedeemError> {
     let record = grant_state
@@ -993,6 +1009,27 @@ pub fn redeem_grant(
                 "dcall_stale_authority",
                 format!("grant '{grant_id}' no longer matches the current DIoT runtime binding identity (binding_id/binding_revision/descriptor_digest drifted since issuance)"),
             )));
+        }
+
+        // Section 17: for a DMap/2 `via_diot_pubsub` grant, the destination
+        // listener's OBSERVED physical MQTT topic is REQUIRED and must
+        // exactly equal the topic DServer independently recomputes from the
+        // grant's own bound identity -- this is a caller observation to
+        // verify (proof the message actually arrived on the namespace this
+        // exact realization/binding owns), never caller-supplied authority.
+        // Historical DMap/1 HTTP redemption never supplies this field at all
+        // (checked below, outside this `if let Some(v2_authority)` block, is
+        // simply skipped for a DMap/1 grant).
+        let observed = observed_mqtt_topic.ok_or(RedeemError::ObservedTopicMissing)?;
+        let expected = compute_mqtt_request_topic(
+            &record.grant.project_id,
+            &record.grant.application_id,
+            &v2_authority.diot_placement_id,
+            &record.grant.destination.node_id,
+            &v2_authority.channel,
+        );
+        if observed != expected {
+            return Err(RedeemError::ObservedTopicMismatch);
         }
     }
 

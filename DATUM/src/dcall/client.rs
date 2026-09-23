@@ -169,11 +169,20 @@ struct RedeemGrantPayload<'a> {
     destination_node_id: &'a str,
     payload_sha256: &'a str,
     payload_size: u64,
+    /// Phase 113B3 (section 17): REQUIRED for a DMap/2 `via_diot_pubsub`
+    /// grant, omitted (via `skip_serializing_if`) for every other
+    /// redemption -- matches the server-side `#[serde(default)]` field
+    /// exactly, so historical DMap/1 HTTP redemption requests are
+    /// byte-for-byte unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_mqtt_topic: Option<&'a str>,
 }
 
 /// `POST /api/v1/dcall/grants/:grant_id/redeem`. Returns `Err` for ANY
 /// non-2xx response -- the caller must treat redemption failure as "do not
-/// execute", never optimistically.
+/// execute", never optimistically. `observed_mqtt_topic` is `None` for the
+/// HTTP/local delivery paths; the MQTT destination subscriber (Phase 113B3)
+/// passes `Some(the exact topic it received the request on)`.
 pub fn redeem_grant(
     base_url: &str,
     grant_id: &str,
@@ -181,6 +190,7 @@ pub fn redeem_grant(
     destination_node_id: &str,
     payload_sha256: &str,
     payload_size: u64,
+    observed_mqtt_topic: Option<&str>,
 ) -> Result<DCallDeliveryGrantV1> {
     let url = format!(
         "{}/api/v1/dcall/grants/{grant_id}/redeem",
@@ -191,6 +201,7 @@ pub fn redeem_grant(
         destination_node_id,
         payload_sha256,
         payload_size,
+        observed_mqtt_topic,
     };
     let response = client()?
         .post(&url)
@@ -269,6 +280,68 @@ pub fn fetch_endpoint(base_url: &str, node_id: &str, transport: &str) -> Result<
         ));
     }
     serde_json::from_str(&body).with_context(|| format!("parse endpoint JSON: {body}"))
+}
+
+/// Mirrors ONLY the fields DATUM must verify/use from
+/// `dserver::core::diot_runtime_binding::DIoTRuntimeBindingV1`
+/// (independent wire-mirror discipline, ADR-0007). `#[serde(deny_unknown_fields)]`
+/// so a future dserver-side field added without a matching DATUM update
+/// fails loudly.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentRuntimeBindingResponse {
+    pub binding_id: String,
+    pub binding_revision: u64,
+    pub project_id: String,
+    pub application_id: String,
+    pub placement_id: String,
+    pub diot_id: String,
+    pub node_id: String,
+    pub dmap_id: String,
+    pub dmap_revision: u64,
+    pub dmap_digest: String,
+    pub dforward_id: String,
+    pub dforward_revision: u64,
+    pub dforward_digest: String,
+    pub artifact_id: String,
+    pub execution_generation: u64,
+    pub execution_projection_digest: String,
+    pub transport: String,
+    pub broker_uri: String,
+    pub registered_at_utc: String,
+    pub descriptor_digest: String,
+}
+
+/// `GET /api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id/current`
+/// (Phase 113B3, section 7). Unlike a plain persisted-value GET, DServer
+/// PROVES this binding is current (via the one production
+/// `verify_runtime_binding_still_current` validator) before returning it --
+/// this is the mechanism source-side MQTT delivery uses (section 8) to
+/// obtain an authority-proven binding immediately before comparing it
+/// against the grant and opening any MQTT connection.
+pub fn fetch_current_runtime_binding(
+    base_url: &str,
+    project_id: &str,
+    application_id: &str,
+    placement_id: &str,
+) -> Result<CurrentRuntimeBindingResponse> {
+    let url = format!(
+        "{}/api/v1/diot/runtime-bindings/{project_id}/{application_id}/{placement_id}/current",
+        base_url.trim_end_matches('/')
+    );
+    let response = client()?
+        .get(&url)
+        .send()
+        .with_context(|| format!("GET {url}"))?;
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow!(
+            "fetch current DIoT runtime binding failed: status={status} body={body}"
+        ));
+    }
+    serde_json::from_str(&body)
+        .with_context(|| format!("parse CurrentRuntimeBindingResponse JSON: {body}"))
 }
 
 #[cfg(test)]

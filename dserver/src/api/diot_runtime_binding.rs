@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 
 use crate::core::diot_runtime_binding::{
     load_state as load_binding_state, persist_state as persist_binding_state,
-    register_runtime_binding, DIoTRuntimeBindingV1, RegisterDIoTRuntimeBindingError,
+    register_runtime_binding, verify_runtime_binding_still_current, DIoTRuntimeBindingV1,
+    RegisterDIoTRuntimeBindingError,
 };
 use crate::storage::control_state::default_control_state_db_path;
 
@@ -150,6 +151,65 @@ pub async fn get_diot_runtime_binding(
         })
 }
 
+/// `GET /api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id/current`
+/// (Phase 113B3, section 7). Unlike the plain `GET` above (which returns
+/// whatever is persisted, even if stale), this handler PROVES the binding is
+/// CURRENT before returning it: it acquires the same authority locks as
+/// `put_diot_runtime_binding`, loads current DDeploy/DNode state, and calls
+/// the ONE existing Phase-113B1 validator
+/// (`verify_runtime_binding_still_current`) -- never a duplicated staleness
+/// check. This is the mechanism DATUM's source-side delivery flow uses
+/// (section 8) to obtain an authority-proven binding immediately before
+/// opening an MQTT connection.
+pub async fn get_diot_runtime_binding_current(
+    axum::extract::Path((project_id, application_id, placement_id)): axum::extract::Path<(
+        String,
+        String,
+        String,
+    )>,
+) -> Result<JsonResponse<DIoTRuntimeBindingV1>, ApiError> {
+    let _ddeploy_transaction = crate::api::ddeploy::ddeploy_transaction()
+        .lock()
+        .map_err(lock_error)?;
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction()
+        .lock()
+        .map_err(lock_error)?;
+    let _diot_runtime_binding_transaction = diot_runtime_binding_transaction()
+        .lock()
+        .map_err(lock_error)?;
+
+    let db_path = db_path();
+    let ddeploy_state = crate::core::ddeploy::load_state(&db_path).map_err(internal_error)?;
+    let dnode_registry_state =
+        crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let binding_state = load_binding_state(&db_path).map_err(internal_error)?;
+
+    let binding = binding_state
+        .get(&project_id, &application_id, &placement_id)
+        .cloned()
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({
+                    "error": format!(
+                        "no DIoT runtime binding registered for project '{project_id}' application '{application_id}' placement '{placement_id}'"
+                    )
+                })),
+            )
+        })?;
+
+    verify_runtime_binding_still_current(&binding, &ddeploy_state, &dnode_registry_state).map_err(
+        |finding| {
+            (
+                StatusCode::CONFLICT,
+                JsonResponse(json!({"error": finding.code, "message": finding.message})),
+            )
+        },
+    )?;
+
+    Ok(JsonResponse(binding))
+}
+
 #[cfg(test)]
 mod tests {
     fn production_source() -> String {
@@ -210,6 +270,32 @@ mod tests {
         assert!(
             !body.contains("_transaction()"),
             "a plain read must not acquire any write-path lock: {body}"
+        );
+    }
+
+    /// Phase 113B3 (section 7): unlike the plain read above, the "current"
+    /// read PROVES currency and therefore must acquire the same authority
+    /// locks as `put_diot_runtime_binding`, in the same order.
+    #[test]
+    fn get_diot_runtime_binding_current_holds_the_established_lock_order() {
+        let body = fn_body(
+            &production_source(),
+            "pub async fn get_diot_runtime_binding_current(",
+        );
+        let ddeploy_lock_pos = body
+            .find("ddeploy::ddeploy_transaction()")
+            .expect("get_diot_runtime_binding_current must acquire DDEPLOY_TRANSACTION");
+        let dnode_lock_pos = body
+            .find("dnode_registry::dnode_transaction()")
+            .expect("get_diot_runtime_binding_current must acquire DNODE_TRANSACTION");
+        let own_lock_pos = body
+            .find("diot_runtime_binding_transaction()")
+            .expect("get_diot_runtime_binding_current must acquire its own DIOT_RUNTIME_BINDING_TRANSACTION");
+        assert!(ddeploy_lock_pos < dnode_lock_pos);
+        assert!(dnode_lock_pos < own_lock_pos);
+        assert!(
+            body.contains("verify_runtime_binding_still_current"),
+            "must reuse the one production validator, not a duplicated check"
         );
     }
 

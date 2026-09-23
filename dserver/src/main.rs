@@ -55,7 +55,9 @@ use api::dgraph_planner::{get_dgraph_planner_dry_run, get_dgraph_planner_dry_run
 use api::dgraph_readiness::get_dgraph_readiness_summary;
 use api::dgraph_resource_limits::get_dgraph_resource_limits_contract;
 use api::dgraph_rollback_audit::get_dgraph_rollback_audit_contract;
-use api::diot_runtime_binding::{get_diot_runtime_binding, put_diot_runtime_binding};
+use api::diot_runtime_binding::{
+    get_diot_runtime_binding, get_diot_runtime_binding_current, put_diot_runtime_binding,
+};
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::dnode_registry::{
@@ -446,6 +448,7 @@ async fn main() {
         .route("/api/v1/dcall/grants/:grant_id/redeem", post(post_redeem_grant))
         .route("/api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id", put(put_diot_runtime_binding))
         .route("/api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id", get(get_diot_runtime_binding))
+        .route("/api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id/current", get(get_diot_runtime_binding_current))
         .route("/api/v1/dcontinuum/authoritative", get(get_authoritative_dcontinuum))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
