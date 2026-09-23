@@ -43,6 +43,9 @@ use crate::core::dcall_endpoint::{
 use crate::core::dcode_authorization::authorize_dcode_invocation;
 use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
 use crate::core::ddeploy::DDeployStateV1;
+use crate::core::diot_runtime_binding::{
+    verify_runtime_binding_still_current, DIoTRuntimeBindingRegistryStateV1,
+};
 use crate::core::dnode_registry::DNodeRegistryStateV1;
 use crate::core::jcs::is_canonical_digest_format;
 use crate::core::sha256::sha256_hex;
@@ -135,6 +138,47 @@ pub struct DCallRealizationAuthorityV1 {
     pub dforward_id: String,
     pub dforward_revision: u64,
     pub dforward_digest: String,
+}
+
+/// Phase 113B2 (ADR-0023): the exact server-derived transport authority a
+/// `DCallDeliveryGrantV1` binds when it governs a DMap/2 `via_diot_pubsub`
+/// D-Call -- `None` for every DMap/1 grant (unchanged, section 2/4). Binds
+/// BOTH halves of what B2 requires: the accepted D-Call realization itself
+/// (`realization_kind`/`diot_placement_id`/`interface`/`channel`/
+/// `dforward_id`/`dforward_revision`/`dforward_digest`, copied verbatim from
+/// the route's own `DCallRealizationAuthorityV1` -- never re-derived
+/// independently, so the two can never silently disagree) AND the governed
+/// DIoT runtime-binding identity current at issuance
+/// (`binding_id`/`binding_revision`/`descriptor_digest`, from
+/// `diot_runtime_binding::DIoTRuntimeBindingV1`). `transport` is carried
+/// (always `"mqtt"` in v0.1) so a future consumer never has to guess it from
+/// the presence of this struct alone.
+///
+/// Section 5 (`broker_uri` inclusion decision): deliberately EXCLUDED.
+/// `binding_id`/`binding_revision`/`descriptor_digest` are what make this
+/// authority load-bearing (they let a consumer prove, via
+/// `diot_runtime_binding::verify_runtime_binding_still_current`, that the
+/// binding is STILL current); a bare `broker_uri` string would be
+/// non-authoritative duplicate data that could only ever go stale
+/// independently of those fields, and Phase 113B2 implements no transport
+/// that would consume it anyway. A future MQTT transport slice (113B3) reads
+/// the current `broker_uri` by looking the binding up again by
+/// `(project_id, application_id, diot_placement_id)` -- the grant's own
+/// `project_id`/`application_id` plus this struct's `diot_placement_id`
+/// already carry everything needed to do that lookup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DCallRealizationTransportAuthorityV1 {
+    pub realization_kind: String,
+    pub diot_placement_id: String,
+    pub interface: String,
+    pub channel: String,
+    pub dforward_id: String,
+    pub dforward_revision: u64,
+    pub dforward_digest: String,
+    pub binding_id: String,
+    pub binding_revision: u64,
+    pub descriptor_digest: String,
+    pub transport: String,
 }
 
 /// Independent review fix v4 (K2A): the authority a real source D-Code
@@ -528,6 +572,14 @@ pub struct DCallDeliveryGrantV1 {
     pub endpoint_revision: Option<u64>,
     #[serde(default)]
     pub endpoint_descriptor_digest: Option<String>,
+    /// Phase 113B2 (section 4/6/18): `Some(..)` exclusively for a DMap/2
+    /// `via_diot_pubsub` grant; `None` for every DMap/1 grant. `#[serde(default)]`
+    /// so a historical DMap/1 grant persisted before this field existed still
+    /// deserializes (as `None`, never fabricated) -- see
+    /// `validate_persisted_dcall_grant_state_integrity` for the reload-time
+    /// shape/consistency checks this field is subject to.
+    #[serde(default)]
+    pub v2_dcall_transport_authority: Option<DCallRealizationTransportAuthorityV1>,
     pub issued_at: String,
     pub expires_at: String,
 }
@@ -575,11 +627,32 @@ pub struct IssuedGrant {
     pub token: String,
 }
 
+/// Phase 113B2 (section 12): the two shapes of delivery authority
+/// `issue_grant` can accept, deliberately an ENUM rather than an
+/// `Option<&DNodeTransportEndpointV1>` plus a separate optional DIoT
+/// authority parameter -- a caller cannot construct both an HTTP endpoint
+/// AND a DIoT transport authority at once, so "DMap/2 `via_diot_pubsub` +
+/// HTTP endpoint authority as delivery authority" is unrepresentable, not
+/// merely rejected at runtime.
+pub enum DCallDeliveryAuthorityV1<'a> {
+    /// DMap/1 local route: no delivery authority beyond the route itself.
+    None,
+    /// DMap/1 remote route: the declared HTTP transport endpoint for the
+    /// destination node.
+    Http(&'a DNodeTransportEndpointV1),
+    /// DMap/2 `via_diot_pubsub` route (any `route_kind` -- section 11):
+    /// the governed realization + runtime-binding authority, constructed by
+    /// the caller (`post_request_grant`) from `derive_dcall_route`'s own
+    /// `route.v2_dcall_realization` plus a resolved, current
+    /// `diot_runtime_binding::DIoTRuntimeBindingV1`.
+    DiotPubsub(DCallRealizationTransportAuthorityV1),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn issue_grant(
     grant_state: &mut DCallGrantStateV1,
     route: DCallRouteV1,
-    endpoint: Option<&DNodeTransportEndpointV1>,
+    delivery_authority: DCallDeliveryAuthorityV1,
     message_id: String,
     correlation_id: String,
     payload_sha256: String,
@@ -587,8 +660,67 @@ pub fn issue_grant(
     source_dcode_evidence_sha256: String,
     now: DateTime<Utc>,
 ) -> Result<IssuedGrant, CanonicalValidationFinding> {
-    if route.route_kind == ROUTE_KIND_REMOTE {
-        let endpoint = endpoint.ok_or_else(|| {
+    // Section 12: reject the impossible authority combinations up front,
+    // before any endpoint/token/state work. Because `DCallDeliveryAuthorityV1`
+    // is an enum, "DMap/2 + HTTP endpoint as delivery authority" can never
+    // reach this function at all (only `DiotPubsub` OR `Http`/`None`, never
+    // both) -- the two combinations actually checked here are the ones the
+    // type system cannot rule out by itself: DMap/1 route + DIoT authority,
+    // and DMap/2 `via_diot_pubsub` route + missing DIoT authority.
+    let v2_dcall_transport_authority = match (&route.v2_dcall_realization, &delivery_authority) {
+        (Some(realization), DCallDeliveryAuthorityV1::DiotPubsub(authority)) => {
+            // Defense in depth, not the primary authority-agreement proof:
+            // `post_request_grant` is what actually resolves `authority`
+            // from the CURRENT runtime-binding registry and cross-checks it
+            // against `realization`; both are derived from the SAME loaded
+            // `ddeploy_state` within the SAME lock hold (section 21/22), so
+            // this equality is expected to always hold. It is checked again
+            // here so `issue_grant` itself never persists a grant whose two
+            // halves of authority silently disagree, even if a future call
+            // site constructed `authority` some other way.
+            if authority.realization_kind != realization.realization_kind
+                || authority.diot_placement_id != realization.diot_placement_id
+                || authority.interface != realization.interface
+                || authority.channel != realization.channel
+                || authority.dforward_id != realization.dforward_id
+                || authority.dforward_revision != realization.dforward_revision
+                || authority.dforward_digest != realization.dforward_digest
+            {
+                return Err(finding(
+                    "dcall_diot_transport_authority_mismatch",
+                    "supplied DIoT transport authority does not match the route's own realization authority",
+                ));
+            }
+            Some(authority.clone())
+        }
+        (Some(realization), _) => {
+            return Err(finding(
+                "dcall_v2_realization_requires_diot_transport_authority",
+                format!(
+                    "D-Call '{}' is governed under an active DMap/2 realization ('{}') but no DIoT transport authority was supplied to issue_grant",
+                    route.call_id, realization.realization_kind
+                ),
+            ));
+        }
+        (None, DCallDeliveryAuthorityV1::DiotPubsub(_)) => {
+            return Err(finding(
+                "dcall_v1_route_cannot_carry_diot_transport_authority",
+                "D-Call route is governed under DMap/1 -- DIoT transport authority is only valid for an active DMap/2 via_diot_pubsub realization",
+            ));
+        }
+        (None, _) => None,
+    };
+
+    // Section 10: HTTP endpoint authority is irrelevant for a DMap/2
+    // `via_diot_pubsub` grant, regardless of `route_kind` -- a same-node OR
+    // remote DIoT-realized call never requires (and never consults) an HTTP
+    // transport endpoint. This block therefore only runs for the DMap/1 path.
+    let http_endpoint = match &delivery_authority {
+        DCallDeliveryAuthorityV1::Http(endpoint) => Some(*endpoint),
+        _ => None,
+    };
+    if v2_dcall_transport_authority.is_none() && route.route_kind == ROUTE_KIND_REMOTE {
+        let endpoint = http_endpoint.ok_or_else(|| {
             finding(
                 "dcall_destination_endpoint_missing",
                 format!("D-Call route to node '{}' is remote but no '{TRANSPORT_HTTP}' endpoint is declared for it", route.destination.node_id),
@@ -633,9 +765,10 @@ pub fn issue_grant(
         payload_size,
         source_dcode_evidence_sha256,
         route_kind: route.route_kind,
-        endpoint_id: endpoint.map(|e| e.endpoint_id.clone()),
-        endpoint_revision: endpoint.map(|e| e.revision),
-        endpoint_descriptor_digest: endpoint.map(|e| e.descriptor_digest.clone()),
+        endpoint_id: http_endpoint.map(|e| e.endpoint_id.clone()),
+        endpoint_revision: http_endpoint.map(|e| e.revision),
+        endpoint_descriptor_digest: http_endpoint.map(|e| e.descriptor_digest.clone()),
+        v2_dcall_transport_authority,
         issued_at,
         expires_at,
     };
@@ -679,6 +812,7 @@ pub fn redeem_grant(
     dnode_registry_state: &DNodeRegistryStateV1,
     dcode_registry_state: &DCodeArtifactRegistryStateV1,
     dcall_endpoint_state: &DCallEndpointRegistryStateV1,
+    diot_runtime_binding_state: &DIoTRuntimeBindingRegistryStateV1,
     grant_id: &str,
     token: &str,
     destination_node_id: &str,
@@ -761,7 +895,13 @@ pub fn redeem_grant(
             format!("grant '{grant_id}' no longer matches current canonical DESTINATION authority (dmap/dgraph/artifact drifted since issuance)"),
         )));
     }
-    if record.grant.route_kind == ROUTE_KIND_REMOTE {
+    // HTTP endpoint staleness is a DMap/1-only concern (section 10): a
+    // DMap/2 `via_diot_pubsub` grant never carries endpoint authority
+    // regardless of `route_kind`, so this check must not run for one (it
+    // would otherwise incorrectly require/consult an HTTP endpoint that was
+    // never this grant's delivery authority in the first place).
+    if record.grant.v2_dcall_transport_authority.is_none() && record.grant.route_kind == ROUTE_KIND_REMOTE
+    {
         let current_endpoint =
             dcall_endpoint_state.get(&record.grant.destination.node_id, TRANSPORT_HTTP);
         let current_digest = current_endpoint.map(|endpoint| endpoint.descriptor_digest.clone());
@@ -771,6 +911,87 @@ pub fn redeem_grant(
                 format!(
                     "grant '{grant_id}' destination endpoint changed or was removed since issuance"
                 ),
+            )));
+        }
+    }
+
+    // Phase 113B2 (section 14): a DMap/2 `via_diot_pubsub` grant must have
+    // its FULL realization + runtime-binding authority re-proved current
+    // before redemption -- the generic dmap/dgraph/artifact rechecks above
+    // are necessary but not sufficient for this grant shape, since they say
+    // nothing about the realization's channel/interface/placement/DForward
+    // ref or about whether the DIoT runtime binding it names still exists
+    // and is itself current. Any failure here leaves the grant `Pending`
+    // (this function returns before the mutation below runs).
+    if let Some(v2_authority) = &record.grant.v2_dcall_transport_authority {
+        // "current D-Call route still exists" + "exact DGraph/DMap refs
+        // agree" + "exact realization agrees": re-derive the route fresh,
+        // from the grant's own bound source identity/port -- this is the
+        // SAME production route-derivation function issuance itself uses,
+        // never a second parallel interpretation of "current realization".
+        let current_route = derive_dcall_route(
+            ddeploy_state,
+            dnode_registry_state,
+            dcode_registry_state,
+            &record.grant.project_id,
+            &record.grant.application_id,
+            &record.grant.call_id,
+            &record.grant.source.service_id,
+            &record.grant.source.node_id,
+            &record.grant.source.port,
+        )
+        .map_err(RedeemError::StaleAuthority)?;
+
+        let current_realization = current_route.v2_dcall_realization.as_ref().ok_or_else(|| {
+            RedeemError::StaleAuthority(finding(
+                "dcall_stale_authority",
+                format!("grant '{grant_id}' was issued under a DMap/2 via_diot_pubsub realization but the currently active authority is no longer DMap/2"),
+            ))
+        })?;
+        if current_realization.realization_kind != v2_authority.realization_kind
+            || current_realization.diot_placement_id != v2_authority.diot_placement_id
+            || current_realization.interface != v2_authority.interface
+            || current_realization.channel != v2_authority.channel
+            || current_realization.dforward_id != v2_authority.dforward_id
+            || current_realization.dforward_revision != v2_authority.dforward_revision
+            || current_realization.dforward_digest != v2_authority.dforward_digest
+        {
+            return Err(RedeemError::StaleAuthority(finding(
+                "dcall_stale_authority",
+                format!("grant '{grant_id}' no longer matches the currently active DMap/2 realization (kind/placement/interface/channel/DForward ref drifted since issuance)"),
+            )));
+        }
+
+        // "exact runtime binding still exists" + "binding validates against
+        // CURRENT authority": resolve by the SAME key issuance used, then
+        // reuse the ONE production staleness validator -- never a duplicate
+        // check.
+        let current_binding = diot_runtime_binding_state
+            .get(
+                &record.grant.project_id,
+                &record.grant.application_id,
+                &v2_authority.diot_placement_id,
+            )
+            .ok_or_else(|| {
+                RedeemError::StaleAuthority(finding(
+                    "dcall_diot_runtime_binding_missing",
+                    format!("grant '{grant_id}' names DIoT placement '{}' which no longer has a registered runtime binding", v2_authority.diot_placement_id),
+                ))
+            })?;
+        verify_runtime_binding_still_current(current_binding, ddeploy_state, dnode_registry_state)
+            .map_err(RedeemError::StaleAuthority)?;
+
+        // "binding_id/binding_revision/descriptor_digest all match the
+        // grant": the binding may still structurally validate yet no longer
+        // be the SAME registration this grant was issued against (e.g. it
+        // was re-registered at a new revision after issuance).
+        if current_binding.binding_id != v2_authority.binding_id
+            || current_binding.binding_revision != v2_authority.binding_revision
+            || current_binding.descriptor_digest != v2_authority.descriptor_digest
+        {
+            return Err(RedeemError::StaleAuthority(finding(
+                "dcall_stale_authority",
+                format!("grant '{grant_id}' no longer matches the current DIoT runtime binding identity (binding_id/binding_revision/descriptor_digest drifted since issuance)"),
             )));
         }
     }
@@ -844,24 +1065,12 @@ pub fn validate_persisted_dcall_grant_state_integrity(
                 }
             }
         }
-        // I7: route_kind must be one of the two known values, and its
-        // endpoint-field presence must agree with it -- local carries NO
-        // endpoint fields, remote carries ALL of them. Never silently
-        // repaired.
+        // I7: route_kind must be one of the two known values, and (section
+        // 15) its node-identity implication always holds regardless of
+        // delivery-authority shape -- local means source/destination are the
+        // SAME D-Node, remote means they are DIFFERENT ones.
         match record.grant.route_kind.as_str() {
             ROUTE_KIND_LOCAL => {
-                if record.grant.endpoint_id.is_some()
-                    || record.grant.endpoint_revision.is_some()
-                    || record.grant.endpoint_descriptor_digest.is_some()
-                {
-                    return Err(format!(
-                        "dcall grant '{key}' has route_kind=local but carries endpoint fields"
-                    ));
-                }
-                // Independent review fix v5 (section 15): a local route
-                // means source and destination are structurally the SAME
-                // D-Node -- persisted state claiming otherwise is
-                // impossible for the real server to have produced.
                 if record.grant.source.node_id != record.grant.destination.node_id {
                     return Err(format!(
                         "dcall grant '{key}' has route_kind=local but source.node_id '{}' != destination.node_id '{}'",
@@ -870,27 +1079,6 @@ pub fn validate_persisted_dcall_grant_state_integrity(
                 }
             }
             ROUTE_KIND_REMOTE => {
-                let endpoint_id = record.grant.endpoint_id.as_deref().ok_or_else(|| {
-                    format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_id")
-                })?;
-                let endpoint_revision = record.grant.endpoint_revision.ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_revision"))?;
-                let endpoint_descriptor_digest =
-                    record.grant.endpoint_descriptor_digest.as_deref().ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_descriptor_digest"))?;
-                // J4: presence alone is not enough -- shape/value validity too.
-                if endpoint_id.trim().is_empty() {
-                    return Err(format!("dcall grant '{key}' has an empty endpoint_id"));
-                }
-                if endpoint_revision < 1 {
-                    return Err(format!(
-                        "dcall grant '{key}' has endpoint_revision {endpoint_revision} < 1"
-                    ));
-                }
-                if !is_canonical_digest_format(endpoint_descriptor_digest) {
-                    return Err(format!("dcall grant '{key}' has a malformed endpoint_descriptor_digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
-                }
-                // Independent review fix v5 (section 15): a remote route
-                // means source and destination are structurally DIFFERENT
-                // D-Nodes -- the whole point of route_kind=remote.
                 if record.grant.source.node_id == record.grant.destination.node_id {
                     return Err(format!("dcall grant '{key}' has route_kind=remote but source.node_id == destination.node_id '{}'", record.grant.source.node_id));
                 }
@@ -900,6 +1088,112 @@ pub fn validate_persisted_dcall_grant_state_integrity(
                     "dcall grant '{key}' has unsupported route_kind '{other}'"
                 ))
             }
+        }
+        // Section 13: delivery-authority shape -- exactly one of "HTTP
+        // endpoint authority" (DMap/1) or "DIoT transport authority"
+        // (DMap/2 `via_diot_pubsub`) may be present, never both, and each
+        // present shape must itself be well-formed. Deliberately does NOT
+        // require the DIoT authority to agree with CURRENT topology here --
+        // a persisted grant remains a historically valid RECORD even after
+        // topology later changes; current usability is rechecked separately
+        // at redemption (`redeem_grant`'s own dedicated block), never here.
+        match &record.grant.v2_dcall_transport_authority {
+            Some(v2) => {
+                if record.grant.endpoint_id.is_some()
+                    || record.grant.endpoint_revision.is_some()
+                    || record.grant.endpoint_descriptor_digest.is_some()
+                {
+                    return Err(format!(
+                        "dcall grant '{key}' carries BOTH v2_dcall_transport_authority and HTTP endpoint authority -- these are mutually exclusive"
+                    ));
+                }
+                if v2.realization_kind != "via_diot_pubsub" {
+                    return Err(format!(
+                        "dcall grant '{key}' has v2_dcall_transport_authority.realization_kind '{}' -- v0.1 only ever issues 'via_diot_pubsub'",
+                        v2.realization_kind
+                    ));
+                }
+                for (label, value) in [
+                    ("diot_placement_id", &v2.diot_placement_id),
+                    ("interface", &v2.interface),
+                    ("channel", &v2.channel),
+                    ("dforward_id", &v2.dforward_id),
+                    ("binding_id", &v2.binding_id),
+                ] {
+                    if value.trim().is_empty() {
+                        return Err(format!(
+                            "dcall grant '{key}' has an empty v2_dcall_transport_authority.{label}"
+                        ));
+                    }
+                }
+                // Mirrors `CanonicalDMapV2::validate`'s own wildcard-channel
+                // rejection (`canonical_dmap_v2.rs`) -- no shared function
+                // exists to call, so this is the identical inline check, not
+                // a reimplementation of different logic.
+                if v2.channel.contains('+') || v2.channel.contains('#') {
+                    return Err(format!(
+                        "dcall grant '{key}' has a wildcard v2_dcall_transport_authority.channel (forbidden)"
+                    ));
+                }
+                if v2.dforward_revision < 1 {
+                    return Err(format!(
+                        "dcall grant '{key}' has v2_dcall_transport_authority.dforward_revision {} < 1",
+                        v2.dforward_revision
+                    ));
+                }
+                if !is_canonical_digest_format(&v2.dforward_digest) {
+                    return Err(format!("dcall grant '{key}' has a malformed v2_dcall_transport_authority.dforward_digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
+                }
+                if v2.binding_revision < 1 {
+                    return Err(format!(
+                        "dcall grant '{key}' has v2_dcall_transport_authority.binding_revision {} < 1",
+                        v2.binding_revision
+                    ));
+                }
+                if !is_canonical_digest_format(&v2.descriptor_digest) {
+                    return Err(format!("dcall grant '{key}' has a malformed v2_dcall_transport_authority.descriptor_digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
+                }
+                if v2.transport != crate::core::diot_runtime_binding::TRANSPORT_MQTT {
+                    return Err(format!(
+                        "dcall grant '{key}' has unsupported v2_dcall_transport_authority.transport '{}'",
+                        v2.transport
+                    ));
+                }
+            }
+            None => match record.grant.route_kind.as_str() {
+                ROUTE_KIND_LOCAL => {
+                    if record.grant.endpoint_id.is_some()
+                        || record.grant.endpoint_revision.is_some()
+                        || record.grant.endpoint_descriptor_digest.is_some()
+                    {
+                        return Err(format!(
+                            "dcall grant '{key}' has route_kind=local but carries endpoint fields"
+                        ));
+                    }
+                }
+                ROUTE_KIND_REMOTE => {
+                    let endpoint_id = record.grant.endpoint_id.as_deref().ok_or_else(|| {
+                        format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_id")
+                    })?;
+                    let endpoint_revision = record.grant.endpoint_revision.ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_revision"))?;
+                    let endpoint_descriptor_digest =
+                        record.grant.endpoint_descriptor_digest.as_deref().ok_or_else(|| format!("dcall grant '{key}' has route_kind=remote but is missing endpoint_descriptor_digest"))?;
+                    // J4: presence alone is not enough -- shape/value validity too.
+                    if endpoint_id.trim().is_empty() {
+                        return Err(format!("dcall grant '{key}' has an empty endpoint_id"));
+                    }
+                    if endpoint_revision < 1 {
+                        return Err(format!(
+                            "dcall grant '{key}' has endpoint_revision {endpoint_revision} < 1"
+                        ));
+                    }
+                    if !is_canonical_digest_format(endpoint_descriptor_digest) {
+                        return Err(format!("dcall grant '{key}' has a malformed endpoint_descriptor_digest (expected the canonical 'sha256:<64 lowercase hex>' form)"));
+                    }
+                }
+                // Already rejected above -- unreachable here.
+                _ => {}
+            },
         }
         // J4: `dgraph_ref`/`dmap_ref` must themselves be structurally valid
         // canonical contract references, not merely present.

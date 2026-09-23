@@ -95,8 +95,39 @@ binding's DMap/DForward/artifact-authority identity is still current before
 any consumer may treat it as authoritative, exactly mirroring Phase 112's
 `check_source_execution_binding` philosophy. This registry performs NO MQTT
 network I/O -- no client, connection, publish, subscribe, or credential
-handling exists yet anywhere in DServer. The evolution needed to actually
-authorize a DIoT-realized delivery (extending `DCallDeliveryGrantV1` with the
-realization authority rather than introducing a parallel MQTT-specific grant
-type) is a locked design decision, not yet implemented; `issue_grant` still
-unconditionally refuses any D-Call governed under DMap/2.
+handling exists yet anywhere in DServer.
+
+Phase 113B2 implements the locked design decision the previous paragraph
+describes: `DCallDeliveryGrantV1` gains one optional, server-derived field
+(`v2_dcall_transport_authority: Option<DCallRealizationTransportAuthorityV1>`)
+rather than a second, parallel authorization type -- `None` for every DMap/1
+grant, `Some(..)` binding BOTH the exact accepted D-Call realization
+(kind/placement/interface/channel/DForward reference) AND the exact governed
+DIoT runtime-binding identity (`binding_id`/`binding_revision`/
+`descriptor_digest`) current at issuance. `post_request_grant` replaces its
+former blanket `dcall_realization_transport_not_implemented` rejection with
+governed resolution: it resolves the runtime binding for the realization's
+placement, requires it exist (`dcall_diot_runtime_binding_missing`) and
+validate against current authority via the Phase-113B1 validator
+(`diot_runtime_binding_stale`), then constructs the grant's transport
+authority itself -- a destination HTTP endpoint is never consulted, and
+`route_kind` (local/remote) never gates this decision, so a same-node
+`via_diot_pubsub` call still receives typed authority rather than silently
+degrading to direct local delivery. `issue_grant`'s delivery authority is now
+a closed three-variant type (no HTTP endpoint, an HTTP endpoint, or DIoT
+transport authority) so the impossible combinations -- DMap/1 with DIoT
+authority, or DMap/2 `via_diot_pubsub` with HTTP endpoint authority as
+delivery authority -- are unrepresentable rather than merely rejected at
+runtime. Redemption re-derives and re-proves this ENTIRE authority chain
+(current route and realization, current runtime binding and its identity)
+before a DMap/2 grant may become `Redeemed`; any staleness leaves it
+`Pending`, never silently consumed. On the DATUM side, `dcall::delivery`
+gains a mandatory, temporary fail-closed seam: once a grant carrying this
+typed authority is obtained, delivery halts immediately with a dedicated
+deterministic evidence code (`dcall_diot_transport_not_implemented`) --
+before any local D-Code invocation, any HTTP request, or any grant
+redemption -- since realization authorization succeeding is not the same as
+a runtime transport existing to act on it. Still no MQTT adapter, ingress
+listener, egress publisher, retry protocol, or exactly-once claim exists
+anywhere in either crate; actual MQTT publish/subscribe transport remains
+the next slice (Phase 113B3).

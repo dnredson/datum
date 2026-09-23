@@ -381,6 +381,32 @@ fn dispatch_one_call(
         );
     }
 
+    // Phase 113B2 (section 19, MANDATORY fail-closed seam): once DServer
+    // issues a grant carrying typed DMap/2 `via_diot_pubsub` transport
+    // authority, delivery MUST NOT fall through into the `route_kind`-based
+    // branches below -- `route_kind` is purely descriptive topology
+    // (section 10/11: it never gates transport for this authority shape,
+    // and a same-node call still carries this authority, so this check
+    // fires regardless of whether `route_kind` happens to be "local" or
+    // "remote"). Realization authorization already succeeded (DServer would
+    // not have issued the grant otherwise), but no MQTT runtime transport
+    // exists until Phase 113B3 -- stop HERE, before any local D-Code
+    // invocation, any HTTP request, and any grant redemption. The evidence
+    // built below is grant-bound (so schema/routing/identity fields are
+    // still forensically useful) but `redeemed_at` is `None` and no
+    // network action of any kind has occurred -- the bearer `token`,
+    // broker credentials, and payload content are never referenced here.
+    if grant.v2_dcall_transport_authority.is_some() {
+        return evidence::build_grant_bound_failure_evidence(
+            id,
+            &grant,
+            None,
+            DCallDeliveryErrorCode::DCallDiotTransportNotImplemented,
+            None,
+            elapsed_ms(start),
+        );
+    }
+
     let result: Result<(DCodeInvocationEvidenceV1, String), DeliveryFailure> =
         match grant.route_kind.as_str() {
             ROUTE_KIND_LOCAL => deliver_local(
@@ -1571,6 +1597,7 @@ mod tests {
             endpoint_id: None,
             endpoint_revision: None,
             endpoint_descriptor_digest: None,
+            v2_dcall_transport_authority: None,
             issued_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: "2026-01-01T00:00:30Z".to_string(),
         }
@@ -1835,4 +1862,296 @@ mod tests {
         let body = read_bounded_response_body(response).unwrap();
         assert!(body.contains("success"));
     }
+
+    // ================================================================
+    // Phase 113B2 (section 19, MANDATORY fail-closed seam; section 27
+    // dispatch test matrix A-H).
+    // ================================================================
+
+    fn v2_diot_grant_response(
+        call_id: &str,
+        message_id: &str,
+        correlation_id: &str,
+        route_kind: &str,
+    ) -> String {
+        serde_json::json!({
+            "grant": {
+                "grant_id": format!("grant-{call_id}"),
+                "project_id": "proj:lab",
+                "application_id": "app:a",
+                "call_id": call_id,
+                "dgraph_ref": {"id": "dgraph:1", "revision": 1, "digest": "sha256:aa"},
+                "dmap_ref": {"id": "dmap:1", "revision": 1, "digest": "sha256:bb"},
+                "source": {"service_id": "source", "port": "out", "node_id": "fog-01", "dserv_artifact_id": "a1", "dserv_artifact_digest": "sha256:cc", "dserv_artifact_descriptor_digest": "sha256:dd"},
+                "destination": {"service_id": "dest", "port": "in", "node_id": "fog-01", "dserv_artifact_id": "a2", "dserv_artifact_digest": "sha256:ee", "dserv_artifact_descriptor_digest": "sha256:ff"},
+                "message_id": message_id,
+                "correlation_id": correlation_id,
+                "payload_sha256": sha256_hex(b"payload"),
+                "payload_size": 7,
+                "source_dcode_evidence_sha256": "f".repeat(64),
+                "route_kind": route_kind,
+                "v2_dcall_transport_authority": {
+                    "realization_kind": "via_diot_pubsub",
+                    "diot_placement_id": "diotp:broker",
+                    "interface": "sensor-bus",
+                    "channel": "pipeline/sensor-to-decoder",
+                    "dforward_id": "dforward:pipeline",
+                    "dforward_revision": 1,
+                    "dforward_digest": format!("sha256:{}", "1".repeat(64)),
+                    "binding_id": "diot-runtime-binding:proj:lab:app:a:diotp:broker",
+                    "binding_revision": 1,
+                    "descriptor_digest": format!("sha256:{}", "2".repeat(64)),
+                    "transport": "mqtt",
+                },
+                "issued_at": "2026-01-01T00:00:00Z",
+                "expires_at": "2026-01-01T00:00:30Z",
+            },
+            "token": "super-secret-bearer-token-must-never-leak",
+        })
+        .to_string()
+    }
+
+    /// Serves EXACTLY the two requests a v2 dispatch attempt should make
+    /// (list_calls, then the grant POST) and then actively probes for a
+    /// THIRD connection for a short bounded window before returning --
+    /// proving no redemption/HTTP-delivery request was ever attempted.
+    /// Returns whether a third connection was observed (must be `false`).
+    /// Reads one HTTP request off `stream` and returns its JSON body
+    /// (`Value::Null` if the request has no body or is not JSON) -- used to
+    /// echo the real caller-computed `source_dcode_evidence_sha256` back
+    /// into a mock grant response, exactly as `fanout_grant_response`'s own
+    /// call sites do.
+    fn read_request_json_body(stream: &mut std::net::TcpStream) -> serde_json::Value {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buffer.extend_from_slice(&chunk[..n]);
+                    if buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&buffer);
+        let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
+        serde_json::from_str(&text[body_start..]).unwrap_or(serde_json::Value::Null)
+    }
+
+    fn serve_two_requests_then_probe_for_a_third(
+        listener: TcpListener,
+        call_id: &'static str,
+        route_kind: &'static str,
+    ) -> bool {
+        {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request_json_body(&mut stream);
+            let body = serde_json::json!([call_id]).to_string();
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(response.as_bytes());
+        }
+        {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request_body = read_request_json_body(&mut stream);
+            let mut body: serde_json::Value =
+                serde_json::from_str(&v2_diot_grant_response(call_id, "m1", "c1", route_kind))
+                    .unwrap();
+            body["grant"]["source_dcode_evidence_sha256"] =
+                request_body["source_dcode_evidence_sha256"].clone();
+            let body = body.to_string();
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(response.as_bytes());
+        }
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+        false
+    }
+
+    /// 27A/B/C/E/F/G: a REMOTE-route DMap/2 grant carrying typed DIoT
+    /// transport authority is obtained (A), recognized (B), and produces
+    /// the dedicated deterministic evidence (C) -- with NO destination HTTP
+    /// request (E, proven by the bounded third-connection probe), NO grant
+    /// redemption (F), and the bearer token never appearing anywhere in the
+    /// serialized evidence (G).
+    #[test]
+    fn v2_grant_transport_authority_halts_remote_delivery_before_any_network_action() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let observed_third_request = std::thread::spawn(move || {
+            serve_two_requests_then_probe_for_a_third(listener, "call-a", "remote")
+        });
+
+        let root = std::env::temp_dir().join(format!("dcall-v2-seam-remote-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let source = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let context = SourceExecutionContext {
+            dserver_url: format!("http://{addr}"),
+            dnode_root: root.to_str().unwrap().to_string(),
+        };
+        // A nonexistent worker binary: if the seam failed to fire and
+        // `deliver_local`/`deliver_remote` were reached, EITHER path would
+        // produce a DIFFERENT error than the dedicated seam code below
+        // (a worker-spawn failure, or -- for "remote" -- a redeem attempt
+        // against the now-exhausted mock server).
+        let results = dispatch_validated_emit_for_test(
+            &context,
+            &source,
+            0,
+            Path::new("definitely-does-not-exist-worker-binary"),
+        );
+        assert_eq!(results.len(), 1);
+        let evidence = &results[0];
+
+        // A: a real grant was obtained (pre-grant failures always carry an
+        // empty grant_id).
+        assert_eq!(evidence.grant_id, "grant-call-a");
+        // B/C: the dedicated deterministic seam evidence code.
+        assert_eq!(
+            evidence.error_code.as_deref(),
+            Some("dcall_diot_transport_not_implemented")
+        );
+        assert!(matches!(evidence.outcome, DCallDeliveryOutcome::Failed));
+        assert_eq!(evidence.schema, crate::dcall::evidence::DCALL_DELIVERY_EVIDENCE_SCHEMA);
+        // F: never redeemed.
+        assert!(evidence.redeemed_at.is_none());
+        assert!(evidence.destination_dcode_evidence_sha256.is_none());
+        // E: no third HTTP request (redeem or otherwise) was ever attempted.
+        assert!(
+            !observed_third_request.join().unwrap(),
+            "a third HTTP request occurred after the v2 grant -- the fail-closed seam did not stop delivery"
+        );
+        // G: the bearer token never appears anywhere in the serialized
+        // evidence.
+        let serialized = serde_json::to_string(evidence).unwrap();
+        assert!(!serialized.contains("super-secret-bearer-token-must-never-leak"));
+    }
+
+    /// 27D: a SAME-NODE (`route_kind == "local"`) DMap/2 grant carrying
+    /// typed DIoT transport authority halts BEFORE any local D-Code
+    /// invocation is attempted -- proven by supplying a worker binary path
+    /// that does not exist: if `deliver_local` were ever reached, spawning
+    /// it would produce a distinct worker-spawn failure, never the seam's
+    /// own dedicated code.
+    #[test]
+    fn v2_grant_transport_authority_halts_local_delivery_before_any_dcode_invocation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = read_request_json_body(&mut stream);
+                let body = serde_json::json!(["call-a"]).to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request_body = read_request_json_body(&mut stream);
+                let mut body: serde_json::Value = serde_json::from_str(&v2_diot_grant_response(
+                    "call-a", "m1", "c1", "local",
+                ))
+                .unwrap();
+                body["grant"]["source_dcode_evidence_sha256"] =
+                    request_body["source_dcode_evidence_sha256"].clone();
+                let body = body.to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let root = std::env::temp_dir().join(format!("dcall-v2-seam-local-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let source = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let context = SourceExecutionContext {
+            dserver_url: format!("http://{addr}"),
+            dnode_root: root.to_str().unwrap().to_string(),
+        };
+        let results = dispatch_validated_emit_for_test(
+            &context,
+            &source,
+            0,
+            Path::new("definitely-does-not-exist-worker-binary"),
+        );
+        handle.join().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_diot_transport_not_implemented"),
+            "a same-node DMap/2 grant must halt before local D-Code invocation, never attempt to spawn the (nonexistent) worker binary"
+        );
+        assert!(results[0].redeemed_at.is_none());
+    }
+
+    /// 27H: a DMap/1 grant response (no `v2_dcall_transport_authority`
+    /// field at all -- the exact historical wire shape) is completely
+    /// unaffected by the new seam; dispatch proceeds into the ordinary
+    /// `route_kind`-based branches exactly as before Phase 113B2.
+    #[test]
+    fn v2_seam_never_fires_for_a_dmap1_grant_without_transport_authority() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = read_request_json_body(&mut stream);
+                let body = serde_json::json!(["call-a"]).to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request_body = read_request_json_body(&mut stream);
+                let mut body: serde_json::Value =
+                    serde_json::from_str(&fanout_grant_response("call-a", "m1", "c1")).unwrap();
+                body["grant"]["source_dcode_evidence_sha256"] =
+                    request_body["source_dcode_evidence_sha256"].clone();
+                let body = body.to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let root = std::env::temp_dir().join(format!("dcall-v1-no-seam-{}", Uuid::new_v4()));
+        crate::dcode::local_identity::init_local_identity(&root, "fog-01").unwrap();
+        let source = real_source_result(
+            "fog-01",
+            "fog-01",
+            r#"{"status":"ok","emits":[{"port":"out","payload_b64":"cGF5bG9hZA=="}]}"#,
+        );
+        let context = SourceExecutionContext {
+            dserver_url: format!("http://{addr}"),
+            dnode_root: root.to_str().unwrap().to_string(),
+        };
+        let results = dispatch_validated_emit_for_test(&context, &source, 0, Path::new("unused"));
+        assert_eq!(results.len(), 1);
+        // `fanout_grant_response` deliberately uses an unsupported
+        // route_kind (see its own doc comment) -- proving dispatch reached
+        // the ordinary `match route_kind` branch (and failed THERE, on the
+        // unsupported value) rather than being halted by the v2 seam, which
+        // never applies to a grant with no transport authority at all.
+        assert_eq!(
+            results[0].error_code.as_deref(),
+            Some("dcall_unsupported_route_kind"),
+            "a DMap/1 grant (no v2 transport authority) must reach the ordinary route_kind dispatch, never the v2 seam"
+        );
+    }
+
 }

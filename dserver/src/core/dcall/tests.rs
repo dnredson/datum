@@ -15,6 +15,7 @@ use crate::core::ddeploy::{
     application_key, canonical_dmap_id, ActiveApplicationDeployment, DDeployProposalV1,
     ProposalLifecycleState, ProposalRecord, ProposalSource, DDEPLOY_PROPOSAL_SCHEMA,
 };
+use crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1;
 use crate::core::dnode_registry::{declare_dnode, DNodeRegistryStateV1};
 use crate::core::dserv_artifact::{
     CanonicalDServArtifactV1, DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1,
@@ -502,7 +503,7 @@ fn issuing_a_local_grant_needs_no_endpoint() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -523,7 +524,7 @@ fn issuing_a_remote_grant_without_an_endpoint_fails_closed() {
     let error = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -558,7 +559,7 @@ fn raw_token_is_never_persisted_only_its_hash() {
     let issued = issue_grant(
         &mut grants,
         route,
-        Some(&endpoint),
+        DCallDeliveryAuthorityV1::Http(&endpoint),
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -580,7 +581,7 @@ fn issue_local(fixture: &Fixture) -> (DCallGrantStateV1, IssuedGrant) {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -597,9 +598,10 @@ fn first_redemption_succeeds_second_fails_with_already_redeemed() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
-    redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
         .expect("first redemption should succeed");
-    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &fixture.dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
         .unwrap_err();
     assert!(matches!(error, RedeemError::AlreadyRedeemed));
 }
@@ -609,12 +611,14 @@ fn wrong_token_is_rejected() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         "wrong-token",
         "fog-01",
@@ -631,6 +635,7 @@ fn expired_grant_is_rejected() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let far_future = now() + ChronoDuration::seconds(GRANT_TTL_SECONDS + 60);
     let error = redeem_grant(
         &mut grants,
@@ -638,6 +643,7 @@ fn expired_grant_is_rejected() {
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -654,12 +660,14 @@ fn wrong_destination_node_is_rejected() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "cloud-01",
@@ -676,12 +684,14 @@ fn payload_digest_mismatch_is_rejected() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -698,12 +708,14 @@ fn payload_size_mismatch_is_rejected() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -728,12 +740,14 @@ fn stale_dmap_after_grant_issuance_fails_redemption() {
     active.active_dmap.revision = 2;
     active.dmap_digest = "sha256:".to_string() + &"9".repeat(64);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -758,6 +772,7 @@ fn moved_destination_after_grant_issuance_fails_redemption() {
         }
     }
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     // The grant still names the OLD destination node ("fog-01"), so
     // redemption is attempted against that node -- but the active DMap no
     // longer places the destination service there at all, so
@@ -769,6 +784,7 @@ fn moved_destination_after_grant_issuance_fails_redemption() {
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -797,7 +813,8 @@ fn source_artifact_descriptor_change_after_grant_issuance_fails_redemption() {
     changed_source.limits.timeout_ms += 1; // descriptor digest changes, module digest unchanged
     dcode.artifacts.insert(key, changed_source);
     let endpoints = DCallEndpointRegistryStateV1::empty();
-    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &dcode, &endpoints, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, now())
         .unwrap_err();
     assert!(matches!(error, RedeemError::StaleAuthority(_)), "expected StaleAuthority, got {error:?}");
 }
@@ -818,12 +835,14 @@ fn source_service_moved_after_grant_issuance_fails_redemption() {
         }
     }
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(
         &mut grants,
         &ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -843,12 +862,14 @@ fn unchanged_grant_redeems_normally_after_two_sided_recheck() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     redeem_grant(
         &mut grants,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -868,7 +889,7 @@ fn changed_endpoint_revision_after_grant_issuance_fails_remote_redemption() {
     let issued = issue_grant(
         &mut grants,
         route,
-        Some(&endpoint_v1),
+        DCallDeliveryAuthorityV1::Http(&endpoint_v1),
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -879,6 +900,8 @@ fn changed_endpoint_revision_after_grant_issuance_fails_remote_redemption() {
     .unwrap();
 
     let mut endpoints = DCallEndpointRegistryStateV1::empty();
+
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let endpoint_v2 = sample_endpoint("cloud-01", 2);
     endpoints.endpoints.insert(
         crate::core::dcall_endpoint::endpoint_key("cloud-01", TRANSPORT_HTTP),
@@ -891,6 +914,7 @@ fn changed_endpoint_revision_after_grant_issuance_fails_remote_redemption() {
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "cloud-01",
@@ -920,6 +944,50 @@ fn matching_binding(route: &DCallRouteV1) -> SourceExecutionBindingV1 {
         dserv_artifact_id: route.source.dserv_artifact_id.clone(),
         dserv_artifact_digest: route.source.dserv_artifact_digest.clone(),
         dserv_artifact_descriptor_digest: route.source.dserv_artifact_descriptor_digest.clone(),
+    }
+}
+
+/// Phase 113B2: registers a real DIoT runtime binding for `route`'s own
+/// realization (against `fixture`'s CURRENT, unmutated authority) and builds
+/// the exact `DCallDeliveryAuthorityV1::DiotPubsub` a legitimate
+/// `issue_grant` call for this route requires. Used by the (small number of)
+/// pre-113B2 tests that issue a grant for a `build_v2_fixture` route purely
+/// to exercise generic redemption/staleness mechanics that are NOT
+/// themselves about the DIoT transport authority -- `issue_grant` now
+/// unconditionally requires this authority for any DMap/2 `via_diot_pubsub`
+/// route, so these tests must supply one to reach the mechanic under test.
+fn diot_transport_authority_for(
+    fixture: &Fixture,
+    route: &DCallRouteV1,
+    diot_bindings: &mut DIoTRuntimeBindingRegistryStateV1,
+) -> DCallRealizationTransportAuthorityV1 {
+    let realization = route
+        .v2_dcall_realization
+        .as_ref()
+        .expect("route must be governed under an active DMap/2 realization");
+    let binding = crate::core::diot_runtime_binding::register_runtime_binding(
+        diot_bindings,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        PROJECT,
+        APP,
+        &realization.diot_placement_id,
+        "mqtt://broker.lab:1883",
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("registering a runtime binding against the fixture's own active DMap/2 must succeed");
+    DCallRealizationTransportAuthorityV1 {
+        realization_kind: realization.realization_kind.clone(),
+        diot_placement_id: realization.diot_placement_id.clone(),
+        interface: realization.interface.clone(),
+        channel: realization.channel.clone(),
+        dforward_id: realization.dforward_id.clone(),
+        dforward_revision: realization.dforward_revision,
+        dforward_digest: realization.dforward_digest.clone(),
+        binding_id: binding.binding_id,
+        binding_revision: binding.binding_revision,
+        descriptor_digest: binding.descriptor_digest,
+        transport: binding.transport,
     }
 }
 
@@ -973,7 +1041,7 @@ fn corrupted_persisted_grant_relationships_fail_reload_without_repair() {
         let route = derive(&fixture, "fog-01").unwrap();
         let endpoint = sample_endpoint("cloud-01", 1);
         let mut baseline = DCallGrantStateV1::empty();
-        let issued = issue_grant(&mut baseline, route, if remote { Some(&endpoint) } else { None }, "m1".into(), "c1".into(), "d".repeat(64), 4, "e".repeat(64), now()).unwrap();
+        let issued = issue_grant(&mut baseline, route, if remote { DCallDeliveryAuthorityV1::Http(&endpoint) } else { DCallDeliveryAuthorityV1::None }, "m1".into(), "c1".into(), "d".repeat(64), 4, "e".repeat(64), now()).unwrap();
         let mut mutations = vec![
             ("grant_id", serde_json::json!("")),
             ("dgraph_ref.id", serde_json::json!("")), ("dmap_ref.id", serde_json::json!("")),
@@ -1113,7 +1181,7 @@ fn redeemed_grant_state_survives_restart_and_cannot_be_replayed() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         payload_sha256.clone(),
@@ -1127,12 +1195,14 @@ fn redeemed_grant_state_survives_restart_and_cannot_be_replayed() {
     // Reload as if the process restarted, then redeem.
     let mut reloaded = load_state(&db_path).unwrap();
     let endpoints = DCallEndpointRegistryStateV1::empty();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     redeem_grant(
         &mut reloaded,
         &fixture.ddeploy,
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -1153,6 +1223,7 @@ fn redeemed_grant_state_survives_restart_and_cannot_be_replayed() {
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -1173,7 +1244,7 @@ fn corrupted_persisted_grant_state_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -1201,7 +1272,7 @@ fn persisted_grant_with_expires_at_not_after_issued_at_fails_closed_on_reload() 
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1230,7 +1301,7 @@ fn persisted_pending_grant_with_a_redeemed_at_timestamp_fails_closed_on_reload()
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1259,7 +1330,7 @@ fn persisted_local_grant_carrying_endpoint_fields_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1299,7 +1370,7 @@ fn persisted_remote_grant_missing_endpoint_fields_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        Some(&endpoint),
+        DCallDeliveryAuthorityV1::Http(&endpoint),
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1328,7 +1399,7 @@ fn persisted_grant_with_empty_required_identifier_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1387,7 +1458,7 @@ fn persisted_remote_grant_with_endpoint_revision_zero_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        Some(&endpoint),
+        DCallDeliveryAuthorityV1::Http(&endpoint),
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1417,7 +1488,7 @@ fn persisted_grant_with_malformed_dgraph_ref_digest_fails_closed_on_reload() {
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1447,7 +1518,7 @@ fn persisted_grant_with_malformed_source_module_digest_fails_closed_on_reload() 
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::None,
         "m1".to_string(),
         "c1".to_string(),
         "d".repeat(64),
@@ -1645,6 +1716,190 @@ fn build_v2_fixture(source_node: &str, dest_node: &str) -> Fixture {
         ddeploy,
         dnode,
         dcode,
+    }
+}
+
+/// Phase 113B2 (sections 16/17/26 E-H): the one real, governed change this
+/// helper applies at a time (channel/DIoT-placement-node/DForward
+/// revision/artifact execution authority), via a SECOND real
+/// `create_v2_proposal`/`accept_v2_proposal` cycle against `fixture.ddeploy`
+/// -- never a direct field mutation simulating a change. Mirrors
+/// `build_v2_fixture`'s own construction exactly except for the one field
+/// under test.
+struct V2GovernanceMutation<'a> {
+    channel: &'a str,
+    interface: &'a str,
+    diot_node: &'a str,
+    dforward_revision: u64,
+    execution_generation: u64,
+    execution_projection_digest: &'a str,
+}
+
+fn accept_v2_governance_mutation(
+    fixture: &mut Fixture,
+    source_node: &str,
+    dest_node: &str,
+    mutation: V2GovernanceMutation,
+) {
+    let proposal_id = "prop-v2-2".to_string();
+    let dg = dgraph();
+    let dgraph_digest = recompute_dgraph_digest(&dg).unwrap();
+    let dcontinuum = crate::core::canonical_dcontinuum::CanonicalDContinuumV1 {
+        schema: crate::core::canonical_dcontinuum::CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+        project_id: PROJECT.to_string(),
+        dcontinuum_id: "dcontinuum:lab".to_string(),
+        revision: 1,
+        nodes: if source_node == dest_node {
+            vec![node(source_node)]
+        } else {
+            vec![node(source_node), node(dest_node)]
+        },
+        links: Vec::new(),
+    };
+    let dcontinuum_digest =
+        crate::core::canonical_dcontinuum::recompute_dcontinuum_digest(&dcontinuum).unwrap();
+    const DIOT_ID: &str = "diot:broker";
+    const DIOT_PLACEMENT_ID: &str = "diotp:broker";
+    let dforward = crate::core::canonical_dforward::CanonicalDForwardV1 {
+        schema: crate::core::canonical_dforward::CANONICAL_DFORWARD_SCHEMA.to_string(),
+        project_id: PROJECT.to_string(),
+        dforward_id: "dforward:pipeline".to_string(),
+        revision: mutation.dforward_revision,
+        diots: vec![crate::core::canonical_dforward::CanonicalDIoTV1 {
+            diot_id: DIOT_ID.to_string(),
+            diot_kind: "broker".to_string(),
+            artifact_requirement: crate::core::canonical_dforward::CanonicalArtifactRequirementV1 {
+                artifact_id: "dserv:pipeline:broker".to_string(),
+            },
+            provides: vec![crate::core::canonical_dforward::CanonicalDForwardInterfaceV1 {
+                interface: mutation.interface.to_string(),
+            }],
+            requires: Vec::new(),
+        }],
+        external_endpoints: Vec::new(),
+        chains: Vec::new(),
+        support_jobs: Vec::new(),
+    };
+    let dforward_digest = dforward.digest().unwrap();
+
+    // The proposal/acceptance CAS gate (`accept_v2_proposal`'s own
+    // `expected_active_dmap_revision != previous_revision` check) requires
+    // this to name the CURRENTLY active revision, not `None` -- a second,
+    // real re-acceptance is not a fresh-deployment.
+    let current_revision = crate::core::ddeploy::active_placement_authority(
+        &fixture.ddeploy,
+        PROJECT,
+        APP,
+    )
+    .unwrap()
+    .unwrap()
+    .revision;
+
+    let proposal = crate::core::ddeploy_v2::DDeployProposalV2 {
+        schema: crate::core::ddeploy_v2::DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+        proposal_id: proposal_id.clone(),
+        project_id: PROJECT.to_string(),
+        application_id: APP.to_string(),
+        source: ProposalSource::Operator,
+        created_at_utc: Utc::now().to_rfc3339(),
+        dgraph_ref: crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dg.dgraph_id.clone(),
+            revision: dg.revision,
+            digest: dgraph_digest,
+        },
+        dcontinuum_ref: crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dcontinuum.dcontinuum_id.clone(),
+            revision: dcontinuum.revision,
+            digest: dcontinuum_digest,
+        },
+        dforward_ref: crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dforward.dforward_id.clone(),
+            revision: dforward.revision,
+            digest: dforward_digest,
+        },
+        placements: vec![
+            crate::core::canonical_dmap_v2::DServPlacementV2 {
+                service_id: SOURCE_SVC.to_string(),
+                node_id: source_node.to_string(),
+            },
+            crate::core::canonical_dmap_v2::DServPlacementV2 {
+                service_id: DEST_SVC.to_string(),
+                node_id: dest_node.to_string(),
+            },
+        ],
+        diot_placements: vec![crate::core::canonical_dmap_v2::DIoTPlacementV2 {
+            placement_id: DIOT_PLACEMENT_ID.to_string(),
+            diot_id: DIOT_ID.to_string(),
+            node_id: mutation.diot_node.to_string(),
+            artifact_binding: crate::core::canonical_dmap_v2::DIoTArtifactBindingV2 {
+                artifact_id: "dserv:pipeline:broker".to_string(),
+                descriptor_digest: format!("sha256:{}", "b".repeat(64)),
+                content_digest: None,
+            },
+        }],
+        dcall_realizations: vec![crate::core::canonical_dmap_v2::DCallRealizationV2 {
+            call_id: CALL_ID.to_string(),
+            realization_kind: "via_diot_pubsub".to_string(),
+            diot_placement_id: DIOT_PLACEMENT_ID.to_string(),
+            interface: mutation.interface.to_string(),
+            channel: mutation.channel.to_string(),
+        }],
+        external_port_bindings: Vec::new(),
+        expected_active_dmap_revision: Some(current_revision),
+        diot_artifact_authority: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                "dserv:pipeline:broker".to_string(),
+                crate::core::ddeploy_v2::DIoTArtifactAuthorityBindingV2 {
+                    artifact_id: "dserv:pipeline:broker".to_string(),
+                    execution_generation: mutation.execution_generation,
+                    execution_projection_digest: mutation.execution_projection_digest.to_string(),
+                },
+            );
+            m
+        },
+    };
+
+    let broker_artifact = crate::core::dcall::tests::minimal_service_artifact_for_diot(
+        PROJECT,
+        "dserv:pipeline:broker",
+        mutation.execution_generation,
+        mutation.execution_projection_digest,
+    );
+
+    fixture
+        .ddeploy
+        .create_v2_proposal(proposal, dg, dcontinuum.clone(), dforward)
+        .unwrap();
+    fixture
+        .ddeploy
+        .accept_v2_proposal(
+            &proposal_id,
+            "acc-v2-2".to_string(),
+            "test".to_string(),
+            "2026-01-01T00:00:02Z".to_string(),
+            &dcontinuum,
+            std::slice::from_ref(&broker_artifact),
+            None,
+        )
+        .unwrap();
+}
+
+/// The exact governance-baseline values `build_v2_fixture` itself uses --
+/// a mutation test changes exactly ONE of these via
+/// `accept_v2_governance_mutation`, keeping the rest identical to the
+/// original acceptance.
+fn baseline_v2_mutation(source_node: &str) -> V2GovernanceMutation<'_> {
+    V2GovernanceMutation {
+        channel: "pipeline/sensor-to-decoder",
+        interface: "sensor-bus",
+        diot_node: source_node,
+        dforward_revision: 1,
+        execution_generation: 1,
+        execution_projection_digest: concat!(
+            "sha256:",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ),
     }
 }
 
@@ -1881,10 +2136,12 @@ fn v2_grant_issued_under_stale_authority_fails_redemption_after_activation_chang
     let fixture = build_v2_fixture("fog-01", "fog-01");
     let route = derive(&fixture, "fog-01").unwrap();
     let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -1905,6 +2162,7 @@ fn v2_grant_issued_under_stale_authority_fails_redemption_after_activation_chang
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -1925,10 +2183,12 @@ fn v2_grant_issued_before_a_placement_change_fails_redemption() {
     let fixture = build_v2_fixture("fog-01", "fog-01");
     let route = derive(&fixture, "fog-01").unwrap();
     let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
     let issued = issue_grant(
         &mut grants,
         route,
-        None,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
         "m1".to_string(),
         "c1".to_string(),
         "deadbeef".to_string(),
@@ -1953,6 +2213,7 @@ fn v2_grant_issued_before_a_placement_change_fails_redemption() {
         &fixture.dnode,
         &fixture.dcode,
         &endpoints,
+        &diot_bindings,
         &issued.grant.grant_id,
         &issued.token,
         "fog-01",
@@ -2053,4 +2314,1294 @@ pub(crate) fn minimal_service_artifact_for_diot(
             ..Default::default()
         },
     }
+}
+
+// ====================================================================
+// Phase 113B2 (ADR-0023): D-Call grant authority for exact DMap/2
+// realization + exact DIoT runtime binding. Sections 15-17, 25-28.
+// ====================================================================
+
+fn issue_v2_grant(
+    source_node: &str,
+    dest_node: &str,
+) -> (
+    Fixture,
+    DCallGrantStateV1,
+    IssuedGrant,
+    DIoTRuntimeBindingRegistryStateV1,
+) {
+    let fixture = build_v2_fixture(source_node, dest_node);
+    let route = derive(&fixture, source_node).unwrap();
+    let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    (fixture, grants, issued, diot_bindings)
+}
+
+// -------------------------------------------------- GRANT ISSUANCE (section 25)
+
+/// 25A: DMap/2 + a current DIoT runtime binding succeeds.
+#[test]
+fn v2_grant_issuance_succeeds_when_diot_runtime_binding_is_current() {
+    let (_fixture, grants, issued, _diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    assert!(grants.grants.contains_key(&issued.grant.grant_id));
+    assert!(issued.grant.v2_dcall_transport_authority.is_some());
+}
+
+/// 25B: no DIoT runtime binding is registered for the realization's
+/// placement -- this is the exact condition `post_request_grant` branches
+/// on (`diot_runtime_binding_state.get(...).ok_or_else(...)`, yielding
+/// `dcall_diot_runtime_binding_missing`) BEFORE any grant is constructed.
+/// No AppState-in-test HTTP harness exists in this codebase (see
+/// `request_grant_payload_sha256_shape_matches_the_persisted_state_rule`'s
+/// own doc comment for the same long-standing limitation), so this proves
+/// the library-level fact the handler relies on.
+#[test]
+fn v2_grant_issuance_fails_closed_when_diot_runtime_binding_is_missing() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let realization = route.v2_dcall_realization.as_ref().unwrap();
+    let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    assert!(
+        diot_bindings
+            .get(PROJECT, APP, &realization.diot_placement_id)
+            .is_none(),
+        "no binding was ever registered for this placement"
+    );
+    // `issue_grant` itself also refuses to construct a grant for this route
+    // without a `DiotPubsub` authority -- zero grant is ever inserted.
+    let mut grants = DCallGrantStateV1::empty();
+    let error = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::None,
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code,
+        "dcall_v2_realization_requires_diot_transport_authority"
+    );
+    assert!(grants.grants.is_empty());
+}
+
+/// 25C: the DIoT runtime binding exists but is stale (DMap authority moved
+/// since it was registered) -- `verify_runtime_binding_still_current`
+/// (the ONE Phase 113B1 validator `post_request_grant` reuses) must reject
+/// it BEFORE any grant is issued.
+#[test]
+fn v2_grant_issuance_fails_closed_when_diot_runtime_binding_is_stale() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let binding = crate::core::diot_runtime_binding::register_runtime_binding(
+        &mut diot_bindings,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        PROJECT,
+        APP,
+        &route.v2_dcall_realization.as_ref().unwrap().diot_placement_id,
+        "mqtt://broker.lab:1883",
+        "2026-01-01T00:00:00Z",
+    )
+    .unwrap();
+    let mut ddeploy = fixture.ddeploy.clone();
+    let key = application_key(PROJECT, APP);
+    let active = ddeploy.phase113_v2.active.get_mut(&key).unwrap();
+    active.map.revision += 1;
+    active.digest = active.map.digest().unwrap();
+    let error =
+        verify_runtime_binding_still_current(&binding, &ddeploy, &fixture.dnode).unwrap_err();
+    assert_eq!(error.code, "diot_runtime_binding_stale");
+    // Zero grant was ever inserted for this stale binding -- there is no
+    // grant-issuance call at all in this scenario, matching what
+    // `post_request_grant` does: reject before constructing the grant.
+}
+
+/// 25D (section 11): a SAME-NODE DMap/2 call still receives typed DIoT
+/// transport authority -- it never becomes a bare local grant merely
+/// because `source.node_id == destination.node_id`.
+#[test]
+fn v2_grant_issuance_for_same_node_call_still_carries_diot_transport_authority() {
+    let (_fixture, _grants, issued, _diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    assert_eq!(issued.grant.route_kind, ROUTE_KIND_LOCAL);
+    assert!(
+        issued.grant.v2_dcall_transport_authority.is_some(),
+        "a same-node DMap/2 via_diot_pubsub call must still carry DIoT transport authority"
+    );
+}
+
+/// 25E (section 10): a REMOTE DMap/2 call succeeds with ZERO HTTP
+/// transport endpoint ever declared or consulted.
+#[test]
+fn v2_grant_issuance_for_remote_call_succeeds_with_zero_http_endpoint() {
+    let (_fixture, _grants, issued, _diot_bindings) = issue_v2_grant("fog-01", "cloud-01");
+    assert_eq!(issued.grant.route_kind, ROUTE_KIND_REMOTE);
+    assert!(issued.grant.v2_dcall_transport_authority.is_some());
+    assert!(issued.grant.endpoint_id.is_none());
+    assert!(issued.grant.endpoint_revision.is_none());
+    assert!(issued.grant.endpoint_descriptor_digest.is_none());
+}
+
+/// 25F (section 10): `issue_grant`'s `DCallDeliveryAuthorityV1` enum makes
+/// it IMPOSSIBLE to construct a grant carrying both HTTP endpoint authority
+/// and DIoT transport authority at once -- a `DiotPubsub` grant's endpoint
+/// fields are always `None`, regardless of whether an HTTP endpoint happens
+/// to be declared for that same destination node elsewhere in the system.
+#[test]
+fn v2_grant_never_carries_http_endpoint_authority_even_when_one_exists_for_the_destination_node() {
+    let fixture = build_v2_fixture("fog-01", "cloud-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    // An HTTP endpoint IS declared for the destination node, in a completely
+    // separate registry -- `issue_grant` is never even given a way to
+    // consult it while also carrying `DiotPubsub` authority.
+    let endpoint = DNodeTransportEndpointV1 {
+        endpoint_id: "endpoint:cloud-01:http".to_string(),
+        node_id: "cloud-01".to_string(),
+        transport: TRANSPORT_HTTP.to_string(),
+        base_url: "http://cloud-01.lab:9000".to_string(),
+        revision: 1,
+        descriptor_digest: format!("sha256:{}", "9".repeat(64)),
+    };
+    let _ = &endpoint; // never passed to issue_grant below -- see doc comment.
+    let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    assert!(issued.grant.endpoint_id.is_none());
+    assert!(issued.grant.endpoint_revision.is_none());
+    assert!(issued.grant.endpoint_descriptor_digest.is_none());
+}
+
+/// 25G: the grant's bound realization fields exactly equal the currently
+/// active DMap/2's own realization -- never independently re-derived.
+#[test]
+fn v2_grant_realization_fields_exactly_equal_active_dmap2() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let expected = route.v2_dcall_realization.clone().unwrap();
+    let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let bound = issued.grant.v2_dcall_transport_authority.unwrap();
+    assert_eq!(bound.realization_kind, expected.realization_kind);
+    assert_eq!(bound.diot_placement_id, expected.diot_placement_id);
+    assert_eq!(bound.interface, expected.interface);
+    assert_eq!(bound.channel, expected.channel);
+    assert_eq!(bound.dforward_id, expected.dforward_id);
+    assert_eq!(bound.dforward_revision, expected.dforward_revision);
+    assert_eq!(bound.dforward_digest, expected.dforward_digest);
+}
+
+/// 25H: the grant's bound binding identity exactly equals the CURRENT
+/// binding it was issued against.
+#[test]
+fn v2_grant_binding_fields_exactly_equal_current_binding() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut grants = DCallGrantStateV1::empty();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let placement_id = route.v2_dcall_realization.as_ref().unwrap().diot_placement_id.clone();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let current_binding = diot_bindings.get(PROJECT, APP, &placement_id).unwrap().clone();
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let bound = issued.grant.v2_dcall_transport_authority.unwrap();
+    assert_eq!(bound.binding_id, current_binding.binding_id);
+    assert_eq!(bound.binding_revision, current_binding.binding_revision);
+    assert_eq!(bound.descriptor_digest, current_binding.descriptor_digest);
+}
+
+/// 25I: DMap/1 local delivery is unchanged -- the grant carries no DIoT
+/// transport authority at all.
+#[test]
+fn v2_dmap1_local_grant_carries_no_diot_transport_authority() {
+    let fixture = build_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut grants = DCallGrantStateV1::empty();
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::None,
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    assert!(issued.grant.v2_dcall_transport_authority.is_none());
+    assert_eq!(issued.grant.route_kind, ROUTE_KIND_LOCAL);
+}
+
+/// 25J: DMap/1 remote (HTTP) delivery is unchanged -- the grant carries
+/// endpoint authority and no DIoT transport authority.
+#[test]
+fn v2_dmap1_remote_grant_carries_endpoint_authority_and_no_diot_transport_authority() {
+    let fixture = build_fixture("fog-01", "cloud-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let endpoint = DNodeTransportEndpointV1 {
+        endpoint_id: "endpoint:cloud-01:http".to_string(),
+        node_id: "cloud-01".to_string(),
+        transport: TRANSPORT_HTTP.to_string(),
+        base_url: "http://cloud-01.lab:9000".to_string(),
+        revision: 1,
+        descriptor_digest: format!("sha256:{}", "9".repeat(64)),
+    };
+    let mut grants = DCallGrantStateV1::empty();
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::Http(&endpoint),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    assert!(issued.grant.v2_dcall_transport_authority.is_none());
+    assert_eq!(issued.grant.endpoint_id.as_deref(), Some("endpoint:cloud-01:http"));
+}
+
+/// 25K (section 12): `issue_grant` rejects every impossible authority
+/// combination via its typed `DCallDeliveryAuthorityV1` design.
+#[test]
+fn v2_issue_grant_rejects_impossible_authority_combinations() {
+    // DMap/1 route + DIoT transport authority.
+    let v1_fixture = build_fixture("fog-01", "fog-01");
+    let v1_route = derive(&v1_fixture, "fog-01").unwrap();
+    let bogus_authority = DCallRealizationTransportAuthorityV1 {
+        realization_kind: "via_diot_pubsub".to_string(),
+        diot_placement_id: "diotp:x".to_string(),
+        interface: "iface".to_string(),
+        channel: "chan".to_string(),
+        dforward_id: "dforward:x".to_string(),
+        dforward_revision: 1,
+        dforward_digest: format!("sha256:{}", "a".repeat(64)),
+        binding_id: "diot-runtime-binding:x".to_string(),
+        binding_revision: 1,
+        descriptor_digest: format!("sha256:{}", "b".repeat(64)),
+        transport: "mqtt".to_string(),
+    };
+    let mut grants = DCallGrantStateV1::empty();
+    let error = issue_grant(
+        &mut grants,
+        v1_route,
+        DCallDeliveryAuthorityV1::DiotPubsub(bogus_authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "dcall_v1_route_cannot_carry_diot_transport_authority");
+    assert!(grants.grants.is_empty());
+
+    // DMap/2 via_diot_pubsub route + HTTP endpoint authority instead of DIoT
+    // transport authority (already proven missing entirely above by
+    // `v2_grant_issuance_fails_closed_when_diot_runtime_binding_is_missing`).
+    let v2_fixture = build_v2_fixture("fog-01", "cloud-01");
+    let v2_route = derive(&v2_fixture, "fog-01").unwrap();
+    let endpoint = DNodeTransportEndpointV1 {
+        endpoint_id: "endpoint:cloud-01:http".to_string(),
+        node_id: "cloud-01".to_string(),
+        transport: TRANSPORT_HTTP.to_string(),
+        base_url: "http://cloud-01.lab:9000".to_string(),
+        revision: 1,
+        descriptor_digest: format!("sha256:{}", "9".repeat(64)),
+    };
+    let mut grants2 = DCallGrantStateV1::empty();
+    let error2 = issue_grant(
+        &mut grants2,
+        v2_route,
+        DCallDeliveryAuthorityV1::Http(&endpoint),
+        "m1".to_string(),
+        "c1".to_string(),
+        "deadbeef".to_string(),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap_err();
+    assert_eq!(error2.code, "dcall_v2_realization_requires_diot_transport_authority");
+    assert!(grants2.grants.is_empty());
+}
+
+// -------------------------------------------------- REDEMPTION (section 26)
+
+/// 26A: unchanged authority and unchanged binding redeems normally.
+#[test]
+fn v2_redemption_succeeds_when_authority_and_binding_are_unchanged() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let grant = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .expect("unchanged v2 authority + binding must redeem");
+    assert!(grant.v2_dcall_transport_authority.is_some());
+}
+
+/// 26B: the DIoT runtime binding is re-registered at a NEW revision (a real
+/// broker_uri change through the production registration path) after the
+/// grant was issued -- redemption must reject the now-stale binding
+/// identity.
+#[test]
+fn v2_redemption_fails_when_binding_revision_changes_after_issuance() {
+    let (fixture, mut grants, issued, mut diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    crate::core::diot_runtime_binding::register_runtime_binding(
+        &mut diot_bindings,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        PROJECT,
+        APP,
+        "diotp:broker",
+        "mqtt://broker2.lab:1883",
+        "2026-01-01T00:00:05Z",
+    )
+    .expect("re-registration with a changed broker_uri is a real, legitimate revision bump");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
+    // The grant must remain Pending, not consumed.
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 26B (idempotency counterpart, section 15): an IDENTICAL re-registration
+/// (same broker_uri, same authority) is a genuine no-op per
+/// `register_runtime_binding`'s own idempotency guarantee -- the binding
+/// keeps its original revision, so redemption of a grant issued against it
+/// still succeeds.
+#[test]
+fn v2_redemption_still_succeeds_after_an_idempotent_identical_reregistration() {
+    let (fixture, mut grants, issued, mut diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let reregistered = crate::core::diot_runtime_binding::register_runtime_binding(
+        &mut diot_bindings,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        PROJECT,
+        APP,
+        "diotp:broker",
+        "mqtt://broker.lab:1883",
+        "2026-01-01T00:00:05Z",
+    )
+    .unwrap();
+    let bound = issued.grant.v2_dcall_transport_authority.as_ref().unwrap();
+    assert_eq!(
+        reregistered.binding_revision, bound.binding_revision,
+        "an identical re-registration must not bump the revision"
+    );
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .expect("redemption must still succeed after a genuinely idempotent re-registration");
+}
+
+/// 26C: the binding's own persisted `descriptor_digest` is tampered with
+/// directly (simulating storage-layer corruption, mirroring this codebase's
+/// established precedent of direct-mutation for CORRUPTION scenarios --
+/// distinct from the GOVERNANCE-mutation tests below, which all go through
+/// the real create/accept path). Even though `binding_id`/`binding_revision`
+/// still match the grant, the digest mismatch must still be caught.
+#[test]
+fn v2_redemption_fails_when_binding_descriptor_digest_is_tampered() {
+    let (fixture, mut grants, issued, mut diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let key = crate::core::diot_runtime_binding::binding_key(PROJECT, APP, "diotp:broker");
+    diot_bindings.bindings.get_mut(&key).unwrap().descriptor_digest =
+        format!("sha256:{}", "0".repeat(64));
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 26D: the currently active DMap/2 moves to a new revision (a real second
+/// acceptance, even with otherwise-identical governed content) after the
+/// grant was issued -- redemption must reject.
+#[test]
+fn v2_redemption_fails_when_dmap_revision_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", baseline_v2_mutation("fog-01"));
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+}
+
+/// 26E (section 16/17): the realization's CHANNEL changes via a real,
+/// governed second acceptance -- redemption of the OLD grant must fail.
+#[test]
+fn v2_redemption_fails_when_realization_channel_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.channel = "pipeline/sensor-to-decoder/v2";
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 113B2.1 section 12: the realization's INTERFACE changes via a real,
+/// governed second acceptance (the DForward's own provided interface and
+/// the DCall realization's declared interface are changed together, since
+/// canonical validation requires them to agree -- an isolated one-sided
+/// interface mutation is not a constructible legitimate proposal) --
+/// redemption of the OLD grant must fail and remain Pending. Distinct from
+/// the channel-change test above: this exercises the `interface` field of
+/// the stale-realization comparison in `redeem_grant`, never previously
+/// covered by a dedicated regression.
+#[test]
+fn v2_redemption_fails_when_realization_interface_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.interface = "sensor-bus-v2";
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(f) if f.code == "dcall_stale_authority"));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 26F: the DIoT placement's NODE changes via a real governed acceptance --
+/// redemption of the OLD grant must fail.
+#[test]
+fn v2_redemption_fails_when_realization_placement_moves_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "cloud-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.diot_node = "cloud-01";
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "cloud-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "cloud-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+}
+
+/// 26G: the governing DForward's own revision changes via a real governed
+/// acceptance -- redemption of the OLD grant must fail.
+#[test]
+fn v2_redemption_fails_when_dforward_authority_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.dforward_revision = 2;
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+}
+
+/// 113B2.1 sections 15/16: the two ServiceArtifact execution-authority
+/// fields are DISTINCT authority dimensions per `verify_runtime_binding_
+/// still_current` and must each get an ISOLATED dedicated test -- a
+/// combined test that changes both at once cannot prove either one alone
+/// is actually load-bearing. This test isolates `execution_generation`
+/// ONLY (`execution_projection_digest` held at its baseline value).
+#[test]
+fn v2_redemption_fails_when_artifact_execution_generation_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.execution_generation = 2;
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 113B2.1 sections 15/16 (isolated counterpart): `execution_projection_
+/// digest` ONLY changes (`execution_generation` held at its baseline
+/// value) -- a real content-projection change without a generation bump.
+/// Deliberately NOT the same scenario as the generation-change test above.
+#[test]
+fn v2_redemption_fails_when_artifact_execution_projection_digest_changes_after_issuance() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.execution_projection_digest =
+        concat!("sha256:", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 26I: every stale-authority rejection above leaves the grant `Pending`,
+/// never consumes it -- proven once more explicitly here with the
+/// DForward-authority-change scenario, then confirming a subsequent
+/// redemption attempt with CORRECT current authority is still impossible
+/// because the underlying route itself no longer matches (the grant is
+/// unredeemable, not merely "not yet redeemed").
+#[test]
+fn v2_stale_redemption_leaves_grant_pending_not_redeemed() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let mut mutation = baseline_v2_mutation("fog-01");
+    mutation.channel = "pipeline/sensor-to-decoder/moved";
+    accept_v2_governance_mutation(&mut fixture, "fog-01", "fog-01", mutation);
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    let record = grants.grants.get(&issued.grant.grant_id).unwrap();
+    assert_eq!(record.status, DCallGrantStatus::Pending);
+    assert!(record.redeemed_at.is_none());
+}
+
+/// 113B2.1 section 17 (third sub-item): CURRENT active authority for the
+/// application "switches to DMap/1". This codebase has no first-class
+/// "downgrade v2 back to v1" governance transition -- `accept_proposal`
+/// (v1) never reads or clears `phase113_v2` state, so calling it for an
+/// application that already has active v2 authority does not produce a
+/// clean switch; it produces the SAME "dual active DMap authority"
+/// condition `active_placement_authority`'s own guard is built to detect
+/// (see `ddeploy.rs`'s dual-authority reject, already covered by its own
+/// dedicated tests in that module). This test proves the practically
+/// relevant property instead: redemption of the OLD v2 grant still fails
+/// closed (via `authorize_dcode_invocation`'s `F_DCODE_APPLICATION_NOT_
+/// ACTIVE`, surfaced here as `StaleAuthority`) rather than silently
+/// succeeding or panicking, and the grant remains Pending. It does NOT
+/// exercise a "clean v2-to-v1 switch" because the codebase provides no
+/// legitimate governance path to produce one without redesigning the
+/// dual-authority model, which is explicitly out of scope for this pass.
+#[test]
+fn v2_redemption_fails_closed_when_a_v1_authority_is_also_registered_for_the_application() {
+    let (mut fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let proposal_id = "prop-v1-shadow".to_string();
+    let dg = dgraph();
+    let dgraph_digest = recompute_dgraph_digest(&dg).unwrap();
+    fixture.ddeploy.proposals.insert(
+        proposal_id.clone(),
+        ProposalRecord {
+            proposal: DDeployProposalV1 {
+                schema: DDEPLOY_PROPOSAL_SCHEMA.to_string(),
+                proposal_id: proposal_id.clone(),
+                project_id: PROJECT.to_string(),
+                application_id: APP.to_string(),
+                source: ProposalSource::Operator,
+                created_at_utc: "2026-01-01T00:00:03Z".to_string(),
+                expected_active_dmap_revision: None,
+                dgraph_ref: CanonicalContractReferenceV1 {
+                    id: dg.dgraph_id.clone(),
+                    revision: dg.revision,
+                    digest: dgraph_digest.clone(),
+                },
+                dcontinuum_ref: CanonicalContractReferenceV1 {
+                    id: "dcontinuum:lab".to_string(),
+                    revision: 1,
+                    digest: format!("sha256:{}", "1".repeat(64)),
+                },
+                placements: vec![
+                    CanonicalDServPlacementV1 {
+                        service_id: SOURCE_SVC.to_string(),
+                        node_id: "fog-01".to_string(),
+                    },
+                    CanonicalDServPlacementV1 {
+                        service_id: DEST_SVC.to_string(),
+                        node_id: "fog-01".to_string(),
+                    },
+                ],
+            },
+            planner_provenance: None,
+            proposal_digest: String::new(),
+            dgraph_snapshot: dg.clone(),
+            dcontinuum_snapshot: crate::core::canonical_dcontinuum::CanonicalDContinuumV1 {
+                schema: crate::core::canonical_dcontinuum::CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+                project_id: PROJECT.to_string(),
+                dcontinuum_id: "dcontinuum:lab".to_string(),
+                revision: 1,
+                nodes: vec![node("fog-01")],
+                links: Vec::new(),
+            },
+            state: ProposalLifecycleState::Accepted,
+            accepted_acceptance_id: Some("acc-v1-shadow".to_string()),
+        },
+    );
+    let dmap = CanonicalDMapV1 {
+        schema: CANONICAL_DMAP_SCHEMA.to_string(),
+        project_id: PROJECT.to_string(),
+        application_id: APP.to_string(),
+        dmap_id: canonical_dmap_id(PROJECT, APP),
+        revision: 1,
+        dgraph_ref: CanonicalContractReferenceV1 {
+            id: dg.dgraph_id.clone(),
+            revision: dg.revision,
+            digest: dgraph_digest,
+        },
+        dcontinuum_ref: CanonicalContractReferenceV1 {
+            id: "dcontinuum:lab".to_string(),
+            revision: 1,
+            digest: format!("sha256:{}", "1".repeat(64)),
+        },
+        placements: vec![
+            CanonicalDServPlacementV1 {
+                service_id: SOURCE_SVC.to_string(),
+                node_id: "fog-01".to_string(),
+            },
+            CanonicalDServPlacementV1 {
+                service_id: DEST_SVC.to_string(),
+                node_id: "fog-01".to_string(),
+            },
+        ],
+    };
+    let dmap_digest = recompute_dmap_digest(&dmap).unwrap();
+    let mut operational_services = BTreeMap::new();
+    for svc in [SOURCE_SVC, DEST_SVC] {
+        operational_services.insert(
+            svc.to_string(),
+            OperationalDesiredService {
+                service_id: svc.to_string(),
+                runtime: "wasm".to_string(),
+                desired_state: "running".to_string(),
+            },
+        );
+    }
+    fixture.ddeploy.active_by_application.insert(
+        application_key(PROJECT, APP),
+        ActiveApplicationDeployment {
+            application_id: APP.to_string(),
+            active_dmap: dmap,
+            dmap_digest,
+            proposal_id,
+            acceptance_id: "acc-v1-shadow".to_string(),
+            accepted_at_utc: "2026-01-01T00:00:04Z".to_string(),
+            operational_services,
+        },
+    );
+
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::StaleAuthority(_)));
+    assert_eq!(
+        grants.grants.get(&issued.grant.grant_id).unwrap().status,
+        DCallGrantStatus::Pending
+    );
+}
+
+/// 26J: a successful v2 redemption is still single-use.
+#[test]
+fn v2_redemption_is_single_use() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .expect("first redemption should succeed");
+    let error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, RedeemError::AlreadyRedeemed));
+}
+
+/// 26K: the pre-existing token/payload integrity checks are unaffected by
+/// the new v2 authority path -- a v2 grant still rejects a wrong token and
+/// a payload digest/size mismatch exactly like a v1 grant.
+#[test]
+fn v2_redemption_rejects_wrong_token_and_payload_mismatch() {
+    let (fixture, mut grants, issued, diot_bindings) = issue_v2_grant("fog-01", "fog-01");
+    let endpoints = DCallEndpointRegistryStateV1::empty();
+    let wrong_token_error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        "wrong-token",
+        "fog-01",
+        "deadbeef",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(wrong_token_error, RedeemError::TokenInvalid));
+    let payload_mismatch_error = redeem_grant(
+        &mut grants,
+        &fixture.ddeploy,
+        &fixture.dnode,
+        &fixture.dcode,
+        &endpoints,
+        &diot_bindings,
+        &issued.grant.grant_id,
+        &issued.token,
+        "fog-01",
+        "wrongpayload",
+        4,
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(payload_mismatch_error, RedeemError::PayloadMismatch));
+}
+
+// -------------------------------------------------- RELOAD / INTEGRITY (section 28)
+
+/// 28A: a HISTORICAL DMap/1 grant record persisted before this field
+/// existed (its JSON literally has no `v2_dcall_transport_authority` key)
+/// still reloads -- `#[serde(default)]` yields `None`, never a fabricated
+/// authority.
+#[test]
+fn persisted_historical_dmap1_grant_without_the_v2_field_still_reloads() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::None,
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(&grants).unwrap();
+    // Simulate a record persisted BEFORE this field existed: strip the key
+    // entirely rather than merely setting it null.
+    value["grants"][&issued.grant.grant_id]["grant"]
+        .as_object_mut()
+        .unwrap()
+        .remove("v2_dcall_transport_authority");
+    let historical_json = serde_json::to_string(&value).unwrap();
+    assert!(!historical_json.contains("v2_dcall_transport_authority"));
+    let reloaded: DCallGrantStateV1 = serde_json::from_str(&historical_json)
+        .expect("a historical record missing this field entirely must still deserialize");
+    validate_persisted_dcall_grant_state_integrity(&reloaded)
+        .expect("a historical DMap/1 grant record must still pass integrity validation");
+    assert_eq!(
+        reloaded
+            .grants
+            .get(&issued.grant.grant_id)
+            .unwrap()
+            .grant
+            .v2_dcall_transport_authority,
+        None
+    );
+}
+
+/// 28B: a DMap/2 grant with its exact typed transport authority round-trips
+/// through real persistence and reload unchanged.
+#[test]
+fn persisted_dmap2_grant_with_typed_transport_authority_reloads() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let expected = authority.clone();
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    persist_state(&db_path, &grants).unwrap();
+    let reloaded = load_state(&db_path).unwrap();
+    let bound = reloaded
+        .grants
+        .get(&issued.grant.grant_id)
+        .unwrap()
+        .grant
+        .v2_dcall_transport_authority
+        .clone()
+        .expect("DMap/2 grant must reload with its typed transport authority intact");
+    assert_eq!(bound, expected);
+}
+
+/// 28C: a persisted grant with a MALFORMED typed transport authority
+/// (wildcard channel) fails integrity on reload.
+#[test]
+fn persisted_grant_with_malformed_v2_transport_authority_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record
+        .grant
+        .v2_dcall_transport_authority
+        .as_mut()
+        .unwrap()
+        .channel = "pipeline/#".to_string();
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(error.contains("wildcard"), "unexpected error: {error}");
+}
+
+/// 113B2.1 section 5B: a persisted grant whose typed transport authority
+/// carries a tampered `realization_kind` (not `via_diot_pubsub`) fails
+/// integrity on reload. Distinct from the wildcard-channel test above --
+/// isolates the `realization_kind` field of the same production check.
+#[test]
+fn persisted_grant_with_tampered_realization_kind_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record
+        .grant
+        .v2_dcall_transport_authority
+        .as_mut()
+        .unwrap()
+        .realization_kind = "via_http".to_string();
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(
+        error.contains("realization_kind"),
+        "unexpected error: {error}"
+    );
+}
+
+/// 113B2.1 section 5D: a persisted grant whose typed transport authority
+/// carries a shape-invalid `dforward_digest` (not the canonical
+/// `sha256:<64 lowercase hex>` form) fails integrity on reload.
+#[test]
+fn persisted_grant_with_malformed_dforward_digest_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record
+        .grant
+        .v2_dcall_transport_authority
+        .as_mut()
+        .unwrap()
+        .dforward_digest = "not-a-real-digest".to_string();
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(
+        error.contains("dforward_digest"),
+        "unexpected error: {error}"
+    );
+}
+
+/// 113B2.1 section 5E: a persisted grant whose typed transport authority
+/// carries `binding_revision == 0` (below the minimum valid revision)
+/// fails integrity on reload.
+#[test]
+fn persisted_grant_with_binding_revision_zero_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record
+        .grant
+        .v2_dcall_transport_authority
+        .as_mut()
+        .unwrap()
+        .binding_revision = 0;
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(
+        error.contains("binding_revision"),
+        "unexpected error: {error}"
+    );
+}
+
+/// 28D: a persisted grant carrying BOTH HTTP endpoint authority AND DIoT
+/// transport authority (a combination `issue_grant` itself can never
+/// produce, but persisted state must still fail closed on if it were ever
+/// corrupted into this shape) fails integrity on reload.
+#[test]
+fn persisted_grant_with_contradictory_endpoint_and_diot_authority_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record.grant.endpoint_id = Some("dcall-endpoint:fog-01:http".to_string());
+    record.grant.endpoint_revision = Some(1);
+    record.grant.endpoint_descriptor_digest = Some(format!("sha256:{}", "9".repeat(64)));
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(
+        error.contains("mutually exclusive"),
+        "unexpected error: {error}"
+    );
+}
+
+/// 28E: a persisted grant whose typed authority carries a tampered
+/// (shape-invalid) `descriptor_digest` fails integrity on reload.
+#[test]
+fn persisted_grant_with_tampered_binding_descriptor_digest_fails_closed_on_reload() {
+    let db_path = tempfile_db();
+    let mut grants = load_state(&db_path).unwrap();
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    let route = derive(&fixture, "fog-01").unwrap();
+    let mut diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
+    let authority = diot_transport_authority_for(&fixture, &route, &mut diot_bindings);
+    let issued = issue_grant(
+        &mut grants,
+        route,
+        DCallDeliveryAuthorityV1::DiotPubsub(authority),
+        "m1".to_string(),
+        "c1".to_string(),
+        "d".repeat(64),
+        4,
+        "e".repeat(64),
+        now(),
+    )
+    .unwrap();
+    let record = grants.grants.get_mut(&issued.grant.grant_id).unwrap();
+    record
+        .grant
+        .v2_dcall_transport_authority
+        .as_mut()
+        .unwrap()
+        .descriptor_digest = "not-a-real-digest".to_string();
+    persist_state(&db_path, &grants).unwrap();
+    let error = load_state(&db_path).unwrap_err();
+    assert!(
+        error.contains("descriptor_digest"),
+        "unexpected error: {error}"
+    );
 }

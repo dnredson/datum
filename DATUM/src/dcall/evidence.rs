@@ -74,6 +74,13 @@ pub enum DCallDeliveryErrorCode {
     DCallDestinationEvidenceMismatch,
     /// I6: a remote listener's response exceeded the bounded read cap.
     DCallRemoteResponseTooLarge,
+    /// Phase 113B2 (section 19, mandatory fail-closed seam): the grant
+    /// carries typed DMap/2 `via_diot_pubsub` transport authority --
+    /// realization authorization succeeded, but no MQTT runtime transport
+    /// is implemented until Phase 113B3. Delivery stops here: no local
+    /// D-Code invocation, no HTTP request, no grant redemption, no network
+    /// action of any kind.
+    DCallDiotTransportNotImplemented,
 }
 
 impl DCallDeliveryErrorCode {
@@ -104,6 +111,7 @@ impl DCallDeliveryErrorCode {
             Self::DCallSourceLocalIdentityMismatch => "dcall_source_local_identity_mismatch",
             Self::DCallDestinationEvidenceMismatch => "dcall_destination_evidence_mismatch",
             Self::DCallRemoteResponseTooLarge => "dcall_remote_response_too_large",
+            Self::DCallDiotTransportNotImplemented => "dcall_diot_transport_not_implemented",
         }
     }
 }
@@ -349,6 +357,7 @@ mod tests {
             endpoint_id: None,
             endpoint_revision: None,
             endpoint_descriptor_digest: None,
+            v2_dcall_transport_authority: None,
             issued_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: "2026-01-01T00:00:30Z".to_string(),
         }

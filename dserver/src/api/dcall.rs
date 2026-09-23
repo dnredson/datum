@@ -3,15 +3,25 @@
 //! Lock order, extended from the established `DDEPLOY_TRANSACTION ->
 //! DNODE_TRANSACTION -> DCODE_TRANSACTION` chain (`api::dcode`'s own doc
 //! comment is the authoritative statement of that order) with
-//! `DCALL_TRANSACTION` as the new innermost lock.
+//! `DCALL_TRANSACTION` as the innermost lock, and (Phase 113B2, ADR-0023)
+//! `DIOT_RUNTIME_BINDING_TRANSACTION` inserted between `DCODE_TRANSACTION`
+//! and `DCALL_TRANSACTION`:
+//! `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DCODE_TRANSACTION ->
+//! DIOT_RUNTIME_BINDING_TRANSACTION -> DCALL_TRANSACTION`. This is
+//! consistent with `api::diot_runtime_binding`'s own established
+//! `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DIOT_RUNTIME_BINDING_TRANSACTION`
+//! order (that module never acquires `DCODE_TRANSACTION` at all, so nothing
+//! about inserting `DCODE_TRANSACTION` before it here creates a conflicting
+//! pair anywhere in the crate) -- any future code that needs BOTH
+//! `DCODE_TRANSACTION` and `DIOT_RUNTIME_BINDING_TRANSACTION` must acquire
+//! `DCODE_TRANSACTION` first, per this order.
 //!
 //! Independent review fix v3 (J7): an earlier version of this comment
 //! incorrectly claimed this file "never acquires any of the other three"
 //! locks -- `post_request_grant` and `post_redeem_grant` both correctly
 //! acquire the FULL chain, in the documented order, before touching D-Call
-//! state (`DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DCODE_TRANSACTION ->
-//! DCALL_TRANSACTION`); only the transport-endpoint declaration/read handlers
-//! acquire `DCALL_TRANSACTION` alone. The claim that was actually true (and
+//! state; only the transport-endpoint declaration/read handlers acquire
+//! `DCALL_TRANSACTION` alone. The claim that was actually true (and
 //! remains true) is narrower: no handler in this file ever acquires any lock
 //! in the REVERSE of that order, so there is no reverse-acquisition path
 //! anywhere in the crate. No handler in this file holds any lock across
@@ -19,7 +29,15 @@
 //! persistence; the actual cross-D-Node HTTP delivery happens entirely
 //! OUTSIDE these handlers, in DATUM's `dcall::delivery`, using the grant
 //! after this endpoint has already released its locks and returned
-//! (`dcall-lock-order-audit.txt`).
+//! (`dcall-lock-order-audit.txt`). Phase 113B2 adds zero MQTT network I/O of
+//! any kind -- `post_request_grant`'s DMap/2 path only reads the already-persisted
+//! `DIoTRuntimeBindingRegistryStateV1` and re-runs the ONE production
+//! `verify_runtime_binding_still_current` validator against state already
+//! loaded under the SAME lock hold (section 21/22): current DDeploy
+//! authority, DNode/DCode authority, current DIoT runtime binding, and
+//! grant-state mutation are all one coherent observation -- there is no
+//! validate-then-release-locks-then-issue-against-possibly-changed-state
+//! window. The same principle governs `post_redeem_grant`.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -32,11 +50,15 @@ use crate::core::canonical_dgraph::CanonicalValidationFinding;
 use crate::core::dcall::{
     check_source_execution_binding, derive_dcall_route, issue_grant,
     load_state as load_grant_state, persist_state as persist_grant_state, redeem_grant,
-    DCallDeliveryGrantV1, DCallGrantStateV1, RedeemError, SourceExecutionBindingV1,
+    DCallDeliveryAuthorityV1, DCallDeliveryGrantV1, DCallGrantStateV1,
+    DCallRealizationTransportAuthorityV1, RedeemError, SourceExecutionBindingV1,
 };
 use crate::core::dcall_endpoint::{
     declare_endpoint, load_state as load_endpoint_state, persist_state as persist_endpoint_state,
     DCallEndpointRegistryStateV1, DNodeTransportEndpointV1, DeclareEndpointError,
+};
+use crate::core::diot_runtime_binding::{
+    load_state as load_diot_runtime_binding_state, verify_runtime_binding_still_current,
 };
 use crate::storage::control_state::default_control_state_db_path;
 
@@ -275,6 +297,10 @@ pub async fn post_request_grant(
     let _dcode_transaction = crate::api::dcode::dcode_transaction()
         .lock()
         .map_err(lock_error)?;
+    let _diot_runtime_binding_transaction =
+        crate::api::diot_runtime_binding::diot_runtime_binding_transaction()
+            .lock()
+            .map_err(lock_error)?;
     let _dcall_transaction = dcall_transaction().lock().map_err(lock_error)?;
 
     let db_path = db_path();
@@ -284,6 +310,8 @@ pub async fn post_request_grant(
     let dcode_registry_state =
         crate::core::dcode_registry::load_state(&db_path).map_err(internal_error)?;
     let endpoint_state = load_endpoint_state(&db_path).map_err(internal_error)?;
+    let diot_runtime_binding_state =
+        load_diot_runtime_binding_state(&db_path).map_err(internal_error)?;
     let mut grant_state = load_grant_state(&db_path).map_err(internal_error)?;
 
     let route = derive_dcall_route(
@@ -360,30 +388,101 @@ pub async fn post_request_grant(
     )
     .map_err(|finding| finding_error(StatusCode::UNPROCESSABLE_ENTITY, finding))?;
 
-    // Phase 113A (ADR-0023) realization boundary: this is the ONE
+    // Phase 113A/113B2 (ADR-0023) realization boundary: this is the ONE
     // authoritative production dispatch boundary (route derivation succeeds
     // under an active DMap/2, per `derive_dcall_route`'s own doc comment --
-    // DGraph/DMap authority is unaffected -- but no grant may ever be issued
-    // for a D-Call governed under DMap/2, since Phase 113A implements no
-    // runtime transport for any canonical realization). Checked HERE,
-    // BEFORE endpoint lookup, `check_source_execution_binding`, the
-    // message-limit checks, and `issue_grant` -- no delivery side effect
-    // (grant/token/endpoint lookup/network send) has occurred yet, and no
-    // duplicate copy of this check exists anywhere else (client/listener
-    // code never re-derives a route). A DMap/1 active authority is entirely
-    // unaffected (`v2_dcall_realization` is `None`).
-    if let Some(realization) = &route.v2_dcall_realization {
-        return Err(finding_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            CanonicalValidationFinding {
-                code: "dcall_realization_transport_not_implemented",
-                message: format!(
-                    "D-Call '{}' is governed under the active DMap/2 with realization kind '{}', but no runtime transport is implemented for it yet -- no grant can be issued yet",
-                    route.call_id, realization.realization_kind
-                ),
-            },
-        ));
-    }
+    // DGraph/DMap authority is unaffected). Section 7's governed resolution
+    // flow: require the realization kind be the one v0.1 supports; resolve
+    // the DIoT runtime binding for this realization's placement by
+    // `(project_id, application_id, diot_placement_id)`; require it exists
+    // (`dcall_diot_runtime_binding_missing` -- distinct from the
+    // "not implemented" code below, which is now reserved for a future
+    // unsupported realization_kind); validate it against CURRENT authority
+    // using the ONE Phase 113B1 validator (`diot_runtime_binding_stale` on
+    // failure, never a duplicated check); require the binding's own
+    // DForward identity agrees with the route's realization; construct the
+    // grant's typed transport authority server-side. Checked HERE, BEFORE
+    // `check_source_execution_binding`, the message-limit checks, and
+    // `issue_grant` -- no delivery side effect (grant/token/network send)
+    // has occurred yet, no HTTP destination-endpoint lookup happens
+    // anywhere on this path, and no duplicate copy of this resolution
+    // exists elsewhere (client/listener code never re-derives a route). A
+    // DMap/1 active authority is entirely unaffected (`v2_dcall_realization`
+    // is `None`).
+    let v2_delivery_authority: Option<DCallDeliveryAuthorityV1> =
+        if let Some(realization) = &route.v2_dcall_realization {
+            if realization.realization_kind != "via_diot_pubsub" {
+                return Err(finding_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    CanonicalValidationFinding {
+                        code: "dcall_realization_transport_not_implemented",
+                        message: format!(
+                            "D-Call '{}' is governed under the active DMap/2 with realization kind '{}', but no runtime transport is implemented for it",
+                            route.call_id, realization.realization_kind
+                        ),
+                    },
+                ));
+            }
+            let binding = diot_runtime_binding_state
+                .get(
+                    &request.project_id,
+                    &request.application_id,
+                    &realization.diot_placement_id,
+                )
+                .cloned()
+                .ok_or_else(|| {
+                    finding_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        CanonicalValidationFinding {
+                            code: "dcall_diot_runtime_binding_missing",
+                            message: format!(
+                                "D-Call '{}' realization names DIoT placement '{}' but no runtime binding is registered for it -- register one via PUT /api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id before requesting a grant",
+                                route.call_id, realization.diot_placement_id
+                            ),
+                        },
+                    )
+                })?;
+            verify_runtime_binding_still_current(&binding, &ddeploy_state, &dnode_registry_state)
+                .map_err(|finding| finding_error(StatusCode::UNPROCESSABLE_ENTITY, finding))?;
+            // Defense in depth (see `issue_grant`'s own doc comment on
+            // `DCallDeliveryAuthorityV1::DiotPubsub`): `binding` and
+            // `realization` were both just derived from the SAME loaded
+            // `ddeploy_state`, under the SAME lock hold, so this is expected
+            // to always hold -- checked anyway so a grant is never issued
+            // for a binding/realization pair that silently disagree.
+            if binding.dforward_id != realization.dforward_id
+                || binding.dforward_revision != realization.dforward_revision
+                || binding.dforward_digest != realization.dforward_digest
+            {
+                return Err(finding_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    CanonicalValidationFinding {
+                        code: "dcall_diot_runtime_binding_realization_mismatch",
+                        message: format!(
+                            "DIoT runtime binding for placement '{}' does not agree with the route's own DForward realization authority",
+                            realization.diot_placement_id
+                        ),
+                    },
+                ));
+            }
+            Some(DCallDeliveryAuthorityV1::DiotPubsub(
+                DCallRealizationTransportAuthorityV1 {
+                    realization_kind: realization.realization_kind.clone(),
+                    diot_placement_id: realization.diot_placement_id.clone(),
+                    interface: realization.interface.clone(),
+                    channel: realization.channel.clone(),
+                    dforward_id: realization.dforward_id.clone(),
+                    dforward_revision: realization.dforward_revision,
+                    dforward_digest: realization.dforward_digest.clone(),
+                    binding_id: binding.binding_id.clone(),
+                    binding_revision: binding.binding_revision,
+                    descriptor_digest: binding.descriptor_digest.clone(),
+                    transport: binding.transport.clone(),
+                },
+            ))
+        } else {
+            None
+        };
 
     // K2B: the authority the source invocation actually executed under
     // (caller-supplied, but derived exclusively by DATUM from that real
@@ -437,35 +536,47 @@ pub async fn post_request_grant(
         }
     }
 
-    let endpoint = if route.route_kind == crate::core::dcall::ROUTE_KIND_REMOTE {
-        Some(
-            endpoint_state
-                .get(
-                    &route.destination.node_id,
-                    crate::core::dcall_endpoint::TRANSPORT_HTTP,
+    // Section 10: HTTP endpoint lookup happens ONLY on the DMap/1 path --
+    // `v2_delivery_authority` is already fully resolved above without ever
+    // consulting `endpoint_state`, so a remote DMap/2 grant succeeds with
+    // zero HTTP endpoint registered, and an existing HTTP endpoint for the
+    // destination node is never consulted (let alone treated as authority)
+    // once a DIoT transport authority has been resolved.
+    let resolved_endpoint: Option<DNodeTransportEndpointV1>;
+    let delivery_authority: DCallDeliveryAuthorityV1;
+    if let Some(v2_authority) = v2_delivery_authority {
+        resolved_endpoint = None;
+        delivery_authority = v2_authority;
+    } else if route.route_kind == crate::core::dcall::ROUTE_KIND_REMOTE {
+        let endpoint = endpoint_state
+            .get(
+                &route.destination.node_id,
+                crate::core::dcall_endpoint::TRANSPORT_HTTP,
+            )
+            .cloned()
+            .ok_or_else(|| {
+                finding_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    CanonicalValidationFinding {
+                        code: "dcall_destination_endpoint_missing",
+                        message: format!(
+                            "no HTTP transport endpoint is declared for destination node '{}'",
+                            route.destination.node_id
+                        ),
+                    },
                 )
-                .cloned()
-                .ok_or_else(|| {
-                    finding_error(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        CanonicalValidationFinding {
-                            code: "dcall_destination_endpoint_missing",
-                            message: format!(
-                                "no HTTP transport endpoint is declared for destination node '{}'",
-                                route.destination.node_id
-                            ),
-                        },
-                    )
-                })?,
-        )
+            })?;
+        resolved_endpoint = Some(endpoint);
+        delivery_authority = DCallDeliveryAuthorityV1::Http(resolved_endpoint.as_ref().unwrap());
     } else {
-        None
-    };
+        resolved_endpoint = None;
+        delivery_authority = DCallDeliveryAuthorityV1::None;
+    }
 
     let issued = issue_grant(
         &mut grant_state,
         route,
-        endpoint.as_ref(),
+        delivery_authority,
         request.message_id,
         request.correlation_id,
         request.payload_sha256,
@@ -509,6 +620,10 @@ pub async fn post_redeem_grant(
     let _dcode_transaction = crate::api::dcode::dcode_transaction()
         .lock()
         .map_err(lock_error)?;
+    let _diot_runtime_binding_transaction =
+        crate::api::diot_runtime_binding::diot_runtime_binding_transaction()
+            .lock()
+            .map_err(lock_error)?;
     let _dcall_transaction = dcall_transaction().lock().map_err(lock_error)?;
 
     let db_path = db_path();
@@ -518,6 +633,8 @@ pub async fn post_redeem_grant(
     let dcode_registry_state =
         crate::core::dcode_registry::load_state(&db_path).map_err(internal_error)?;
     let endpoint_state = load_endpoint_state(&db_path).map_err(internal_error)?;
+    let diot_runtime_binding_state =
+        load_diot_runtime_binding_state(&db_path).map_err(internal_error)?;
     let mut grant_state = load_grant_state(&db_path).map_err(internal_error)?;
 
     let grant = redeem_grant(
@@ -526,6 +643,7 @@ pub async fn post_redeem_grant(
         &dnode_registry_state,
         &dcode_registry_state,
         &endpoint_state,
+        &diot_runtime_binding_state,
         &grant_id,
         &request.token,
         &request.destination_node_id,
@@ -603,6 +721,45 @@ mod tests {
         }
     }
 
+    /// Phase 113B2 (section 24): a caller MUST NOT be able to name any
+    /// DMap/2 realization/runtime-binding authority field -- every one of
+    /// these is server-derived (from the active DMap/2 and the DIoT
+    /// runtime-binding registry), never caller input. Mirrors
+    /// `request_grant_payload_rejects_destination_fields`'s exact technique.
+    #[test]
+    fn request_grant_payload_rejects_diot_transport_authority_fields() {
+        for field in [
+            "realization_kind",
+            "diot_placement_id",
+            "interface",
+            "channel",
+            "dforward_id",
+            "dforward_revision",
+            "dforward_digest",
+            "binding_id",
+            "binding_revision",
+            "descriptor_digest",
+            "broker_uri",
+            "transport",
+        ] {
+            let mut value = json!({
+                "project_id": "proj:lab", "application_id": "app:a", "call_id": "c1",
+                "source_node_id": "fog-01", "source_output_port": "out",
+                "message_id": "m1", "correlation_id": "c1",
+                "payload_sha256": "a".repeat(64), "payload_size": 4,
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), json!("caller-chosen"));
+            let result: Result<RequestGrantRequest, _> = serde_json::from_value(value);
+            assert!(
+                result.is_err(),
+                "expected {field} to be rejected by deny_unknown_fields"
+            );
+        }
+    }
+
     #[test]
     fn request_grant_payload_accepts_the_legitimate_minimal_shape() {
         let value = json!({
@@ -621,5 +778,120 @@ mod tests {
         });
         let result: Result<RequestGrantRequest, _> = serde_json::from_value(value);
         assert!(result.is_ok());
+    }
+
+    // ----------------------------------------------------------------- //
+    // 113B2.1 section 23/24: this crate has no established precedent for //
+    // constructing a real `AppState` inside a unit test (see              //
+    // `api::ddeploy`'s own `post_plan_proposal_holds_the_same_lock_order_ //
+    // accept_proposal_uses` doc comment for the identical limitation), so //
+    // `post_request_grant`/`post_redeem_grant` cannot be invoked as real  //
+    // Axum requests here -- that boundary remains MANUAL (see             //
+    // `MANUAL_VALIDATION_COMMANDS.md`) and is proven end-to-end by the    //
+    // real Phase-112 `dcall_two_node_integration` subprocess test, which  //
+    // exercises these exact handlers over real HTTP. What a unit test CAN //
+    // and must prove here, mirroring `api::ddeploy`'s exact source-text-  //
+    // scan technique, is that the module doc comment's claimed lock order //
+    // is what the handler source actually contains -- this file's own    //
+    // doc comment already discloses a past incident (independent review  //
+    // fix v3 / J7) where a stale claim about this file's locking behavior //
+    // went undetected for a time, so this exact class of regression is    //
+    // the one this test is built to catch.                                //
+    // ----------------------------------------------------------------- //
+
+    fn production_source() -> String {
+        let source = include_str!("dcall.rs");
+        let production_source: String = source
+            .lines()
+            .take_while(|line| line.trim() != "#[cfg(test)]")
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            production_source.len() < source.len(),
+            "the '#[cfg(test)] mod tests' boundary was not found -- this test would otherwise scan its own forbidden-string literals"
+        );
+        production_source
+    }
+
+    fn fn_body(source: &str, fn_signature_prefix: &str) -> String {
+        let start = source
+            .find(fn_signature_prefix)
+            .unwrap_or_else(|| panic!("'{fn_signature_prefix}' not found in source"));
+        // Every handler in this file is followed by another `pub async fn`
+        // -- a safe end-of-function marker for this simple text scan (no
+        // nested `fn` definitions exist inside either handler body).
+        let rest = &source[start..];
+        let next_fn = rest[fn_signature_prefix.len()..]
+            .find("\npub async fn ")
+            .unwrap_or(rest.len() - fn_signature_prefix.len());
+        rest[..fn_signature_prefix.len() + next_fn].to_string()
+    }
+
+    /// Proves `post_request_grant` acquires the exact documented chain
+    /// `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DCODE_TRANSACTION ->
+    /// DIOT_RUNTIME_BINDING_TRANSACTION -> DCALL_TRANSACTION`, never a
+    /// reversed or reordered subset.
+    #[test]
+    fn post_request_grant_holds_the_documented_lock_order() {
+        let body = fn_body(&production_source(), "pub async fn post_request_grant(");
+        let ddeploy_pos = body
+            .find("ddeploy::ddeploy_transaction()")
+            .expect("post_request_grant must acquire DDEPLOY_TRANSACTION");
+        let dnode_pos = body
+            .find("dnode_registry::dnode_transaction()")
+            .expect("post_request_grant must acquire DNODE_TRANSACTION");
+        let dcode_pos = body
+            .find("dcode::dcode_transaction()")
+            .expect("post_request_grant must acquire DCODE_TRANSACTION");
+        let diot_binding_pos = body
+            .find("diot_runtime_binding::diot_runtime_binding_transaction()")
+            .expect("post_request_grant must acquire DIOT_RUNTIME_BINDING_TRANSACTION");
+        let dcall_pos = body
+            .find("dcall_transaction().lock()")
+            .expect("post_request_grant must acquire DCALL_TRANSACTION");
+        assert!(ddeploy_pos < dnode_pos, "DDEPLOY must precede DNODE");
+        assert!(dnode_pos < dcode_pos, "DNODE must precede DCODE");
+        assert!(
+            dcode_pos < diot_binding_pos,
+            "DCODE must precede DIOT_RUNTIME_BINDING"
+        );
+        assert!(
+            diot_binding_pos < dcall_pos,
+            "DIOT_RUNTIME_BINDING must precede DCALL"
+        );
+    }
+
+    /// Same proof as above, for `post_redeem_grant` -- issuance and
+    /// redemption must never diverge in lock order, or a future change to
+    /// one without the other could create a reverse-acquisition deadlock
+    /// risk between the two handlers.
+    #[test]
+    fn post_redeem_grant_holds_the_documented_lock_order() {
+        let body = fn_body(&production_source(), "pub async fn post_redeem_grant(");
+        let ddeploy_pos = body
+            .find("ddeploy::ddeploy_transaction()")
+            .expect("post_redeem_grant must acquire DDEPLOY_TRANSACTION");
+        let dnode_pos = body
+            .find("dnode_registry::dnode_transaction()")
+            .expect("post_redeem_grant must acquire DNODE_TRANSACTION");
+        let dcode_pos = body
+            .find("dcode::dcode_transaction()")
+            .expect("post_redeem_grant must acquire DCODE_TRANSACTION");
+        let diot_binding_pos = body
+            .find("diot_runtime_binding::diot_runtime_binding_transaction()")
+            .expect("post_redeem_grant must acquire DIOT_RUNTIME_BINDING_TRANSACTION");
+        let dcall_pos = body
+            .find("dcall_transaction().lock()")
+            .expect("post_redeem_grant must acquire DCALL_TRANSACTION");
+        assert!(ddeploy_pos < dnode_pos, "DDEPLOY must precede DNODE");
+        assert!(dnode_pos < dcode_pos, "DNODE must precede DCODE");
+        assert!(
+            dcode_pos < diot_binding_pos,
+            "DCODE must precede DIOT_RUNTIME_BINDING"
+        );
+        assert!(
+            diot_binding_pos < dcall_pos,
+            "DIOT_RUNTIME_BINDING must precede DCALL"
+        );
     }
 }
