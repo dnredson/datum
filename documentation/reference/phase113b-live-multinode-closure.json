@@ -1,0 +1,72 @@
+{
+  "phase": "113B",
+  "date_utc": "2026-09-24",
+  "feature_commit": "890798d15fef35df7b12cbf4cce80e083c21014b",
+  "branch": "agent/dforward-diot-runtime-v1",
+  "phase113b4a_result": "pass",
+  "phase113b4b_result": "partial",
+  "live_multinode_mqtt_delivery": false,
+  "topology": {
+    "source": { "canonical_node_id": "fog-01", "operational_host": "datum-fog", "operational_ip": "192.168.10.103" },
+    "destination": { "canonical_node_id": "cloud-01", "operational_host": "datum-cloud", "operational_ip": "192.168.10.108" },
+    "control_plane": { "operational_ip": "192.168.10.101", "port": 8080 },
+    "mqtt_broker_final_attempt": { "operational_ip": "192.168.10.101", "port": 1883 }
+  },
+  "namespace": {
+    "project_id": "proj:dcall-live-b4ba74cc0a3",
+    "application_id": "app:pipeline-b4ba74cc0a3",
+    "call_id": "sensor-to-decoder",
+    "dforward_id": "dforward:live-b4ba74cc0a3",
+    "diot_placement_id": "diotplace:mqtt-broker-cloud01-b4ba74cc0a3"
+  },
+  "proven_live": {
+    "governance_registration": true,
+    "dmap2_proposal_accepted": true,
+    "diot_runtime_binding_registered_and_verified": true,
+    "real_source_dcode_invocation": true,
+    "real_dcall_grant_issued_remote_route": true,
+    "real_mqtt_delivery": false
+  },
+  "final_delivery_attempt": {
+    "grant_id": "dcall-grant:55669639-24ce-4865-bb1c-775a9c55a102",
+    "dgraph_digest": "sha256:47487f35e6f5e78442975380b5c87180558b39d8decc7e23ad209af7e30a0273",
+    "dmap_digest": "sha256:fbe0d7fb11adb95740b69300ed931844724e309186169333515d6ee0d5507e6f",
+    "source_dcode_evidence_sha256": "7fe43886eee91f6fbaa4e3f883136777d254afb4069bb6fccdb54a8c0b74a04e",
+    "payload_sha256": "90f272522386263a145e469ffb8b6a0d1aa215f9b6cb438242f1021b45545480",
+    "route_kind": "remote",
+    "outcome": "Failed",
+    "error_code": "dcall_transport_timeout",
+    "duration_ms": 29721,
+    "redeemed_at": null,
+    "destination_dcode_evidence_sha256": null
+  },
+  "brokers_attempted": [
+    { "kind": "docker_bridge", "host": "cloud-01", "port": 1884, "result": "keepalive_timeout" },
+    { "kind": "docker_host_network", "host": "cloud-01", "port": 1883, "result": "port_conflict_with_unrelated_service" },
+    { "kind": "docker_bridge_fresh_port", "host": "cloud-01", "port": 1885, "result": "keepalive_timeout" },
+    { "kind": "native_windows_mosquitto", "host": "control-plane", "port": 1883, "result": "listener_connection_silently_dropped" }
+  ],
+  "root_cause_assessment": "The collected evidence is consistent with an environment-specific cloud-01 networking failure (a VirtualBox virtual network adapter silently dropping long-lived outbound TCP connections regardless of destination/protocol, consistent with repeated SSH instability to that host throughout the session); this is the best-supported explanation, not a mathematical proof that the VM/network layer is the sole possible cause. What is directly established: the same DATUM MQTT implementation and broker passed the governed Phase 113B4A E2E on a single machine.",
+  "regression_gates": {
+    "dserver_core_dcall": 99,
+    "dserver_api_dcall": 5,
+    "dserver_core_dcall_mqtt_topic": 11,
+    "dserver_core_diot_runtime_binding": 26,
+    "dserver_api_diot_runtime_binding": 4,
+    "dserver_core_ddeploy": 181,
+    "dserver_core_ddeploy_v2": 0,
+    "dserver_api_ddeploy": 24,
+    "datum_dcall_grant": 2,
+    "datum_dcall_client": 2,
+    "datum_dcall_mqtt": 24,
+    "datum_dcall_delivery": 38,
+    "datum_dcall_listener": 5,
+    "datum_dcall_evidence": 4,
+    "phase112_hard_gate": "7 passed, 0 failed",
+    "b4a_governed_e2e_single_machine": "1 passed, 0 failed"
+  },
+  "new_production_code": [
+    "DATUM/src/bin/smartsentinel-dcall-dispatch.rs"
+  ],
+  "sensitive_data_excluded": ["bearer_token", "broker_credentials", "raw_payload_bytes"]
+}

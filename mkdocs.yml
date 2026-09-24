@@ -60,6 +60,7 @@ nav:
       - Node / Hardware History: reference/node-incarnation-history.md
       - Operational WASM Reconciliation: reference/operational-wasm-reconciliation.md
       - Governed MQTT D-Call E2E: reference/governed-mqtt-dcall-e2e.md
+      - Phase 113B live multinode closure: reference/phase113b-live-multinode-closure.md
   - API:
       - Overview: api/overview.md
   - Reference:
