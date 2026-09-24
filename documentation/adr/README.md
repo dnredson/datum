@@ -45,6 +45,7 @@ work belongs to Stages 107A and 107B.
 | [ADR-0021](ADR-0021-canonical-dserv-artifact-and-dcode-wasm-v0.1.md) | Canonical D-Serv artifact and D-Code/WASM v0.1 (roadmap phase 111) | Accepted and implemented | ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0008, ADR-0017, ADR-0018, ADR-0019 |
 | [ADR-0022](ADR-0022-canonical-dcall-realization-v0.1.md) | Canonical D-Call realization v0.1 (roadmap phase 112) | Accepted and implemented | ADR-0002, ADR-0003, ADR-0005, ADR-0009, ADR-0017, ADR-0018, ADR-0019, ADR-0020, ADR-0021 |
 | [ADR-0023](ADR-0023-canonical-dforward-diot-dmap-v2.md) | Canonical D-Forward / DIoT and D-Map v2 control-plane foundation (roadmap phase 113A) | Accepted and implemented; runtime transport deferred | ADR-0002, ADR-0006, ADR-0010, ADR-0017, ADR-0018, ADR-0022 |
+| [ADR-0024](ADR-0024-canonical-dmonitor-observation-model.md) | Canonical DMonitor observation model (roadmap phase 114A) | Accepted and implemented; collection/persistence, convergence/drift, readiness feed integration, and live multinode validation deferred | ADR-0002, ADR-0006, ADR-0007, ADR-0009, ADR-0010, ADR-0017, ADR-0021, ADR-0022, ADR-0023 |
 
 ## Relationship to closed phases
 

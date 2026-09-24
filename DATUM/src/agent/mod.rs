@@ -4,6 +4,7 @@ pub mod canonical_dforward;
 pub mod canonical_dgraph;
 pub mod canonical_dmap;
 pub mod canonical_dmap_v2;
+pub mod canonical_dmonitor;
 pub mod discovery;
 pub mod discovery_collectors;
 pub mod execution_projection;
