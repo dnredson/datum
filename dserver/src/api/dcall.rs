@@ -173,29 +173,36 @@ pub async fn get_dcalls_for_source_service(
     )>,
 ) -> Result<JsonResponse<Vec<String>>, ApiError> {
     let ddeploy_state = crate::core::ddeploy::load_state(&db_path()).map_err(internal_error)?;
-    let active = ddeploy_state
-        .active_by_application
-        .get(&crate::core::ddeploy::application_key(
-            &project_id,
-            &application_id,
-        ))
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                JsonResponse(
-                    json!({"error": "dcall_not_found", "message": "no active accepted D-Map"}),
-                ),
-            )
-        })?;
-    let proposal = ddeploy_state
-        .proposals
-        .get(&active.proposal_id)
-        .ok_or_else(|| internal_error("active proposal record missing"))?;
+    // Phase 113B4A fix: this discovery endpoint previously read only the
+    // DMap/1-specific `active_by_application` map directly, so an
+    // application whose ONLY active authority is DMap/2 was reported as
+    // having "no active accepted D-Map" even though one genuinely is
+    // active -- discovered by the real governed MQTT E2E test, which is
+    // the first exerciser of D-Call dispatch discovery against a DMap/2-
+    // only application. Fixed by consuming the SAME shared
+    // `active_placement_authority` accessor `derive_dcall_route` and
+    // `authorize_dcode_invocation` already use, so this endpoint is
+    // correct for both DMap/1 and DMap/2 active authority.
+    let active = crate::core::ddeploy::active_placement_authority(
+        &ddeploy_state,
+        &project_id,
+        &application_id,
+    )
+    .map_err(internal_error)?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({"error": "dcall_not_found", "message": "no active accepted D-Map"})),
+        )
+    })?;
+    let dgraph_snapshot = active.dgraph_snapshot.ok_or_else(|| {
+        internal_error("active placement authority is missing its DGraph snapshot")
+    })?;
     let call_ids: Vec<String> =
-        crate::core::dcall::resolve_dcalls_for_emit(&proposal.dgraph_snapshot, &source_service_id)
-        .into_iter()
-        .map(|call| call.call_id.clone())
-        .collect();
+        crate::core::dcall::resolve_dcalls_for_emit(&dgraph_snapshot, &source_service_id)
+            .into_iter()
+            .map(|call| call.call_id.clone())
+            .collect();
     Ok(JsonResponse(call_ids))
 }
 

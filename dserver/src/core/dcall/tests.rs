@@ -479,6 +479,38 @@ fn destination_service_with_no_active_placement_is_rejected() {
     assert_eq!(error.code, "dcall_destination_service_not_placed");
 }
 
+/// Phase 113B4A regression: `GET /api/v1/dcall/calls/:project/:app/:service`
+/// (`get_dcalls_for_source_service`) previously read ONLY the DMap/1-
+/// specific `active_by_application` map directly instead of the shared
+/// `active_placement_authority` accessor every other Phase-112 consumer
+/// (`derive_dcall_route`, `authorize_dcode_invocation`) already migrated to
+/// in Phase 113A -- so an application whose ONLY active authority is
+/// DMap/2 was wrongly reported as having no active D-Map at all. This was
+/// undetected until the real governed MQTT E2E test (113B4A) became the
+/// first exerciser of D-Call dispatch discovery against a DMap/2-only
+/// application. This proves the handler's own fixed logic (consult
+/// `active_placement_authority`, then `resolve_dcalls_for_emit` against its
+/// `dgraph_snapshot`) against a purely DMap/2-active fixture, with no
+/// DMap/1 authority present at all.
+#[test]
+fn dcall_discovery_finds_calls_for_a_dmap2_only_active_application() {
+    let fixture = build_v2_fixture("fog-01", "fog-01");
+    assert!(
+        fixture.ddeploy.active_by_application.is_empty(),
+        "this fixture must be DMap/2-only -- no v1 active authority at all"
+    );
+    let active = crate::core::ddeploy::active_placement_authority(&fixture.ddeploy, PROJECT, APP)
+        .unwrap()
+        .expect("a DMap/2-only application must still report an active placement authority");
+    assert!(active.v2.is_some(), "this fixture's active authority must be DMap/2");
+    let dgraph_snapshot = active
+        .dgraph_snapshot
+        .expect("active placement authority must carry its DGraph snapshot");
+    let matches = resolve_dcalls_for_emit(&dgraph_snapshot, SOURCE_SVC);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].call_id, CALL_ID);
+}
+
 #[test]
 fn resolve_dcalls_for_emit_is_deterministic_and_empty_is_valid() {
     let dg = dgraph();

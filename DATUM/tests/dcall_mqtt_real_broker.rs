@@ -39,13 +39,30 @@ fn real_broker_subscribe_publish_receive_round_trip() {
     subscriber
         .subscribe(request_topic)
         .expect("subscribe to request topic");
-    // Give the broker a moment to register the subscription before publishing.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // `rumqttc::Client::new` spawns no background thread: `subscribe()`/
+    // `publish()` only enqueue a request onto that connection's OWN
+    // internal channel, and nothing (not even the initial MQTT CONNECT) is
+    // actually sent over the wire until that specific `Connection` is
+    // driven via `poll()`/`recv()`/`recv_timeout()`. A fixed `sleep()` does
+    // NOT drive it. Polling with a short bounded timeout here both performs
+    // the real CONNECT+SUBSCRIBE handshake and confirms it completed before
+    // anything is published (ordering matters for QoS1 without `retain`:
+    // the broker only forwards to already-registered subscribers).
+    assert!(
+        subscriber
+            .poll(std::time::Duration::from_millis(2000))
+            .expect("drive subscriber connect+subscribe")
+            .is_none(),
+        "no message should exist yet -- this poll only established the subscription"
+    );
 
     let request_payload = b"real-broker-request-envelope";
     publisher
         .publish(request_topic, request_payload, MqttQos::AtLeastOnce, false)
         .expect("publish request, QoS1, retain=false");
+    // Likewise, drive the PUBLISHER's own connection so its queued CONNECT+
+    // PUBLISH actually reaches the broker -- `publish()` alone never does.
+    let _ = publisher.poll(std::time::Duration::from_millis(1000));
 
     let (received_topic, received_payload) = subscriber
         .poll(std::time::Duration::from_secs(10))
@@ -55,15 +72,18 @@ fn real_broker_subscribe_publish_receive_round_trip() {
     assert_eq!(received_payload, request_payload);
 
     // Response round trip: subscriber (destination) replies on the reply
-    // topic, publisher (source) receives it.
+    // topic, publisher (source) receives it. Same two-step discipline:
+    // drive the subscribing connection to completion before anything is
+    // published on that topic, then flush the publishing connection.
     publisher
         .subscribe(reply_topic)
         .expect("publisher subscribes to its own reply topic");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    let _ = publisher.poll(std::time::Duration::from_millis(2000));
     let response_payload = b"real-broker-response-envelope";
     subscriber
         .publish(reply_topic, response_payload, MqttQos::AtLeastOnce, false)
         .expect("publish response, QoS1, retain=false");
+    let _ = subscriber.poll(std::time::Duration::from_millis(1000));
 
     let (received_reply_topic, received_reply_payload) = publisher
         .poll(std::time::Duration::from_secs(10))
