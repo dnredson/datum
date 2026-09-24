@@ -24,6 +24,7 @@
 //! "now" rather than a slightly different one per record.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::core::dmonitor_state::DMonitorObservationRecordV1;
 
@@ -31,7 +32,14 @@ use crate::core::dmonitor_state::DMonitorObservationRecordV1;
 /// construction (`u64`) -- there is no way to construct a policy that
 /// permits negative age, and no field here can be influenced by anything in
 /// a request body (it is server configuration, not caller input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (Phase 114C): the convergence diagnostic API
+/// echoes the exact policy it evaluated against back in its response, and
+/// accepts one as an explicit per-request DIAGNOSTIC input (never a
+/// server-owned governance policy -- see `dmonitor_interpretation`'s module
+/// doc). Widening this type's derive list is purely additive; B1's own
+/// evaluation contract is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DMonitorFreshnessPolicyV1 {
     /// Maximum acceptable `evaluation_time - observed_at_utc`.
     pub max_observed_age_seconds: u64,
@@ -62,7 +70,8 @@ impl Default for DMonitorFreshnessPolicyV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DMonitorFreshnessV1 {
     Fresh,
     Stale,
@@ -71,6 +80,43 @@ pub enum DMonitorFreshnessV1 {
     /// age comparisons -- an untrustworthy clock is reported as such, never
     /// silently classified as merely "stale" or, worse, "fresh".
     ClockSkew,
+}
+
+/// Fail-closed input validation for a CALLER-SUPPLIED freshness policy
+/// (Phase 114C, section 32). `evaluate_freshness` itself casts each bound
+/// to `i64` (`policy.max_future_clock_skew_seconds as i64`, etc.); an
+/// internal caller always supplies a small, sane `u64` (seconds), but an
+/// HTTP caller could supply a value exceeding `i64::MAX`, which an `as i64`
+/// cast silently reinterprets as a NEGATIVE number (two's-complement
+/// truncation) rather than erroring -- turning, for example,
+/// `max_future_clock_skew_seconds: u64::MAX` into a skew bound of `-1`,
+/// which would then spuriously classify nearly every real evaluation as
+/// `ClockSkew`. This validator rejects any bound whose `u64` value exceeds
+/// `i64::MAX` BEFORE it ever reaches `evaluate_freshness`, closing that gap
+/// at the trust boundary rather than changing `evaluate_freshness`'s own
+/// established contract (which stays a pure, infallible-on-policy-shape
+/// function for its existing internal callers).
+pub fn validate_freshness_policy(policy: &DMonitorFreshnessPolicyV1) -> Result<(), String> {
+    let ceiling = i64::MAX as u64;
+    if policy.max_observed_age_seconds > ceiling {
+        return Err(format!(
+            "max_observed_age_seconds {} exceeds the maximum representable bound {ceiling}",
+            policy.max_observed_age_seconds
+        ));
+    }
+    if policy.max_received_age_seconds > ceiling {
+        return Err(format!(
+            "max_received_age_seconds {} exceeds the maximum representable bound {ceiling}",
+            policy.max_received_age_seconds
+        ));
+    }
+    if policy.max_future_clock_skew_seconds > ceiling {
+        return Err(format!(
+            "max_future_clock_skew_seconds {} exceeds the maximum representable bound {ceiling}",
+            policy.max_future_clock_skew_seconds
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +205,72 @@ mod tests {
         CANONICAL_DMONITOR_OBSERVATION_SCHEMA,
     };
     use serde_json::json;
+
+    // ---------------------------------------------- PHASE 114C CLOSURE
+    // (freshness policy validation)
+
+    #[test]
+    fn a_sane_policy_validates() {
+        assert!(validate_freshness_policy(&DMonitorFreshnessPolicyV1::default()).is_ok());
+    }
+
+    #[test]
+    fn zero_bounds_are_valid() {
+        let policy = DMonitorFreshnessPolicyV1 {
+            max_observed_age_seconds: 0,
+            max_received_age_seconds: 0,
+            max_future_clock_skew_seconds: 0,
+        };
+        assert!(validate_freshness_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn i64_max_bound_is_valid() {
+        let ceiling = i64::MAX as u64;
+        let policy = DMonitorFreshnessPolicyV1 {
+            max_observed_age_seconds: ceiling,
+            max_received_age_seconds: ceiling,
+            max_future_clock_skew_seconds: ceiling,
+        };
+        assert!(validate_freshness_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn one_past_i64_max_is_rejected_for_each_field() {
+        let ceiling = i64::MAX as u64;
+        let base = DMonitorFreshnessPolicyV1 {
+            max_observed_age_seconds: 1,
+            max_received_age_seconds: 1,
+            max_future_clock_skew_seconds: 1,
+        };
+
+        let mut observed_overflow = base;
+        observed_overflow.max_observed_age_seconds = ceiling + 1;
+        assert!(validate_freshness_policy(&observed_overflow).is_err());
+
+        let mut received_overflow = base;
+        received_overflow.max_received_age_seconds = ceiling + 1;
+        assert!(validate_freshness_policy(&received_overflow).is_err());
+
+        let mut skew_overflow = base;
+        skew_overflow.max_future_clock_skew_seconds = ceiling + 1;
+        assert!(validate_freshness_policy(&skew_overflow).is_err());
+    }
+
+    #[test]
+    fn u64_max_is_rejected_and_would_otherwise_silently_invert_to_negative() {
+        // Documents the exact defect class this validator closes: casting
+        // u64::MAX to i64 wraps to -1, which (if this validator did not
+        // exist) would make `evaluate_freshness`'s clock-skew comparison
+        // spuriously fire for nearly every real evaluation.
+        assert_eq!(u64::MAX as i64, -1);
+        let policy = DMonitorFreshnessPolicyV1 {
+            max_observed_age_seconds: 60,
+            max_received_age_seconds: 60,
+            max_future_clock_skew_seconds: u64::MAX,
+        };
+        assert!(validate_freshness_policy(&policy).is_err());
+    }
 
     fn record(
         observed_at_utc: &str,

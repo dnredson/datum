@@ -4,14 +4,15 @@
   digest, and unit tests), Phase 114B1 (DServer ingestion, durable
   persistence, sequence/idempotency ordering, and server-derived freshness
   evaluation), Phase 114B1.1 (a narrow correctness-closure audit fixing
-  concrete gaps found in 114B1), AND Phase 114B2 (the production
-  SmartSentinel -> canonical DMonitor compatibility projection and
-  publication path -- see "Server ingestion (Phase 114B1)", "114B1.1
-  correctness closure", and "SmartSentinel compatibility bridge (Phase
-  114B2)" below). Convergence and drift views (114C), readiness/
-  `any_element` feed integration (114D), and live multinode validation
-  (114E) are all explicitly deferred to later phases and are not implemented
-  by this ADR.
+  concrete gaps found in 114B1), Phase 114B2 (the production SmartSentinel
+  -> canonical DMonitor compatibility projection and publication path), AND
+  Phase 114C (server-derived desired-vs-observed placement convergence/drift
+  interpretation -- see "Server ingestion (Phase 114B1)", "114B1.1
+  correctness closure", "SmartSentinel compatibility bridge (Phase 114B2)",
+  and "Derived convergence/drift interpretation (Phase 114C)" below).
+  Readiness/`any_element` feed integration (114D) and live multinode
+  validation (114E) are explicitly deferred to later phases and are not
+  implemented by this ADR.
 - Scope: the canonical `datum.dmonitor-observation/1` wire contract that
   represents a single piece of DATUM-native, DATUM-owned observed-runtime
   evidence, and the authority boundary between it and every existing
@@ -604,6 +605,281 @@ existing DServer `/api/v1/snapshots`/`/api/v1/sentinels/*` routes remain
 exactly as they were before this phase -- SmartSentinel has not been
 deleted, renamed, or replaced.
 
+## Derived convergence/drift interpretation (Phase 114C)
+
+`DMap`/`DForward`/etc. remain the ONE authority for what SHOULD exist.
+`DMonitor` remains evidence of what WAS OBSERVED. Phase 114C ONLY compares
+them, in a new pure module (`dserver::core::dmonitor_interpretation`) that
+grants DMonitor no desired-state authority, produces no placement decision,
+and performs no host/reconciliation action.
+
+**Derived, never persisted.** Every result type
+(`DMonitorApplicationConvergenceV1`, `DMonitorServicePlacementConvergenceV1`,
+...) is a READ MODEL computed on demand from three explicit inputs: the
+current active `PlacementAuthorityView` (via the ONE shared
+`ddeploy::active_placement_authority` -- never `active_by_application`/
+`phase113_v2.active` read independently), the current persisted
+`DMonitorStateV1`, and an explicit `DMonitorFreshnessPolicyV1` + evaluation
+time. Nothing is written back to `storage::control_state` or any other
+persistence layer: desired authority can change, evidence ages, policy can
+change, and evaluation time advances, so persisting a convergence boolean
+would immediately create another staleness problem of its own.
+
+**Four separate dimensions, never collapsed.** Freshness (is the evidence
+recent enough to trust right now), authority correlation (does the
+evidence's own `dmap_ref` exactly match CURRENT authority), placement
+convergence (does admitted evidence prove the desired placement is what is
+actually running), and observed health (what the collector believed about
+the subject's own health) are kept structurally independent. `Fresh !=
+Healthy`, `Healthy != Converged`, `Converged != Ready`, and `Diverged` does
+not necessarily imply `Unhealthy` -- proven directly by
+`exact_placement_with_unhealthy_health_still_converges`/
+`exact_placement_with_degraded_health_still_converges`: a DMap may correctly
+place a service on a node while that service happens to be currently
+unhealthy.
+
+**Reason codes.** The main convergence state is a small closed
+`DMonitorConvergenceV1::{Converged, Diverged, Unknown}`; every "why" is a
+stable string finding code kept separate from that state:
+`exact_match`, `no_evidence`, `stale_evidence`, `clock_skew`,
+`authority_ref_missing`, `authority_mismatch`, `wrong_node`,
+`unexpected_realization`, `conflicting_fresh_evidence`,
+`no_active_placement_authority`, `no_desired_placements`,
+`insufficient_canonical_correlation`.
+
+**Active authority source.** Every D-Serv comparison reads ONLY
+`PlacementAuthorityView`'s shared fields (`dmap_id`/`revision`/`digest`/
+`placements`), never anything `v2`-specific -- `datum.dmap/1` and
+`datum.dmap/2` active authority are compared identically, with no
+DMap1/DMap2 fork in this module at all (proven by
+`dmap1_exact_ref_correct_node_fresh_is_converged`/
+`dmap2_exact_ref_correct_node_fresh_is_converged` sharing the exact same
+assertions against the same evaluator).
+
+**Freshness precedence.** Freshness qualification happens BEFORE
+authority-correlation evidence can prove CURRENT convergence. Stale or
+clock-skew-invalid evidence remains historically valid (never deleted,
+never rejected from persistence) but cannot prove `Converged` -- if the
+only relevant evidence is stale/clock-skew-invalid, the result is `Unknown`
+(with `stale_evidence`/`clock_skew` findings), NEVER `Diverged`: absence of
+current proof is not proof of drift.
+
+**Exact D-Map correlation, never "helpful" matching.** A `DServRealization`
+observation with no `dmap_ref` cannot prove convergence
+(`authority_ref_missing`). A fresh observation whose `dmap_ref` does not
+EXACTLY match current `{id, revision, digest}` -- wrong revision, or the
+same id/revision with a different digest -- is `authority_mismatch`, never
+"helpfully" treated as current-authority evidence merely because
+service_id/node_id agree.
+
+**Wrong-node / unexpected-realization / conflicting-evidence semantics.**
+The evaluator scans ALL relevant `DServRealization` evidence for
+`(project_id, application_id, service_id)` across every observed node, not
+merely a lookup keyed by the desired node (`latest_dserv_realizations_per_stream`,
+which replicates `dmonitor_state`'s own "latest per exact subject per
+stream" rule directly against the typed subject enum, since
+`subject_key`/`subject_candidates` require an exact node up front and
+therefore cannot discover realizations of the same service on a DIFFERENT
+node). Given the admitted (fresh + exact-authority-match) evidence set:
+evidence only on the desired node -> `Converged`
+(`exact_match`); evidence only on ONE other node -> `Diverged`
+(`wrong_node`); evidence on the desired node AND an extra other node ->
+`Diverged` (`unexpected_realization`); evidence on TWO OR MORE different
+non-desired nodes with none on the desired node -> `Diverged`
+(`conflicting_fresh_evidence` -- this project's precise, documented
+definition of "materially conflicting" for 114C). No admitted evidence at
+all -> `Unknown`, with every distinct exclusion reason actually observed
+among the excluded evidence (in priority order:
+`authority_ref_missing`/`authority_mismatch`/`clock_skew`/`stale_evidence`),
+or `no_evidence` if nothing relevant exists at all.
+
+**No implicit monitor leader.** Multiple monitor streams reporting on the
+same subject are each evaluated independently -- "latest received wins" is
+never used as an implicit leader election. A stale stream never vetoes a
+fresh stream's proof (`fresh_good_evidence_is_not_vetoed_by_stale_conflicting_evidence`);
+two agreeing fresh streams both support the same result
+(`two_fresh_agreeing_streams_are_converged`); health disagreement between
+monitor instances is preserved in `observed_health_claims` but never alters
+`convergence` (`health_disagreement_does_not_alter_placement_convergence`,
+and no health-majority vote is ever computed).
+
+**Application-level aggregation.** `Diverged` beats `Unknown` beats
+`Converged`: if any desired service is positively proven divergent, the
+application is `Diverged`; else if any required service cannot be proven
+(missing/stale/insufficient evidence), `Unknown`; only if every desired
+service is `Converged` is the application `Converged`. An application with
+ZERO desired D-Serv placements is explicitly `Unknown`
+(`no_desired_placements`) -- `all([]) == true` is deliberately NOT treated
+as operational convergence.
+
+**No active authority / historical evidence.** A project/application with
+no active accepted placement authority at all yields `Unknown`
+(`no_active_placement_authority`), never `Diverged` -- this is absence of
+desired deployment authority, not runtime drift. Historical DMonitor
+evidence correlated to an old D-Map revision remains fully persisted and
+inspectable, but fresh evidence correlated to an old revision still cannot
+prove CURRENT convergence -- exposed as `authority_mismatch`, never treated
+as corrupted evidence and never deleted.
+
+**Current SmartSentinel D-Serv-evidence limitation (documented honestly).**
+Phase 114B2 deliberately does not manufacture `DServRealization` from
+container/process/image names or ports (there is no exact
+`project_id`/`application_id`/`service_id` correlation available from that
+source). A normal SmartSentinel-only deployment therefore currently has
+ZERO canonical `DServRealization` evidence, and the correct 114C result is
+`Unknown`/`no_evidence` -- this module never falls back to `RuntimeProcess`
+or `Unbound` observations to infer D-Serv convergence. Producing real
+`DServRealization` evidence is a future collector's job, not 114C's.
+
+**DIoT correlation capability/limitation (audit finding).**
+`DMonitorSubjectV1::DIoTRealization` (`{project_id, application_id,
+dforward_ref: Option<ContractRef>, diot_placement_id: Option<String>}`) was
+audited against what exact current DMap/2 realization placement proof would
+require, and found INSUFFICIENT on three independent counts: (1) no observed
+node field at all (unlike `DServRealization`, which carries its own
+`node_id` -- the observation's own top-level `node_id`, the OBSERVER's
+identity, is not a safe substitute, since nothing guarantees the observing
+collector and the DIoT realization it reports on run on the same node); (2)
+no D-Map/2 reference at all (only `dforward_ref` -- DForward-authority
+correlation is not DMap/2 revision/digest correlation); (3) no reference to
+Phase 113B1's existing `DIoTRuntimeBindingV1` runtime-binding authority
+(`binding_id`/`binding_revision`/`descriptor_digest` -- a separate,
+already-existing operational authority for "which broker does this
+placement currently resolve to" that `DIoTRealization` does not reference at
+all). `evaluate_diot_placement_convergence` therefore ALWAYS returns
+`Unknown`/`insufficient_canonical_correlation`, proven even for a
+hypothetically ideal `dforward_ref` match
+(`diot_convergence_never_returns_converged_even_with_a_hypothetically_perfect_dforward_match`).
+This is a documented, tested, deliberate Phase 114C outcome -- the canonical
+`datum.dmonitor-observation/1` schema was NOT widened in this pass to
+improvise a fix; if DIoT placement convergence is wanted, it requires a
+reviewed schema-enrichment decision (adding an observed node field, a
+`dmap_ref`, and/or a runtime-binding reference to `DIoTRealization`) that
+this ADR explicitly defers rather than pre-empts.
+
+**D-Code/D-Call kept out of scope.** `DCodeExecution` and `DCallDelivery`
+evidence is valuable execution/delivery evidence with distinct semantics
+from D-Serv placement: a successful D-Call does not prove every desired
+service is converged, and a D-Code invocation does not replace D-Map
+placement authority. Neither is consumed by
+`evaluate_application_dserv_convergence` in 114C.
+
+**API.** `POST /api/v1/dmonitor/convergence/:project_id/:application_id/evaluate`
+(`dserver::api::dmonitor_convergence`), matching this project's established
+`:project_id`-in-path convention. `POST` despite being read-only because the
+request body carries an explicit, per-request DIAGNOSTIC freshness policy
+(`max_observed_age_seconds`/`max_received_age_seconds`/
+`max_future_clock_skew_seconds`, strict `deny_unknown_fields`, no
+`evaluated_at_utc` accepted -- the server generates it from `Utc::now()`).
+The policy is validated (`validate_freshness_policy`, rejecting any bound
+exceeding `i64::MAX` -- a `u64` value beyond that silently two's-complement-
+wraps to negative when cast to `i64` inside `evaluate_freshness`, which
+would otherwise make `max_future_clock_skew_seconds: u64::MAX` spuriously
+classify nearly every real evaluation as `ClockSkew`) BEFORE any lock is
+acquired. Lock order: `DDEPLOY_TRANSACTION -> DMONITOR_TRANSACTION`,
+extending the established chain; no D-Node/D-Call/D-IoT-runtime-binding lock
+is acquired (neither domain's state is read). This is 114C's diagnostic
+policy only -- 114D will define the server-owned GOVERNANCE consumption
+policy for readiness, which is not the same thing and is not implemented
+here.
+
+**Deferred to 114D/114E:** readiness decisions, `any_element` selection,
+placement eligibility changes, mutation authorization, reconciliation,
+restart/redeploy action, automatic correction, retention/pruning, AI/GNN
+policy, live multinode validation, health-majority election, monitor leader
+election.
+
+**DIoT correlation gap: standing blocker for 114D.** The DIoT-placement
+correlation gap documented above (no observed node field, no D-Map/2
+reference, no runtime-binding-authority reference on
+`DMonitorSubjectV1::DIoTRealization`) is NOT a blocker for closing D-Serv
+convergence in 114C -- D-Serv placement convergence is fully derivable and
+implemented independently of it. It IS, however, a standing blocker that
+**must be resolved before Phase 114D can claim any DMonitor-backed
+`any_element` readiness signal for a DIoT-realized dependency**: 114D cannot
+honestly report "this DIoT placement is ready" from evidence that cannot
+prove which node it runs on or which D-Map/2 revision it belongs to. This
+gap remains open and tracked here, not silently carried forward.
+
+### Phase 114C.1 closure audit
+
+An independent review of the 114C implementation found and fixed one real
+architectural gap, plus resolved an inventory-count discrepancy.
+
+**1. Finding-code inventory: 13, not 12 (report-only mismatch, not a code
+defect).** The Phase 114C final report's prose summary said "12 stable
+string codes" while actually listing (and the implementation actually
+declaring) 13: the summary undercounted its own list by one. All 13 were
+already consistent across the implementation, this ADR, and the test suite;
+`dmonitor_interpretation::ALL_FINDING_CODES` now exists as the single
+authoritative inventory, with a test
+(`finding_code_inventory_has_exactly_thirteen_stable_codes`) asserting its
+exact size and uniqueness so this can never again silently drift between
+code and prose. `FINDING_UNSUPPORTED_SUBJECT_EVIDENCE` was kept (never
+removed merely to make the count round): it is declared but not currently
+emitted by any code path (both `evaluate_service_placement` and the
+unexpected-realization scan only ever receive records already filtered to
+`DServRealization`), reserved for a future generalization of this module
+across multiple subject kinds.
+
+**2. Unexpected `service_id` detection (real defect, fixed).** The original
+114C `evaluate_application_dserv_convergence` only ever asked, per DESIRED
+service, "does evidence exist for this exact service?" -- it had no way to
+discover a fresh, exact-authority-matching `DServRealization` for a
+`service_id` that has NO desired placement in the active D-Map at all
+(`latest_dserv_realizations_per_stream` was parameterized by a single,
+already-known `service_id`). A deployment with a correctly-placed desired
+service AND a fresh, exact-authority-matching realization of a completely
+different, undesired service would have been reported `Converged` --
+"every desired service has one correct observation" is not the same claim
+as "nothing unexpected is running." Fixed: the single-service enumeration
+was replaced by `latest_dserv_realizations_for_application` (scans the
+WHOLE project/application, grouped by `service_id` afterward), and a new
+`unexpected_realizations: Vec<DMonitorUnexpectedServiceEvidenceV1>` field on
+`DMonitorApplicationConvergenceV1` carries evidence for every `service_id`
+absent from the desired set. A PROVEN (admitted, i.e. fresh +
+exact-authority-matching) unexpected realization escalates the application
+to `Diverged` with `unexpected_realization`, regardless of how the desired
+services fared; a stale or old-D-Map-correlated unexpected observation is
+preserved as excluded evidence but never escalates convergence (mirroring
+the exact same freshness-precedence rule already established for desired
+services). `wrong_node` (a DESIRED service observed on the wrong node) and
+`unexpected_realization` (a service with no desired placement at all) are
+kept structurally distinct -- proven directly by
+`wrong_node_desired_service_is_distinct_from_unexpected_service_id`.
+
+**3. Zero-desired-placements edge case, corrected.** Section 18's original
+`no_desired_placements`/`Unknown` result for an application with zero
+desired D-Serv placements is still correct when there is also no
+current/fresh evidence at all. But a zero-desired-placement application
+with a FRESH, exact-authority-matching `DServRealization` for some service
+is now correctly `Diverged`/`unexpected_realization` rather than
+`Unknown`/`no_desired_placements` -- every currently-running realization is,
+by definition, unexpected when nothing at all is desired. Zero desired
+placements plus only stale/historical evidence remains `Unknown` (never
+`Diverged`), consistent with the freshness-precedence rule.
+
+**4. A second, related latent defect discovered and fixed while
+implementing the above.** The original per-service evidence scan
+(`latest_dserv_realizations_per_stream`) tracked only ONE "latest for this
+stream" value per `service_id`, overwriting it on every match regardless of
+the observed `node_id`. Since a `DServRealization` subject's canonical
+identity includes `node_id` (two different nodes realizing the "same"
+service are two DIFFERENT subjects, not one subject whose value changed),
+a single stream reporting the same service on two different nodes,
+interleaved, would have silently discarded the earlier node's observation
+the moment the later node's observation was seen -- even though Phase
+114B1.1 already established that a stream's "latest per subject" tracking
+must be per EXACT subject, not per some coarser grouping. Fixed as part of
+the `latest_dserv_realizations_for_application` rewrite, which now keys its
+per-stream "latest" map by the full `(service_id, node_id)` pair -- proven
+directly by
+`same_service_two_different_nodes_within_one_stream_are_both_tracked`. This
+was a real gap in the original implementation, not a hypothetical one: it
+would have caused a genuine wrong-node/unexpected-realization false
+negative for any stream (a central control-plane collector, for instance)
+that ever reported on the same service across more than one node.
+
 ## Migration posture for the legacy SmartSentinel model
 
 This ADR does not migrate or remove any existing SmartSentinel code path.
@@ -643,10 +919,13 @@ authority over this decision and is not a migration source.
   against a real DServer process (`b1_b2_integration_proof`) -- see
   "SmartSentinel compatibility bridge (Phase 114B2)" above. No other
   SmartSentinel binary/output was touched.
-- No drift/convergence computation exists yet. An observation that
-  contradicts active DMap/DForward authority is representable (it is just
-  an observation), but nothing yet derives or flags that contradiction --
-  114C's job.
+- D-Serv placement drift/convergence is now derivable, read-only, from
+  `dserver::core::dmonitor_interpretation::evaluate_application_dserv_convergence`
+  -- see "Derived convergence/drift interpretation (Phase 114C)" above. DIoT
+  placement convergence remains provably impossible from the current
+  `DIoTRealization` subject shape (audited, documented, tested fail-closed);
+  D-Code/D-Call evidence remains deliberately out of scope for placement
+  convergence.
 - No readiness/`any_element` feed integration exists yet -- 114D's job.
 - No live multinode validation of this model exists yet -- 114E's job, and
   per this project's established evidentiary discipline (see the Phase 113B
