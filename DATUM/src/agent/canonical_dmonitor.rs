@@ -68,8 +68,17 @@ pub struct CanonicalDMonitorObservationV1 {
 
     /// Identifies WHICH monitor process/instance produced this observation
     /// (distinct from `node_id`: a single DNode could in principle run more
-    /// than one monitor instance, and a monitor instance's own restarts are
-    /// visible via this staying constant while `sequence` resets or jumps).
+    /// than one monitor instance). `monitor_instance_id` identifies one
+    /// monotonic SEQUENCE EPOCH (Phase 114B1.1 closure): `sequence` is
+    /// monotonic for as long as `monitor_instance_id` stays the same, and a
+    /// monitor process that restarts while PRESERVING its own
+    /// `monitor_instance_id` must also preserve/continue its own sequence
+    /// counter -- resetting to a lower sequence under the SAME
+    /// `monitor_instance_id` is stale/out-of-order, never a fresh epoch.
+    /// Only adopting a genuinely NEW `monitor_instance_id` legitimately
+    /// starts a new sequence (typically at 1); see
+    /// `dserver::core::dmonitor_state`'s ingestion rules, which enforce this
+    /// exactly.
     pub monitor_instance_id: String,
 
     /// 1-based, monotonically increasing per `monitor_instance_id`. A
@@ -302,6 +311,31 @@ impl CanonicalDMonitorObservationV1 {
 
         findings.extend(self.subject.validate());
 
+        // Phase 114B1.1 closure (section 2): a project-bearing subject can
+        // never coexist with a contradictory or absent top-level
+        // `project_id`. This is enforced HERE, in the canonical artifact's
+        // own validator -- never left for a consumer's request-scoped
+        // project isolation (e.g. DServer's ingestion path) to paper over,
+        // since a self-contradictory canonical artifact must be rejected
+        // regardless of which project scope it is later submitted under.
+        if let Some(subject_project_id) = self.subject.project_id() {
+            match &self.project_id {
+                Some(top_level) if top_level == subject_project_id => {}
+                Some(top_level) => findings.push(finding(
+                    "subject_project_id_inconsistent",
+                    format!(
+                        "observation.project_id '{top_level}' does not match subject.project_id '{subject_project_id}'"
+                    ),
+                )),
+                None => findings.push(finding(
+                    "subject_project_id_inconsistent",
+                    format!(
+                        "observation.project_id must be Some(\"{subject_project_id}\") to match the typed subject's project_id, got None"
+                    ),
+                )),
+            }
+        }
+
         // Fail-closed structural guard (section 14): `facts` must never
         // carry a `desired_state` key, at the top level or nested inside it.
         // This cannot happen through the typed fields above (none of them
@@ -329,6 +363,30 @@ impl CanonicalDMonitorObservationV1 {
 }
 
 impl DMonitorSubjectV1 {
+    /// The typed `project_id` this subject variant carries, if any (Phase
+    /// 114B1.1 closure, section 2). Only the four project-governed variants
+    /// (`DServRealization`, `DCodeExecution`, `DCallDelivery`,
+    /// `DIoTRealization`) carry one; `DNode`/`RuntimeProcess`/
+    /// `NetworkReachability`/`Unbound` have no project concept and always
+    /// return `None`. Used by `CanonicalDMonitorObservationV1::validate` to
+    /// enforce that the top-level `project_id` can never contradict a
+    /// project-bearing subject's own `project_id` -- this cannot be left to
+    /// a consumer (e.g. DServer's request-path project scope) to catch,
+    /// because the canonical artifact itself must never be internally
+    /// self-contradictory.
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            DMonitorSubjectV1::DServRealization { project_id, .. }
+            | DMonitorSubjectV1::DCodeExecution { project_id, .. }
+            | DMonitorSubjectV1::DCallDelivery { project_id, .. }
+            | DMonitorSubjectV1::DIoTRealization { project_id, .. } => Some(project_id.as_str()),
+            DMonitorSubjectV1::DNode { .. }
+            | DMonitorSubjectV1::RuntimeProcess { .. }
+            | DMonitorSubjectV1::NetworkReachability { .. }
+            | DMonitorSubjectV1::Unbound { .. } => None,
+        }
+    }
+
     fn validate(&self) -> Vec<DMonitorValidationFinding> {
         let mut findings = Vec::new();
         let mut require = |label: &'static str, value: &str| {
@@ -553,6 +611,24 @@ mod tests {
         assert!(recompute_dmonitor_observation_digest(&observation).is_err());
     }
 
+    /// Golden vector (Phase 114B1): the DServer-side independent mirror
+    /// (`dserver::core::canonical_dmonitor`) must produce the EXACT SAME
+    /// digest for this identical fixture. The literal is hardcoded in BOTH
+    /// crates (mirrors `dcall_mqtt_topic.rs`'s established golden-vector
+    /// precedent) -- if either implementation's JCS canonicalization or
+    /// field mirroring ever silently drifts from the other, this test (or
+    /// its DServer-side twin `digest_matches_datum_golden_vector`) fails.
+    #[test]
+    fn digest_matches_dserver_golden_vector() {
+        let observation = minimal_dnode_observation();
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:1119cec82421ebf78e01cd947a956a251caf36e4309fce58b768edc3db542c7e",
+            "DATUM's canonical_dmonitor digest for the shared fixture must match DServer's golden vector exactly"
+        );
+    }
+
     #[test]
     fn digest_changes_when_any_field_changes() {
         let base = minimal_dnode_observation();
@@ -625,6 +701,7 @@ mod tests {
     #[test]
     fn dserv_realization_may_correlate_exactly_with_a_dmap_reference() {
         let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
         observation.subject = DMonitorSubjectV1::DServRealization {
             project_id: "proj:lab".to_string(),
             application_id: "app:pipeline".to_string(),
@@ -642,6 +719,7 @@ mod tests {
     #[test]
     fn malformed_dmap_reference_digest_is_rejected() {
         let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
         observation.subject = DMonitorSubjectV1::DServRealization {
             project_id: "proj:lab".to_string(),
             application_id: "app:pipeline".to_string(),
@@ -747,6 +825,7 @@ mod tests {
     fn dcode_execution_subject_references_evidence_by_digest_only() {
         let real_digest = crate::dcode::evidence::dcode_evidence_sha256(&sample_dcode_evidence());
         let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
         observation.subject = DMonitorSubjectV1::DCodeExecution {
             project_id: "proj:lab".to_string(),
             application_id: "app:pipeline".to_string(),
@@ -763,6 +842,220 @@ mod tests {
             }
             _ => panic!("expected DCodeExecution subject"),
         }
+    }
+
+    // ------------------------- PHASE 114B1.1 CLOSURE: CROSS-CRATE COVERAGE
+
+    /// Golden vector #2: `DServRealization` with `dmap_ref` PRESENT,
+    /// project-consistent, `Degraded` health. Extends cross-crate proof
+    /// beyond the single `DNode` case (golden #1) to a project-bearing
+    /// subject variant carrying an optional canonical ref.
+    #[test]
+    fn digest_matches_dserver_golden_vector_2_dserv_realization_with_dmap_ref() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.health = DMonitorHealthV1::Degraded;
+        observation.subject = DMonitorSubjectV1::DServRealization {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            service_id: "decoder".to_string(),
+            node_id: "cloud-01".to_string(),
+            dmap_ref: Some(DMonitorContractRefV1 {
+                id: "dmap:1".to_string(),
+                revision: 3,
+                digest: format!("sha256:{}", "a".repeat(64)),
+            }),
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:a7d1d6ce7e56eabe44656efab47c4d21a603503a902cd44f8b86be3123d0ab38",
+        );
+    }
+
+    /// Golden vector #3: `DCodeExecution` with `dcode_evidence_sha256`
+    /// PRESENT, project-consistent, `Unknown` health.
+    #[test]
+    fn digest_matches_dserver_golden_vector_3_dcode_execution_with_evidence() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.health = DMonitorHealthV1::Unknown;
+        observation.subject = DMonitorSubjectV1::DCodeExecution {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            service_id: "sensor".to_string(),
+            node_id: "fog-01".to_string(),
+            dcode_evidence_sha256: Some(format!("{}", "e".repeat(64))),
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:44be20b5f30d0bbbe1a09301499e43aa322c9913035a1474426a8c476dd2139e",
+        );
+    }
+
+    /// Golden vector #4: `DIoTRealization` with `dforward_ref` AND
+    /// `diot_placement_id` PRESENT, project-consistent, `Unhealthy` health.
+    #[test]
+    fn digest_matches_dserver_golden_vector_4_diot_realization_with_refs() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.health = DMonitorHealthV1::Unhealthy;
+        observation.subject = DMonitorSubjectV1::DIoTRealization {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            dforward_ref: Some(DMonitorContractRefV1 {
+                id: "dforward:1".to_string(),
+                revision: 2,
+                digest: format!("sha256:{}", "b".repeat(64)),
+            }),
+            diot_placement_id: Some("diotp:broker".to_string()),
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:20529ff5fa669c9a8c9fe4f47c49da44a2aa3f17bc6c35eec899f13e0e2d7067",
+        );
+    }
+
+    /// Golden vector #5: `Unbound` with `description` PRESENT, no project
+    /// (permitted for non-project-bearing subjects), `Healthy` health.
+    #[test]
+    fn digest_matches_dserver_golden_vector_5_unbound_with_description() {
+        let mut observation = minimal_dnode_observation();
+        observation.subject = DMonitorSubjectV1::Unbound {
+            node_id: "fog-01".to_string(),
+            description: Some("container discovered before correlation".to_string()),
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:847c0f899e8a7ca846d10e30978a769767789ed93c9eced064d2deb8295d98ab",
+        );
+    }
+
+    /// Table-driven round-trip coverage (compact, per the task's own
+    /// guidance -- not a golden digest per case) for the remaining
+    /// subject-variant shapes not already exercised by a golden vector
+    /// above: `RuntimeProcess`, `DCallDelivery` (evidence ABSENT), and
+    /// `NetworkReachability`, plus every `DMonitorHealthV1` value. Proves
+    /// each shape validates and serialization round-trips exactly --
+    /// self-consistency within this crate, complementing (not replacing)
+    /// the cross-crate golden vectors above.
+    #[test]
+    fn table_driven_remaining_subject_variants_and_all_health_values_round_trip() {
+        let subjects = vec![
+            DMonitorSubjectV1::RuntimeProcess {
+                node_id: "fog-01".to_string(),
+                runtime_ref: "container:abc123".to_string(),
+            },
+            DMonitorSubjectV1::DCallDelivery {
+                project_id: "proj:lab".to_string(),
+                application_id: "app:pipeline".to_string(),
+                call_id: "sensor-to-decoder".to_string(),
+                grant_id: None,
+                delivery_evidence_digest: None,
+            },
+            DMonitorSubjectV1::NetworkReachability {
+                node_id: "fog-01".to_string(),
+                target: "cloud-01:1883".to_string(),
+            },
+        ];
+        let health_values = [
+            DMonitorHealthV1::Unknown,
+            DMonitorHealthV1::Healthy,
+            DMonitorHealthV1::Degraded,
+            DMonitorHealthV1::Unhealthy,
+        ];
+        for subject in subjects {
+            for &health in &health_values {
+                let mut observation = minimal_dnode_observation();
+                if let Some(project_id) = subject.project_id() {
+                    observation.project_id = Some(project_id.to_string());
+                }
+                observation.subject = subject.clone();
+                observation.health = health;
+                assert!(observation.validate().is_empty(), "{:?} / {:?}: {:?}", subject, health, observation.validate());
+                let json_text = serde_json::to_string(&observation).unwrap();
+                let restored: CanonicalDMonitorObservationV1 = serde_json::from_str(&json_text).unwrap();
+                assert_eq!(observation, restored);
+                assert!(recompute_dmonitor_observation_digest(&observation).is_ok());
+            }
+        }
+    }
+
+    // ---------------------------------------------- PHASE 114B1.1 CLOSURE
+
+    /// Section 2: a project-bearing subject with a top-level `project_id`
+    /// naming a DIFFERENT project is a self-contradictory canonical
+    /// artifact and must be rejected by the artifact's OWN validator, never
+    /// left for a later consumer's request-scoped project isolation to
+    /// catch.
+    #[test]
+    fn subject_project_id_mismatch_against_top_level_is_rejected() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("project-a".to_string());
+        observation.subject = DMonitorSubjectV1::DCallDelivery {
+            project_id: "project-b".to_string(),
+            application_id: "app:pipeline".to_string(),
+            call_id: "sensor-to-decoder".to_string(),
+            grant_id: None,
+            delivery_evidence_digest: None,
+        };
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "subject_project_id_inconsistent"), "{findings:?}");
+    }
+
+    /// Same defect, but with the top-level `project_id` absent entirely
+    /// rather than merely wrong -- `None` is not a safe default when the
+    /// subject itself claims a project.
+    #[test]
+    fn subject_project_id_present_with_top_level_none_is_rejected() {
+        let mut observation = minimal_dnode_observation();
+        assert!(observation.project_id.is_none());
+        observation.subject = DMonitorSubjectV1::DIoTRealization {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            dforward_ref: None,
+            diot_placement_id: None,
+        };
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "subject_project_id_inconsistent"), "{findings:?}");
+    }
+
+    /// The consistent case must remain valid: this is not a blanket ban on
+    /// project-bearing subjects, only on CONTRADICTORY ones.
+    #[test]
+    fn subject_project_id_matching_top_level_is_accepted() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.subject = DMonitorSubjectV1::DCallDelivery {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            call_id: "sensor-to-decoder".to_string(),
+            grant_id: None,
+            delivery_evidence_digest: None,
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+    }
+
+    /// Non-project-bearing subjects (`DNode`, `RuntimeProcess`,
+    /// `NetworkReachability`, `Unbound`) never trigger this rule -- their
+    /// `project_id()` is always `None`, so a host-level observation with no
+    /// project at all remains legal exactly as ADR-0024 originally intended.
+    #[test]
+    fn non_project_bearing_subjects_permit_top_level_project_id_none() {
+        let mut observation = minimal_dnode_observation();
+        assert!(observation.project_id.is_none());
+        observation.subject = DMonitorSubjectV1::NetworkReachability {
+            node_id: "fog-01".to_string(),
+            target: "cloud-01:1883".to_string(),
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
     }
 
     fn sample_dcode_evidence() -> crate::dcode::evidence::DCodeInvocationEvidenceV1 {

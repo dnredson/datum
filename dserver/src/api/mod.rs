@@ -25,6 +25,7 @@ pub mod dgraph_rollback_audit;
 pub mod diot_runtime_binding;
 pub mod dispatch;
 pub mod dmap;
+pub mod dmonitor;
 pub mod dnode_registry;
 pub mod events;
 pub mod external_ai_inference;

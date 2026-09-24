@@ -60,6 +60,10 @@ use api::diot_runtime_binding::{
 };
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
+use api::dmonitor::{
+    get_dmonitor_observation_by_id, get_dmonitor_stream_head, list_dmonitor_stream_heads,
+    post_dmonitor_observation,
+};
 use api::dnode_registry::{
     delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode,
 };
@@ -450,6 +454,10 @@ async fn main() {
         .route("/api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id", get(get_diot_runtime_binding))
         .route("/api/v1/diot/runtime-bindings/:project_id/:application_id/:placement_id/current", get(get_diot_runtime_binding_current))
         .route("/api/v1/dcontinuum/authoritative", get(get_authoritative_dcontinuum))
+        .route("/api/v1/dmonitor/observations/:project_id", post(post_dmonitor_observation))
+        .route("/api/v1/dmonitor/observations/:project_id/streams", get(list_dmonitor_stream_heads))
+        .route("/api/v1/dmonitor/observations/:project_id/by-id/:observation_id", get(get_dmonitor_observation_by_id))
+        .route("/api/v1/dmonitor/observations/:project_id/:node_id/:monitor_instance_id/head", get(get_dmonitor_stream_head))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
             "/api/v1/action-plan/materialized",

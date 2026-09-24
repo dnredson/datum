@@ -73,6 +73,15 @@ pub const DOMAIN_DCALL_GRANT_STATE: &str = "dcall_grant_state";
 /// MQTT network I/O is implemented against this domain yet; it exists purely
 /// to make the governed binding identity durable ahead of that closure.
 pub const DOMAIN_DIOT_RUNTIME_BINDING_REGISTRY: &str = "diot_runtime_binding_registry";
+/// DMonitor observation ingestion state (Phase 114B1, ADR-0024): server-owned
+/// durable storage of ACCEPTED canonical `datum.dmonitor-observation/1`
+/// evidence -- per-stream ordering/idempotency heads, an `observation_id`
+/// identity index, and a typed-subject index. Deliberately a SEPARATE domain
+/// from every desired-state/placement domain above: DMonitor state is
+/// observed evidence only, never authority (see `core::dmonitor_state`'s
+/// module doc for the full boundary rationale). v1 retains every accepted
+/// observation indefinitely -- retention/pruning is explicitly deferred.
+pub const DOMAIN_DMONITOR_STATE: &str = "dmonitor_state";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlStateHistoryEntry {
