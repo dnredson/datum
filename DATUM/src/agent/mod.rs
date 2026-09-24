@@ -7,6 +7,7 @@ pub mod canonical_dmap_v2;
 pub mod canonical_dmonitor;
 pub mod discovery;
 pub mod discovery_collectors;
+pub mod dmonitor_projection;
 pub mod execution_projection;
 pub mod image_identity_verification;
 pub mod integrated_service_evidence;

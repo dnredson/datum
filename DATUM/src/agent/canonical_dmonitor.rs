@@ -536,7 +536,12 @@ fn json_numbers_are_finite(value: &Value) -> bool {
 /// `DATUM/src/core/plugins/service_builder.rs` produces on every legacy
 /// `service` entity today, so this is a real smuggling path, not a
 /// hypothetical one.
-fn facts_contain_desired_state_key(value: &Value) -> bool {
+///
+/// `pub(crate)` (Phase 114B2): `agent::dmonitor_projection`'s own test suite
+/// reuses this exact scan as a self-check that its projected `facts` never
+/// carry `desired_state`, rather than only relying on `validate()` to catch
+/// it indirectly -- the same function, not a second implementation.
+pub(crate) fn facts_contain_desired_state_key(value: &Value) -> bool {
     match value {
         Value::Object(map) => {
             map.contains_key("desired_state") || map.values().any(facts_contain_desired_state_key)

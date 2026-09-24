@@ -3,11 +3,15 @@ use std::{fs, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use datum::config::load_config;
+use datum::agent::dmonitor_projection::{
+    project_telemetry_to_dmonitor_observations, DMonitorProjectionContext,
+};
 use datum::agent::service_loop::{run_service_loop, ServiceLoopOptions};
-use datum::core::cycle::run_cycle_for_node_identity;
+use datum::core::cycle::{run_cycle_for_node_identity, run_observation_only_cycle_for_node_identity};
+use datum::outputs::dmonitor_http::DMonitorHttpOutput;
 use datum::outputs::http_json::HttpJsonOutput;
 use datum::outputs::telemetry_http::TelemetryHttpOutput;
-use datum::telemetry::{attach_host_telemetry_with_peers, write_telemetry_atomic};
+use datum::telemetry::{attach_host_telemetry_with_peers, build_host_telemetry, write_telemetry_atomic};
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-observe")]
@@ -155,18 +159,63 @@ fn main() -> Result<()> {
 
     let telemetry_output = TelemetryHttpOutput::new(
         format!("{}/api/v1/sentinels/{}/telemetry", base_url, snapshot.meta.node_id),
-        project_id,
+        project_id.clone(),
         args.timeout_s,
     )?;
     telemetry_output.emit(&telemetry)?;
 
+    // ---- DMonitor canonical projection/publication (Phase 114B2) ----
+    // An ADDITIONAL output path alongside the legacy snapshot/telemetry
+    // publication above -- never a replacement. Deliberately sourced from a
+    // SEPARATE, structurally read-only collection
+    // (`run_observation_only_cycle_for_node_identity`, section 9) rather
+    // than the `snapshot`/`telemetry` already built above: that snapshot was
+    // produced by `run_cycle_for_node_identity`, whose plugin list
+    // unconditionally includes `DesiredStatePlannerPlugin`/
+    // `RecoveryPlannerPlugin`/`ActionExecutorPlugin` (each internally
+    // config-gated, not structurally absent) -- the DMonitor-compatible path
+    // must not depend on that config gate. One NEW DMonitor process epoch is
+    // created per one-shot invocation (section 21): a later invocation gets
+    // a new `monitor_instance_id` and begins again at sequence 1.
+    let dmonitor_report = {
+        let observation_snapshot = run_observation_only_cycle_for_node_identity(
+            &node_id,
+            args.hostname.as_deref(),
+            &cfg.agent.schema_version,
+            &cfg,
+        )
+        .map_err(|error| anyhow::anyhow!("DMonitor observation-only collection failed: {error}"))?;
+        let observation_telemetry = build_host_telemetry(&observation_snapshot, None, 1)
+            .map_err(|error| anyhow::anyhow!("build DMonitor-source telemetry: {error}"))?;
+        let mut dmonitor_context = DMonitorProjectionContext::new_process_epoch(&node_id);
+        let dmonitor_observations =
+            project_telemetry_to_dmonitor_observations(&observation_telemetry, &mut dmonitor_context)
+                .map_err(|error| anyhow::anyhow!("project DMonitor observations: {error}"))?;
+        let dmonitor_payloads: Vec<(String, serde_json::Value)> = dmonitor_observations
+            .iter()
+            .map(|observation| {
+                serde_json::to_value(observation)
+                    .map(|value| (observation.observation_id.clone(), value))
+                    .map_err(|error| anyhow::anyhow!("serialize DMonitor observation: {error}"))
+            })
+            .collect::<Result<_>>()?;
+        let dmonitor_output =
+            DMonitorHttpOutput::new(base_url.to_string(), project_id, args.timeout_s)?;
+        dmonitor_output.publish_all(&dmonitor_payloads)
+    };
+
     println!(
-        "mode=smartsentinel-observe status=ok node_id={} cycle_id={} entities={} edges={} events={} actions=0 side_effects_performed=false snapshot_published=true telemetry_published=true out={}",
+        "mode=smartsentinel-observe status=ok node_id={} cycle_id={} entities={} edges={} events={} actions=0 side_effects_performed=false snapshot_published=true telemetry_published=true dmonitor_accepted={} dmonitor_idempotent_replay={} dmonitor_failed={} dmonitor_not_attempted={} dmonitor_published={} out={}",
         snapshot.meta.node_id,
         snapshot.meta.cycle_id,
         snapshot.entities.len(),
         snapshot.edges.len(),
         snapshot.events.len(),
+        dmonitor_report.accepted.len(),
+        dmonitor_report.idempotent_replay.len(),
+        dmonitor_report.failed.is_some(),
+        dmonitor_report.not_attempted.len(),
+        dmonitor_report.is_fully_successful(),
         args.out
     );
 

@@ -12,10 +12,14 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use serde_json::json;
 
+use crate::agent::dmonitor_projection::{
+    project_telemetry_to_dmonitor_observations, DMonitorProjectionContext,
+};
 use crate::config::{self, FileJsonConfig};
-use crate::core::cycle::run_cycle_for_node_identity;
-use crate::telemetry::{attach_host_telemetry_with_peers, write_telemetry_atomic};
+use crate::core::cycle::{run_cycle_for_node_identity, run_observation_only_cycle_for_node_identity};
+use crate::telemetry::{attach_host_telemetry_with_peers, build_host_telemetry, write_telemetry_atomic};
 use crate::core::model::Snapshot;
+use crate::outputs::dmonitor_http::DMonitorHttpOutput;
 use crate::outputs::file_json::FileJsonOutput;
 use crate::outputs::http_json::HttpJsonOutput;
 use crate::outputs::telemetry_http::TelemetryHttpOutput;
@@ -230,6 +234,29 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         _ => None,
     };
 
+    // ---- DMonitor canonical projection/publication (Phase 114B2) ----
+    // Piggybacks on the SAME HTTP publishing configuration as the legacy
+    // outputs above (no separate DMonitor CLI/config surface) -- an
+    // ADDITIONAL output path, not a replacement. `dmonitor_context` is a
+    // single process-epoch identity created ONCE here, at service-loop
+    // startup, and reused for every collection for the lifetime of this
+    // process (section 20's explicit prohibition on creating a new
+    // `monitor_instance_id` per cycle); its sequence counter is therefore
+    // monotonic across the whole run.
+    let dmonitor_output = match (
+        http_output.as_ref(),
+        http_publish_url.as_deref(),
+        http_project_id.as_deref(),
+    ) {
+        (Some(_), Some(snapshot_url), Some(project_id)) => Some(DMonitorHttpOutput::new(
+            dserver_base_url(snapshot_url),
+            project_id.to_string(),
+            http_timeout_s,
+        )?),
+        _ => None,
+    };
+    let mut dmonitor_context = DMonitorProjectionContext::new_process_epoch(&node_id);
+
     let started_at_utc = Utc::now();
     let started_at = Instant::now();
     let shutdown_signal = Arc::new(AtomicU8::new(SHUTDOWN_NONE));
@@ -247,7 +274,7 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     );
 
     println!(
-        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} telemetry_http_json={} mutations=disabled",
+        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} telemetry_http_json={} dmonitor_json={} dmonitor_monitor_instance_id={} mutations=disabled",
         node_id,
         cycle_s,
         options.heartbeat_s,
@@ -255,7 +282,9 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         instance_lock_path.display(),
         if file_output.is_some() { "enabled" } else { "disabled" },
         if http_output.is_some() { "enabled" } else { "disabled" },
-        if telemetry_http_output.is_some() { "enabled" } else { "disabled" }
+        if telemetry_http_output.is_some() { "enabled" } else { "disabled" },
+        if dmonitor_output.is_some() { "enabled" } else { "disabled" },
+        dmonitor_context.monitor_instance_id()
     );
 
     let mut collection_sequence = 0u64;
@@ -349,6 +378,56 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                     None => out_status.push("telemetry_http=disabled".to_string()),
                 }
 
+                // Separate, structurally read-only DMonitor-source
+                // collection (section 9) -- never reuses `snapshot`/
+                // `telemetry` above, which came from `run_cycle_for_node_identity`
+                // (unconditionally including the planning/recovery/execution
+                // plugins, even though this loop's own `cfg` mutation at
+                // startup disables them internally). `dmonitor_context` is
+                // NOT reset here: it is the same context created once at
+                // service-loop startup, so its sequence keeps advancing
+                // across every cycle (section 20).
+                match run_observation_only_cycle_for_node_identity(
+                    &node_id,
+                    hostname.as_deref(),
+                    &cfg.agent.schema_version,
+                    &cfg,
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|observation_snapshot| build_host_telemetry(&observation_snapshot, None, 1))
+                {
+                    Ok(observation_telemetry) => {
+                        match project_telemetry_to_dmonitor_observations(
+                            &observation_telemetry,
+                            &mut dmonitor_context,
+                        ) {
+                            Ok(observations) => match &dmonitor_output {
+                                Some(out) => {
+                                    let payloads: Vec<(String, serde_json::Value)> = observations
+                                        .iter()
+                                        .filter_map(|observation| {
+                                            serde_json::to_value(observation)
+                                                .ok()
+                                                .map(|value| (observation.observation_id.clone(), value))
+                                        })
+                                        .collect();
+                                    let report = out.publish_all(&payloads);
+                                    out_status.push(format!(
+                                        "dmonitor=ok(accepted={},idempotent_replay={},failed={},not_attempted={})",
+                                        report.accepted.len(),
+                                        report.idempotent_replay.len(),
+                                        report.failed.is_some(),
+                                        report.not_attempted.len()
+                                    ));
+                                }
+                                None => out_status.push("dmonitor=disabled".to_string()),
+                            },
+                            Err(error) => out_status.push(format!("dmonitor=err(projection:{error})")),
+                        }
+                    }
+                    Err(error) => out_status.push(format!("dmonitor=err(collection:{error})")),
+                }
+
                 if let Some(path) = &options.telemetry_out_override {
                     match write_telemetry_atomic(path, &telemetry) {
                         Ok(_) => out_status.push("telemetry_json=ok".to_string()),
@@ -430,13 +509,17 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     Ok(())
 }
 
-fn telemetry_publish_url(snapshot_url: &str, node_id: &str) -> String {
+fn dserver_base_url(snapshot_url: &str) -> String {
     let snapshot_url = snapshot_url.trim_end_matches('/');
-    let base = snapshot_url
+    snapshot_url
         .strip_suffix("/api/v1/snapshots")
         .unwrap_or(snapshot_url)
-        .trim_end_matches('/');
-    format!("{}/api/v1/sentinels/{}/telemetry", base, node_id)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn telemetry_publish_url(snapshot_url: &str, node_id: &str) -> String {
+    format!("{}/api/v1/sentinels/{}/telemetry", dserver_base_url(snapshot_url), node_id)
 }
 
 fn install_ctrlc_handler(shutdown_signal: Arc<AtomicU8>) -> Result<()> {
