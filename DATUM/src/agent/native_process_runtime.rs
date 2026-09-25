@@ -685,6 +685,24 @@ pub fn missing_artifact_assignment_report(service: &OperationalDesiredService) -
 /// exactly once per `NativeProcess`-dispatched desired service, with
 /// `assignment` guaranteed `Some` by the caller (the missing-assignment
 /// case is handled separately, before this is ever reached).
+///
+/// Phase 115H (post-Phase-115-closure hardening, discovered live): `lease`/
+/// `effective_pinning_mode` are `None` together in EXACTLY one case --
+/// `resolve_stage107a_cycle_gate` returned `Err(reason)` for this cycle
+/// (missing/insufficient pinning mode, unconfigured required-mode clock
+/// skew, mismatched resource identity, or an invalid/expired lease).
+/// `stage107a_gate_error` carries that EXACT reason, mirroring the pattern
+/// this crate's own Container-runtime path already establishes
+/// (`stage107a_service_block_before_image`'s `(Some(Err(reason)), _) =>
+/// Some(reason.clone())` arm) -- before this fix, the native-process path
+/// alone discarded it and substituted a generic, non-actionable message,
+/// which is exactly what made a live, correctly-fail-closed rejection
+/// (missing `dispatch.authorization_clock_skew_seconds` under
+/// `execution_pinning_mode = required`, ADR-0012 design-review finding 2)
+/// look like an unexplained architectural gap during Phase 115F. This is a
+/// diagnostics-only change: the BLOCKING decision itself was always
+/// correct and is completely unchanged; only the message now tells the
+/// operator WHY.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconcile_native_service(
     cfg: &Config,
@@ -693,6 +711,7 @@ pub(crate) fn reconcile_native_service(
     authorization: Option<&OperationalReconciliationAuthorization>,
     lease: Option<&LeaseGuard>,
     effective_pinning_mode: Option<&'static str>,
+    stage107a_gate_error: Option<&str>,
     boundary_context: &MutationBoundaryContext,
     service: &OperationalDesiredService,
     assignment: &OperationalArtifactAssignment,
@@ -773,7 +792,21 @@ pub(crate) fn reconcile_native_service(
                     (generation_err, completeness_err)
                 }
                 (_, _, _, Err(error)) => (Some(format!("blocked_projection_computation_failed: {error}")), None),
-                _ => (Some("blocked_authorization_not_leased: no valid Stage 107A cycle gate for this cycle".to_string()), None),
+                // Phase 115H: surface the REAL reason `resolve_stage107a_cycle_gate`
+                // returned, exactly mirroring the Container path's own
+                // established pattern -- never a generic placeholder when
+                // the actual cause is known. The generic fallback string is
+                // kept only for the (should-be-unreachable, given this
+                // function is only ever called under the same
+                // `execute_requested && control_plane_authorized` gate the
+                // cycle-gate `Result` was itself computed under) case where
+                // no reason was supplied at all.
+                _ => (
+                    Some(stage107a_gate_error.map(str::to_string).unwrap_or_else(|| {
+                        "blocked_authorization_not_leased: no valid Stage 107A cycle gate for this cycle".to_string()
+                    })),
+                    None,
+                ),
             }
         } else {
             (None, None)
@@ -2508,13 +2541,89 @@ mod tests {
         let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
 
         let _report = reconcile_native_service(
-            &cfg, "proj", "node", None, None, None, &boundary_context, &service, &assignment, true, true, false,
+            &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
         );
         let state_dir = root.join("state");
         let lock_file_exists = std::fs::read_dir(&state_dir)
             .map(|entries| entries.filter_map(|e| e.ok()).any(|e| e.path().extension().is_some_and(|ext| ext == "lock")))
             .unwrap_or(false);
         assert!(!lock_file_exists, "an observe-only cycle must never create a lock file");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- Phase 115H: Stage 107A cycle-gate error is surfaced, not lost -- //
+
+    // `reconcile_native_service` short-circuits to
+    // `NATIVE_PROCESS_RUNTIME_UNSUPPORTED_PLATFORM` before ever reaching the
+    // lease/generation match arm on a non-Linux host (`platform_supported()`
+    // is `cfg!(target_os = "linux")`, hardcoded, not injectable) -- these two
+    // tests exercise the actual Phase 115H glue code and so, like the rest of
+    // this file's mutation-path tests, only run on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stage107a_gate_error_is_surfaced_verbatim_and_still_blocks_mutation() {
+        // The exact live Phase 115F failure mode: `resolve_stage107a_cycle_gate`
+        // returned `Err(reason)` (here, the real
+        // `blocked_missing_clock_skew_config` string), so `lease` and
+        // `effective_pinning_mode` are both `None`. Before the Phase 115H
+        // fix, the catch-all substituted a generic, non-actionable message;
+        // now the real reason must appear verbatim, AND the blocking
+        // decision itself (no mutation) must be unchanged.
+        let root = temp_root("stage107a-gate-error-surfaced");
+        let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
+        let mut assignment = native_assignment_for_reconcile();
+        assignment.execution_projection_digest = execution_projection::recompute_native_digest(&assignment).unwrap();
+        let service = OperationalDesiredService {
+            service_id: "svc".to_string(),
+            runtime: "native_process".to_string(),
+            desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
+        };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let real_reason = format!(
+            "{}: required mode needs an explicit authorization_clock_skew_seconds; there is no implicit zero",
+            crate::agent::stage107a_enforcement::BLOCKED_MISSING_CLOCK_SKEW_CONFIG
+        );
+
+        let report = reconcile_native_service(
+            &cfg, "proj", "node", None, None, None, Some(&real_reason), &boundary_context, &service, &assignment, true, true, false,
+        );
+        assert_eq!(report.message, real_reason);
+        assert!(!report.host_mutation_performed);
+        assert_eq!(report.execution_status, NATIVE_PROCESS_OBSERVED_ONLY);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn absent_stage107a_gate_error_falls_back_to_the_generic_message_and_still_blocks() {
+        // The should-be-unreachable case (cycle gate resolution supplied no
+        // reason at all): the generic fallback string is kept, and the
+        // security-relevant outcome -- no mutation -- is identical to the
+        // case above.
+        let root = temp_root("stage107a-gate-error-absent-fallback");
+        let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
+        let mut assignment = native_assignment_for_reconcile();
+        assignment.execution_projection_digest = execution_projection::recompute_native_digest(&assignment).unwrap();
+        let service = OperationalDesiredService {
+            service_id: "svc".to_string(),
+            runtime: "native_process".to_string(),
+            desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
+        };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+
+        let report = reconcile_native_service(
+            &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
+        );
+        assert_eq!(
+            report.message,
+            "blocked_authorization_not_leased: no valid Stage 107A cycle gate for this cycle"
+        );
+        assert!(!report.host_mutation_performed);
+        assert_eq!(report.execution_status, NATIVE_PROCESS_OBSERVED_ONLY);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2550,7 +2659,7 @@ mod tests {
         let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
 
         let report = reconcile_native_service(
-            &cfg, "proj", "node", None, None, None, &boundary_context, &service, &assignment, true, true, false,
+            &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
         );
         assert!(!report.host_mutation_performed);
         assert!(
@@ -3045,6 +3154,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &boundary_context,
             &service,
             &assignment,
@@ -3082,7 +3192,7 @@ mod tests {
         };
 
         let report = reconcile_native_service(
-            &cfg, "proj", "node", None, None, None, &boundary_context, &service, &assignment, false, false, false,
+            &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, false, false, false,
         );
 
         assert!(!report.message.contains("blocked_native_process_state_unreadable"));

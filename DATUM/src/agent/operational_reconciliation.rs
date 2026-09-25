@@ -1398,6 +1398,15 @@ fn run_operational_reconciliation_from_bootstrap(
                 let cycle_gate = stage107a_cycle_gate.as_ref().and_then(|result| result.as_ref().ok());
                 let lease = cycle_gate.map(|gate| &gate.lease);
                 let effective_mode = cycle_gate.map(|gate| gate.effective_mode);
+                // Phase 115H: the exact reason the cycle gate failed to
+                // resolve, when it did -- mirrors the Container path's own
+                // `stage107a_service_block_before_image` computation
+                // (`(Some(Err(reason)), _) => Some(reason.clone())`), never
+                // discarded in favor of a generic message.
+                let stage107a_gate_error: Option<&str> = stage107a_cycle_gate
+                    .as_ref()
+                    .and_then(|result| result.as_ref().err())
+                    .map(String::as_str);
                 let native_boundary_context = MutationBoundaryContext {
                     authorization_id: authorization.map(|a| a.authorization_id.as_str()),
                     expires_at_utc: authorization.and_then(|a| a.expires_at_utc.as_deref()),
@@ -1410,6 +1419,7 @@ fn run_operational_reconciliation_from_bootstrap(
                     authorization,
                     lease,
                     effective_mode,
+                    stage107a_gate_error,
                     &native_boundary_context,
                     service,
                     assignment.expect("ServiceRuntimeDispatch::NativeProcess implies assignment is Some"),
