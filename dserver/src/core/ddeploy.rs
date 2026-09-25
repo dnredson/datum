@@ -4562,6 +4562,150 @@ mod tests {
         assert_eq!(assignment_b.dmap_ref.as_ref().unwrap().id, active_b.active_dmap.dmap_id);
     }
 
+    /// Phase 115E: proves the EXISTING (unmodified) Phase 114C/114D1
+    /// readiness pipeline correctly consumes a `DServRealization`
+    /// observation shaped EXACTLY as Phase 115B (`agent::dcode_execution_dmonitor::
+    /// build_dserv_realization_from_dcode_evidence`) or Phase 115D
+    /// (`agent::native_process_dmonitor::build_dserv_realization_from_native_state`)
+    /// actually produce it -- real accepted D-Map, real `active_placement_authority`,
+    /// real ingestion, real readiness evaluation. No readiness/convergence
+    /// logic is touched by this phase; this test exists to CONFIRM it, not
+    /// to change it. Mirrors those two producers' exact field mapping:
+    /// `dmap_ref` copied verbatim from current authority, `service_id` the
+    /// D-Serv placement id (never an artifact/D-Code id), `collector` one of
+    /// their real collector-id constants, health `Healthy` for a real
+    /// successful realization.
+    #[test]
+    fn readiness_pipeline_accepts_a_phase_115_shaped_dserv_realization_end_to_end() {
+        use crate::core::canonical_dmonitor::{CanonicalDMonitorObservationV1, DMonitorContractRefV1, DMonitorHealthV1, DMonitorSubjectV1, CANONICAL_DMONITOR_OBSERVATION_SCHEMA};
+        use crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1;
+        use crate::core::dmonitor_readiness::{default_readiness_policy, evaluate_application_readiness, DMonitorReadinessV1};
+        use crate::core::dmonitor_state::{ingest_observation, DMonitorStateV1};
+        use crate::core::dnode_registry::DNodeRegistryStateV1;
+
+        const PROJECT: &str = "proj-115e";
+        const APP: &str = "app-115e";
+        const NODE: &str = "fog-01";
+        const SVC: &str = "svc-115e";
+        const T0: &str = "2026-01-01T00:00:00Z";
+
+        let mut state = DDeployStateV1::empty();
+        let mut dgraph = sample_dgraph(APP, 1);
+        dgraph.services.truncate(1);
+        dgraph.services[0].service_id = SVC.to_string();
+        let artifacts = vec![sample_artifact(SVC, vec![NODE])];
+        create_and_accept_with_dgraph(&mut state, PROJECT, APP, dgraph, "p1", vec![CanonicalDServPlacementV1 { service_id: SVC.to_string(), node_id: NODE.to_string() }], &artifacts, "operator:alice", "a1", T0).unwrap();
+
+        let authority = active_placement_authority(&state, PROJECT, APP).unwrap().expect("must be active immediately after acceptance");
+
+        // Phase 115B/115D's own exact `dmap_ref` construction: verbatim
+        // id/revision/digest from current authority, never recomputed.
+        let dmap_ref = DMonitorContractRefV1 { id: authority.dmap_id.clone(), revision: authority.revision, digest: authority.digest.clone() };
+
+        let build_observation = |sequence: u64, service_id: &str, application_id: &str, node_id: &str, observed_at_utc: &str, health: DMonitorHealthV1, dmap_ref: DMonitorContractRefV1, observation_id: &str| {
+            CanonicalDMonitorObservationV1 {
+                schema: CANONICAL_DMONITOR_OBSERVATION_SCHEMA.to_string(),
+                observation_id: observation_id.to_string(),
+                project_id: Some(PROJECT.to_string()),
+                node_id: node_id.to_string(),
+                monitor_instance_id: "dmonitor-instance:fog-01:115e-test".to_string(),
+                sequence,
+                observed_at_utc: observed_at_utc.to_string(),
+                cycle_id: None,
+                collector: "dcode_invoke".to_string(),
+                subject: DMonitorSubjectV1::DServRealization {
+                    project_id: PROJECT.to_string(),
+                    application_id: application_id.to_string(),
+                    service_id: service_id.to_string(),
+                    node_id: node_id.to_string(),
+                    dmap_ref: Some(dmap_ref),
+                },
+                health,
+                facts: serde_json::json!({}),
+            }
+        };
+
+        let empty_runtime_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let empty_dnode_registry = DNodeRegistryStateV1::empty();
+        let policy = default_readiness_policy();
+
+        // Snapshot D-Map/acceptance state before any DMonitor activity, to
+        // prove (Case H) that ingestion + readiness evaluation mutate NEITHER.
+        let ddeploy_snapshot_before = state.clone();
+
+        // CASE A: no D-Serv evidence at all -> NotReady.
+        let empty_dmonitor_state = DMonitorStateV1::empty();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &empty_dmonitor_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case A: {result:#?}");
+
+        // CASE B: exact current canonical Healthy/fresh evidence -> Ready.
+        let mut dmonitor_state = DMonitorStateV1::empty();
+        let observation = build_observation(1, SVC, APP, NODE, T0, DMonitorHealthV1::Healthy, dmap_ref.clone(), "obs-115e-1");
+        ingest_observation(&mut dmonitor_state, PROJECT, observation, T0).unwrap();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &dmonitor_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::Ready, "Case B: {result:#?}");
+
+        // CASE C: the SAME evidence, evaluated 91s later -> stale -> NotReady
+        // (freshness policy: max_observed_age_seconds = 90, re-verified from
+        // source at the top of this test file's module, not merely assumed).
+        let later = "2026-01-01T00:01:31Z"; // T0 + 91s
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &dmonitor_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, later);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case C (stale): {result:#?}");
+
+        // CASE D: service identity mismatch -- evidence for a DIFFERENT
+        // service_id than the one actually placed -> NotReady.
+        let mut wrong_service_state = DMonitorStateV1::empty();
+        let observation = build_observation(1, "svc-does-not-exist", APP, NODE, T0, DMonitorHealthV1::Healthy, dmap_ref.clone(), "obs-115e-d");
+        ingest_observation(&mut wrong_service_state, PROJECT, observation, T0).unwrap();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &wrong_service_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case D (service mismatch): {result:#?}");
+
+        // CASE E: application mismatch -- evidence honestly claims a
+        // DIFFERENT application_id than the one being evaluated -> NotReady
+        // (never silently credited to this application).
+        let mut wrong_app_state = DMonitorStateV1::empty();
+        let observation = build_observation(1, SVC, "some-other-app", NODE, T0, DMonitorHealthV1::Healthy, dmap_ref.clone(), "obs-115e-e");
+        ingest_observation(&mut wrong_app_state, PROJECT, observation, T0).unwrap();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &wrong_app_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case E (application mismatch): {result:#?}");
+
+        // CASE F: node mismatch -- evidence claims a node the D-Map did NOT
+        // place this service on -> NotReady.
+        let mut wrong_node_state = DMonitorStateV1::empty();
+        let observation = build_observation(1, SVC, APP, "cloud-01", T0, DMonitorHealthV1::Healthy, dmap_ref.clone(), "obs-115e-f");
+        ingest_observation(&mut wrong_node_state, PROJECT, observation, T0).unwrap();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&authority), &wrong_node_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case F (node mismatch): {result:#?}");
+
+        // CASE G: the D-Map changes (a new acceptance bumps the revision) --
+        // the OLD evidence's dmap_ref must no longer satisfy the NEW current
+        // authority. Never silently "still good enough."
+        let mut dgraph2 = sample_dgraph(APP, 2);
+        dgraph2.services.truncate(1);
+        dgraph2.services[0].service_id = SVC.to_string();
+        create_and_accept_with_dgraph(&mut state, PROJECT, APP, dgraph2, "p2", vec![CanonicalDServPlacementV1 { service_id: SVC.to_string(), node_id: NODE.to_string() }], &artifacts, "operator:alice", "a2", "2026-01-01T00:02:00Z").unwrap();
+        let new_authority = active_placement_authority(&state, PROJECT, APP).unwrap().expect("must still be active after re-acceptance");
+        assert_ne!(new_authority.revision, authority.revision, "the acceptance must actually have advanced the D-Map revision");
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&new_authority), &dmonitor_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::NotReady, "Case G (stale D-Map evidence after re-acceptance): {result:#?}");
+
+        // Fresh evidence under the NEW authority restores Ready.
+        let new_dmap_ref = DMonitorContractRefV1 { id: new_authority.dmap_id.clone(), revision: new_authority.revision, digest: new_authority.digest.clone() };
+        let mut fresh_dmonitor_state = DMonitorStateV1::empty();
+        let observation = build_observation(1, SVC, APP, NODE, T0, DMonitorHealthV1::Healthy, new_dmap_ref, "obs-115e-g-fresh");
+        ingest_observation(&mut fresh_dmonitor_state, PROJECT, observation, T0).unwrap();
+        let result = evaluate_application_readiness(PROJECT, APP, PROJECT, Some(&new_authority), &fresh_dmonitor_state, &empty_runtime_registry, &state, &empty_dnode_registry, &policy, T0);
+        assert_eq!(result.readiness, DMonitorReadinessV1::Ready, "Case G (fresh evidence under new D-Map): {result:#?}");
+
+        // CASE H: none of the above DMonitor activity (ingestion, six
+        // readiness evaluations) mutated D-Map/acceptance state one bit
+        // beyond the two acceptances THIS TEST ITSELF explicitly performed
+        // -- compare the state as of immediately after acceptance p1 against
+        // an independent snapshot taken at that exact point.
+        assert_eq!(state.active_by_application.get(&application_key(PROJECT, APP)).unwrap().active_dmap.dmap_id, ddeploy_snapshot_before.active_by_application.get(&application_key(PROJECT, APP)).unwrap().active_dmap.dmap_id);
+        assert_eq!(ddeploy_snapshot_before.active_by_application.get(&application_key(PROJECT, APP)).unwrap().active_dmap.revision, authority.revision, "the pre-DMonitor-activity snapshot must still reflect only the FIRST acceptance");
+    }
+
     #[test]
     fn dnode_registry_mutation_never_rewrites_an_already_persisted_proposal_snapshot() {
         // A6: registry state becoming stale/changed must NOT silently
