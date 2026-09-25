@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use datum::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter;
+use datum::agent::dmonitor_emission::DMonitorEmissionContext;
 use datum::dcode::authorization::DCodeInvocationAuthorizationV1;
 use datum::dcode::client;
 use datum::dcode::dserv_artifact::CanonicalDServArtifactV1;
@@ -11,6 +13,7 @@ use datum::dcode::invoke::invoke_dcode;
 use datum::dcode::local_identity::load_local_identity;
 use datum::dcode::module_store::DCodeModuleStore;
 use datum::dcode::worker::IsolatedWorkerExecutor;
+use datum::outputs::dmonitor_http::DMonitorHttpOutput;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartsentinel-dcode-invoke")]
@@ -70,6 +73,15 @@ struct InvokeArgs {
     input_path: String,
     #[arg(long)]
     evidence_out: Option<String>,
+    /// Phase 115B: best-effort, opt-in publication of one canonical
+    /// `DServRealization` DMonitor observation built from this invocation's
+    /// own governed evidence, sent to `dserver_url` (never a second
+    /// server). A publish failure is logged to stderr and NEVER changes
+    /// this command's exit code -- monitoring must never destabilize the
+    /// governed invocation path it observes (mirrors
+    /// `dcall::dmonitor_publisher`'s own failure-isolation principle).
+    #[arg(long, default_value_t = false)]
+    dmonitor_publish: bool,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -108,6 +120,9 @@ struct Resolved {
     worker_binary: Option<String>,
     input_path: String,
     evidence_out: Option<String>,
+    /// `Some(dserver_url)` only when `--dmonitor-publish` was passed on the
+    /// GOVERNED `invoke` path -- `offline-test-only` never publishes.
+    dmonitor_publish_to: Option<String>,
 }
 
 fn default_worker_binary_path() -> PathBuf {
@@ -170,6 +185,7 @@ fn main() -> Result<()> {
                 worker_binary: None,
                 input_path: args.input_path,
                 evidence_out: args.evidence_out,
+                dmonitor_publish_to: args.dmonitor_publish.then_some(args.dserver_url),
             }
         }
         Mode::OfflineTestOnly(args) => {
@@ -194,6 +210,10 @@ fn main() -> Result<()> {
                 worker_binary: args.worker_binary,
                 input_path: args.input_path,
                 evidence_out: args.evidence_out,
+                // NEVER publish from the offline/test-only bypass path -- it
+                // has no governed DServer-issued authorization to honestly
+                // attribute an observation to.
+                dmonitor_publish_to: None,
             }
         }
     };
@@ -226,6 +246,34 @@ fn main() -> Result<()> {
         Some(path) => fs::write(path, format!("{evidence_json}\n"))
             .with_context(|| format!("write evidence to {path}"))?,
         None => println!("{evidence_json}"),
+    }
+
+    // Phase 115B: best-effort, opt-in DMonitor evidence publication. Never
+    // affects this command's own exit code (see `--dmonitor-publish`'s own
+    // doc comment) -- a failure here is logged and swallowed, exactly like
+    // `dcall::dmonitor_publisher`'s own failure-isolation principle.
+    if let Some(dserver_url) = &resolved.dmonitor_publish_to {
+        let mut emitter = DCodeExecutionMonitorEmitter::new(
+            DMonitorEmissionContext::new_process_epoch(&resolved.node_id),
+            resolved.node_id.clone(),
+        );
+        match emitter.emit(&evidence) {
+            Some(observation) => match DMonitorHttpOutput::new(dserver_url.clone(), evidence.project_id.clone(), 5) {
+                Ok(output) => match serde_json::to_value(&observation) {
+                    Ok(observation_json) => {
+                        if let Err(error) = output.publish(&observation.observation_id, &observation_json) {
+                            eprintln!("dmonitor_publish_failed observation_id={} error={error}", observation.observation_id);
+                        }
+                    }
+                    Err(error) => eprintln!("dmonitor_publish_serialize_failed error={error}"),
+                },
+                Err(error) => eprintln!("dmonitor_publish_client_build_failed error={error}"),
+            },
+            None => eprintln!(
+                "dmonitor_publish_skipped reason=node_identity_mismatch evidence_node_id={} local_node_id={}",
+                evidence.node_id, resolved.node_id
+            ),
+        }
     }
 
     let succeeded = evidence.outcome == DCodeInvocationOutcome::Success;

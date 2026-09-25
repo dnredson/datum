@@ -1111,6 +1111,48 @@ fn emit_and_publish(
     }
 }
 
+/// Phase 115B: offers an already-built canonical `DServRealization`
+/// observation to `publisher` -- never blocks, never panics, never retries.
+/// A separate helper from `emit_and_publish` because the D-Serv emitter
+/// (`DCodeExecutionMonitorEmitter::emit`) can honestly return `None` (Phase
+/// 115A Q9's node-identity guard), so the caller decides whether to publish
+/// at all, unlike the DIoT heartbeat emitter which always has something to
+/// say.
+fn publish_dserv_observation(
+    publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
+    observation: &crate::agent::canonical_dmonitor::CanonicalDMonitorObservationV1,
+) {
+    let observation_id = observation.observation_id.clone();
+    if let Ok(observation_json) = serde_json::to_value(observation) {
+        publisher.try_publish(crate::dcall::dmonitor_publisher::DMonitorPublishJob {
+            observation_id,
+            observation_json,
+        });
+    }
+}
+
+/// Phase 115B: if `response` carries real D-Code invocation evidence
+/// (`dcode_evidence`, populated only on `outcome="success"` in
+/// `handle_mqtt_dcall_request`), builds and publishes one canonical
+/// `DServRealization` observation from it. A response with no evidence
+/// (malformed request, grant redemption failure -- no invocation ever
+/// happened) or evidence that fails the emitter's own node-identity guard
+/// (Phase 115A Q9) emits nothing -- never fabricated. Malformed evidence
+/// JSON (should be unreachable in production: `handle_mqtt_dcall_request`
+/// always serializes a real `DCodeInvocationEvidenceV1`) is likewise
+/// silently skipped rather than panicking the listener loop.
+fn emit_dserv_evidence_if_present(
+    response: &crate::dcall::mqtt::MqttDCallResponseEnvelopeV1,
+    dserv_emitter: &mut crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter,
+    publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
+) {
+    let Some(evidence_json) = response.dcode_evidence.clone() else { return };
+    let Ok(evidence) = serde_json::from_value::<crate::dcode::evidence::DCodeInvocationEvidenceV1>(evidence_json) else { return };
+    if let Some(observation) = dserv_emitter.emit(&evidence) {
+        publish_dserv_observation(publisher, &observation);
+    }
+}
+
 /// Phase 113B3 (section 15) + Phase 114D0B: production MQTT D-Call
 /// destination listener loop. Runs until `stop` is set. Startup: prove
 /// local D-Node identity, fetch the CURRENT runtime binding (fails closed
@@ -1179,6 +1221,15 @@ pub fn run_mqtt_dcall_listener(
     );
     let binding_identity = diot_runtime_binding_identity(&binding);
     let emission_context = crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch(&identity.node_id);
+    // Phase 115B: a SEPARATE process epoch (own `monitor_instance_id`, own
+    // sequence counter) for canonical D-Serv realization evidence -- kept
+    // independent of the DIoT emitter's own stream above, mirroring how
+    // `agent::dmonitor_projection` and `agent::diot_runtime_dmonitor` are
+    // already two independent producers rather than one shared stream.
+    let dserv_emitter = crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter::new(
+        crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch(&identity.node_id),
+        identity.node_id.clone(),
+    );
 
     let result = run_mqtt_dcall_listener_loop(
         transport,
@@ -1190,6 +1241,7 @@ pub fn run_mqtt_dcall_listener(
         &identity.node_id,
         binding_identity,
         emission_context,
+        dserv_emitter,
         &publisher,
         heartbeat_interval,
         DEFAULT_POLL_INTERVAL,
@@ -1219,6 +1271,7 @@ fn run_mqtt_dcall_listener_loop<T: crate::dcall::mqtt::MqttListenerSession>(
     local_node_id: &str,
     binding_identity: crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity,
     emission_context: crate::agent::dmonitor_emission::DMonitorEmissionContext,
+    mut dserv_emitter: crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter,
     publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
     heartbeat_interval: std::time::Duration,
     poll_interval: std::time::Duration,
@@ -1262,6 +1315,7 @@ fn run_mqtt_dcall_listener_loop<T: crate::dcall::mqtt::MqttListenerSession>(
                     if let Some((reply_topic, response)) =
                         handle_mqtt_dcall_request(dserver_url, dnode_root, &topic, &request)
                     {
+                        emit_dserv_evidence_if_present(&response, &mut dserv_emitter, publisher);
                         let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
                         let _ = MqttPubSub::publish(
                             &mut transport,
@@ -3509,6 +3563,10 @@ mod tests {
                 "cloud-01",
                 diot_binding_identity_fixture(),
                 emission_context,
+                crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter::new(
+                    crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch("cloud-01"),
+                    "cloud-01".to_string(),
+                ),
                 &publisher,
                 heartbeat_interval,
                 poll_interval,
@@ -3525,5 +3583,213 @@ mod tests {
         // proof, enforced by the surrounding `#[test]` harness's own
         // default timeout.
         assert!(broker.published_log().iter().all(|(topic, ..)| topic == &request_topic), "no reply should ever have been published for an unredeemable grant");
+    }
+
+    // --------------------------------------------------- PHASE 115B
+
+    fn sample_dcode_evidence(node_id: &str) -> crate::dcode::evidence::DCodeInvocationEvidenceV1 {
+        crate::dcode::evidence::DCodeInvocationEvidenceV1 {
+            schema: DCODE_EVIDENCE_SCHEMA.to_string(),
+            authorization_id: "dcode-auth:proj:lab:app:pipeline:decode:1".to_string(),
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            service_id: "decode".to_string(),
+            node_id: node_id.to_string(),
+            dmap_id: "dmap:1".to_string(),
+            dmap_revision: 1,
+            dmap_digest: format!("sha256:{}", "a".repeat(64)),
+            dgraph_id: "dgraph:pipeline".to_string(),
+            dgraph_revision: 1,
+            dgraph_digest: format!("sha256:{}", "b".repeat(64)),
+            dserv_artifact_id: "dserv:pipeline:decode".to_string(),
+            dserv_artifact_digest: "c".repeat(64),
+            dserv_artifact_descriptor_digest: format!("sha256:{}", "d".repeat(64)),
+            module_size_bytes: Some(64),
+            dnode_abi: "datum-dnode/0".to_string(),
+            fresh_instance_per_invocation: true,
+            input_port: "in".to_string(),
+            message_id: "msg-1".to_string(),
+            correlation_id: "corr-1".to_string(),
+            input_sha256: "e".repeat(64),
+            input_size: 7,
+            input_envelope_sha256: "f".repeat(64),
+            input_envelope_size: 64,
+            received_at_utc: "2026-09-25T10:00:00Z".to_string(),
+            output_sha256: None,
+            output_size: None,
+            output_status: Some("ok".to_string()),
+            output_reason_present: false,
+            output_reason_sha256: None,
+            output_reason_size: None,
+            emits: Vec::new(),
+            limits_applied: DCodeAppliedLimits {
+                fuel_per_invocation: 1_000_000,
+                timeout_ms: 100,
+                max_memory_pages: 4,
+                max_message_bytes: 65536,
+            },
+            outcome: crate::dcode::evidence::DCodeInvocationOutcome::Success,
+            error_code: None,
+            error_message: None,
+            error_offending_value_sha256: None,
+            error_offending_value_size: None,
+            duration_ms: 3,
+        }
+    }
+
+    fn response_with_evidence(
+        evidence: &crate::dcode::evidence::DCodeInvocationEvidenceV1,
+    ) -> crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+        crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+            schema: crate::dcall::mqtt::RESPONSE_ENVELOPE_SCHEMA.to_string(),
+            grant_id: "dcall-grant:1".to_string(),
+            outcome: "success".to_string(),
+            error_code: None,
+            dcode_evidence: Some(serde_json::to_value(evidence).unwrap()),
+        }
+    }
+
+    /// A minimal counting mock DServer: accepts every connection, always
+    /// replies 200 `{"outcome":"accepted"}`, and records how many requests
+    /// it received -- used to prove `emit_dserv_evidence_if_present`
+    /// actually offers (or withholds) a publish job, without depending on
+    /// `dmonitor_publisher`'s own private test helpers in another module.
+    struct CountingMockDServer {
+        url: String,
+        count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl CountingMockDServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let counted = count.clone();
+            let stopping = stop.clone();
+            let thread = std::thread::spawn(move || {
+                while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                            let mut bytes = Vec::new();
+                            let mut buffer = [0u8; 4096];
+                            loop {
+                                let read = match stream.read(&mut buffer) {
+                                    Ok(0) => break,
+                                    Ok(read) => read,
+                                    Err(_) => break,
+                                };
+                                bytes.extend_from_slice(&buffer[..read]);
+                                if bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let body = r#"{"outcome":"accepted"}"#;
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { url, count, stop, thread: Some(thread) }
+        }
+
+        fn received_count(&self) -> usize {
+            self.count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountingMockDServer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn emitter_for(node_id: &str) -> crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter {
+        crate::agent::dcode_execution_dmonitor::DCodeExecutionMonitorEmitter::new(
+            crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch(node_id),
+            node_id.to_string(),
+        )
+    }
+
+    /// Phase 115B: a response carrying real, matching-node D-Code evidence
+    /// results in one canonical `DServRealization` observation actually
+    /// being sent to DServer.
+    #[test]
+    fn matching_node_evidence_is_published_as_a_dserv_realization() {
+        let server = CountingMockDServer::start();
+        let output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(server.url.clone(), "proj:lab".to_string(), 5).unwrap();
+        let publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(output, crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY);
+        let mut emitter = emitter_for("fog-01");
+        let evidence = sample_dcode_evidence("fog-01");
+        let response = response_with_evidence(&evidence);
+
+        emit_dserv_evidence_if_present(&response, &mut emitter, &publisher);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        publisher.shutdown();
+
+        assert_eq!(server.received_count(), 1, "exactly one DServRealization observation must be published");
+    }
+
+    /// Phase 115A Q9 / 115B.3: evidence claiming a DIFFERENT node than this
+    /// process's own local identity must never be published -- fail closed,
+    /// never guess which of two disagreeing node values to trust.
+    #[test]
+    fn wrong_node_evidence_is_never_published() {
+        let server = CountingMockDServer::start();
+        let output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(server.url.clone(), "proj:lab".to_string(), 5).unwrap();
+        let publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(output, crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY);
+        let mut emitter = emitter_for("fog-01");
+        // Evidence claims "cloud-01", but this process's own emitter is
+        // bound to "fog-01" -- a mismatch `dcode::invoke` itself can only
+        // produce via `DCodeInvocationOutcome::StaleAuthority`.
+        let evidence = sample_dcode_evidence("cloud-01");
+        let response = response_with_evidence(&evidence);
+
+        emit_dserv_evidence_if_present(&response, &mut emitter, &publisher);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        publisher.shutdown();
+
+        assert_eq!(server.received_count(), 0, "a node-identity mismatch must never be published as a local realization");
+    }
+
+    /// A response with no D-Code evidence at all (malformed request, grant
+    /// redemption failure -- no invocation ever happened) must never
+    /// fabricate an observation.
+    #[test]
+    fn response_without_dcode_evidence_publishes_nothing() {
+        let server = CountingMockDServer::start();
+        let output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(server.url.clone(), "proj:lab".to_string(), 5).unwrap();
+        let publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(output, crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY);
+        let mut emitter = emitter_for("fog-01");
+        let response = crate::dcall::mqtt::MqttDCallResponseEnvelopeV1 {
+            schema: crate::dcall::mqtt::RESPONSE_ENVELOPE_SCHEMA.to_string(),
+            grant_id: "dcall-grant:1".to_string(),
+            outcome: "failed".to_string(),
+            error_code: Some("dcall_destination_execution_failed".to_string()),
+            dcode_evidence: None,
+        };
+
+        emit_dserv_evidence_if_present(&response, &mut emitter, &publisher);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        publisher.shutdown();
+
+        assert_eq!(server.received_count(), 0);
     }
 }
