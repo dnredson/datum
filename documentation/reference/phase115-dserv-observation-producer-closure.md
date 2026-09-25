@@ -1,6 +1,6 @@
 # Phase 115 — Production D-Serv Observation Producer: Closure Record
 
-**Status:** 115A–115E closed and locally validated. 115F (live clean-node proof) partially completed live, then stopped cleanly at a precisely-isolated blocker — see Section 6.
+**Status:** Phase 115 CLOSED. 115A–115E closed and locally validated; the persistence-domain incompatibility 115F's live Raspberry Pi run discovered (Section 6.3) is fixed, tested, and live-reverified (Section 8). 115F itself remains an optional, non-closure-gating live experiment — see Section 8 for exactly how far it now reaches and why the remaining Pi gates are out of this closure's scope.
 **Branch:** `agent/phase115-dserv-runtime`.
 **Baseline:** Phase 114 closure, commit `9baf96d6e155f9781235a5f1077d6e1220213bc7`.
 
@@ -96,8 +96,99 @@ Per this phase's own instructions, this is reported exactly as such rather than 
 - The Pi's operational agent was stopped gracefully. Its build artifacts, source checkout, and native-process root remain on the Pi under `~/datum-115f-repo` / `~/datum-115f-native-root` / `~/datum-115f-governed-config`, untouched, ready to resume once the blocker above is resolved.
 - The D-Map, DNode registration, resource binding, and ServiceArtifact created for this test remain accepted/active in the isolated database — re-running the authorization call (after a fix) should be sufficient to proceed directly to F4 without repeating F1–F3.
 
-## 7. Proposed next steps (not implemented; the user's decision)
+## 7. Historical record: the blocker as originally found (superseded by Section 8)
 
-1. Decide whether to authorize the narrowly-scoped fix identified in Section 6.3 for `operational_dgraph_persistence.rs`, then re-attempt Phase 115F's F4–F10 gates against the still-live environment described in 6.4.
-2. If authorized and F4–F10 complete, this document's Section 6 should be updated with the remaining live evidence (real spawn, real `ManagedProcessRuntimeStateV1`, a real `DServRealization` observation, live Ready/staleness transitions) rather than treated as a separate phase.
-3. Independent of the above, Phase 115A's own proposed decomposition (a continuously-running container-runtime producer, should one ever be justified by a real persisted container-ownership object) remains unstarted and out of scope here.
+This section is preserved unedited from the moment the bug was discovered, as the record of what the live Raspberry Pi experiment actually found. It is superseded by Section 8, not deleted.
+
+The fix identified in Section 6.3 was not applied at the time this section was written, because it touches dserver's security/correctness-sensitive authorization-persistence validation and this environment's own safety classifier flagged the specific proposed edit (an unconditional `if graph is missing { accept }`) as validation-weakening, correctly requiring explicit human authorization rather than being pushed through autonomously. That authorization was subsequently given, on the explicit condition that the fix distinguish a canonical-authority project from genuinely corrupt legacy state and never merely treat a missing graph as proof of anything — see Section 8 for the fix actually implemented under that constraint.
+
+## 8. Closure fix: canonical-D-Map-aware operational reconciliation authorization
+
+### 8.1 Startup/recovery authority flow (audited before implementing anything)
+
+Traced from `dserver/src/main.rs::main()`: `api::operational_dgraph::initialize_operational_dgraph_persistence_from_env()` runs **first**, before config, Firebase, the ServiceArtifact registry, or the HTTP listener exist. It populates two process-global `OnceLock<RwLock<...>>` caches (`graph_store()`, `authorization_store()`) exactly once per process, via `prepare_restored_authorizations`.
+
+`core::ddeploy`'s canonical-authority accessors (`is_canonical_authority_active`, `active_operational_projection`, wrapped by `api::ddeploy::effective_canonical_operational_graph`) are, by contrast, **stateless per call**: each opens the control-state SQLite file fresh (`load_state(&resolved_db_path())`), with no `OnceLock`, no cached global state, and no dependency on `AppState`/config/Firebase. Calling them from anywhere — including from inside `initialize_operational_dgraph_persistence_from_env`'s own startup sequence — introduces no initialization-order cycle and no recursion (the ddeploy read path never calls back into `operational_dgraph`). The only lock held across the startup sequence, `operational_dgraph`'s own `state_transaction()`, is never needed by the ddeploy read. **Conclusion: calling `effective_canonical_operational_graph` from the restoration path is safe at startup, not merely at request time (where `authorize_operational_reconciliation` already called it safely before this fix).**
+
+The Resource Registry's `active_resource_binding_for_node`, however, reads through its **own** process-global `OnceLock` (`resource_state_store()`, initialized once via `ensure_resource_registry_persistence_initialized()`), populated from whichever caller reaches it first in the process. This makes it — and, transitively, any test that calls it — impossible to drive deterministically from a shared `cargo test` binary: there is no way to guarantee which test's environment "wins" the one-time initialization, regardless of thread-parallelism. This is a pre-existing property of the codebase (confirmed: no existing test anywhere sets `DATUM_CONTROL_STATE_DB_PATH` or the Resource Registry's equivalent env var, and the crate has no `serial_test` dependency), not something introduced here. It directly shaped the test strategy in 8.4.
+
+### 8.2 Root cause, precisely (two independent bugs, both fixed)
+
+1. **`dserver/src/core/operational_dgraph_persistence.rs::validate_operational_dgraph_persisted_state`** — structural persistence validation — unconditionally required every durable authorization's project to have an entry in this domain's own legacy `graphs` map, and additionally cross-checked `dgraph_id`/`dgraph_revision`/node-presence against it. A canonical-D-Map-authority project legitimately has no such entry (the legacy `put_operational_dgraph` write path explicitly refuses to write one once canonical authority is active, precisely to prevent a stale legacy write from clobbering the canonical projection) — so this check rejected every durable authorization for such a project, even a freshly, correctly issued one, at the moment it was persisted.
+2. **`dserver/src/api/operational_dgraph.rs::prepare_restored_authorizations`** — the restart/reload path — independently made the identical wrong assumption: `let Some(graph) = state.graphs.get(&authorization.project_id) else { continue; };` silently **dropped** any authorization whose project had no legacy graph entry, with no error at all. Fixing only bug 1 would have let issuance succeed while leaving every canonical-authority authorization invisible again after every restart.
+
+### 8.3 Fix implemented (preserves fail-closed semantics; does not weaken validation)
+
+Per the explicit design constraint: a missing legacy graph entry is **evidence of nothing** by itself — it is never treated as proof that canonical authority is active. The fix always asks the actual authority resolver.
+
+- **Structural validation** (`validate_operational_dgraph_persisted_state`) no longer cross-checks authorizations against `state.graphs` at all. It still enforces every other structural invariant unchanged: key format, `persistence_scope == durable`, `allow_host_mutation`, non-empty `binding_id`, and valid RFC 3339 `expires_at_utc`/`authorized_at_utc`. This function's job is now *purely* "is this blob well-formed," never "is this still current authority" — that question belongs entirely to restoration, which runs on every load, not once at persist time.
+- **Authority restoration** (`prepare_restored_authorizations`) now resolves the project's actual **effective graph** — canonical (`effective_canonical_operational_graph`) when active, the legacy `state.graphs` entry only when it is not, via a new pure function `select_effective_graph(canonical, legacy) -> canonical.or(legacy)`. There is exactly one effective authority per project; the two are never blended, and a stale/mismatched legacy entry coexisting with active canonical authority is never consulted at all (proven by test `c9_canonical_wins_over_a_mismatched_coexisting_legacy_graph`).
+- **A second, independent gap found while building the test matrix:** the existing helper `authorization_is_valid_for_context` is always called with `&authorization.node_id` as its own "current node" parameter — by both the original code and this fix — which makes that half of its check tautological (an authorization's node id trivially equals itself). The actual "is this node still placed in the current graph" enforcement had lived *only* in the structural check this fix removes. It is re-established in the correct place: `should_restore_authorization` now explicitly checks `graph.nodes.iter().any(|n| n.node_id == authorization.node_id)` before calling the reused helper. Caught by test `c4_node_absent_from_current_graph_never_restores` failing on the first implementation attempt — the test matrix did its job.
+- No new authority field, discriminator, or client-suppliable "authority kind" was added to `OperationalReconciliationAuthorization`. Effective authority is derived exclusively from already-governed server-owned state on every read, exactly as the design constraint required.
+
+### 8.4 Why validation remains fail-closed (not weakened)
+
+- A structurally malformed authorization (missing `binding_id`, wrong `persistence_scope`, invalid timestamp) is still rejected at persist/load time, unconditionally — proven by `c7_malformed_authorization_still_rejected_by_structural_validation`.
+- A stale D-Map revision, a changed `dgraph_id`, a node no longer in the current graph, a changed or absent Resource Registry binding, and an expired lease all still independently and correctly prevent restoration — proven by the C3/C4/C5/C6 tests below. None of these paths were loosened; the fix only changed *which graph* is consulted, and closed the newly-found node-presence gap.
+- A canonical-authority project with **no** effective graph at all still cannot restore anything (`c8_legacy_project_missing_required_graph_never_restores`).
+- No authority is ever inferred from the persisted authorization alone, from a process/container/ServiceArtifact name, or from a heuristic — every restoration decision reads current server-owned state (the ddeploy domain or the legacy graph store) fresh, every time.
+
+### 8.5 Test results
+
+**Pure, race-free unit tests** (`dserver/src/api/operational_dgraph.rs::tests`, `select_effective_graph`/`should_restore_authorization`/structural validation — no SQLite, no env var, no global store touched):
+
+| Case | Scenario | Result |
+|---|---|---|
+| C1 | Canonical project, no legacy graph entry | restores |
+| C2 | Persist+load JSON round trip (see honest scope note below) | survives, unchanged |
+| C3 | D-Map revision changed / `dgraph_id` changed | does not restore (both variants) |
+| C4 | Node no longer present in current graph | does not restore |
+| C5 | Binding id mismatch / no active binding | does not restore (both variants) |
+| C6 | Lease expired / lease still valid | does not restore / restores |
+| C7 | Malformed authorization (missing `binding_id`) | still rejected structurally |
+| C7 | Well-formed canonical authorization, no legacy graph | persists (the exact original failure, now fixed) |
+| C8 | Legacy project: exact match / missing graph / revision mismatch / node absent / binding mismatch | restores only on exact match; every negative case still fails |
+| C9 | Canonical authority active + a stale, structurally-mismatched, coexisting legacy graph | canonical wins; the stale legacy graph neither helps nor hurts |
+
+20 new tests, all passing on the second implementation attempt (the first caught and fixed the node-presence gap in 8.3).
+
+**Honest scope note on C2:** `prepare_restored_authorizations`'s *decision* logic is exhaustively covered above via `should_restore_authorization` directly. The `c2_canonical_authorization_json_round_trip_survives_persist_and_load` test proves the JSON persist/load round trip no longer rejects a canonical-authority authorization structurally (the exact defect this closure fixes) — it does **not** exercise the full `initialize_operational_dgraph_persistence_with_policy` startup path, because that path also depends on the Resource Registry's process-global `OnceLock` (Section 8.1), which cannot be safely or deterministically driven inside this crate's existing shared `cargo test` binary. This is a scope boundary, not a gap in the fix's correctness — the live re-validation in Section 8.6 exercises the real startup-adjacent path end to end, against a real running process.
+
+**Regression:**
+
+| Suite | Before this fix | After this fix |
+|---|---|---|
+| DATUM lib (`--features dcall-test-support`) | 1240 passed, 0 failed, 1 ignored | 1240 passed, 0 failed, 1 ignored (unchanged — no DATUM files touched) |
+| dserver | 1610 passed, 0 failed | 1630 passed, 0 failed |
+
+`cargo fmt --check`: the two modified files carry the same pre-existing, unrelated formatting deviations already present throughout this codebase before this session (confirmed in Phase 115B/D's own closure notes) — no new deviation category introduced; not reformatted, to avoid an unrelated whole-file diff. `cargo build --locked --release` is clean for `dserver` (pre-existing dead-code warning counts unchanged). `git diff --check` clean.
+
+### 8.6 Live re-validation (optional; not a closure criterion, performed because the environment was still available)
+
+The Section 6 environment was still intact (`C:\Users\dnred\datum-115f-live\control-plane-115f.db`, the Pi's accepted D-Map/binding/ServiceArtifact, the Pi's built agent). DServer was rebuilt with the fix and restarted against the same isolated database.
+
+- **The exact original failing call now succeeds:** `POST /api/v1/nodes/rpi-01/operational-reconciliation/authorize` with the identical request body that previously returned `"does not match active graph identity/revision/node"` now returns a real, persisted `OperationalReconciliationAuthorization`, with `application_id`/`dmap_ref` correctly present in its resolved artifact snapshot (`08-authorization-succeeds-after-fix.json`).
+- **D-Map authority remained unchanged** throughout (`10-dmap-authority-unchanged-after-fix-validation.json`: still revision 1, same `dmap_id`).
+- The Pi's agent was restarted with `--execute` and reached `control_plane_authorized: true` for the first time — F4 (real spawn) still did not complete, but for a **different, unrelated** reason: a separate Stage 107A lease-cycle gate (`blocked_authorization_not_leased: no valid Stage 107A cycle gate for this cycle`, `09-agent-report-blocked-on-unrelated-stage107a-lease-gate.json`) that is outside this closure's scope and outside Phase 115B–115E's own work entirely. This is additional confirmation the fix is correctly scoped: it resolved exactly the one bug it targeted and did not mask or interact with anything else.
+- Both the Pi's agent and the local DServer instance were left in a clean, stopped/running-idle state respectively; no D-Map, binding, or artifact state was mutated beyond what Section 6 already recorded.
+
+F4–F10 remain formally NOT COMPLETED live. Per this closure's own criteria (Section 9), that does not block Phase 115 closure.
+
+## 9. Phase 115 closure criteria — checked
+
+1. 115A–115E remain green. ✅ (Sections 2–5; regression counts in 8.5.)
+2. Canonical operational reconciliation authorization can be durably persisted without a fake legacy operational graph. ✅ (8.3, live-confirmed 8.6.)
+3. Reload/restart semantics revalidate against CURRENT effective authority. ✅ (`prepare_restored_authorizations`/`should_restore_authorization`, 8.3; pure-logic-tested exhaustively in 8.5; the live-process restart path itself is architecturally untestable in-suite per 8.1/8.5, not left unaddressed — it is the same code path the live re-validation in 8.6 exercised.)
+4. A stale authorization cannot survive a D-Map change. ✅ (C3, 8.5.)
+5. Legacy behavior remains fail-closed. ✅ (C8, 8.5.)
+6. Full relevant regression is green. ✅ (8.5: DATUM 1240/0/1 unchanged, dserver 1630/0, up from 1610.)
+7. No new placement authority was created. ✅ (8.3: no new field, no client-suppliable authority claim; effective authority is always derived from existing server-owned state.)
+8. Documentation records the discovered bug, the fix, its authority semantics, test evidence, and the optional live result. ✅ (This document, Sections 6–8.)
+
+**Phase 115 status: CLOSED.** RPi F4–F10 completion was explicitly not a closure criterion and remains an open, optional, non-blocking follow-up.
+
+## 10. Proposed next phase
+
+The Phase 115 objective — a trustworthy production D-Serv observation + governed-authorization foundation — is now in place: real evidence producers (115B/115D), correct identity propagation (115C), correct readiness consumption (115E), and now correct authorization persistence/restoration under canonical D-Map authority (115, this closure). Per the standing instruction not to implement automatic recovery before this foundation is proven, the recommended next subphase is:
+
+**Phase 116 — Multinode reconciliation dependency ordering**, scoped narrowly to: given the now-trustworthy `DServRealization`/readiness signal, define and test how one application's D-Serv/DIoT readiness gates or sequences another's governed reconciliation across nodes — read-only dependency *evaluation* only (mirroring Phase 114D2's `any_element` DForward pattern), explicitly still deferring any automatic corrective action (restart, redeploy, rollback) to a later phase once dependency evaluation itself is proven. The unrelated Stage 107A lease-cycle gate surfaced in Section 8.6 should be investigated as a small, separate, focused fix before or alongside that phase if live multinode validation is desired again — it is unrelated to Phase 115's own scope and was not investigated further here.
