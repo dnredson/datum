@@ -1,8 +1,15 @@
 # Phase 116B — Canonical DScript v1 Core Contract
 
-**Status:** Phase 116B CLOSED. **Phase 116 itself remains OPEN.** This is the
-first production implementation of DScript in the repository; it is a
-narrow, conservative typed contract, not the full phase.
+**Status:** Phase 116B CLOSED. This is the first production implementation
+of DScript in the repository; it is a narrow, conservative typed contract,
+not the full phase. **Phase 116 itself has since CLOSED** — see
+`documentation/reference/phase116c-dscript-input-admission-and-closure.md`
+for the input boundary that completed it and the closure review. This
+document's own content below is unmodified and remains an accurate record
+of the 116B decisions; a small number of test/fixture details it describes
+(the shared fixture's exact JSON shape, and whether unknown fields are
+tolerated) were subsequently refined in 116C — see that document for the
+current, authoritative state of those two points.
 **Branch:** `agent/phase116-dscript`.
 **Baseline:** Phase 116A closure, commit `6295d5157d5ea01af2d9d76365ef5497d2f7133b`.
 
