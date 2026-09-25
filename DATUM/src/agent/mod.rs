@@ -5,6 +5,7 @@ pub mod canonical_dgraph;
 pub mod canonical_dmap;
 pub mod canonical_dmap_v2;
 pub mod canonical_dmonitor;
+pub mod canonical_dscript;
 pub mod dcode_execution_dmonitor;
 pub mod diot_runtime_dmonitor;
 pub mod discovery;

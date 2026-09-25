@@ -11,6 +11,7 @@ pub mod canonical_dgraph;
 pub mod canonical_dmap;
 pub mod canonical_dmap_v2;
 pub mod canonical_dmonitor;
+pub mod canonical_dscript;
 pub mod canonical_placement;
 pub mod capabilities;
 pub mod controlled_dgraph_deployment;
