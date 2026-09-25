@@ -22,6 +22,7 @@ pub mod dcall_endpoint;
 pub mod dcall_mqtt_topic;
 pub mod dcode_authorization;
 pub mod dcode_registry;
+pub mod dcompile_request;
 pub mod ddeploy;
 pub mod ddeploy_v2;
 pub mod deployment_assignment;
