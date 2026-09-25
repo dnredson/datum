@@ -688,7 +688,7 @@ mod tests {
             dgraph_id: "dgraph:test".to_string(), revision,
             project_id: "project:test".to_string(),
             nodes: vec![
-                OperationalNodeDesiredState { node_id: "fog-01".to_string(), desired_services: vec![OperationalDesiredService { service_id: "mqtt".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() }] },
+                OperationalNodeDesiredState { node_id: "fog-01".to_string(), desired_services: vec![OperationalDesiredService { service_id: "mqtt".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None }] },
                 OperationalNodeDesiredState { node_id: "cloud-01".to_string(), desired_services: Vec::new() },
             ],
             metadata: Some(json!({"relations":[{"from":"fog-01","to":"cloud-01","rel":"connected_to","latency_ms":12.5}]})),

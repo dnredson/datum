@@ -257,6 +257,8 @@ fn build_fixture(source_node: &str, dest_node: &str) -> Fixture {
                 service_id: svc.to_string(),
                 runtime: "wasm".to_string(),
                 desired_state: "running".to_string(),
+                application_id: String::new(),
+                dmap_ref: None,
             },
         );
     }
@@ -3399,6 +3401,8 @@ fn v2_redemption_fails_closed_when_a_v1_authority_is_also_registered_for_the_app
                 service_id: svc.to_string(),
                 runtime: "wasm".to_string(),
                 desired_state: "running".to_string(),
+                application_id: String::new(),
+                dmap_ref: None,
             },
         );
     }

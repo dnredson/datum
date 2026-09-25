@@ -504,6 +504,8 @@ mod tests {
                 service_id: SVC.to_string(),
                 runtime: "wasm".to_string(),
                 desired_state: "running".to_string(),
+                application_id: String::new(),
+                dmap_ref: None,
             },
         );
 

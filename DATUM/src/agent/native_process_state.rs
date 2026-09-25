@@ -19,6 +19,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::dcode::authorization::CanonicalContractReferenceV1;
+
 pub const MANAGED_PROCESS_RUNTIME_STATE_SCHEMA: &str = "datum.managed-process-runtime-state/1";
 
 pub const PROCESS_STATE_RUNNING: &str = "running";
@@ -37,6 +39,25 @@ pub struct ManagedProcessRuntimeStateV1 {
     /// authoritatively carry them.
     pub execution_generation: u64,
     pub execution_projection_digest: String,
+    /// Phase 115C (Phase 115A audit finding, "identity discarded one hop
+    /// below dispatch authorization"): the `application_id` of the D-Map
+    /// that placed this exact service, copied verbatim from the
+    /// `OperationalArtifactAssignment` this process was spawned from --
+    /// purely observed-history evidence, exactly like `execution_generation`
+    /// above; never independently derived, never treated as an input to
+    /// anything. Empty for a record persisted before this field existed, or
+    /// for a service resolved under `PlacementAuthority::LegacyTargetNodes`
+    /// (no D-Map at all) -- an empty value here must never be treated as a
+    /// real application_id, only as "unknown," and this crate never
+    /// heuristically reconstructs it from the process/container itself.
+    #[serde(default)]
+    pub application_id: String,
+    /// Phase 115C: the exact accepted D-Map `{id, revision, digest}` this
+    /// process was spawned under, copied verbatim -- same observed-history,
+    /// never-recomputed status as `application_id` above. `None` for a
+    /// pre-migration record or a legacy-authority placement.
+    #[serde(default)]
+    pub dmap_ref: Option<CanonicalContractReferenceV1>,
     pub content_sha256: String,
     pub pid: u32,
     pub proc_start_time_ticks: u64,
@@ -377,6 +398,12 @@ mod tests {
             artifact_id: "svc".to_string(),
             execution_generation: 3,
             execution_projection_digest: "sha256:".to_string() + &"a".repeat(64),
+            application_id: "app-x".to_string(),
+            dmap_ref: Some(CanonicalContractReferenceV1 {
+                id: "dmap:1".to_string(),
+                revision: 1,
+                digest: "sha256:".to_string() + &"c".repeat(64),
+            }),
             content_sha256: "b".repeat(64),
             pid: 4242,
             proc_start_time_ticks: 123456,
@@ -694,6 +721,46 @@ mod tests {
         assert_eq!(loaded, state);
         remove_state(&path).unwrap();
         assert!(load_state(&path).unwrap().is_none());
+    }
+
+    /// Phase 115C: a record persisted BEFORE `application_id`/`dmap_ref`
+    /// existed (or one from a legacy-authority placement that never had a
+    /// D-Map at all) must still load -- with these fields honestly absent,
+    /// never heuristically reconstructed from anything else in the record.
+    #[test]
+    fn legacy_record_without_application_id_or_dmap_ref_still_loads_with_them_absent() {
+        let path = temp_path("legacy-no-115c-fields");
+        let legacy_json = serde_json::json!({
+            "schema": MANAGED_PROCESS_RUNTIME_STATE_SCHEMA,
+            "service_id": "svc",
+            "artifact_id": "svc",
+            "execution_generation": 3,
+            "execution_projection_digest": format!("sha256:{}", "a".repeat(64)),
+            "content_sha256": "b".repeat(64),
+            "pid": 4242,
+            "proc_start_time_ticks": 123456,
+            "observed_executable": "/managed/root/artifacts/bbbb/entrypoint",
+            "cmdline_digest": compute_args_digest(&["--config".to_string(), "cfg.toml".to_string()]),
+            "started_at_utc": "2026-01-01T00:00:00Z",
+            "state": PROCESS_STATE_RUNNING,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy_json).unwrap()).unwrap();
+        let loaded = load_state(&path).unwrap().expect("legacy record must still load");
+        assert_eq!(loaded.application_id, "");
+        assert!(loaded.dmap_ref.is_none());
+        assert!(validate_loaded_state(&loaded).is_ok(), "absent 115C fields must not fail validation");
+        remove_state(&path).unwrap();
+    }
+
+    #[test]
+    fn persist_and_load_round_trips_application_id_and_dmap_ref() {
+        let path = temp_path("roundtrip-115c");
+        let state = sample_state();
+        persist_state(&path, &state).unwrap();
+        let loaded = load_state(&path).unwrap().expect("state must load back");
+        assert_eq!(loaded.application_id, "app-x");
+        assert_eq!(loaded.dmap_ref, state.dmap_ref);
+        remove_state(&path).unwrap();
     }
 
     #[test]

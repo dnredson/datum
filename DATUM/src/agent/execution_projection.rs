@@ -445,6 +445,8 @@ mod tests {
             secret_bindings: Vec::new(),
             execution_generation: 1,
             execution_projection_digest: String::new(),
+            application_id: String::new(),
+            dmap_ref: None,
         }
     }
 
@@ -596,6 +598,8 @@ mod tests {
             }],
             execution_generation: 1,
             execution_projection_digest: String::new(),
+            application_id: String::new(),
+            dmap_ref: None,
         }
     }
 

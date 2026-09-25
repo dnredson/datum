@@ -263,7 +263,7 @@ mod tests {
             revision: 4, project_id: "project-a".into(),
             nodes: vec![
                 OperationalNodeDesiredState { node_id: "fog-01".into(), desired_services: vec![
-                    OperationalDesiredService { service_id: "mqtt".into(), runtime: "container".into(), desired_state: "running".into() },
+                    OperationalDesiredService { service_id: "mqtt".into(), runtime: "container".into(), desired_state: "running".into(), application_id: String::new(), dmap_ref: None },
                 ] },
                 OperationalNodeDesiredState { node_id: "cloud-01".into(), desired_services: vec![] },
             ],

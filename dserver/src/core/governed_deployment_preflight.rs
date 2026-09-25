@@ -225,8 +225,8 @@ mod tests {
             dgraph_revision: 6,
             node_id: "cloud-01".to_string(),
             desired_services: vec![
-                OperationalDesiredService { service_id: "db".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() },
-                OperationalDesiredService { service_id: "api".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() },
+                OperationalDesiredService { service_id: "db".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None },
+                OperationalDesiredService { service_id: "api".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None },
             ],
             artifacts: vec![
                 ArtifactReconciliationAssignment {
@@ -242,6 +242,7 @@ mod tests {
                     lifecycle: Default::default(),
                     dependencies: vec![], wasm_decision: policy.clone(), bindings: BTreeMap::new(), secret_refs: vec![],
                     secret_bindings: vec![], execution_generation: 1, execution_projection_digest: String::new(),
+                    application_id: String::new(), dmap_ref: None,
                 },
                 ArtifactReconciliationAssignment {
                     artifact_id: "api".to_string(), service_id: "api".to_string(), artifact_service_id: "api".to_string(), version: "1".to_string(),
@@ -256,6 +257,7 @@ mod tests {
                     lifecycle: Default::default(),
                     dependencies: vec!["db".to_string()], wasm_decision: policy, bindings: BTreeMap::new(), secret_refs: vec!["api_secret".to_string()],
                     secret_bindings: vec![], execution_generation: 1, execution_projection_digest: String::new(),
+                    application_id: String::new(), dmap_ref: None,
                 },
             ],
             authorization: None,

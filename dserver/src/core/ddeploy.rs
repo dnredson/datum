@@ -1678,6 +1678,14 @@ pub fn derive_application_operational_services(
                     service_id: placement.service_id.clone(),
                     runtime: artifact.runtime.kind.clone(),
                     desired_state: "running".to_string(),
+                    // Phase 115C: known here directly from the D-Map this
+                    // service is being placed by. `dmap_ref` is populated
+                    // later, by `union_project_operational_graph`, which is
+                    // where this application's already-computed `dmap_digest`
+                    // (external to `CanonicalDMapV1` itself -- see that
+                    // type's own doc comment) is actually available.
+                    application_id: dmap.application_id.clone(),
+                    dmap_ref: None,
                 });
             }
             Err(f) => findings.push(f),
@@ -1764,7 +1772,19 @@ pub fn union_project_operational_graph(
         for placement in &app.active_dmap.placements {
             match app.operational_services.get(&placement.service_id) {
                 Some(service) => {
-                    merged_by_node.entry(placement.node_id.clone()).or_default().push(service.clone());
+                    // Phase 115C: attach the exact D-Map contract reference
+                    // this placement came from -- `application_id` already
+                    // survived from `derive_application_operational_services`;
+                    // `dmap_ref.digest` is only available here, from this
+                    // already-computed `ActiveApplicationDeployment`, never
+                    // independently recomputed.
+                    let mut service = service.clone();
+                    service.dmap_ref = Some(crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+                        id: app.active_dmap.dmap_id.clone(),
+                        revision: app.active_dmap.revision,
+                        digest: app.dmap_digest.clone(),
+                    });
+                    merged_by_node.entry(placement.node_id.clone()).or_default().push(service);
                 }
                 None => {
                     // Fail closed rather than silently omitting the
@@ -4133,7 +4153,7 @@ mod tests {
         create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
-        let extra = OperationalDesiredService { service_id: "svc-ghost".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() };
+        let extra = OperationalDesiredService { service_id: "svc-ghost".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None };
         state.active_by_application.get_mut(&key).unwrap().operational_services.insert("svc-ghost".to_string(), extra);
         persist_state(&path, &state).unwrap();
         assert!(load_state(&path).is_err(), "an operational_services snapshot with an EXTRA service the active_dmap does not place must fail closed");
@@ -4430,6 +4450,116 @@ mod tests {
         let cloud_slice = crate::core::operational_dgraph::build_operational_slice(&graph, "cloud-01", None).unwrap();
         assert_eq!(cloud_slice.desired_services.len(), 1);
         assert_eq!(cloud_slice.desired_services[0].service_id, "svc-b");
+    }
+
+    /// A `sample_artifact`-shaped fixture is deliberately minimal (D-Map
+    /// acceptance validation only checks `target_nodes`/`runtime.kind`, not
+    /// a full container spec) -- unlike `sample_artifact`, this one has a
+    /// real `container` payload and a safe `wasm_decision`, so it can
+    /// actually resolve through `build_artifact_reconciliation_context_with_authority`.
+    fn container_ready_artifact(service_id: &str, target_nodes: Vec<&str>) -> ServiceArtifact {
+        ServiceArtifact {
+            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            artifact_id: format!("artifact:{service_id}"),
+            service_id: service_id.to_string(),
+            runtime: ServiceRuntimeSpec {
+                kind: "container".to_string(),
+                container: Some(crate::core::service_artifact_registry::ContainerDeploymentSpec {
+                    container_name: format!("datum-{service_id}"),
+                    image: "example.invalid/image:1".to_string(),
+                    ports: Vec::new(),
+                    network: None,
+                    network_aliases: Vec::new(),
+                    volumes: Vec::new(),
+                    configuration_mounts: Vec::new(),
+                    command: Vec::new(),
+                    image_source_kind: crate::core::service_artifact_registry::IMAGE_SOURCE_KIND_LOCAL_BUILD.to_string(),
+                    resolved_image_identity: None,
+                }),
+                native_process: None,
+            },
+            probes: ServiceProbeSet {
+                execution: ServiceProbeSpec { kind: "none".to_string(), params: Default::default(), vantage_point: None },
+                health: None,
+                availability: None,
+            },
+            metadata: None,
+            control_plane: ServiceArtifactControlPlane {
+                target_nodes: target_nodes.into_iter().map(str::to_string).collect(),
+                version: "1".to_string(),
+                artifact_kind: "container".to_string(),
+                wasm_decision: crate::core::service_artifact_registry::ServiceArtifactWasmDecision {
+                    module_id: "reconcile_service".to_string(),
+                    function_name: "decide".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Phase 115C (closing the Phase 115A "identity discarded one hop below
+    /// dispatch authorization" gap): proves `application_id` and the exact
+    /// accepted D-Map `{id, revision, digest}` survive the FULL chain --
+    /// accepted D-Map -> `derive_application_operational_services` ->
+    /// `union_project_operational_graph` -> per-node slice ->
+    /// `build_artifact_reconciliation_context_with_authority` -- landing on
+    /// the exact `ArtifactReconciliationAssignment` a D-Node would receive.
+    /// Two applications on the SAME node must each keep their OWN identity,
+    /// never cross-contaminated.
+    #[test]
+    fn application_id_and_dmap_ref_survive_from_acceptance_to_the_reconciliation_assignment() {
+        let mut state = DDeployStateV1::empty();
+
+        let mut dgraph_a = sample_dgraph("app-a", 1);
+        dgraph_a.services.truncate(1);
+        dgraph_a.services[0].service_id = "svc-a".to_string();
+        let artifacts_a = vec![sample_artifact("svc-a", vec!["fog-01"])];
+        create_and_accept_with_dgraph(&mut state, "proj-x", "app-a", dgraph_a, "p-a1", vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "fog-01".to_string() }], &artifacts_a, "operator:alice", "a-a1", "2026-01-01T00:00:00Z").unwrap();
+
+        let mut dgraph_b = sample_dgraph("app-b", 1);
+        dgraph_b.services.truncate(1);
+        dgraph_b.services[0].service_id = "svc-b".to_string();
+        let artifacts_b = vec![sample_artifact("svc-b", vec!["fog-01"])];
+        create_and_accept_with_dgraph(&mut state, "proj-x", "app-b", dgraph_b, "p-b1", vec![CanonicalDServPlacementV1 { service_id: "svc-b".to_string(), node_id: "fog-01".to_string() }], &artifacts_b, "operator:bob", "a-b1", "2026-01-01T01:00:00Z").unwrap();
+
+        let active_a = state.active_by_application.get(&application_key("proj-x", "app-a")).unwrap().clone();
+        let active_b = state.active_by_application.get(&application_key("proj-x", "app-b")).unwrap().clone();
+
+        let revision = *state.project_operational_revision.get("proj-x").unwrap();
+        let graph = union_project_operational_graph("proj-x", &state.active_by_application, revision).unwrap();
+        let fog_slice = crate::core::operational_dgraph::build_operational_slice(&graph, "fog-01", None).unwrap();
+        assert_eq!(fog_slice.desired_services.len(), 2, "both applications place a service on fog-01");
+
+        let svc_a = fog_slice.desired_services.iter().find(|s| s.service_id == "svc-a").unwrap();
+        assert_eq!(svc_a.application_id, "app-a");
+        let svc_a_dmap_ref = svc_a.dmap_ref.as_ref().expect("svc-a must carry its own dmap_ref");
+        assert_eq!(svc_a_dmap_ref.id, active_a.active_dmap.dmap_id);
+        assert_eq!(svc_a_dmap_ref.revision, active_a.active_dmap.revision);
+        assert_eq!(svc_a_dmap_ref.digest, active_a.dmap_digest);
+
+        let svc_b = fog_slice.desired_services.iter().find(|s| s.service_id == "svc-b").unwrap();
+        assert_eq!(svc_b.application_id, "app-b");
+        let svc_b_dmap_ref = svc_b.dmap_ref.as_ref().expect("svc-b must carry its own dmap_ref");
+        assert_eq!(svc_b_dmap_ref.id, active_b.active_dmap.dmap_id);
+        // Two independent applications' D-Maps must never be confused with
+        // each other, even when they place services on the exact same node.
+        assert_ne!(svc_a_dmap_ref.id, svc_b_dmap_ref.id);
+        assert_ne!(svc_a.application_id, svc_b.application_id);
+
+        let context = crate::core::artifact_reconciliation_context::build_artifact_reconciliation_context_with_authority(
+            &fog_slice,
+            &[container_ready_artifact("svc-a", vec!["fog-01"]), container_ready_artifact("svc-b", vec!["fog-01"])],
+            crate::core::artifact_reconciliation_context::PlacementAuthority::CanonicalDMap,
+        ).expect("context must build");
+
+        let assignment_a = context.artifacts.iter().find(|a| a.service_id == "svc-a").unwrap();
+        assert_eq!(assignment_a.application_id, "app-a");
+        assert_eq!(assignment_a.dmap_ref.as_ref().unwrap().id, active_a.active_dmap.dmap_id);
+
+        let assignment_b = context.artifacts.iter().find(|a| a.service_id == "svc-b").unwrap();
+        assert_eq!(assignment_b.application_id, "app-b");
+        assert_eq!(assignment_b.dmap_ref.as_ref().unwrap().id, active_b.active_dmap.dmap_id);
     }
 
     #[test]

@@ -1999,6 +1999,10 @@ fn spawn_and_persist(
         artifact_id: assignment.artifact_id.clone(),
         execution_generation: assignment.execution_generation,
         execution_projection_digest: execution_projection_digest.to_string(),
+        // Phase 115C: carried verbatim from the governed assignment this
+        // process was spawned from -- never independently derived.
+        application_id: assignment.application_id.clone(),
+        dmap_ref: assignment.dmap_ref.clone(),
         content_sha256: content_sha256.to_string(),
         pid,
         proc_start_time_ticks: starttime,
@@ -2296,6 +2300,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: "native_process".to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         };
         let report = missing_artifact_assignment_report(&service);
         assert_eq!(report.execution_status, BLOCKED_MISSING_ARTIFACT_ASSIGNMENT);
@@ -2368,6 +2374,8 @@ mod tests {
             secret_bindings: Vec::new(),
             execution_generation: 1,
             execution_projection_digest: String::new(),
+            application_id: String::new(),
+            dmap_ref: None,
         }
     }
 
@@ -2462,6 +2470,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: "native_process".to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         };
         let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
 
@@ -2497,6 +2507,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: "native_process".to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         };
         let layout = ManagedLayout::new(&root);
         let key = native_process_acquisition::stable_service_key("proj", "node", "svc");
@@ -2668,6 +2680,8 @@ mod tests {
             artifact_id: "svc".to_string(),
             execution_generation: 3,
             execution_projection_digest: "sha256:".to_string() + &"a".repeat(64),
+            application_id: String::new(),
+            dmap_ref: None,
             content_sha256: "b".repeat(64),
             pid: 999_999,
             proc_start_time_ticks: 123456,
@@ -2974,6 +2988,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: "native_process".to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         };
 
         // Write a corrupted (non-JSON) state file at the exact path the
@@ -3024,6 +3040,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: "native_process".to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         };
         let boundary_context = MutationBoundaryContext {
             authorization_id: None,
@@ -3238,6 +3256,8 @@ mod linux_integration_tests {
             artifact_id: "it-svc".to_string(),
             execution_generation: 1,
             execution_projection_digest: "sha256:".to_string() + &"a".repeat(64),
+            application_id: String::new(),
+            dmap_ref: None,
             content_sha256: "b".repeat(64),
             pid,
             proc_start_time_ticks: starttime,
@@ -3553,6 +3573,8 @@ mod linux_integration_tests {
             artifact_id: "it-svc".to_string(),
             execution_generation: 1,
             execution_projection_digest: "sha256:".to_string() + &"a".repeat(64),
+            application_id: String::new(),
+            dmap_ref: None,
             content_sha256: "b".repeat(64),
             pid,
             proc_start_time_ticks: starttime,

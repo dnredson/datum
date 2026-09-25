@@ -111,6 +111,19 @@ pub struct ArtifactReconciliationAssignment {
     /// the digest to verify it was not tampered with in transit.
     #[serde(default)]
     pub execution_projection_digest: String,
+    /// Phase 115C (Phase 115A audit finding): carried verbatim from the
+    /// matching `OperationalDesiredService.application_id` this assignment
+    /// was resolved against -- never independently looked up a second way.
+    /// Empty for a not-yet-rebuilt legacy operational graph.
+    #[serde(default)]
+    pub application_id: String,
+    /// Phase 115C: carried verbatim from the matching
+    /// `OperationalDesiredService.dmap_ref` -- the exact accepted D-Map
+    /// `{id, revision, digest}` that placed this service, never
+    /// independently recomputed. `None` for a not-yet-rebuilt legacy graph
+    /// or a service resolved under `PlacementAuthority::LegacyTargetNodes`.
+    #[serde(default)]
+    pub dmap_ref: Option<crate::core::canonical_dmap::CanonicalContractReferenceV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -391,6 +404,10 @@ pub fn resolve_assignments_from_registry_with_authority(
                     secret_bindings: artifact.control_plane.secret_bindings.clone(),
                     execution_generation: artifact.control_plane.execution_generation,
                     execution_projection_digest: artifact.control_plane.execution_projection_digest.clone(),
+                    // Phase 115C: verbatim from the desired-service this
+                    // assignment resolves, never independently looked up.
+                    application_id: service.application_id.clone(),
+                    dmap_ref: service.dmap_ref.clone(),
                 }
             }
             Ok(RuntimeKind::NativeProcess) => {
@@ -428,6 +445,10 @@ pub fn resolve_assignments_from_registry_with_authority(
                     secret_bindings: artifact.control_plane.secret_bindings.clone(),
                     execution_generation: artifact.control_plane.execution_generation,
                     execution_projection_digest: artifact.control_plane.execution_projection_digest.clone(),
+                    // Phase 115C: verbatim from the desired-service this
+                    // assignment resolves, never independently looked up.
+                    application_id: service.application_id.clone(),
+                    dmap_ref: service.dmap_ref.clone(),
                 }
             }
             Err(error) => {
@@ -934,6 +955,8 @@ mod tests {
             service_id: "native-svc".to_string(),
             runtime: crate::core::runtime_kind::RUNTIME_KIND_NATIVE_PROCESS.to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         }];
         s
     }
@@ -1131,6 +1154,8 @@ mod tests {
                 service_id: "mqtt".to_string(),
                 runtime: "container".to_string(),
                 desired_state: "running".to_string(),
+                application_id: String::new(),
+                dmap_ref: None,
             }],
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
@@ -1218,6 +1243,8 @@ mod tests {
                         service_id: "mqtt".to_string(),
                         runtime: "container".to_string(),
                         desired_state: "running".to_string(),
+                        application_id: String::new(),
+                        dmap_ref: None,
                     }],
                 }],
                 metadata: None,
@@ -1751,6 +1778,8 @@ mod tests {
             secret_bindings: Vec::new(),
             execution_generation: 1,
             execution_projection_digest: String::new(),
+            application_id: String::new(),
+            dmap_ref: None,
         });
         assert!(gaps.iter().all(|gap| !gap.starts_with("unpinned_image_reference:")));
     }
@@ -1848,7 +1877,7 @@ mod tests {
         // canonical `OperationalDGraph` for this node).
         let mut fog_slice = slice();
         fog_slice.node_id = "fog-01".to_string();
-        fog_slice.desired_services = vec![OperationalDesiredService { service_id: "svc-a".to_string(), runtime: "container".to_string(), desired_state: "running".to_string() }];
+        fog_slice.desired_services = vec![OperationalDesiredService { service_id: "svc-a".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None }];
 
         // Step 3/4: the REAL canonical-authority path resolves svc-a on fog-01.
         let canonical_context = build_artifact_reconciliation_context_with_authority(&fog_slice, &[artifact_svc_a.clone()], PlacementAuthority::CanonicalDMap)

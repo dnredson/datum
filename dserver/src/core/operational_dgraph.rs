@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::canonical_dmap::CanonicalContractReferenceV1;
 use crate::core::service_artifact_registry::{
     EXECUTION_PINNING_MODE_LEGACY_PARTIAL, EXECUTION_PINNING_MODE_REQUIRED,
 };
@@ -55,6 +56,30 @@ pub struct OperationalDesiredService {
     pub service_id: String,
     pub runtime: String,
     pub desired_state: String,
+    /// Phase 115C (Phase 115A audit finding): the `application_id` of the
+    /// D-Map that placed this exact service here. Previously discarded the
+    /// moment `union_project_operational_graph` merged per-application
+    /// `ActiveApplicationDeployment` records into this shared, per-project,
+    /// per-node structure -- it survived only in that function's untyped
+    /// `metadata.applications` provenance array, never on the typed service
+    /// record itself, so nothing reading `desired_services` directly (this
+    /// object's only real consumers: `ArtifactReconciliationContext`,
+    /// `OperationalArtifactAssignment`, and ultimately node-local runtime
+    /// state) could recover which application a given `service_id` belonged
+    /// to. Empty for a not-yet-rebuilt legacy graph -- `union_project_operational_graph`
+    /// always populates this going forward; an empty value here must never
+    /// be silently treated as a real application_id, only as "unknown."
+    #[serde(default)]
+    pub application_id: String,
+    /// Phase 115C: the exact accepted D-Map `{id, revision, digest}` this
+    /// placement came from, EXACTLY as `ActiveApplicationDeployment` already
+    /// carries it -- never independently recomputed, never a new authority.
+    /// `None` for a not-yet-rebuilt legacy graph or for a service still
+    /// resolved under `PlacementAuthority::LegacyTargetNodes` (Stage 111,
+    /// which predates canonical D-Map placement entirely and has no D-Map to
+    /// reference).
+    #[serde(default)]
+    pub dmap_ref: Option<CanonicalContractReferenceV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -553,6 +578,8 @@ mod tests {
                     service_id: "mqtt".to_string(),
                     runtime: "container".to_string(),
                     desired_state: "running".to_string(),
+                    application_id: String::new(),
+                    dmap_ref: None,
                 }],
             }],
             metadata: None,

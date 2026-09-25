@@ -322,6 +322,8 @@ mod tests {
                     service_id: "mqtt".to_string(),
                     runtime: "container".to_string(),
                     desired_state: "running".to_string(),
+                    application_id: String::new(),
+                    dmap_ref: None,
                 }],
             }],
             metadata: None,

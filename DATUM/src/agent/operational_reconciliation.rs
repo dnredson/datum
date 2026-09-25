@@ -13,6 +13,7 @@ use crate::agent::bootstrap::{
     run_bootstrap, run_bootstrap_with_resource_discovery, BootstrapState,
     SmartSentinelBootstrapReport,
 };
+use crate::dcode::authorization::CanonicalContractReferenceV1;
 use crate::agent::execution_projection;
 use crate::agent::image_identity_verification::{
     self, CliDockerImageRuntime, DockerImageRuntime, VerifiedImageIdentity,
@@ -54,6 +55,16 @@ pub struct OperationalDesiredService {
     pub service_id: String,
     pub runtime: String,
     pub desired_state: String,
+    /// Phase 115C. Mirrors `dserver::core::operational_dgraph::OperationalDesiredService.application_id`.
+    /// Empty for a not-yet-rebuilt legacy operational graph -- never treated
+    /// as a real application_id in that case, only as "unknown."
+    #[serde(default)]
+    pub application_id: String,
+    /// Phase 115C. Mirrors `dserver::core::operational_dgraph::OperationalDesiredService.dmap_ref`
+    /// -- the exact accepted D-Map `{id, revision, digest}` this placement
+    /// came from, never independently recomputed on this side either.
+    #[serde(default)]
+    pub dmap_ref: Option<CanonicalContractReferenceV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +290,12 @@ pub struct OperationalArtifactAssignment {
     /// (`blocked_projection_mismatch`).
     #[serde(default)]
     pub execution_projection_digest: String,
+    /// Phase 115C. Mirrors `dserver::core::artifact_reconciliation_context::ArtifactReconciliationAssignment.application_id`.
+    #[serde(default)]
+    pub application_id: String,
+    /// Phase 115C. Mirrors `dserver::core::artifact_reconciliation_context::ArtifactReconciliationAssignment.dmap_ref`.
+    #[serde(default)]
+    pub dmap_ref: Option<CanonicalContractReferenceV1>,
 }
 
 pub const IMAGE_SOURCE_KIND_REGISTRY: &str = "registry";
@@ -4071,6 +4088,8 @@ mod tests {
             service_id: "svc".to_string(),
             runtime: runtime.to_string(),
             desired_state: "running".to_string(),
+            application_id: String::new(),
+            dmap_ref: None,
         }
     }
 
@@ -4114,6 +4133,8 @@ mod tests {
             secret_bindings: Vec::new(),
             execution_generation: 1,
             execution_projection_digest: String::new(),
+            application_id: String::new(),
+            dmap_ref: None,
         }
     }
 
