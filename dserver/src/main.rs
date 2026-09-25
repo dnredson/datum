@@ -58,6 +58,7 @@ use api::dgraph_rollback_audit::get_dgraph_rollback_audit_contract;
 use api::diot_runtime_binding::{
     get_diot_runtime_binding, get_diot_runtime_binding_current, put_diot_runtime_binding,
 };
+use api::dforward_dependency_readiness::get_dforward_dependency_readiness;
 use api::dispatch::{get_dispatch_for_node, get_materialized_dispatch, publish_latest_dispatch};
 use api::dmap::{get_dmap, set_dmap};
 use api::dmonitor::{
@@ -462,6 +463,7 @@ async fn main() {
         .route("/api/v1/dmonitor/observations/:project_id/:node_id/:monitor_instance_id/head", get(get_dmonitor_stream_head))
         .route("/api/v1/dmonitor/convergence/:project_id/:application_id/evaluate", post(post_evaluate_dmonitor_convergence))
         .route("/api/v1/dmonitor/readiness/:project_id/:application_id", get(get_dmonitor_readiness))
+        .route("/api/v1/dforward/dependency-readiness/:project_id/:application_id/:node_id", get(get_dforward_dependency_readiness))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
             "/api/v1/action-plan/materialized",

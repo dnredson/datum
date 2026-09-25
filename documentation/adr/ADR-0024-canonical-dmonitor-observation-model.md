@@ -1481,6 +1481,140 @@ authorization, automatic recovery, monitor leader election, and
 retention/pruning all remain entirely out of scope, deferred to Phase
 114D2 and beyond.
 
+## DMonitor-governed any_element provider readiness (Phase 114D2)
+
+### Closing the ADR-0010 deferred gate
+
+ADR-0010 defined `requires[scope = any_element]` readiness as establishable
+ONLY from fresh DMonitor evidence of the PROVIDING D-IoT placement, never
+from static configuration, and Phase 113 deliberately left it
+`readiness_authority = "dmonitor"` / `readiness_state =
+"pending_fresh_evidence"`. Phase 114D2 closes that seam with a new pure
+module, `core::dforward_dependency_readiness`, that answers the actual
+question ADR-0010 asks: for `consumer.requires(interface = I, scope =
+any_element)`, which canonical DIoT provides `I` to this consumer according
+to the CURRENT accepted DForward/DMap/2 authority, and is THAT EXACT
+provider placement `Ready` under Phase 114D1 governance?
+
+### Provider resolved from CURRENT accepted DForward topology only
+
+`evaluate_dforward_dependency_readiness` never accepts a caller-supplied
+DForward or a caller-selected provider -- it reads the accepted
+`dforward_snapshot` embedded in `PlacementAuthorityV2Extras` (the exact same
+authority `dforward_projection::governed_node_projection` already treats as
+the ONLY legitimate DForward source), obtained via
+`ddeploy::active_placement_authority`, and resolves providers purely from
+that snapshot's own `chains`/`hops`.
+
+### Hop direction is not authority
+
+Independent audit of `CanonicalDForwardV1::validate` confirmed the concern
+this phase was built to respect: hop-endpoint validation proves interface
+COMPLEMENTARITY only --
+`(a.provides(I) && b.requires(I)) || (a.requires(I) && b.provides(I))` --
+and never fixes which side of a hop is semantically "the provider". D2
+therefore identifies the consumer's own side of a hop by exact `diot_id`
+match, then classifies the OTHER side as a provider candidate only if it is
+a declared DIoT whose `provides[]` genuinely contains the required
+interface. `hop.from`/`hop.to` position is never treated as authority
+(`resolve_provider_candidates`).
+
+### DMap/2 supplies the provider placement; multiplicity fails closed by audit, not assumption
+
+`DIoTPlacementV2` placements are supplied by `PlacementAuthorityV2Extras.diot_placements`.
+Direct audit of `canonical_dmap_v2.rs`'s own validation found that
+`diot_id` uniqueness across placements is NOT enforced -- only
+`placement_id` uniqueness is (`duplicate_diot_placement` fires solely on a
+repeated `placement_id`). Since no accepted contract establishes a
+placement-selection rule for one logical `diot_id` legitimately having
+multiple current placements, and none establishes a provider-selection rule
+for one interface legitimately resolving to multiple distinct logical
+DIoTs across one or more chains, D2 fails closed in both cases
+(`provider_ambiguous`, `provider_placement_ambiguous`) rather than
+inventing first-wins/nearest-node/healthiest-wins/round-robin selection --
+any of which would be new placement/routing authority this phase does not
+have. Repeated topological references to the SAME exact provider (multiple
+hops/chains naming the identical `diot_id`) are deduplicated by
+construction (a `BTreeSet`), never counted as multiple providers.
+
+### External endpoints are not DIoT provider readiness
+
+If a required interface resolves only to a declared external endpoint
+(never to a DIoT that provides it), D2 fails closed with
+`provider_not_diot` rather than inventing external-endpoint health
+semantics -- ADR-0010's gate is specifically about the providing D-IoT
+placement.
+
+### Same-node providers are not rejected
+
+`AnyElement` is the scope name (as opposed to `SameElement`), not
+`OtherElement`/`RemoteElement`; nothing in the accepted contracts restricts
+the resolved provider to a different node than the consumer, so D2 does not
+invent that restriction (`provider_on_same_node_as_consumer_is_satisfied_when_ready`).
+
+### D1 is consumed, never reimplemented
+
+D2 calls `dmonitor_readiness::evaluate_application_readiness` EXACTLY ONCE
+per evaluation (one snapshot, one `evaluated_at_utc`, one server-owned
+policy -- the SAME instance Phase 114D1 already established, never a
+caller-supplied one) and reads only the `DMonitorDiotPlacementReadinessV1`
+entry matching the resolved provider's exact `placement_id`. It never
+recomputes freshness, DMap/DForward/runtime-binding correlation, health
+aggregation, or monitor-conflict policy -- those all remain Phase
+114D0A/D1's sole responsibility.
+
+### The gate is provider-placement readiness, never whole-application readiness
+
+This is the load-bearing property the whole phase exists to prove: an
+`any_element` dependency is `Satisfied` purely on the strength of its own
+exact provider placement's `readiness == Ready`; an unrelated D-Serv
+placement being `NotReady` (and therefore whole-application readiness being
+`NotReady`) never blocks it. Proven at the unit level
+(`unrelated_dserv_notready_does_not_block_a_ready_provider`) and end-to-end
+against a real DServer process
+(`dmonitor_d2_dependency_readiness_integration.rs`), where the dependency is
+`Satisfied` while `GET /api/v1/dmonitor/readiness/...` simultaneously
+reports `NotReady` for the same application.
+
+### Result model and finding inventory
+
+`DForwardDependencyReadinessV1 { schema: "datum.dforward-dependency-readiness/1",
+project_id, application_id, node_id, evaluated_at_utc, policy, dmap_ref,
+dforward_ref, findings, dependencies }`, where each
+`DForwardAnyElementDependencyReadinessV1` carries the consumer's exact
+identity, the resolved provider's exact identity (when resolved), the
+EXACT provider placement's own embedded `DMonitorDiotPlacementReadinessV1`
+(for auditability -- never the whole application readiness object, never
+unrelated D-Serv evidence), a fail-closed two-state
+`DForwardDependencyStateV1 { Satisfied, Blocked }` (no third `Unknown`
+governance state, mirroring Phase 114D1's own rationale), and typed
+findings. A THIRD, separate 9-entry finding inventory
+(`dforward_dependency_readiness::ALL_DEPENDENCY_FINDING_CODES`) is used --
+never overloading the convergence layer's 19 codes or the readiness layer's
+9. Not persisted, for the same reason convergence/readiness are not.
+
+### Production API
+
+`GET /api/v1/dforward/dependency-readiness/:project_id/:application_id/:node_id`
+-- no request body, no query parameters, no caller-supplied DForward or
+provider selection, server-owned evaluation time and Phase 114D1 policy,
+read-only. Uses the SAME 4-lock order Phase 114D0A/D1 established
+(`DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+DIOT_RUNTIME_BINDING_TRANSACTION -> DMONITOR_TRANSACTION`) and calls the
+shared core functions directly -- never an internal HTTP call to DServer's
+own `/api/v1/dmonitor/readiness/...` route.
+
+### `same_element` unchanged; DServer remains observer
+
+`same_element` requirements never enter this dynamic evaluation at all
+(only `scope == AnyElement` requirements are enumerated) -- its existing
+structural validation/static projection is untouched. No reconciliation,
+restart/redeploy, placement mutation, host mutation, automatic corrective
+action, or provider-selection/ranking policy was introduced. Live multinode
+validation of this resolution logic remains Phase 114E's job, per the same
+evidentiary discipline already carried forward from every prior Phase 114
+sub-phase.
+
 ## Migration posture for the legacy SmartSentinel model
 
 This ADR does not migrate or remove any existing SmartSentinel code path.
@@ -1546,6 +1680,16 @@ authority over this decision and is not a migration source.
   end against a real DServer process
   (`dmonitor_d1_readiness_integration.rs::d1_readiness_requires_every_required_dimension_ready`).
   `any_element` feed integration still does not exist -- 114D2's job.
+- ADR-0010's deferred `any_element` gate is now closed:
+  `core::dforward_dependency_readiness::evaluate_dforward_dependency_readiness`
+  resolves the CURRENT accepted DForward chain topology's exact provider
+  DIoT placement and consumes Phase 114D1's per-placement readiness for it
+  at `GET /api/v1/dforward/dependency-readiness/:project_id/:application_id/:node_id`
+  -- see "DMonitor-governed any_element provider readiness (Phase 114D2)"
+  above, proven end to end against a real DServer process
+  (`dmonitor_d2_dependency_readiness_integration.rs::d2_any_element_dependency_consumes_provider_placement_readiness_not_application_readiness`),
+  including the load-bearing proof that an unrelated D-Serv placement being
+  `NotReady` never blocks a `Ready` provider.
 - No live multinode validation of this model exists yet -- 114E's job, and
   per this project's established evidentiary discipline (see the Phase 113B
   live-multinode closure precedent), any future claim of live multinode

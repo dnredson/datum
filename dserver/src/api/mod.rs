@@ -9,6 +9,7 @@ pub mod dcall;
 pub mod dcode;
 pub mod ddeploy;
 pub mod deployment_lifecycle;
+pub mod dforward_dependency_readiness;
 pub mod deployment_planning;
 pub mod dgraph_artifact_integrity;
 pub mod dgraph_capability_negotiation;

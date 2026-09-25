@@ -76,7 +76,15 @@ retry protocol, recursive dispatch, or exactly-once claim is part of this ADR.
 `same_element` requirements can be structurally validated and projected in
 Phase 113A. `any_element` requirements may be represented but are not ready
 from static configuration. Any execution path requiring them remains pending
-until fresh DMonitor evidence exists, per ADR-0010.
+until fresh DMonitor evidence exists, per ADR-0010. Phase 114D2 closes that
+deferred gate: `dserver::core::dforward_dependency_readiness` resolves the
+CURRENT accepted chain topology's exact provider DIoT placement and consumes
+Phase 114D1's per-placement readiness for it -- see ADR-0010's own "Phase
+114D2: implementation" section and ADR-0024. This static
+`dforward_projection` module itself is UNCHANGED: it still has no DMonitor
+state to consult and correctly keeps reporting
+`readiness_state = "pending_fresh_evidence"` for `any_element`; the new
+module is an entirely separate, additively-named, DMonitor-aware evaluation.
 
 The operational realization projection helper validates supplied DMap/2 and
 exact DForward references before deriving a node-local view. It may repeat placement, artifact bindings,

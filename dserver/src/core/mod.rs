@@ -30,6 +30,7 @@ pub mod deployment_lifecycle_observed;
 pub mod deployment_manifest;
 pub mod deployment_plan;
 pub mod deployment_readiness;
+pub mod dforward_dependency_readiness;
 pub mod dforward_projection;
 pub mod dgraph;
 pub mod dgraph_artifact_integrity;
