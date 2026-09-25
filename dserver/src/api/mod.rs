@@ -27,6 +27,7 @@ pub mod dispatch;
 pub mod dmap;
 pub mod dmonitor;
 pub mod dmonitor_convergence;
+pub mod dmonitor_readiness;
 pub mod dnode_registry;
 pub mod events;
 pub mod external_ai_inference;

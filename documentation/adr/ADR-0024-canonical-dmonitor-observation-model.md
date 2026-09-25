@@ -1314,6 +1314,173 @@ realization may legitimately be `convergence = Converged` with
 independence, unchanged) -- Phase 114D1 is what will decide whether such a
 state counts as "ready."
 
+## DMonitor-backed readiness governance (Phase 114D1)
+
+### Readiness is governance, not telemetry
+
+Phase 114D1 answers exactly one question: does SERVER-OWNED governance
+currently permit this application's realizations to be considered ready for
+downstream use? Readiness is never a field DMonitor submits, never a health
+alias, never a convergence alias, and never a caller-selected diagnostic
+interpretation -- it is entirely derived, entirely server-computed, from
+facts the platform already independently proves (freshness, authority
+correlation, convergence, health).
+
+### Fail-closed two-state model
+
+Unlike `DMonitorConvergenceV1` (three states, including a genuinely honest
+`Unknown`), `DMonitorReadinessV1` has exactly two states: `Ready` and
+`NotReady`. Readiness is an authorization-style decision -- if it cannot be
+POSITIVELY proven, the answer is `NotReady`, never a third "unknown"
+governance state. Diagnostic uncertainty remains fully visible through
+`findings` and the embedded, unmodified convergence results, which keep
+their own `Unknown` states unchanged.
+
+### Server-owned policy, no caller override
+
+`DMonitorReadinessPolicyV1 { policy_id, freshness_policy, accepted_health }`
+is entirely server-owned. `GET /api/v1/dmonitor/readiness/:project_id/:application_id`
+takes NO request body and NO query parameter -- nothing a caller sends can
+influence the freshness window, the accepted-health set, or
+`evaluated_at_utc`. No `[dmonitor]` section exists yet in
+`dserver::config::AppConfig`, so v1 ships one explicit, versioned,
+fully-documented default (`dmonitor-readiness-v1`):
+`max_observed_age_seconds = 90`, `max_received_age_seconds = 90`,
+`max_future_clock_skew_seconds = 10`, `accepted_health = Healthy` only.
+The 90-second window is three nominal periods of the Phase 114D0B governed
+DIoT heartbeat default (30 seconds) -- heartbeat cadence and this readiness
+freshness window are INDEPENDENT configured values, and an operator who
+configures a heartbeat slower than this window can legitimately and
+correctly cause otherwise-healthy evidence to read `NotReady`; that is
+working as designed. Broader policy configurability is a later
+product/configuration concern, never caller control.
+
+### Prerequisites, never re-derived
+
+`core::dmonitor_readiness::evaluate_application_readiness` calls
+`evaluate_application_dserv_convergence` and
+`evaluate_application_diot_convergence` UNMODIFIED, for the SAME
+`evaluated_at_utc` and the SAME readiness freshness policy, and adds only
+one new layer: a typed current-health assessment
+(`DMonitorCurrentHealthV1`: `Healthy`/`Degraded`/`Unhealthy`/`Unknown`/
+`Conflicting`) computed ONLY from each placement's already-`admitted_evidence`
+(never stale/excluded claims -- those are already excluded by the
+convergence layer). No monitor leader, no majority vote: for one required
+placement, if every admitted current evidence claim agrees on `Healthy`,
+health passes; ANY disagreement, or any non-`Healthy` value, fails closed
+(`Conflicting` gets its own finding, `conflicting_current_health`, rather
+than being silently folded into a generic `NotReady`).
+
+### Per-placement, per-dimension, and application-level readiness
+
+Readiness exists at three levels: `DMonitorPlacementReadinessV1` (one per
+desired D-Serv placement), `DMonitorDiotPlacementReadinessV1` (one per
+desired DIoT placement), and the application aggregate. A D-Serv placement
+is `Ready` only if its convergence is exactly `Converged` AND its current
+health is `Healthy`; a DIoT placement adds nothing new here -- freshness,
+exact DMap/DForward/runtime-binding correlation, and runtime-binding
+currentness are ALREADY structural prerequisites of `admitted_evidence` and
+of `convergence == Converged` itself (Phase 114D0A), so this layer only
+adds the health gate on top, never re-deriving those five prerequisites.
+
+### Required vs. not-required dimensions
+
+`datum.dmap/1` has no DIoT placement concept at all, so DIoT is
+`NotRequired` and never blocks readiness. A `datum.dmap/2` authority with
+zero desired DIoT placements is likewise `NotRequired` for DIoT. Every
+desired D-Serv placement is individually required; every desired DIoT
+placement is individually required. A dimension with zero desired
+placements never blocks readiness BY ITSELF -- except that a dimension's
+own top-level convergence being `Diverged` (which Phase 114C/114D0A already
+produce for a proven unexpected realization, even against zero desired
+placements) always blocks readiness regardless of the required count
+(`dimension_ok` in `dmonitor_readiness.rs` encodes exactly this rule). Zero
+desired D-Serv AND zero desired DIoT is `NotReady`/`no_required_runtime_realizations`
+-- `all([]) == true` is never treated as operational readiness proof.
+
+### Application aggregation
+
+`Ready` iff: current active placement authority exists; at least one
+required runtime realization exists; every required D-Serv placement is
+`Ready`; every required DIoT placement is `Ready`; and neither dimension's
+convergence is `Diverged` (which also catches a proven unexpected
+realization). No weighted score, no percentage threshold, no majority.
+
+### Old-but-Healthy authority-change semantics
+
+The Phase 114D0B scenario this phase was explicitly built to handle
+correctly: an MQTT session may remain `health = Healthy` while still
+referencing binding N after server authority advances to N+1. Phase 114D0A
+already excludes that evidence from admission (authority mismatch /
+stale runtime binding), so its placement's convergence is not `Converged`
+and readiness is `NotReady` -- health never overrides authority/currentness.
+Proven directly by
+`dmonitor_readiness::tests::old_authority_but_still_healthy_session_is_not_ready`
+and the D0A+D1 integration proof's third step (a fresh, exact-current
+`Unhealthy` DIoT observation flips readiness to `NotReady` while
+convergence stays `Converged`, demonstrating the inverse but structurally
+identical independence).
+
+### Graceful shutdown needs no special case
+
+Phase 114D0B's graceful shutdown emits no synthetic `Unhealthy` observation
+-- the last `Healthy` heartbeat simply ages toward staleness under the
+UNCHANGED Phase 114C freshness rule. Readiness therefore naturally
+transitions `Ready -> NotReady` once that evidence falls outside the
+readiness policy's freshness window, with no shutdown-specific readiness
+state required.
+
+### Readiness is never persisted
+
+Like convergence, readiness is recomputed fresh on every call from a single
+in-process snapshot (`PlacementAuthorityView`, `DMonitorStateV1`,
+`DIoTRuntimeBindingRegistryStateV1`, `DDeployStateV1`,
+`DNodeRegistryStateV1`) taken under the SAME 4-lock order Phase 114D0A
+established (`DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+DIOT_RUNTIME_BINDING_TRANSACTION -> DMONITOR_TRANSACTION`). Persisting a
+readiness boolean would immediately create a second, independently-stale
+piece of state -- exactly the same reasoning Phase 114B1's own module doc
+already gives for never persisting convergence.
+
+### Readiness finding inventory
+
+A SEPARATE 9-entry inventory from the 19 convergence finding codes (never
+overloading them): `ready`, `no_active_placement_authority`,
+`no_required_runtime_realizations`, `dserv_not_converged`,
+`diot_not_converged`, `health_unknown`, `health_degraded`,
+`health_unhealthy`, `conflicting_current_health`. Nested convergence
+results embedded in the readiness response keep their own 19 codes
+unchanged.
+
+### Exact limitation: canonical D-Serv evidence has no production emitter yet
+
+The generic SmartSentinel Phase 114B2 bridge deliberately does NOT
+manufacture `DServRealization` identity from container/process/image names
+(see "SmartSentinel compatibility bridge (Phase 114B2)" above) -- so a
+normal environment running only generic SmartSentinel telemetry currently
+has NO canonical D-Serv realization evidence at all. For an application
+with required D-Serv placements, readiness correctly stays `NotReady`
+until exact canonical evidence exists; this module never falls back to
+`RuntimeProcess`, container name, process name, `Unbound`, hostname, image,
+or port evidence to manufacture a false positive. The Phase 114D1
+integration proof (`dmonitor_d1_readiness_integration.rs`) explicitly
+constructs and publishes a canonical `DServRealization` fixture directly
+(via `agent::canonical_dmonitor` + `outputs::dmonitor_http`) to prove the
+GOVERNANCE logic -- this is testing governance, not inventing a production
+D-Serv evidence producer, which remains a separate, still-open future
+concern.
+
+### D-Call success, `any_element` still deferred
+
+D-Call delivery success/count, DCode invocation count, message throughput,
+broker RTT, and network-probe reachability are explicitly NOT part of v1
+readiness -- the v1 policy is exactly `fresh + exact-current + converged +
+Healthy` for every required realization, nothing more. `any_element`
+resolution, placement selection, reconciliation, restart/redeploy, mutation
+authorization, automatic recovery, monitor leader election, and
+retention/pruning all remain entirely out of scope, deferred to Phase
+114D2 and beyond.
+
 ## Migration posture for the legacy SmartSentinel model
 
 This ADR does not migrate or remove any existing SmartSentinel code path.
@@ -1370,7 +1537,15 @@ authority over this decision and is not a migration source.
   to end against a real DServer process
   (`dmonitor_d0a_d0b_integration.rs::d0a_d0b_end_to_end_diot_evidence_converges`).
   DServer itself was not modified: it remains observer only.
-- No readiness/`any_element` feed integration exists yet -- 114D's job.
+- Server-owned, fail-closed readiness governance now exists at
+  `GET /api/v1/dmonitor/readiness/:project_id/:application_id` --
+  `core::dmonitor_readiness::evaluate_application_readiness` derives
+  `Ready`/`NotReady` from the SAME convergence functions above plus a new
+  admitted-current-health gate, with no caller-controllable policy -- see
+  "DMonitor-backed readiness governance (Phase 114D1)" above, proven end to
+  end against a real DServer process
+  (`dmonitor_d1_readiness_integration.rs::d1_readiness_requires_every_required_dimension_ready`).
+  `any_element` feed integration still does not exist -- 114D2's job.
 - No live multinode validation of this model exists yet -- 114E's job, and
   per this project's established evidentiary discipline (see the Phase 113B
   live-multinode closure precedent), any future claim of live multinode

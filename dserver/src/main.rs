@@ -65,6 +65,7 @@ use api::dmonitor::{
     post_dmonitor_observation,
 };
 use api::dmonitor_convergence::post_evaluate_dmonitor_convergence;
+use api::dmonitor_readiness::get_dmonitor_readiness;
 use api::dnode_registry::{
     delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode,
 };
@@ -460,6 +461,7 @@ async fn main() {
         .route("/api/v1/dmonitor/observations/:project_id/by-id/:observation_id", get(get_dmonitor_observation_by_id))
         .route("/api/v1/dmonitor/observations/:project_id/:node_id/:monitor_instance_id/head", get(get_dmonitor_stream_head))
         .route("/api/v1/dmonitor/convergence/:project_id/:application_id/evaluate", post(post_evaluate_dmonitor_convergence))
+        .route("/api/v1/dmonitor/readiness/:project_id/:application_id", get(get_dmonitor_readiness))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
             "/api/v1/action-plan/materialized",

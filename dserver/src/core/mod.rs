@@ -48,6 +48,7 @@ pub mod diot_runtime_binding;
 pub mod dispatch_policy;
 pub mod dmonitor_freshness;
 pub mod dmonitor_interpretation;
+pub mod dmonitor_readiness;
 pub mod dmonitor_state;
 pub mod dnode_registry;
 pub mod dserv_artifact;
