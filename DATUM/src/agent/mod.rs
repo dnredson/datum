@@ -16,6 +16,7 @@ pub mod image_identity_verification;
 pub mod integrated_service_evidence;
 pub mod jcs;
 pub mod native_process_acquisition;
+pub mod native_process_dmonitor;
 pub mod native_process_runtime;
 pub mod native_process_state;
 pub mod operational_evidence;

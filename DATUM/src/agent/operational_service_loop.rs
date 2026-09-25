@@ -14,6 +14,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::bootstrap::{run_bootstrap_with_resource_discovery, BootstrapState};
+use crate::agent::dmonitor_emission::DMonitorEmissionContext;
+use crate::agent::native_process_dmonitor::NativeProcessMonitorEmitter;
 use crate::agent::operational_evidence::{
     append_operational_evidence, publish_operational_evidence, OperationalEvidenceEvent,
 };
@@ -186,6 +188,26 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         .build()
         .context("build SmartSentinel operational control-plane client")?;
 
+    // Phase 115D: one DMonitor process epoch + bounded background publisher
+    // for the lifetime of this loop, mirroring `dcall::delivery`'s own
+    // established pattern -- a slow/unresponsive DServer can never stall
+    // reconciliation (the loop's own primary purpose), and a restarted
+    // process always gets a fresh `monitor_instance_id`/sequence-1 epoch.
+    let dserv_emission_context = DMonitorEmissionContext::new_process_epoch(
+        requested_node_id.as_deref().unwrap_or("unknown"),
+    );
+    let mut dserv_emitter = NativeProcessMonitorEmitter::new(dserv_emission_context);
+    let dserv_dmonitor_output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(
+        options.dserver_url.clone(),
+        options.project_id.clone(),
+        options.timeout_s,
+    )
+    .context("build SmartSentinel operational DMonitor client")?;
+    let dserv_publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(
+        dserv_dmonitor_output,
+        crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY,
+    );
+
     let shutdown = Arc::new(AtomicBool::new(false));
     install_ctrlc_handler(Arc::clone(&shutdown))?;
 
@@ -345,6 +367,8 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                 &mut last_snapshot,
                 &mut last_drift_verification,
                 &mut last_control_signature,
+                &mut dserv_emitter,
+                &dserv_publisher,
             );
         }
 
@@ -373,6 +397,12 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         eprintln!("mode=smartsentinel-operational event=liveness status=thread_join_error");
     }
 
+    // Phase 115D: graceful shutdown of the DMonitor publication worker,
+    // regardless of how the loop above exited -- never leaves a background
+    // thread dangling, never blocks longer than one in-flight publish's own
+    // client timeout (mirrors `dcall::delivery::run_mqtt_dcall_listener`).
+    dserv_publisher.shutdown();
+
     println!(
         "mode=smartsentinel-operational event=shutdown completed_cycles={} heartbeat_seq={} uptime_ms={}",
         sequence,
@@ -397,6 +427,8 @@ fn run_hybrid_control_cycle(
     last_snapshot: &mut Option<Instant>,
     last_drift_verification: &mut Option<Instant>,
     last_control_signature: &mut Option<ControlSignature>,
+    dserv_emitter: &mut NativeProcessMonitorEmitter,
+    dserv_publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
 ) {
     let bootstrap = match run_bootstrap_with_resource_discovery(
         cached_discovery.clone(),
@@ -614,6 +646,42 @@ fn run_hybrid_control_cycle(
                     Err(error) => {
                         report.snapshot_published = false;
                         report.snapshot_publish_error = Some(error.to_string());
+                    }
+                }
+            }
+
+            // Phase 115D: independent, read-only DMonitor observation of
+            // every service this cycle reconciled -- never gates, never
+            // mutates, never influences `report`/`execution_status` above.
+            // For each service, `observe_current_native_state` re-reads
+            // (never trusts a cached value) the SAME persisted runtime-
+            // ownership record `reconcile_native_service` itself just used,
+            // via the identical stable-key derivation -- so this can never
+            // silently drift onto a different service's file. Silently
+            // `None` for any non-native-process service, a service with no
+            // persisted state yet, or one still missing Phase 115C identity
+            // (application_id/dmap_ref) -- fail-closed, never fabricated.
+            let observed_at_utc = chrono::Utc::now().to_rfc3339();
+            for service in &report.services {
+                if let Some((state, identity)) = crate::agent::native_process_runtime::observe_current_native_state(
+                    cfg,
+                    &options.project_id,
+                    &report.node_id,
+                    &service.service_id,
+                ) {
+                    if let Some(observation) = dserv_emitter.emit(
+                        &report.node_id,
+                        &options.project_id,
+                        &observed_at_utc,
+                        &state,
+                        &identity,
+                    ) {
+                        if let Ok(observation_json) = serde_json::to_value(&observation) {
+                            dserv_publisher.try_publish(crate::dcall::dmonitor_publisher::DMonitorPublishJob {
+                                observation_id: observation.observation_id.clone(),
+                                observation_json,
+                            });
+                        }
                     }
                 }
             }

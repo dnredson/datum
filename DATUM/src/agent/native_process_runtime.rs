@@ -185,6 +185,38 @@ fn configured_native_process_root(cfg: &Config) -> Option<PathBuf> {
     Some(PathBuf::from(root))
 }
 
+/// Phase 115D: an independent, READ-ONLY observation of a managed native
+/// process's CURRENT persisted state + freshly-checked identity -- reuses
+/// exactly the same `configured_native_process_root`/`stable_service_key`/
+/// `ManagedLayout`/`load_state`/`observe_persisted_identity` machinery
+/// `reconcile_native_service` itself uses, so a DMonitor producer never
+/// re-derives "where is this service's state file" a second, potentially
+/// divergent way. Deliberately separate from `reconcile_native_service`:
+/// this never acquires the reconciliation lock, never mutates anything, and
+/// is safe to call from an entirely independent observation cycle (mirrors
+/// DMonitor's own "never gate/mutate" contract at the call-site boundary,
+/// not merely by convention). `None` means either no root is configured, no
+/// state has ever been persisted for this exact service, or the persisted
+/// record is unreadable/invalid -- in every such case there is honestly
+/// nothing to observe, never a fabricated placeholder.
+pub(crate) fn observe_current_native_state(
+    cfg: &Config,
+    project_id: &str,
+    node_id: &str,
+    service_id: &str,
+) -> Option<(ManagedProcessRuntimeStateV1, IdentityCheck)> {
+    let root = configured_native_process_root(cfg)?;
+    let stable_key = native_process_acquisition::stable_service_key(project_id, node_id, service_id);
+    let layout = ManagedLayout::new(root);
+    let path = layout.state_path(&stable_key).ok()?;
+    let state = native_process_state::load_state(&path).ok()??;
+    if native_process_state::validate_loaded_state(&state).is_err() {
+        return None;
+    }
+    let identity = observe_persisted_identity(&state);
+    Some((state, identity))
+}
+
 // ---------------------------------------------------------------------- //
 // Pure reconciliation decision (Section N).
 // ---------------------------------------------------------------------- //
