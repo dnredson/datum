@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 
 use crate::{
     api::resource_registry::active_resource_binding_for_node,
+    core::resource_binding::ResourceRoleBindingRecord,
     core::{
         artifact_reconciliation_context::{
             build_artifact_reconciliation_context_with_authority, required_completeness_gaps,
@@ -127,13 +128,95 @@ fn initialize_operational_dgraph_persistence_with_policy(
     Ok(restored)
 }
 
+/// Pure selection: there is exactly one effective placement authority per
+/// project. When canonical D-Map authority is active (`canonical_graph` is
+/// `Some`), it ALWAYS wins, regardless of whatever this domain's own legacy
+/// `state.graphs` map happens to contain for the same project -- a stale or
+/// merely-coexisting legacy entry is never consulted, never blended with the
+/// canonical one, and can never cause a valid canonical authorization to be
+/// rejected. Only when no canonical authority is active does the legacy
+/// graph become the effective authority. No I/O: directly unit-testable
+/// without touching any SQLite domain.
+fn select_effective_graph(
+    canonical_graph: Option<OperationalDGraph>,
+    legacy_graph: Option<OperationalDGraph>,
+) -> Option<OperationalDGraph> {
+    canonical_graph.or(legacy_graph)
+}
+
+/// Phase 115F live-validation finding: a persisted authorization is
+/// historical evidence of a past grant, never current placement authority by
+/// itself -- on every load/restart it must be RE-ADMITTED against whichever
+/// graph is the project's CURRENT effective authority (`select_effective_graph`
+/// above), exactly the same concept `authorize_operational_reconciliation`
+/// already resolves at issuance time. `binding` is `None` when no active
+/// Resource Registry binding exists for the node -- an authorization can
+/// never be restored without one, exactly like at issuance time.
+///
+/// No I/O: takes the already-resolved effective graph and binding as plain
+/// parameters, so this is the exact decision `prepare_restored_authorizations`
+/// makes, directly and exhaustively unit-testable without touching any
+/// SQLite domain or global in-memory store.
+///
+/// Explicit node-presence check (second investigation finding, C4): reusing
+/// `authorization_is_valid_for_context` alone is NOT sufficient here -- that
+/// helper's own `node_id` parameter is meant to be an INDEPENDENTLY-supplied
+/// "node we are checking for" (e.g. the URL path parameter at issuance time),
+/// and comparing it against `authorization.node_id` is only a meaningful
+/// check when the two can genuinely disagree. Calling it with
+/// `&authorization.node_id` as that parameter (as both this function and the
+/// original, now-replaced restoration code do) makes that specific half of
+/// the helper's check tautological. The REAL "is this node still placed in
+/// the current graph at all" enforcement lived only in the structural
+/// validator this fix removed (Section on `validate_operational_dgraph_persisted_state`)
+/// -- it is re-established HERE instead, at authority-restoration time,
+/// which is where it actually belongs (a node's presence is a fact about
+/// CURRENT authority, never a structural property of a persisted blob).
+///
+/// Reuses `authorization_is_valid_for_context` for every other dimension --
+/// project/dgraph_id/dgraph_revision/binding match plus a still-valid lease
+/// -- so a stale D-Map revision, a changed binding, or an expired lease all
+/// still correctly fail to restore, exactly as before. A project with no
+/// effective graph at all (neither canonical nor legacy) still silently
+/// excludes the authorization from the active set, same as today -- this
+/// only changes WHICH graph is checked against, never weakens any check.
+fn should_restore_authorization(
+    authorization: &OperationalReconciliationAuthorization,
+    canonical_graph: Option<OperationalDGraph>,
+    legacy_graph: Option<OperationalDGraph>,
+    binding: Option<&ResourceRoleBindingRecord>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(graph) = select_effective_graph(canonical_graph, legacy_graph) else { return false };
+    let Some(binding) = binding else { return false };
+    let node_still_placed = graph
+        .nodes
+        .iter()
+        .any(|node| node.node_id.trim() == authorization.node_id.trim());
+    node_still_placed
+        && authorization_is_valid_for_context(authorization, &graph, &authorization.node_id, &binding.binding_id, now)
+}
+
+/// Thin I/O wrapper around `should_restore_authorization`. `effective_canonical_operational_graph`
+/// is a SEPARATE, safe read of a completely different, stateless-per-call
+/// SQLite domain (`core::ddeploy::load_state`/`active_operational_projection`
+/// open their own domain fresh on every call; there is no shared `OnceLock`,
+/// no cached global state, and no dependency on `AppState`/config/Firebase on
+/// that side) -- calling it here, including during server startup
+/// (`initialize_operational_dgraph_persistence_from_env`, which runs before
+/// any HTTP listener or other subsystem exists), introduces no
+/// initialization-order cycle, no recursion (the ddeploy read path never
+/// calls back into this module), and no new lock ordering (the only lock
+/// held across this whole sequence, `state_transaction()`, is never needed
+/// by the ddeploy read at all).
 fn prepare_restored_authorizations(state: &OperationalDGraphPersistedState) -> Result<AuthorizationMap, String> {
     let mut restored = BTreeMap::new();
     let now = Utc::now();
     for (key, authorization) in &state.authorizations {
-        let Some(graph) = state.graphs.get(&authorization.project_id) else { continue; };
-        let Some(binding) = active_resource_binding_for_node(&authorization.project_id, &authorization.node_id)? else { continue; };
-        if authorization_is_valid_for_context(authorization, graph, &authorization.node_id, &binding.binding_id, now) {
+        let canonical_graph = crate::api::ddeploy::effective_canonical_operational_graph(&authorization.project_id)?;
+        let legacy_graph = state.graphs.get(&authorization.project_id).cloned();
+        let binding = active_resource_binding_for_node(&authorization.project_id, &authorization.node_id)?;
+        if should_restore_authorization(authorization, canonical_graph, legacy_graph, binding.as_ref(), now) {
             restored.insert(key.clone(), authorization.clone());
         }
     }
@@ -741,5 +824,318 @@ mod tests {
     fn reconciliation_authorization_scope_rejects_unknown_values() {
         assert!(!reconciliation_authorization_scope_is_acceptable("bogus"));
         assert!(!reconciliation_authorization_scope_is_acceptable(""));
+    }
+
+    // ---- Phase 115F fix: canonical-D-Map-aware authorization restoration ---
+    // ---- (C1-C9 test matrix, all pure -- no SQLite, no env var, no global --
+    // ---- in-memory store touched; see this module's `resource_registry`   --
+    // ---- OnceLock for why that path is architecturally untestable here). --
+
+    const PROJECT: &str = "proj:115f-fix-test";
+    const NODE: &str = "rpi-01";
+    const SVC: &str = "svc-115f0";
+
+    fn canonical_graph(revision: u64) -> OperationalDGraph {
+        OperationalDGraph {
+            schema_version: OPERATIONAL_DGRAPH_SCHEMA_VERSION.to_string(),
+            dgraph_id: "ddeploy-operational:proj:115f-fix-test".to_string(),
+            revision,
+            project_id: PROJECT.to_string(),
+            nodes: vec![OperationalNodeDesiredState {
+                node_id: NODE.to_string(),
+                desired_services: vec![OperationalDesiredService {
+                    service_id: SVC.to_string(),
+                    runtime: "native_process".to_string(),
+                    desired_state: "running".to_string(),
+                    application_id: "app:115f-fix-test".to_string(),
+                    dmap_ref: None,
+                }],
+            }],
+            metadata: None,
+        }
+    }
+
+    fn binding(binding_id: &str) -> ResourceRoleBindingRecord {
+        ResourceRoleBindingRecord {
+            binding_schema_version: "0.1.0".to_string(),
+            project_id: PROJECT.to_string(),
+            binding_id: binding_id.to_string(),
+            resource_id: "resource:hw:test".to_string(),
+            node_id: NODE.to_string(),
+            transition_kind: "initial_assignment".to_string(),
+            predecessor_binding_id: None,
+            status: "active".to_string(),
+            bound_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            unbound_at_utc: None,
+            identity_scope: "canonical_hardware".to_string(),
+            hardware_fingerprint_id: Some("hw:test".to_string()),
+            os_installation_id: Some("osinst:test".to_string()),
+            capacity_profile_id: "capacity:test".to_string(),
+            control_plane_authorized: true,
+            automatic_assignment_performed: false,
+        }
+    }
+
+    fn durable_auth(dgraph_id: &str, dgraph_revision: u64, node_id: &str, binding_id: &str) -> OperationalReconciliationAuthorization {
+        let now = Utc::now();
+        OperationalReconciliationAuthorization {
+            authorization_id: "opauth:115f-fix-test".to_string(),
+            project_id: PROJECT.to_string(),
+            dgraph_id: dgraph_id.to_string(),
+            dgraph_revision,
+            node_id: node_id.to_string(),
+            binding_id: Some(binding_id.to_string()),
+            resource_id: Some("resource:hw:test".to_string()),
+            authorized_by: "operator:test".to_string(),
+            authorized_at_utc: now.to_rfc3339(),
+            allow_host_mutation: true,
+            operation: AUTHORIZATION_OPERATION_RECONCILE.to_string(),
+            persistence_scope: AUTHORIZATION_SCOPE_DURABLE.to_string(),
+            expires_at_utc: Some((now + chrono::Duration::minutes(10)).to_rfc3339()),
+            artifact_bindings: Vec::new(),
+            execution_pinning_mode: "required".to_string(),
+            snapshot: Vec::new(),
+        }
+    }
+
+    // ---- C9 core rule: exactly one effective authority ---------------------
+
+    #[test]
+    fn select_effective_graph_canonical_wins_when_active() {
+        let canonical = canonical_graph(1);
+        let mut legacy = canonical_graph(1);
+        legacy.dgraph_id = "dgraph:stale-legacy".to_string();
+        legacy.revision = 99;
+        let effective = select_effective_graph(Some(canonical.clone()), Some(legacy));
+        assert_eq!(effective, Some(canonical), "canonical authority must win even over a coexisting, differently-shaped legacy entry");
+    }
+
+    #[test]
+    fn select_effective_graph_falls_back_to_legacy_when_no_canonical_authority() {
+        let legacy = canonical_graph(1);
+        let effective = select_effective_graph(None, Some(legacy.clone()));
+        assert_eq!(effective, Some(legacy));
+    }
+
+    #[test]
+    fn select_effective_graph_is_none_when_neither_exists() {
+        assert_eq!(select_effective_graph(None, None), None);
+    }
+
+    // ---- C1: canonical project, no legacy graph at all ---------------------
+
+    #[test]
+    fn c1_canonical_authorization_restores_with_no_legacy_graph_entry() {
+        let graph = canonical_graph(1);
+        let auth = durable_auth(&graph.dgraph_id, graph.revision, NODE, "binding:1");
+        let b = binding("binding:1");
+        assert!(should_restore_authorization(&auth, Some(graph), None, Some(&b), Utc::now()));
+    }
+
+    // ---- C3: canonical D-Map revision changed -> old authorization must ----
+    // ---- NOT restore, no rebinding, no revision rewriting, fail closed. ----
+
+    #[test]
+    fn c3_stale_dmap_revision_never_restores() {
+        let old_graph_shape = canonical_graph(1);
+        let auth = durable_auth(&old_graph_shape.dgraph_id, 1, NODE, "binding:1");
+        let current_graph = canonical_graph(2); // same dgraph_id, revision bumped to 2
+        let b = binding("binding:1");
+        assert!(!should_restore_authorization(&auth, Some(current_graph), None, Some(&b), Utc::now()), "an authorization issued against revision 1 must never become active for revision 2");
+    }
+
+    #[test]
+    fn c3_dgraph_id_change_never_restores() {
+        let auth = durable_auth("ddeploy-operational:proj:115f-fix-test", 1, NODE, "binding:1");
+        let mut different_graph = canonical_graph(1);
+        different_graph.dgraph_id = "ddeploy-operational:proj:different".to_string();
+        let b = binding("binding:1");
+        assert!(!should_restore_authorization(&auth, Some(different_graph), None, Some(&b), Utc::now()));
+    }
+
+    // ---- C4: canonical node no longer present in the effective graph -------
+
+    #[test]
+    fn c4_node_absent_from_current_graph_never_restores() {
+        let graph = canonical_graph(1);
+        let auth = durable_auth(&graph.dgraph_id, graph.revision, "some-other-node", "binding:1");
+        let b = binding("binding:1");
+        assert!(!should_restore_authorization(&auth, Some(graph), None, Some(&b), Utc::now()));
+    }
+
+    // ---- C5: Resource Registry binding changed or absent --------------------
+
+    #[test]
+    fn c5_binding_id_mismatch_never_restores() {
+        let graph = canonical_graph(1);
+        let auth = durable_auth(&graph.dgraph_id, graph.revision, NODE, "binding:old");
+        let current_binding = binding("binding:new");
+        assert!(!should_restore_authorization(&auth, Some(graph), None, Some(&current_binding), Utc::now()));
+    }
+
+    #[test]
+    fn c5_no_active_binding_never_restores() {
+        let graph = canonical_graph(1);
+        let auth = durable_auth(&graph.dgraph_id, graph.revision, NODE, "binding:1");
+        assert!(!should_restore_authorization(&auth, Some(graph), None, None, Utc::now()));
+    }
+
+    // ---- C6: lease expired ---------------------------------------------------
+
+    #[test]
+    fn c6_expired_lease_never_restores() {
+        let graph = canonical_graph(1);
+        let mut auth = durable_auth(&graph.dgraph_id, graph.revision, NODE, "binding:1");
+        auth.expires_at_utc = Some((Utc::now() - chrono::Duration::minutes(1)).to_rfc3339());
+        let b = binding("binding:1");
+        assert!(!should_restore_authorization(&auth, Some(graph), None, Some(&b), Utc::now()));
+    }
+
+    #[test]
+    fn c6_still_valid_lease_restores() {
+        let graph = canonical_graph(1);
+        let auth = durable_auth(&graph.dgraph_id, graph.revision, NODE, "binding:1");
+        let b = binding("binding:1");
+        assert!(should_restore_authorization(&auth, Some(graph), None, Some(&b), Utc::now()));
+    }
+
+    // ---- C8: legacy project behavior is unchanged ----------------------------
+
+    #[test]
+    fn c8_legacy_project_exact_match_restores() {
+        let legacy = graph(3); // this module's own pre-existing legacy fixture (project:test/fog-01)
+        let auth = durable_auth(&legacy.dgraph_id, legacy.revision, "fog-01", "binding:1");
+        let mut auth = auth;
+        auth.project_id = legacy.project_id.clone();
+        let b = ResourceRoleBindingRecord { project_id: legacy.project_id.clone(), ..binding("binding:1") };
+        assert!(should_restore_authorization(&auth, None, Some(legacy), Some(&b), Utc::now()));
+    }
+
+    #[test]
+    fn c8_legacy_project_missing_required_graph_never_restores() {
+        let auth = durable_auth("dgraph:test", 3, "fog-01", "binding:1");
+        let b = binding("binding:1");
+        assert!(!should_restore_authorization(&auth, None, None, Some(&b), Utc::now()), "no canonical graph and no legacy graph entry must never restore");
+    }
+
+    #[test]
+    fn c8_legacy_project_revision_mismatch_never_restores() {
+        let legacy = graph(3);
+        let mut auth = durable_auth(&legacy.dgraph_id, 2, "fog-01", "binding:1"); // wrong revision
+        auth.project_id = legacy.project_id.clone();
+        let b = ResourceRoleBindingRecord { project_id: legacy.project_id.clone(), ..binding("binding:1") };
+        assert!(!should_restore_authorization(&auth, None, Some(legacy), Some(&b), Utc::now()));
+    }
+
+    #[test]
+    fn c8_legacy_project_node_absent_never_restores() {
+        let legacy = graph(3);
+        let mut auth = durable_auth(&legacy.dgraph_id, legacy.revision, "not-a-real-node", "binding:1");
+        auth.project_id = legacy.project_id.clone();
+        let b = ResourceRoleBindingRecord { project_id: legacy.project_id.clone(), ..binding("binding:1") };
+        assert!(!should_restore_authorization(&auth, None, Some(legacy), Some(&b), Utc::now()));
+    }
+
+    #[test]
+    fn c8_legacy_project_binding_mismatch_never_restores() {
+        let legacy = graph(3);
+        let mut auth = durable_auth(&legacy.dgraph_id, legacy.revision, "fog-01", "binding:old");
+        auth.project_id = legacy.project_id.clone();
+        let b = ResourceRoleBindingRecord { project_id: legacy.project_id.clone(), ..binding("binding:new") };
+        assert!(!should_restore_authorization(&auth, None, Some(legacy), Some(&b), Utc::now()));
+    }
+
+    // ---- C9: canonical authority active AND a stale/coexisting legacy ------
+    // ---- graph both present for the same project -- canonical must win, ---
+    // ---- the stale legacy entry must neither help nor hurt. ----------------
+
+    #[test]
+    fn c9_canonical_wins_over_a_mismatched_coexisting_legacy_graph() {
+        let canonical = canonical_graph(1);
+        let auth = durable_auth(&canonical.dgraph_id, canonical.revision, NODE, "binding:1");
+        let mut stale_legacy = canonical_graph(1);
+        stale_legacy.dgraph_id = "dgraph:totally-different-stale-legacy".to_string();
+        stale_legacy.revision = 999;
+        stale_legacy.nodes.clear(); // would fail node-presence if it were consulted
+        let b = binding("binding:1");
+        assert!(
+            should_restore_authorization(&auth, Some(canonical), Some(stale_legacy), Some(&b), Utc::now()),
+            "a stale, structurally-mismatched coexisting legacy graph must never cause a valid canonical authorization to be rejected"
+        );
+    }
+
+    // ---- C7: structurally malformed authorization is still rejected by ----
+    // ---- structural persistence validation -- unrelated to, and never -----
+    // ---- weakened by, the authority-restoration fix above. -----------------
+
+    #[test]
+    fn c7_malformed_authorization_still_rejected_by_structural_validation() {
+        use crate::core::operational_dgraph_persistence::{
+            validate_operational_dgraph_persisted_state, OperationalDGraphPersistedState,
+        };
+        let auth = durable_auth("dgraph:test", 1, NODE, "binding:1");
+        let mut malformed = auth.clone();
+        malformed.binding_id = None; // structurally invalid regardless of any graph
+        let mut state = OperationalDGraphPersistedState::empty();
+        state.authorizations.insert(
+            authorization_key(&malformed.project_id, &malformed.node_id),
+            malformed,
+        );
+        assert!(
+            validate_operational_dgraph_persisted_state(&state).is_err(),
+            "a durable authorization missing binding_id must still fail structural validation, with no graph involved at all"
+        );
+    }
+
+    #[test]
+    fn c7_well_formed_canonical_authorization_passes_structural_validation_with_no_graph_entry() {
+        // The exact shape this Phase 115F fix must newly ACCEPT at persist
+        // time: a durable, well-formed authorization for a canonical-
+        // authority project that has NO entry in this domain's own legacy
+        // `graphs` map at all.
+        use crate::core::operational_dgraph_persistence::{
+            validate_operational_dgraph_persisted_state, OperationalDGraphPersistedState,
+        };
+        let auth = durable_auth("ddeploy-operational:proj:115f-fix-test", 1, NODE, "binding:1");
+        let mut state = OperationalDGraphPersistedState::empty();
+        state.authorizations.insert(authorization_key(&auth.project_id, &auth.node_id), auth);
+        assert!(
+            validate_operational_dgraph_persisted_state(&state).is_ok(),
+            "a well-formed durable authorization for a canonical-authority project must persist even with no legacy graphs entry"
+        );
+    }
+
+    // ---- C2 (partial, honest scope): the persisted JSON structurally -------
+    // ---- survives a save+reload cycle without being rejected. This proves --
+    // ---- `validate_operational_dgraph_persisted_state` no longer errors on --
+    // ---- a canonical-authority authorization with no legacy graph entry; ---
+    // ---- it does NOT exercise `prepare_restored_authorizations`'s own ------
+    // ---- re-admission decision, which depends on the Resource Registry's ---
+    // ---- process-wide `OnceLock` global store (see this file's own --------
+    // ---- `active_resource_binding_for_node`) -- that store is initialized --
+    // ---- exactly once per process from whichever caller reaches it first, -
+    // ---- so it cannot be safely or deterministically driven from a shared --
+    // ---- `cargo test` binary. `should_restore_authorization`'s tests above -
+    // ---- already exhaustively cover that decision's actual logic, pure and-
+    // ---- race-free.
+    #[test]
+    fn c2_canonical_authorization_json_round_trip_survives_persist_and_load() {
+        use crate::core::operational_dgraph_persistence::{
+            load_operational_dgraph_persisted_state, persist_operational_dgraph_state,
+            OperationalDGraphPersistedState,
+        };
+        let path = std::env::temp_dir().join(format!(
+            "datum-115f-fix-c2-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let auth = durable_auth("ddeploy-operational:proj:115f-fix-test", 1, NODE, "binding:1");
+        let mut state = OperationalDGraphPersistedState::empty();
+        state.authorizations.insert(authorization_key(&auth.project_id, &auth.node_id), auth.clone());
+        persist_operational_dgraph_state(&path, &state).expect("persist must succeed with no legacy graph entry");
+        let reloaded = load_operational_dgraph_persisted_state(&path)
+            .expect("load must succeed")
+            .expect("state must exist");
+        assert_eq!(reloaded.authorizations.get(&authorization_key(&auth.project_id, &auth.node_id)), Some(&auth));
+        let _ = std::fs::remove_file(&path);
     }
 }

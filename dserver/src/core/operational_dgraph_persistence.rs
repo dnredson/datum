@@ -118,24 +118,36 @@ pub fn validate_operational_dgraph_persisted_state(
             )
         })?;
 
-        let graph = state.graphs.get(&authorization.project_id).ok_or_else(|| {
-            format!(
-                "persisted operational authorization '{}' references missing project graph '{}'",
-                authorization.authorization_id, authorization.project_id
-            )
-        })?;
-        if authorization.dgraph_id != graph.dgraph_id
-            || authorization.dgraph_revision != graph.revision
-            || !graph
-                .nodes
-                .iter()
-                .any(|node| node.node_id.trim() == authorization.node_id.trim())
-        {
-            return Err(format!(
-                "persisted operational authorization '{}' does not match active graph identity/revision/node",
-                authorization.authorization_id
-            ));
-        }
+        // Phase 115F live-validation finding: this function is STRUCTURAL
+        // serialization validation only -- it checks that what is already
+        // persisted in this domain-isolated store (`DOMAIN_OPERATIONAL_DGRAPH`)
+        // is internally well-formed, never whether an authorization is
+        // CURRENT external authority. It deliberately does NOT cross-check
+        // an authorization against `state.graphs` (this store's own legacy
+        // graph map): that map is populated ONLY by the legacy
+        // `put_operational_dgraph` write path, which itself explicitly
+        // refuses to write once canonical D-Map authority (Stage 111,
+        // ADR-0018) is active for a project -- so a project legitimately
+        // using canonical authority (which every Phase 115 D-Serv-observation
+        // scenario requires, since `dmap_ref` only exists under it) has NO
+        // entry here at all, by design, not by corruption. Treating that
+        // absence as a structural defect would make it impossible to ever
+        // durably persist a canonical-authority project's authorization.
+        //
+        // The actual "is this authorization CURRENT authority" question is
+        // answered elsewhere, against whichever graph (canonical or legacy)
+        // is ACTUALLY the project's effective authority right now --
+        // `api::operational_dgraph::prepare_restored_authorizations`, using
+        // the same `authorization_is_valid_for_context` helper
+        // `authorize_operational_reconciliation` already uses at issuance
+        // time. That check runs on every load/restart (never merely once,
+        // here, at persist time), which is where "was this authorization's
+        // D-Map since superseded" must actually be re-proven -- persisted
+        // data is evidence of a past grant, never current authority by
+        // itself. This function still fully enforces every OTHER structural
+        // invariant above (key format, durable persistence_scope,
+        // allow_host_mutation, non-empty binding_id, valid expiry/authored
+        // timestamps) -- none of that is weakened.
     }
 
     Ok(())
