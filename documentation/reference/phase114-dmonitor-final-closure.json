@@ -1,0 +1,71 @@
+{
+  "phase": "114",
+  "date_utc": "2026-09-25",
+  "final_feature_commit": "3e0baa8f415b822f69eef86c0cbfe2a3681e3a65",
+  "branch": "agent/dmonitor-v1",
+  "status": "closed",
+  "phase114e_result": "pass",
+  "live_multinode_dmonitor_validation": true,
+  "subphase_commits": {
+    "114A": "124bbd2377dac9c07b12fb2efb6a61c7cf704cbe",
+    "114B1": "f68c3a01542d7cba0d49bb226ff47ac9da8055e3",
+    "114B2": "e148e0c5a41920f5abbb0d5f16a45adc215059fd",
+    "114C": "371f116a7fac03080fe2fbdaf7526aa827062189",
+    "114D0A": "5dfb626e383c087c3d78c799b194174c9f22b2d2",
+    "114D0B": "0cfd75752e97b4b0f2de58a882dfd9ab9f6139f8",
+    "114D1": "c059c3341c7901eeea77ce4881bbd341580d8aef",
+    "114D2": "3e0baa8f415b822f69eef86c0cbfe2a3681e3a65"
+  },
+  "topology": {
+    "control_plane_and_broker": { "operational_ip": "192.168.10.101", "dserver_port": 8080, "mqtt_port": 1883 },
+    "provider": { "canonical_node_id": "fog-01", "operational_ip": "192.168.10.103", "live_process": "smartsentinel-dcall-mqtt-listen" },
+    "consumer": { "canonical_node_id": "cloud-01", "operational_ip": "192.168.10.108", "live_process": null, "note": "declared DNode + DIoT placement only; D2 gate depends solely on provider placement readiness" }
+  },
+  "namespace": {
+    "project_id": "proj:dmonitor-live-114e0",
+    "application_id": "app:pipeline-114e0",
+    "dmap_id": "dmap:24:proj:dmonitor-live-114e018:app:pipeline-114e0",
+    "dmap_revision": 1,
+    "dmap_digest": "sha256:c7eac434eb593f2b866ae7cf6347f66fe2d0b6c96f32fe290b4939ea15212122",
+    "dforward_id": "dforward:dmonitor-live-114e0",
+    "dforward_revision": 1,
+    "dforward_digest": "sha256:09c3054d4245f16989cd73e0e535a97852013d93456a648fb9e7de68dcb061b2",
+    "provider_diot_id": "mqtt-broker",
+    "provider_placement_id": "diotplace:mqtt-broker-fog01",
+    "consumer_diot_id": "diot:consumer",
+    "consumer_placement_id": "diotplace:consumer",
+    "interface": "sensor-bus",
+    "unrelated_dserv_service_id": "unrelated-service",
+    "runtime_binding_id": "diot-runtime-binding:proj:dmonitor-live-114e0:app:pipeline-114e0:diotplace:mqtt-broker-fog01"
+  },
+  "acceptance_matrix": {
+    "E1_authority": "pass",
+    "E2_initial_fail_closed": "pass",
+    "E3_real_provider_producer": "pass",
+    "E4_exact_correlation": "pass",
+    "E5_provider_readiness": "pass",
+    "E6_cross_node_any_element": "pass",
+    "E7_sustained_heartbeat": "pass",
+    "E8_graceful_stop_staleness": "pass",
+    "E9_authority_immutability": "pass"
+  },
+  "e8_staleness_transition": {
+    "last_healthy_observation_id": "dmonitor-obs:dmonitor-instance:fog-01:01634a4c-8375-4fb2-b9cf-ed3e446b448b:21",
+    "observed_at_utc": "2026-09-25T14:40:35.688045133+00:00",
+    "received_at_utc": "2026-09-25T14:40:34.102025300+00:00",
+    "stale_evaluated_at_utc": "2026-09-25T14:42:06.727122300+00:00",
+    "health_at_stale_check": "healthy",
+    "freshness_at_stale_check": "stale",
+    "admitted_at_stale_check": false,
+    "provider_readiness_at_stale_check": "not_ready",
+    "dependency_state_at_stale_check": "blocked"
+  },
+  "what_was_not_proven": [
+    "full application data-plane end-to-end DCall payload exchange between fog-01 and cloud-01",
+    "resolution of the historical Phase 113B4B cross-host MQTT payload transport limitation",
+    "a live consumer-side runtime producer on cloud-01 (not required by the D2 gate)",
+    "reconciliation, automatic recovery, or any corrective host mutation driven by DMonitor evidence"
+  ],
+  "sensitive_data_excluded": ["bearer_token", "broker_credentials", "windows_username", "raw_payload_bytes"],
+  "next_phase": "115"
+}
