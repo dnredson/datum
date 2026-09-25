@@ -63,7 +63,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::canonical_dmonitor::{DMonitorHealthV1, DMonitorSubjectV1};
-use crate::core::ddeploy_v2::PlacementAuthorityView;
+use crate::core::ddeploy_v2::{PlacementAuthorityV2Extras, PlacementAuthorityView};
 use crate::core::dmonitor_freshness::{evaluate_freshness, DMonitorFreshnessPolicyV1, DMonitorFreshnessV1};
 use crate::core::dmonitor_state::{DMonitorObservationRecordV1, DMonitorStateV1};
 
@@ -103,12 +103,30 @@ pub const FINDING_NO_ACTIVE_PLACEMENT_AUTHORITY: &str = "no_active_placement_aut
 pub const FINDING_NO_DESIRED_PLACEMENTS: &str = "no_desired_placements";
 pub const FINDING_INSUFFICIENT_CANONICAL_CORRELATION: &str = "insufficient_canonical_correlation";
 
-/// The complete, stable finding-code inventory (Phase 114C.1, section 1) --
-/// exactly the 13 constants declared above, in declaration order. Exists so
-/// a test can assert the inventory's exact size and membership stay in sync
-/// with the constants themselves, rather than the count only ever being
-/// asserted informally in prose (which is exactly how the Phase 114C final
-/// report's "12" miscount happened).
+// Phase 114D0A closure: DIoT convergence reuses every finding code above
+// that is generic to "evidence vs authority" comparison (exact match,
+// no/stale/clock-skewed evidence, an authority ref present but missing or
+// mismatched, wrong/conflicting observed node, an unexpected realization,
+// no active placement authority at all) unchanged. These six are the ones
+// with no D-Serv equivalent: DIoT correlation additionally requires an
+// exact match against the CURRENTLY REGISTERED `DIoTRuntimeBindingV1` (a
+// separate operational authority from DMap/DForward, never reachable from
+// D-Serv's comparison at all) and that registration must itself still be
+// current against DMap/2 + D-Node authority.
+pub const FINDING_RUNTIME_BINDING_NOT_REGISTERED: &str = "runtime_binding_not_registered";
+pub const FINDING_RUNTIME_BINDING_REF_MISSING: &str = "runtime_binding_ref_missing";
+pub const FINDING_RUNTIME_BINDING_MISMATCH: &str = "runtime_binding_mismatch";
+pub const FINDING_RUNTIME_BINDING_STALE: &str = "runtime_binding_stale";
+pub const FINDING_DMAP_V1_NO_DIOT_SUPPORT: &str = "dmap_v1_no_diot_support";
+pub const FINDING_NO_DESIRED_DIOT_PLACEMENTS: &str = "no_desired_diot_placements";
+
+/// The complete, stable finding-code inventory (Phase 114C.1, section 1;
+/// extended by Phase 114D0A section 1 with the six DIoT-only codes above --
+/// never redefined, only appended to). Exists so a test can assert the
+/// inventory's exact size and membership stay in sync with the constants
+/// themselves, rather than the count only ever being asserted informally in
+/// prose (which is exactly how the Phase 114C final report's "12" miscount
+/// happened).
 pub const ALL_FINDING_CODES: &[&str] = &[
     FINDING_EXACT_MATCH,
     FINDING_NO_EVIDENCE,
@@ -123,6 +141,12 @@ pub const ALL_FINDING_CODES: &[&str] = &[
     FINDING_NO_ACTIVE_PLACEMENT_AUTHORITY,
     FINDING_NO_DESIRED_PLACEMENTS,
     FINDING_INSUFFICIENT_CANONICAL_CORRELATION,
+    FINDING_RUNTIME_BINDING_NOT_REGISTERED,
+    FINDING_RUNTIME_BINDING_REF_MISSING,
+    FINDING_RUNTIME_BINDING_MISMATCH,
+    FINDING_RUNTIME_BINDING_STALE,
+    FINDING_DMAP_V1_NO_DIOT_SUPPORT,
+    FINDING_NO_DESIRED_DIOT_PLACEMENTS,
 ];
 
 fn finding(code: &'static str, message: impl Into<String>) -> DMonitorConvergenceFindingV1 {
@@ -165,6 +189,18 @@ pub enum AuthorityCorrelationV1 {
     /// current authority (a stale/historical reference, or a fabricated
     /// one) -- valid historical evidence, never current-authority proof.
     Mismatch,
+    /// Phase 114D0A: reserved for a correlation dimension that does not
+    /// apply at all in the current context (e.g. DForward correlation when
+    /// the active authority has no DForward concept). Never currently
+    /// constructed: `evaluate_application_diot_convergence` handles its one
+    /// "not applicable" case (`datum.dmap/1` has no DIoT placements at all)
+    /// at the WHOLE-APPLICATION level, before any per-placement DForward
+    /// comparison is reached, so this variant is declared for API
+    /// completeness/future use rather than currently reachable -- mirroring
+    /// this module's existing `FINDING_UNSUPPORTED_SUBJECT_EVIDENCE`
+    /// precedent.
+    #[allow(dead_code)]
+    NotApplicable,
 }
 
 /// Evidence-oriented summary of one admitted-or-excluded observation
@@ -274,15 +310,87 @@ pub struct DMonitorApplicationConvergenceV1 {
     pub unexpected_realizations: Vec<DMonitorUnexpectedServiceEvidenceV1>,
 }
 
-/// Result of the (currently, and by design, always fail-closed) DIoT
-/// placement convergence audit -- see [`evaluate_diot_placement_convergence`].
+/// Evidence-oriented summary of one `DIoTRealization` observation (Phase
+/// 114D0A, mirroring [`DMonitorEvidenceSummaryV1`] but tracking DIoT's THREE
+/// independent correlation dimensions -- DMap, DForward, and runtime-binding
+/// -- separately, plus whether the CURRENTLY REGISTERED runtime binding
+/// itself is still current against DMap/2 + D-Node authority. Deliberately
+/// never includes the observation's own `facts` blob (same rule as
+/// [`DMonitorEvidenceSummaryV1`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DMonitorDiotEvidenceSummaryV1 {
+    pub observation_id: String,
+    pub observation_digest: String,
+    pub node_id: String,
+    pub monitor_instance_id: String,
+    pub sequence: u64,
+    pub observed_at_utc: String,
+    pub received_at_utc: String,
+    pub freshness: DMonitorFreshnessV1,
+    pub health: DMonitorHealthV1,
+    pub dmap_correlation: AuthorityCorrelationV1,
+    pub dforward_correlation: AuthorityCorrelationV1,
+    pub runtime_binding_correlation: AuthorityCorrelationV1,
+    /// `true` only when a `DIoTRuntimeBindingV1` is currently registered for
+    /// this exact (project, application, placement) AND
+    /// `verify_runtime_binding_still_current` accepts it against the
+    /// current DMap/2 + D-Node authority. `false` whenever no binding is
+    /// registered at all (in which case `runtime_binding_correlation` is
+    /// always `RefMissing`) or when the registered binding is itself stale.
+    pub runtime_binding_current: bool,
+    /// The node_id the SUBJECT itself claims (`DIoTRealization.node_id`) --
+    /// the field placement comparison keys on, mirroring D-Serv's
+    /// `observed_subject_node_id`.
+    pub observed_subject_node_id: String,
+    pub admitted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclusion_reason: Option<&'static str>,
+}
+
+/// One desired DIoT placement's derived convergence (Phase 114D0A, mirroring
+/// [`DMonitorServicePlacementConvergenceV1`]).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DMonitorDiotConvergenceV1 {
     pub project_id: String,
     pub application_id: String,
+    pub diot_id: String,
     pub diot_placement_id: String,
+    pub desired_node_id: String,
     pub convergence: DMonitorConvergenceV1,
     pub findings: Vec<DMonitorConvergenceFindingV1>,
+    pub admitted_evidence: Vec<DMonitorDiotEvidenceSummaryV1>,
+    pub excluded_evidence: Vec<DMonitorDiotEvidenceSummaryV1>,
+    pub observed_health_claims: Vec<DMonitorHealthClaimV1>,
+}
+
+/// `DIoTRealization` evidence for a `(diot_id, diot_placement_id)` that has
+/// NO desired placement in the active DMap/2 authority at all (Phase 114D0A,
+/// mirroring [`DMonitorUnexpectedServiceEvidenceV1`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DMonitorUnexpectedDiotEvidenceV1 {
+    pub diot_id: String,
+    pub diot_placement_id: String,
+    pub admitted_evidence: Vec<DMonitorDiotEvidenceSummaryV1>,
+    pub excluded_evidence: Vec<DMonitorDiotEvidenceSummaryV1>,
+}
+
+/// Top-level derived DIoT convergence view for one application (Phase
+/// 114D0A, mirroring [`DMonitorApplicationConvergenceV1`]). Kept as a
+/// SEPARATE result type from the D-Serv one (section 31): DIoT evidence
+/// being missing or Unknown must never change an already-computed D-Serv
+/// `Converged`/`Diverged` result, and vice versa.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DMonitorApplicationDiotConvergenceV1 {
+    pub schema: String,
+    pub project_id: String,
+    pub application_id: String,
+    pub evaluated_at_utc: String,
+    pub dmap_ref: Option<DMapRefSummaryV1>,
+    pub freshness_policy: DMonitorFreshnessPolicyV1,
+    pub convergence: DMonitorConvergenceV1,
+    pub findings: Vec<DMonitorConvergenceFindingV1>,
+    pub placements: Vec<DMonitorDiotConvergenceV1>,
+    pub unexpected_realizations: Vec<DMonitorUnexpectedDiotEvidenceV1>,
 }
 
 // ---------------------------------------------------------------- DSERV CORE
@@ -520,6 +628,7 @@ fn assess_dserv_evidence(
             AuthorityCorrelationV1::RefMissing => FINDING_AUTHORITY_REF_MISSING,
             AuthorityCorrelationV1::Mismatch => FINDING_AUTHORITY_MISMATCH,
             AuthorityCorrelationV1::ExactMatch => unreachable!("admitted case handled above"),
+            AuthorityCorrelationV1::NotApplicable => unreachable!("D-Serv dmap_ref comparison never produces NotApplicable"),
         })
     };
 
@@ -794,55 +903,628 @@ fn latest_dserv_realizations_for_application(
     results
 }
 
-// ----------------------------------------------------------------- DIOT AUDIT
+// ------------------------------------------------------------------- DIOT CORE
+//
+// Phase 114D0A closure: the Phase 114C audit conclusion (the OLD
+// `DIoTRealization` shape carried no observed node_id, no DMap/2 reference,
+// and no runtime-binding reference, so exact current DIoT convergence could
+// never be proven) is closed by the canonical model change in
+// `canonical_dmonitor.rs` (required `node_id`/`diot_id`/`diot_placement_id`,
+// optional `dmap_ref`/`dforward_ref`/`runtime_binding_ref`). This module now
+// implements the real 9-point exact-correlation algorithm documented in
+// ADR-0024's "Phase 114D0A" section:
+//
+// 1. Enumerate every currently-relevant `DIoTRealization` observation for
+//    the application (ANY diot_id/placement/node), mirroring
+//    `latest_dserv_realizations_for_application`'s "latest per exact
+//    subject per stream" rule exactly (`latest_diot_realizations_for_application`).
+// 2. Enumerate desired DIoT placements from `authority.v2.diot_placements`.
+//    `authority.v2 == None` (a `datum.dmap/1` active authority) means DIoT
+//    placement is NOT APPLICABLE at all -- `Unknown` with
+//    `FINDING_DMAP_V1_NO_DIOT_SUPPORT`, never `Diverged` (section 30's rule
+//    extended: absence of a concept a DMap version doesn't support is not
+//    drift).
+// 3. Freshness-gate each observation exactly like D-Serv
+//    (`dmonitor_freshness::evaluate_freshness`).
+// 4. DMap correlation: observed `dmap_ref` vs current `{dmap_id, revision,
+//    digest}` -- identical rule to D-Serv's `dmap_ref` comparison.
+// 5. DForward correlation: observed `dforward_ref` vs current
+//    `{dforward_id, dforward_revision, dforward_digest}` from
+//    `authority.v2`.
+// 6. Runtime-binding correlation: observed `runtime_binding_ref` vs the
+//    CURRENTLY REGISTERED `DIoTRuntimeBindingV1` for this exact
+//    `(project_id, application_id, diot_placement_id)`, looked up from
+//    `DIoTRuntimeBindingRegistryStateV1::get`. No registration at all is
+//    `FINDING_RUNTIME_BINDING_NOT_REGISTERED` (never treated as "not
+//    applicable" -- a DMap/2 DIoT placement always has a governed runtime
+//    binding once realized).
+// 7. Runtime-binding currentness: the registered binding (if any) is passed
+//    through `verify_runtime_binding_still_current` UNMODIFIED (never
+//    reimplemented) against the SAME `ddeploy_state`/`dnode_registry_state`
+//    this evaluation was given. A binding that fails this check can never
+//    contribute to `admitted` evidence even if the observation's own
+//    `runtime_binding_ref` matches it exactly -- the registration itself is
+//    stale.
+// 8. Node match: `observed_subject_node_id` (the subject's OWN `node_id`,
+//    never the observation's top-level observer `node_id`) vs the desired
+//    placement's `node_id` -- identical matching/other/wrong-node/
+//    conflicting-node combinatorics to
+//    `evaluate_service_placement` (section 18/19 carried over unchanged).
+// 9. Evidence for a `(diot_id, diot_placement_id)` absent from the desired
+//    set is unexpected-realization drift, evaluated with the SAME admission
+//    rule (section 9, mirroring `evaluate_unexpected_service`).
+//
+// Evidence is `admitted` (able to prove CURRENT convergence) only when
+// ALL of: Fresh, DMap correlation ExactMatch, DForward correlation
+// ExactMatch-or-NotApplicable, runtime-binding correlation ExactMatch, AND
+// the currently-registered binding verifies still-current. Any one failure
+// excludes the evidence with the single most specific reason (section 9's
+// "no server-synthesized observation" rule: a registered binding alone,
+// with no admitted fresh evidence naming it, never synthesizes Converged).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_application_diot_convergence(
+    project_id: &str,
+    application_id: &str,
+    project_scope: &str,
+    authority: Option<&PlacementAuthorityView>,
+    dmonitor_state: &DMonitorStateV1,
+    runtime_binding_registry: &crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1,
+    ddeploy_state: &crate::core::ddeploy::DDeployStateV1,
+    dnode_registry_state: &crate::core::dnode_registry::DNodeRegistryStateV1,
+    freshness_policy: &DMonitorFreshnessPolicyV1,
+    evaluated_at_utc: &str,
+) -> DMonitorApplicationDiotConvergenceV1 {
+    let Some(authority) = authority else {
+        return DMonitorApplicationDiotConvergenceV1 {
+            schema: DMONITOR_CONVERGENCE_SCHEMA.to_string(),
+            project_id: project_id.to_string(),
+            application_id: application_id.to_string(),
+            evaluated_at_utc: evaluated_at_utc.to_string(),
+            dmap_ref: None,
+            freshness_policy: *freshness_policy,
+            convergence: DMonitorConvergenceV1::Unknown,
+            findings: vec![finding(
+                FINDING_NO_ACTIVE_PLACEMENT_AUTHORITY,
+                format!(
+                    "project '{project_id}' application '{application_id}' has no active accepted placement authority"
+                ),
+            )],
+            placements: Vec::new(),
+            unexpected_realizations: Vec::new(),
+        };
+    };
 
-/// Phase 114C section 20 audit conclusion: `DMonitorSubjectV1::DIoTRealization`
-/// (`{project_id, application_id, dforward_ref: Option<ContractRef>,
-/// diot_placement_id: Option<String>}`) does NOT carry enough typed evidence
-/// to prove exact CURRENT DMap/2 realization placement, and this function
-/// therefore ALWAYS fails closed with
-/// [`FINDING_INSUFFICIENT_CANONICAL_CORRELATION`] -- regardless of how
-/// exactly `dforward_ref` matches current authority. This is a deliberate,
-/// tested, documented Phase 114C outcome (section 35), not an oversight:
-///
-/// - **No observed node field at all.** Unlike `DServRealization` (which
-///   carries its own `node_id`), `DIoTRealization` has no field naming which
-///   node the placement was observed running ON. The observation's own
-///   top-level `node_id` (the OBSERVER's identity) is not a substitute: nothing
-///   in the canonical schema guarantees the observing collector and the
-///   DIoT realization it reports on run on the same node, so treating them
-///   as equivalent would be exactly the kind of "helpful" inference section
-///   11 forbids for D-Serv and which is equally unsafe here.
-/// - **No DMap/2 reference at all.** The subject carries `dforward_ref`
-///   only, never a `dmap_ref` -- so even an exact `dforward_ref` match
-///   proves DForward-authority correlation, never DMap/2 revision/digest
-///   correlation, which `evaluate_application_dserv_convergence` requires
-///   for D-Serv.
-/// - **No runtime binding authority reference.** Phase 113B1's
-///   `DIoTRuntimeBindingV1` (`binding_id`/`binding_revision`/
-///   `descriptor_digest`) is a SEPARATE, already-existing operational
-///   authority answering exactly "which broker does this DIoT placement
-///   currently resolve to" -- `DIoTRealization` references none of it.
-///
-/// This is reported as a concrete design finding (documented in ADR-0024)
-/// rather than improvised by widening `datum.dmonitor-observation/1` in this
-/// pass, per this phase's explicit instruction not to enrich the canonical
-/// schema without review.
-pub fn evaluate_diot_placement_convergence(
+    let dmap_ref = DMapRefSummaryV1 {
+        dmap_id: authority.dmap_id.clone(),
+        revision: authority.revision,
+        digest: authority.digest.clone(),
+    };
+
+    // Section 30-style rule (point 2): `datum.dmap/1` has no DForward/DIoT
+    // placement concept at all. This is absence of a supported concept, not
+    // observed drift.
+    let Some(v2) = authority.v2.as_ref() else {
+        return DMonitorApplicationDiotConvergenceV1 {
+            schema: DMONITOR_CONVERGENCE_SCHEMA.to_string(),
+            project_id: project_id.to_string(),
+            application_id: application_id.to_string(),
+            evaluated_at_utc: evaluated_at_utc.to_string(),
+            dmap_ref: Some(dmap_ref),
+            freshness_policy: *freshness_policy,
+            convergence: DMonitorConvergenceV1::Unknown,
+            findings: vec![finding(
+                FINDING_DMAP_V1_NO_DIOT_SUPPORT,
+                format!(
+                    "project '{project_id}' application '{application_id}' active authority is datum.dmap/1, which has no DIoT placement concept"
+                ),
+            )],
+            placements: Vec::new(),
+            unexpected_realizations: Vec::new(),
+        };
+    };
+
+    let all_records = latest_diot_realizations_for_application(dmonitor_state, project_scope, project_id, application_id);
+    let mut by_placement: BTreeMap<(String, String), Vec<DMonitorObservationRecordV1>> = BTreeMap::new();
+    for record in all_records {
+        if let DMonitorSubjectV1::DIoTRealization { diot_id, diot_placement_id, .. } = &record.observation.subject {
+            by_placement
+                .entry((diot_id.clone(), diot_placement_id.clone()))
+                .or_default()
+                .push(record);
+        }
+    }
+
+    let desired: BTreeSet<(&str, &str)> = v2
+        .diot_placements
+        .iter()
+        .map(|placement| (placement.diot_id.as_str(), placement.placement_id.as_str()))
+        .collect();
+
+    let empty: Vec<DMonitorObservationRecordV1> = Vec::new();
+    let placements: Vec<DMonitorDiotConvergenceV1> = v2
+        .diot_placements
+        .iter()
+        .map(|placement| {
+            let relevant = by_placement
+                .get(&(placement.diot_id.clone(), placement.placement_id.clone()))
+                .unwrap_or(&empty);
+            evaluate_diot_placement(
+                project_id,
+                application_id,
+                &placement.diot_id,
+                &placement.placement_id,
+                &placement.node_id,
+                &dmap_ref,
+                v2,
+                relevant,
+                runtime_binding_registry,
+                ddeploy_state,
+                dnode_registry_state,
+                freshness_policy,
+                evaluated_at_utc,
+                project_scope,
+            )
+        })
+        .collect();
+
+    let unexpected_realizations: Vec<DMonitorUnexpectedDiotEvidenceV1> = by_placement
+        .iter()
+        .filter(|((diot_id, placement_id), _)| !desired.contains(&(diot_id.as_str(), placement_id.as_str())))
+        .map(|((diot_id, placement_id), records)| {
+            evaluate_unexpected_diot(
+                diot_id,
+                placement_id,
+                records,
+                &dmap_ref,
+                v2,
+                runtime_binding_registry,
+                project_id,
+                application_id,
+                ddeploy_state,
+                dnode_registry_state,
+                freshness_policy,
+                evaluated_at_utc,
+            )
+        })
+        .collect();
+
+    let has_proven_unexpected = unexpected_realizations
+        .iter()
+        .any(|unexpected| !unexpected.admitted_evidence.is_empty());
+
+    let convergence = if placements
+        .iter()
+        .any(|placement| placement.convergence == DMonitorConvergenceV1::Diverged)
+        || has_proven_unexpected
+    {
+        DMonitorConvergenceV1::Diverged
+    } else if placements
+        .iter()
+        .any(|placement| placement.convergence == DMonitorConvergenceV1::Unknown)
+    {
+        DMonitorConvergenceV1::Unknown
+    } else if v2.diot_placements.is_empty() {
+        DMonitorConvergenceV1::Unknown
+    } else {
+        DMonitorConvergenceV1::Converged
+    };
+
+    let findings = if v2.diot_placements.is_empty() && !has_proven_unexpected {
+        vec![finding(
+            FINDING_NO_DESIRED_DIOT_PLACEMENTS,
+            "active DMap/2 placement authority declares zero DIoT placements; nothing to converge",
+        )]
+    } else if has_proven_unexpected {
+        let unexpected_ids: Vec<String> = unexpected_realizations
+            .iter()
+            .filter(|unexpected| !unexpected.admitted_evidence.is_empty())
+            .map(|unexpected| format!("{}/{}", unexpected.diot_id, unexpected.diot_placement_id))
+            .collect();
+        vec![finding(
+            FINDING_UNEXPECTED_REALIZATION,
+            format!(
+                "fresh, exact-authority-matching DIoT realization evidence exists for placement(s) {unexpected_ids:?}, which have no desired placement in the active authority at all"
+            ),
+        )]
+    } else {
+        Vec::new()
+    };
+
+    DMonitorApplicationDiotConvergenceV1 {
+        schema: DMONITOR_CONVERGENCE_SCHEMA.to_string(),
+        project_id: project_id.to_string(),
+        application_id: application_id.to_string(),
+        evaluated_at_utc: evaluated_at_utc.to_string(),
+        dmap_ref: Some(dmap_ref),
+        freshness_policy: *freshness_policy,
+        convergence,
+        findings,
+        placements,
+        unexpected_realizations,
+    }
+}
+
+/// Assesses ONE `DIoTRealization` record's freshness + three-dimensional
+/// authority correlation (point 3-7 of the algorithm above), producing the
+/// shared [`DMonitorDiotEvidenceSummaryV1`] used identically by
+/// desired-placement evaluation and unexpected-placement detection.
+#[allow(clippy::too_many_arguments)]
+fn assess_diot_evidence(
+    record: &DMonitorObservationRecordV1,
+    dmap_ref: &DMapRefSummaryV1,
+    v2: &PlacementAuthorityV2Extras,
+    runtime_binding_registry: &crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1,
     project_id: &str,
     application_id: &str,
     diot_placement_id: &str,
+    ddeploy_state: &crate::core::ddeploy::DDeployStateV1,
+    dnode_registry_state: &crate::core::dnode_registry::DNodeRegistryStateV1,
+    freshness_policy: &DMonitorFreshnessPolicyV1,
+    evaluated_at_utc: &str,
+) -> DMonitorDiotEvidenceSummaryV1 {
+    let DMonitorSubjectV1::DIoTRealization {
+        node_id: observed_node_id,
+        dmap_ref: observed_dmap_ref,
+        dforward_ref: observed_dforward_ref,
+        runtime_binding_ref: observed_runtime_binding_ref,
+        ..
+    } = &record.observation.subject
+    else {
+        unreachable!("assess_diot_evidence is only ever called with DIoTRealization records");
+    };
+
+    let freshness_evaluation = evaluate_freshness(record, freshness_policy, evaluated_at_utc);
+    let (freshness, freshness_ok) = match &freshness_evaluation {
+        Ok(evaluation) => (evaluation.freshness, evaluation.freshness == DMonitorFreshnessV1::Fresh),
+        Err(_) => (DMonitorFreshnessV1::Stale, false),
+    };
+
+    let dmap_correlation = match observed_dmap_ref {
+        None => AuthorityCorrelationV1::RefMissing,
+        Some(observed_ref) => {
+            if observed_ref.id == dmap_ref.dmap_id && observed_ref.revision == dmap_ref.revision && observed_ref.digest == dmap_ref.digest {
+                AuthorityCorrelationV1::ExactMatch
+            } else {
+                AuthorityCorrelationV1::Mismatch
+            }
+        }
+    };
+
+    let dforward_correlation = match observed_dforward_ref {
+        None => AuthorityCorrelationV1::RefMissing,
+        Some(observed_ref) => {
+            if observed_ref.id == v2.dforward_id && observed_ref.revision == v2.dforward_revision && observed_ref.digest == v2.dforward_digest {
+                AuthorityCorrelationV1::ExactMatch
+            } else {
+                AuthorityCorrelationV1::Mismatch
+            }
+        }
+    };
+
+    let registered_binding = runtime_binding_registry.get(project_id, application_id, diot_placement_id);
+    let runtime_binding_current = registered_binding
+        .map(|binding| {
+            crate::core::diot_runtime_binding::verify_runtime_binding_still_current(binding, ddeploy_state, dnode_registry_state).is_ok()
+        })
+        .unwrap_or(false);
+
+    let runtime_binding_correlation = match (observed_runtime_binding_ref, registered_binding) {
+        (_, None) => AuthorityCorrelationV1::RefMissing,
+        (None, Some(_)) => AuthorityCorrelationV1::RefMissing,
+        (Some(observed_ref), Some(registered)) => {
+            if observed_ref.binding_id == registered.binding_id
+                && observed_ref.binding_revision == registered.binding_revision
+                && observed_ref.descriptor_digest == registered.descriptor_digest
+            {
+                AuthorityCorrelationV1::ExactMatch
+            } else {
+                AuthorityCorrelationV1::Mismatch
+            }
+        }
+    };
+
+    let admitted = freshness_ok
+        && dmap_correlation == AuthorityCorrelationV1::ExactMatch
+        && dforward_correlation == AuthorityCorrelationV1::ExactMatch
+        && runtime_binding_correlation == AuthorityCorrelationV1::ExactMatch
+        && runtime_binding_current;
+
+    let exclusion_reason = if admitted {
+        None
+    } else if !freshness_ok {
+        Some(match freshness {
+            DMonitorFreshnessV1::ClockSkew => FINDING_CLOCK_SKEW,
+            _ => FINDING_STALE_EVIDENCE,
+        })
+    } else if dmap_correlation != AuthorityCorrelationV1::ExactMatch {
+        Some(match dmap_correlation {
+            AuthorityCorrelationV1::RefMissing => FINDING_AUTHORITY_REF_MISSING,
+            AuthorityCorrelationV1::Mismatch => FINDING_AUTHORITY_MISMATCH,
+            _ => unreachable!("admitted case handled above"),
+        })
+    } else if dforward_correlation != AuthorityCorrelationV1::ExactMatch {
+        Some(match dforward_correlation {
+            AuthorityCorrelationV1::RefMissing => FINDING_AUTHORITY_REF_MISSING,
+            AuthorityCorrelationV1::Mismatch => FINDING_AUTHORITY_MISMATCH,
+            _ => unreachable!("admitted case handled above"),
+        })
+    } else if registered_binding.is_none() {
+        Some(FINDING_RUNTIME_BINDING_NOT_REGISTERED)
+    } else if runtime_binding_correlation != AuthorityCorrelationV1::ExactMatch {
+        Some(match runtime_binding_correlation {
+            AuthorityCorrelationV1::RefMissing => FINDING_RUNTIME_BINDING_REF_MISSING,
+            AuthorityCorrelationV1::Mismatch => FINDING_RUNTIME_BINDING_MISMATCH,
+            _ => unreachable!("admitted case handled above"),
+        })
+    } else {
+        Some(FINDING_RUNTIME_BINDING_STALE)
+    };
+
+    DMonitorDiotEvidenceSummaryV1 {
+        observation_id: record.observation.observation_id.clone(),
+        observation_digest: record.observation_digest.clone(),
+        node_id: record.observation.node_id.clone(),
+        monitor_instance_id: record.observation.monitor_instance_id.clone(),
+        sequence: record.observation.sequence,
+        observed_at_utc: record.observation.observed_at_utc.clone(),
+        received_at_utc: record.received_at_utc.clone(),
+        freshness,
+        health: record.observation.health,
+        dmap_correlation,
+        dforward_correlation,
+        runtime_binding_correlation,
+        runtime_binding_current,
+        observed_subject_node_id: observed_node_id.clone(),
+        admitted,
+        exclusion_reason,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_unexpected_diot(
+    diot_id: &str,
+    diot_placement_id: &str,
+    records: &[DMonitorObservationRecordV1],
+    dmap_ref: &DMapRefSummaryV1,
+    v2: &PlacementAuthorityV2Extras,
+    runtime_binding_registry: &crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1,
+    project_id: &str,
+    application_id: &str,
+    ddeploy_state: &crate::core::ddeploy::DDeployStateV1,
+    dnode_registry_state: &crate::core::dnode_registry::DNodeRegistryStateV1,
+    freshness_policy: &DMonitorFreshnessPolicyV1,
+    evaluated_at_utc: &str,
+) -> DMonitorUnexpectedDiotEvidenceV1 {
+    let mut admitted_evidence = Vec::new();
+    let mut excluded_evidence = Vec::new();
+    for record in records {
+        let summary = assess_diot_evidence(
+            record,
+            dmap_ref,
+            v2,
+            runtime_binding_registry,
+            project_id,
+            application_id,
+            diot_placement_id,
+            ddeploy_state,
+            dnode_registry_state,
+            freshness_policy,
+            evaluated_at_utc,
+        );
+        if summary.admitted {
+            admitted_evidence.push(summary);
+        } else {
+            excluded_evidence.push(summary);
+        }
+    }
+    admitted_evidence.sort_by(|a, b| a.observation_id.cmp(&b.observation_id));
+    excluded_evidence.sort_by(|a, b| a.observation_id.cmp(&b.observation_id));
+    DMonitorUnexpectedDiotEvidenceV1 {
+        diot_id: diot_id.to_string(),
+        diot_placement_id: diot_placement_id.to_string(),
+        admitted_evidence,
+        excluded_evidence,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_diot_placement(
+    project_id: &str,
+    application_id: &str,
+    diot_id: &str,
+    diot_placement_id: &str,
+    desired_node_id: &str,
+    dmap_ref: &DMapRefSummaryV1,
+    v2: &PlacementAuthorityV2Extras,
+    relevant: &[DMonitorObservationRecordV1],
+    runtime_binding_registry: &crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1,
+    ddeploy_state: &crate::core::ddeploy::DDeployStateV1,
+    dnode_registry_state: &crate::core::dnode_registry::DNodeRegistryStateV1,
+    freshness_policy: &DMonitorFreshnessPolicyV1,
+    evaluated_at_utc: &str,
+    project_scope: &str,
 ) -> DMonitorDiotConvergenceV1 {
+    let mut admitted_evidence = Vec::new();
+    let mut excluded_evidence = Vec::new();
+    let mut health_claims: Vec<DMonitorHealthClaimV1> = Vec::new();
+
+    for record in relevant {
+        let health_claim = DMonitorHealthClaimV1 {
+            monitor_instance_id: record.observation.monitor_instance_id.clone(),
+            health: record.observation.health,
+        };
+        if !health_claims.contains(&health_claim) {
+            health_claims.push(health_claim);
+        }
+
+        let summary = assess_diot_evidence(
+            record,
+            dmap_ref,
+            v2,
+            runtime_binding_registry,
+            project_id,
+            application_id,
+            diot_placement_id,
+            ddeploy_state,
+            dnode_registry_state,
+            freshness_policy,
+            evaluated_at_utc,
+        );
+        if summary.admitted {
+            admitted_evidence.push(summary);
+        } else {
+            excluded_evidence.push(summary);
+        }
+    }
+
+    admitted_evidence.sort_by(|a, b| a.observation_id.cmp(&b.observation_id));
+    excluded_evidence.sort_by(|a, b| a.observation_id.cmp(&b.observation_id));
+    health_claims.sort_by(|a, b| a.monitor_instance_id.cmp(&b.monitor_instance_id));
+
+    let matching: Vec<&DMonitorDiotEvidenceSummaryV1> = admitted_evidence
+        .iter()
+        .filter(|evidence| evidence.observed_subject_node_id == desired_node_id)
+        .collect();
+    let other: Vec<&DMonitorDiotEvidenceSummaryV1> = admitted_evidence
+        .iter()
+        .filter(|evidence| evidence.observed_subject_node_id != desired_node_id)
+        .collect();
+    let distinct_other_nodes: BTreeSet<&str> = other
+        .iter()
+        .map(|evidence| evidence.observed_subject_node_id.as_str())
+        .collect();
+
+    let (convergence, findings) = if !matching.is_empty() && other.is_empty() {
+        (
+            DMonitorConvergenceV1::Converged,
+            vec![finding(
+                FINDING_EXACT_MATCH,
+                format!("fresh, exact-authority-matching (DMap+DForward+runtime-binding, currently-verified) evidence confirms DIoT placement '{diot_placement_id}' on desired node '{desired_node_id}'"),
+            )],
+        )
+    } else if !matching.is_empty() && !other.is_empty() {
+        (
+            DMonitorConvergenceV1::Diverged,
+            vec![finding(
+                FINDING_UNEXPECTED_REALIZATION,
+                format!(
+                    "DIoT placement '{diot_placement_id}' has fresh, exact-authority-matching evidence on the desired node '{desired_node_id}' AND on unexpected node(s) {distinct_other_nodes:?}"
+                ),
+            )],
+        )
+    } else if matching.is_empty() && distinct_other_nodes.len() == 1 {
+        let wrong_node = distinct_other_nodes.iter().next().copied().unwrap_or("");
+        (
+            DMonitorConvergenceV1::Diverged,
+            vec![finding(
+                FINDING_WRONG_NODE,
+                format!(
+                    "DIoT placement '{diot_placement_id}' has fresh, exact-authority-matching evidence on node '{wrong_node}', not the desired node '{desired_node_id}'"
+                ),
+            )],
+        )
+    } else if matching.is_empty() && distinct_other_nodes.len() > 1 {
+        (
+            DMonitorConvergenceV1::Diverged,
+            vec![finding(
+                FINDING_CONFLICTING_FRESH_EVIDENCE,
+                format!(
+                    "DIoT placement '{diot_placement_id}' has fresh, exact-authority-matching evidence on multiple non-desired nodes {distinct_other_nodes:?}, none of them the desired node '{desired_node_id}'"
+                ),
+            )],
+        )
+    } else {
+        let mut reasons = Vec::new();
+        for code in [
+            FINDING_RUNTIME_BINDING_NOT_REGISTERED,
+            FINDING_RUNTIME_BINDING_STALE,
+            FINDING_RUNTIME_BINDING_REF_MISSING,
+            FINDING_RUNTIME_BINDING_MISMATCH,
+            FINDING_AUTHORITY_REF_MISSING,
+            FINDING_AUTHORITY_MISMATCH,
+            FINDING_CLOCK_SKEW,
+            FINDING_STALE_EVIDENCE,
+        ] {
+            if excluded_evidence.iter().any(|evidence| evidence.exclusion_reason == Some(code)) {
+                reasons.push(finding(
+                    code,
+                    format!("DIoT placement '{diot_placement_id}' has excluded evidence: {code}"),
+                ));
+            }
+        }
+        if reasons.is_empty() {
+            reasons.push(finding(
+                FINDING_NO_EVIDENCE,
+                format!("no DIoTRealization evidence exists for placement '{diot_placement_id}' (diot '{diot_id}') in project scope '{project_scope}'"),
+            ));
+        }
+        (DMonitorConvergenceV1::Unknown, reasons)
+    };
+
     DMonitorDiotConvergenceV1 {
         project_id: project_id.to_string(),
         application_id: application_id.to_string(),
+        diot_id: diot_id.to_string(),
         diot_placement_id: diot_placement_id.to_string(),
-        convergence: DMonitorConvergenceV1::Unknown,
-        findings: vec![finding(
-            FINDING_INSUFFICIENT_CANONICAL_CORRELATION,
-            "DMonitorSubjectV1::DIoTRealization carries no observed node_id, no DMap/2 reference, and no runtime binding authority reference -- exact current DIoT placement convergence cannot be proven from this evidence shape (Phase 114C audit finding; see ADR-0024)",
-        )],
+        desired_node_id: desired_node_id.to_string(),
+        convergence,
+        findings,
+        admitted_evidence,
+        excluded_evidence,
+        observed_health_claims: health_claims,
     }
+}
+
+/// Scans every project-scoped stream for the LATEST occurrence, PER STREAM
+/// AND PER EXACT `(diot_id, diot_placement_id, node_id)` SUBJECT, of a
+/// `DIoTRealization` subject belonging to `(project_id, application_id)` --
+/// mirroring `latest_dserv_realizations_for_application` exactly (see that
+/// function's doc comment for the full rationale; the same "latest per exact
+/// subject per stream, never the stream head" and "same placement on two
+/// different nodes are two independent subjects" rules apply unchanged).
+/// Project isolation (section 29) is enforced here identically.
+fn latest_diot_realizations_for_application(
+    dmonitor_state: &DMonitorStateV1,
+    project_scope: &str,
+    project_id: &str,
+    application_id: &str,
+) -> Vec<DMonitorObservationRecordV1> {
+    let mut results = Vec::new();
+    for stream in dmonitor_state.streams.values() {
+        if stream.project_scope != project_scope {
+            continue;
+        }
+        let mut latest_per_subject: BTreeMap<(String, String, String), DMonitorObservationRecordV1> = BTreeMap::new();
+        for record in stream.observations.values() {
+            if let DMonitorSubjectV1::DIoTRealization {
+                project_id: p,
+                application_id: a,
+                diot_id: d,
+                diot_placement_id: pl,
+                node_id: n,
+                ..
+            } = &record.observation.subject
+            {
+                if p == project_id && a == application_id {
+                    latest_per_subject.insert((d.clone(), pl.clone(), n.clone()), record.clone());
+                }
+            }
+        }
+        results.extend(latest_per_subject.into_values());
+    }
+    results.sort_by(|a, b| {
+        (
+            a.observation.node_id.as_str(),
+            a.observation.monitor_instance_id.as_str(),
+            a.observation.observation_id.as_str(),
+        )
+            .cmp(&(
+                b.observation.node_id.as_str(),
+                b.observation.monitor_instance_id.as_str(),
+                b.observation.observation_id.as_str(),
+            ))
+    });
+    results
 }
 
 #[cfg(test)]
@@ -1400,8 +2082,11 @@ mod tests {
     // ------------------------------------------------------- FINDING INVENTORY
 
     #[test]
-    fn finding_code_inventory_has_exactly_thirteen_stable_codes() {
-        assert_eq!(ALL_FINDING_CODES.len(), 13, "{ALL_FINDING_CODES:?}");
+    fn finding_code_inventory_has_exactly_nineteen_stable_codes() {
+        // Phase 114C.1 fixed the count at 13 D-Serv/generic codes; Phase
+        // 114D0A appends exactly 6 DIoT-only codes (never redefining any of
+        // the original 13) -- see `ALL_FINDING_CODES`'s own doc comment.
+        assert_eq!(ALL_FINDING_CODES.len(), 19, "{ALL_FINDING_CODES:?}");
         let unique: BTreeSet<&str> = ALL_FINDING_CODES.iter().copied().collect();
         assert_eq!(unique.len(), ALL_FINDING_CODES.len(), "every finding code must be distinct");
     }
@@ -1676,22 +2361,552 @@ mod tests {
         assert_eq!(instances, BTreeSet::from(["mon-a", "mon-b"]));
     }
 
-    // ------------------------------------------------------------- DIOT AUDIT
+    // --------------------------------------------------------- DIOT CORE (114D0A)
 
-    #[test]
-    fn diot_convergence_always_fails_closed_to_unknown() {
-        let result = evaluate_diot_placement_convergence(PROJECT, APP, "diotp:broker");
-        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
-        assert!(result.findings.iter().any(|f| f.code == FINDING_INSUFFICIENT_CANONICAL_CORRELATION));
+    use crate::core::canonical_dcontinuum::{
+        CanonicalDContinuumV1, CanonicalDNodeV1, CanonicalNodeCapabilitiesV1,
+        CanonicalNodeCapacityV1, CanonicalNodePlatformV1, CANONICAL_DCONTINUUM_SCHEMA,
+    };
+    use crate::core::canonical_dforward::{
+        CanonicalArtifactRequirementV1, CanonicalDForwardInterfaceV1, CanonicalDForwardV1,
+        CanonicalDIoTV1, CANONICAL_DFORWARD_SCHEMA,
+    };
+    use crate::core::canonical_dgraph::{
+        recompute_dgraph_digest, CanonicalDCallV1, CanonicalDGraphV1,
+        CanonicalDServExecutionRequirementV1, CanonicalDServResourceRequirementV1,
+        CanonicalDServV1, CANONICAL_DGRAPH_SCHEMA, DNODE_ABI_V0,
+    };
+    use crate::core::canonical_dmap_v2::{ContractRefV2, DIoTArtifactBindingV2};
+    use crate::core::ddeploy::{active_placement_authority, ProposalSource};
+    use crate::core::ddeploy_v2::DDeployProposalV2;
+    use crate::core::diot_runtime_binding::{register_runtime_binding, DIoTRuntimeBindingRegistryStateV1};
+    use crate::core::dnode_registry::declare_dnode;
+    use crate::core::canonical_dmonitor::DMonitorRuntimeBindingRefV1;
+    use crate::core::service_artifact_registry::{
+        NativeProcessDeploymentSpecV1, ServiceArtifact, ServiceArtifactControlPlane,
+        ServiceProbeSet, ServiceProbeSpec, ServiceRuntimeSpec, SERVICE_ARTIFACT_SCHEMA_VERSION,
+    };
+
+    const DIOT_ID: &str = "diot:broker";
+    const DIOT_PLACEMENT_ID: &str = "diotp:broker";
+    const OTHER_DIOT_PLACEMENT_ID: &str = "diotp:unexpected";
+    const REALIZATION_INTERFACE: &str = "sensor-bus";
+    const ARTIFACT_ID: &str = "dserv:pipeline:broker";
+
+    fn diot_node(node_id: &str) -> CanonicalDNodeV1 {
+        CanonicalDNodeV1 {
+            node_id: node_id.to_string(),
+            platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "x86_64".to_string() },
+            capacity: CanonicalNodeCapacityV1 { cpu_cores: 4, memory_bytes: 4_000_000_000 },
+            capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] },
+        }
+    }
+
+    fn minimal_broker_artifact(project_id: &str, execution_generation: u64, execution_projection_digest: &str) -> ServiceArtifact {
+        ServiceArtifact {
+            schema_version: SERVICE_ARTIFACT_SCHEMA_VERSION.to_string(),
+            artifact_id: ARTIFACT_ID.to_string(),
+            service_id: ARTIFACT_ID.to_string(),
+            runtime: ServiceRuntimeSpec {
+                kind: "native_process".to_string(),
+                container: None,
+                native_process: Some(NativeProcessDeploymentSpecV1 {
+                    process_name: "broker".to_string(),
+                    entrypoint: "bin/broker-run".to_string(),
+                    args: Vec::new(),
+                    working_directory: None,
+                }),
+            },
+            probes: ServiceProbeSet {
+                execution: ServiceProbeSpec { kind: "process_running".to_string(), params: BTreeMap::new(), vantage_point: Some("local_host".to_string()) },
+                health: None,
+                availability: None,
+            },
+            metadata: None,
+            control_plane: ServiceArtifactControlPlane {
+                project_id: project_id.to_string(),
+                execution_generation,
+                execution_projection_digest: execution_projection_digest.to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    struct DiotFixture {
+        ddeploy: crate::core::ddeploy::DDeployStateV1,
+        dnode: crate::core::dnode_registry::DNodeRegistryStateV1,
+    }
+
+    /// Builds one REAL accepted DMap/2 authority (via the actual
+    /// `create_v2_proposal`/`accept_v2_proposal` production path, never
+    /// hand-assembled) with exactly one DIoT broker placement on
+    /// `broker_node`, mirroring `diot_runtime_binding::tests::build_fixture`
+    /// (duplicated rather than shared across files, matching this
+    /// codebase's existing precedent -- see that function's own doc
+    /// comment). Building through the real acceptance path (rather than
+    /// constructing a `PlacementAuthorityView` by hand, as the D-Serv tests
+    /// above do) is required here because `verify_runtime_binding_still_current`
+    /// re-derives active authority from `DDeployStateV1` itself.
+    fn build_diot_fixture(broker_node: &str) -> DiotFixture {
+        let dg = CanonicalDGraphV1 {
+            schema: CANONICAL_DGRAPH_SCHEMA.to_string(),
+            application_id: APP.to_string(),
+            dgraph_id: "dgraph:prop-diot-1".to_string(),
+            revision: 1,
+            services: vec![
+                CanonicalDServV1 {
+                    service_id: SVC_A.to_string(),
+                    execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
+                    resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
+                },
+                CanonicalDServV1 {
+                    service_id: SVC_B.to_string(),
+                    execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
+                    resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
+                },
+            ],
+            calls: vec![CanonicalDCallV1 { call_id: "sensor-to-decoder".to_string(), source_service_id: SVC_A.to_string(), target_service_id: SVC_B.to_string() }],
+        };
+        let dgraph_digest = recompute_dgraph_digest(&dg).unwrap();
+
+        let dcontinuum = CanonicalDContinuumV1 {
+            schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+            project_id: PROJECT.to_string(),
+            dcontinuum_id: "dcontinuum:prop-diot-1".to_string(),
+            revision: 1,
+            nodes: vec![diot_node(broker_node)],
+            links: Vec::new(),
+        };
+        let dcontinuum_digest = crate::core::canonical_dcontinuum::recompute_dcontinuum_digest(&dcontinuum).unwrap();
+
+        let dforward = CanonicalDForwardV1 {
+            schema: CANONICAL_DFORWARD_SCHEMA.to_string(),
+            project_id: PROJECT.to_string(),
+            dforward_id: "dforward:prop-diot-1".to_string(),
+            revision: 1,
+            diots: vec![CanonicalDIoTV1 {
+                diot_id: DIOT_ID.to_string(),
+                diot_kind: "broker".to_string(),
+                artifact_requirement: CanonicalArtifactRequirementV1 { artifact_id: ARTIFACT_ID.to_string() },
+                provides: vec![CanonicalDForwardInterfaceV1 { interface: REALIZATION_INTERFACE.to_string() }],
+                requires: Vec::new(),
+            }],
+            external_endpoints: Vec::new(),
+            chains: Vec::new(),
+            support_jobs: Vec::new(),
+        };
+        let dforward_digest = dforward.digest().unwrap();
+
+        let proposal = DDeployProposalV2 {
+            schema: crate::core::ddeploy_v2::DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+            proposal_id: "prop-diot-1".to_string(),
+            project_id: PROJECT.to_string(),
+            application_id: APP.to_string(),
+            source: ProposalSource::Operator,
+            created_at_utc: "2026-01-01T00:00:00Z".to_string(),
+            dgraph_ref: ContractRefV2 { id: dg.dgraph_id.clone(), revision: dg.revision, digest: dgraph_digest },
+            dcontinuum_ref: ContractRefV2 { id: dcontinuum.dcontinuum_id.clone(), revision: dcontinuum.revision, digest: dcontinuum_digest },
+            dforward_ref: ContractRefV2 { id: dforward.dforward_id.clone(), revision: dforward.revision, digest: dforward_digest },
+            placements: vec![
+                DServPlacementV2 { service_id: SVC_A.to_string(), node_id: broker_node.to_string() },
+                DServPlacementV2 { service_id: SVC_B.to_string(), node_id: broker_node.to_string() },
+            ],
+            diot_placements: vec![DIoTPlacementV2 {
+                placement_id: DIOT_PLACEMENT_ID.to_string(),
+                diot_id: DIOT_ID.to_string(),
+                node_id: broker_node.to_string(),
+                artifact_binding: DIoTArtifactBindingV2 { artifact_id: ARTIFACT_ID.to_string(), descriptor_digest: format!("sha256:{}", "b".repeat(64)), content_digest: None },
+            }],
+            dcall_realizations: vec![DCallRealizationV2 {
+                call_id: "sensor-to-decoder".to_string(),
+                realization_kind: "via_diot_pubsub".to_string(),
+                diot_placement_id: DIOT_PLACEMENT_ID.to_string(),
+                interface: REALIZATION_INTERFACE.to_string(),
+                channel: "pipeline/sensor-to-decoder".to_string(),
+            }],
+            external_port_bindings: Vec::new(),
+            expected_active_dmap_revision: None,
+            diot_artifact_authority: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    ARTIFACT_ID.to_string(),
+                    crate::core::ddeploy_v2::DIoTArtifactAuthorityBindingV2 {
+                        artifact_id: ARTIFACT_ID.to_string(),
+                        execution_generation: 1,
+                        execution_projection_digest: format!("sha256:{}", "c".repeat(64)),
+                    },
+                );
+                m
+            },
+        };
+
+        let broker_artifact = minimal_broker_artifact(PROJECT, 1, &format!("sha256:{}", "c".repeat(64)));
+
+        let mut ddeploy = crate::core::ddeploy::DDeployStateV1::empty();
+        ddeploy.create_v2_proposal(proposal, dg, dcontinuum.clone(), dforward).unwrap();
+        ddeploy
+            .accept_v2_proposal("prop-diot-1", "acc-prop-diot-1".to_string(), "test".to_string(), "2026-01-01T00:00:01Z".to_string(), &dcontinuum, std::slice::from_ref(&broker_artifact), None)
+            .unwrap();
+
+        let mut dnode = crate::core::dnode_registry::DNodeRegistryStateV1::empty();
+        declare_dnode(&mut dnode, diot_node(broker_node)).unwrap();
+        DiotFixture { ddeploy, dnode }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn diot_realization_observation(
+        node_id: &str,
+        monitor_instance_id: &str,
+        sequence: u64,
+        diot_id: &str,
+        diot_placement_id: &str,
+        observed_node_id: &str,
+        dmap_ref: Option<DMonitorContractRefV1>,
+        dforward_ref: Option<DMonitorContractRefV1>,
+        runtime_binding_ref: Option<DMonitorRuntimeBindingRefV1>,
+        observed_at_utc: &str,
+        observation_id: &str,
+    ) -> CanonicalDMonitorObservationV1 {
+        CanonicalDMonitorObservationV1 {
+            schema: CANONICAL_DMONITOR_OBSERVATION_SCHEMA.to_string(),
+            observation_id: observation_id.to_string(),
+            project_id: Some(PROJECT.to_string()),
+            node_id: node_id.to_string(),
+            monitor_instance_id: monitor_instance_id.to_string(),
+            sequence,
+            observed_at_utc: observed_at_utc.to_string(),
+            cycle_id: None,
+            collector: "test_diot_realization".to_string(),
+            subject: DMonitorSubjectV1::DIoTRealization {
+                project_id: PROJECT.to_string(),
+                application_id: APP.to_string(),
+                diot_id: diot_id.to_string(),
+                diot_placement_id: diot_placement_id.to_string(),
+                node_id: observed_node_id.to_string(),
+                dmap_ref,
+                dforward_ref,
+                runtime_binding_ref,
+            },
+            health: DMonitorHealthV1::Healthy,
+            facts: serde_json::json!({}),
+        }
+    }
+
+    /// Fixture + real registered-and-current binding, plus the exact
+    /// `{dmap_ref, dforward_ref, runtime_binding_ref}` an observer would
+    /// need to report for the admission rule's "all four exact matches" to
+    /// hold.
+    struct DiotEvidenceInputs {
+        fixture: DiotFixture,
+        runtime_registry: DIoTRuntimeBindingRegistryStateV1,
+        dmap_ref: DMonitorContractRefV1,
+        dforward_ref: DMonitorContractRefV1,
+        runtime_binding_ref: DMonitorRuntimeBindingRefV1,
+    }
+
+    fn build_diot_evidence_inputs(broker_node: &str) -> DiotEvidenceInputs {
+        let fixture = build_diot_fixture(broker_node);
+        let authority = active_placement_authority(&fixture.ddeploy, PROJECT, APP).unwrap().unwrap();
+        let v2 = authority.v2.clone().unwrap();
+        let mut runtime_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let binding = register_runtime_binding(
+            &mut runtime_registry,
+            &fixture.ddeploy,
+            &fixture.dnode,
+            PROJECT,
+            APP,
+            DIOT_PLACEMENT_ID,
+            "mqtt://broker.lab:1883",
+            "2026-01-01T00:00:02Z",
+        )
+        .unwrap();
+        DiotEvidenceInputs {
+            dmap_ref: DMonitorContractRefV1 { id: authority.dmap_id.clone(), revision: authority.revision, digest: authority.digest.clone() },
+            dforward_ref: DMonitorContractRefV1 { id: v2.dforward_id.clone(), revision: v2.dforward_revision, digest: v2.dforward_digest.clone() },
+            runtime_binding_ref: DMonitorRuntimeBindingRefV1 { binding_id: binding.binding_id.clone(), binding_revision: binding.binding_revision, descriptor_digest: binding.descriptor_digest.clone() },
+            fixture,
+            runtime_registry,
+        }
     }
 
     #[test]
-    fn diot_convergence_never_returns_converged_even_with_a_hypothetically_perfect_dforward_match() {
-        // Even constructing the "best case" scenario -- exact dforward_ref
-        // match is not modeled as an input at all, precisely because the
-        // subject shape cannot prove exact current placement regardless.
-        let result = evaluate_diot_placement_convergence(PROJECT, APP, "diotp:broker");
-        assert_ne!(result.convergence, DMonitorConvergenceV1::Converged);
+    fn dmap_v1_authority_has_no_diot_placement_concept_and_is_unknown() {
+        let state = DMonitorStateV1::empty();
+        let ddeploy = crate::core::ddeploy::DDeployStateV1::empty();
+        let dnode = crate::core::dnode_registry::DNodeRegistryStateV1::empty();
+        let runtime_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &runtime_registry, &ddeploy, &dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.findings.iter().any(|f| f.code == FINDING_DMAP_V1_NO_DIOT_SUPPORT));
+        assert!(result.placements.is_empty());
+    }
+
+    #[test]
+    fn no_active_authority_is_unknown() {
+        let state = DMonitorStateV1::empty();
+        let ddeploy = crate::core::ddeploy::DDeployStateV1::empty();
+        let dnode = crate::core::dnode_registry::DNodeRegistryStateV1::empty();
+        let runtime_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let result = evaluate_application_diot_convergence(PROJECT, APP, PROJECT, None, &state, &runtime_registry, &ddeploy, &dnode, &policy(), NOW);
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.findings.iter().any(|f| f.code == FINDING_NO_ACTIVE_PLACEMENT_AUTHORITY));
+    }
+
+    #[test]
+    fn zero_desired_diot_placements_is_unknown() {
+        let state = DMonitorStateV1::empty();
+        let ddeploy = crate::core::ddeploy::DDeployStateV1::empty();
+        let dnode = crate::core::dnode_registry::DNodeRegistryStateV1::empty();
+        let runtime_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, Some(&authority_v2(vec![(SVC_A, NODE_A)])), &state, &runtime_registry, &ddeploy, &dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.findings.iter().any(|f| f.code == FINDING_NO_DESIRED_DIOT_PLACEMENTS));
+    }
+
+    #[test]
+    fn exact_match_all_authorities_fresh_correct_node_converges() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Converged);
+        assert_eq!(result.placements[0].convergence, DMonitorConvergenceV1::Converged);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_EXACT_MATCH));
+        assert!(result.placements[0].admitted_evidence[0].runtime_binding_current);
+    }
+
+    #[test]
+    fn missing_dmap_ref_excludes_evidence_and_is_unknown() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, None, Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_AUTHORITY_REF_MISSING));
+    }
+
+    #[test]
+    fn mismatched_dforward_ref_excludes_evidence_and_is_unknown() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        let bad_dforward = DMonitorContractRefV1 { id: inputs.dforward_ref.id.clone(), revision: inputs.dforward_ref.revision + 1, digest: inputs.dforward_ref.digest.clone() };
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(bad_dforward), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_AUTHORITY_MISMATCH));
+    }
+
+    #[test]
+    fn missing_runtime_binding_ref_excludes_evidence() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), None, FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_RUNTIME_BINDING_REF_MISSING));
+    }
+
+    #[test]
+    fn runtime_binding_not_registered_excludes_evidence() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let empty_registry = DIoTRuntimeBindingRegistryStateV1::empty();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &empty_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_RUNTIME_BINDING_NOT_REGISTERED));
+    }
+
+    #[test]
+    fn mismatched_runtime_binding_ref_excludes_evidence() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let bad_binding_ref = DMonitorRuntimeBindingRefV1 { binding_id: inputs.runtime_binding_ref.binding_id.clone(), binding_revision: inputs.runtime_binding_ref.binding_revision + 1, descriptor_digest: inputs.runtime_binding_ref.descriptor_digest.clone() };
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(bad_binding_ref), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_RUNTIME_BINDING_MISMATCH));
+    }
+
+    #[test]
+    fn wrong_node_diverges() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        // Observed on NODE_B, but the fixture's registered/current binding
+        // (and desired placement) is NODE_A -- runtime_binding_ref exact
+        // match is against the REGISTERED binding, independent of which
+        // node the observation itself claims, so this evidence is still
+        // ADMITTED (it exactly matches every authority dimension) but
+        // compares as wrong-node against the desired placement.
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_B, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_B, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Diverged);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_WRONG_NODE));
+    }
+
+    #[test]
+    fn stale_evidence_is_unknown() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), STALE, "obs-1"),
+            STALE,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_STALE_EVIDENCE));
+    }
+
+    #[test]
+    fn unexpected_diot_evidence_can_never_admit_because_currentness_requires_placement_existence() {
+        // Structural property, distinct from D-Serv: `assess_diot_evidence`
+        // requires `runtime_binding_current`, and
+        // `verify_runtime_binding_still_current` itself fails closed the
+        // instant a binding's `placement_id` is absent from the CURRENT
+        // active DMap/2's `diot_placements` (see that function's own "DIoT
+        // placement ... no longer exists" check). A binding can therefore
+        // never be registered-and-current for a placement that is not
+        // desired, which means a "proven unexpected DIoT realization" (the
+        // D-Serv analogue of `unexpected_realizations` with non-empty
+        // `admitted_evidence`) is unreachable by construction, not merely
+        // untested.
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        // Fresh evidence for a DIFFERENT (diot_id, placement_id) than the
+        // one desired, reusing the SAME dmap_ref/dforward_ref (both exactly
+        // current) but a runtime_binding_ref that cannot possibly be
+        // registered-and-current for this other placement.
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, "diot:other", OTHER_DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        // The one DESIRED placement has no evidence of its own at all here
+        // (only the unexpected placement was ingested), so it is Unknown
+        // with FINDING_NO_EVIDENCE; the unexpected evidence never escalates
+        // this to Diverged because it was never admitted.
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_NO_EVIDENCE));
+        assert_eq!(result.unexpected_realizations.len(), 1);
+        assert!(result.unexpected_realizations[0].admitted_evidence.is_empty());
+        assert!(result.unexpected_realizations[0]
+            .excluded_evidence
+            .iter()
+            .any(|e| e.exclusion_reason == Some(FINDING_RUNTIME_BINDING_NOT_REGISTERED)));
+    }
+
+    #[test]
+    fn project_isolation_ignores_other_project_scope_evidence() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        let mut other_project_observation = diot_realization_observation(
+            NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A,
+            Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()),
+            FRESH, "obs-1",
+        );
+        other_project_observation.project_id = Some(OTHER_PROJECT.to_string());
+        if let DMonitorSubjectV1::DIoTRealization { project_id, .. } = &mut other_project_observation.subject {
+            *project_id = OTHER_PROJECT.to_string();
+        }
+        ingest_scope(&mut state, OTHER_PROJECT, other_project_observation, FRESH);
+        let result = evaluate_application_diot_convergence(
+            PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Unknown);
+        assert!(result.placements[0].findings.iter().any(|f| f.code == FINDING_NO_EVIDENCE));
+    }
+
+    #[test]
+    fn identical_inputs_produce_identical_diot_results() {
+        let inputs = build_diot_evidence_inputs(NODE_A);
+        let authority = active_placement_authority(&inputs.fixture.ddeploy, PROJECT, APP).unwrap();
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            diot_realization_observation(NODE_A, "mon-1", 1, DIOT_ID, DIOT_PLACEMENT_ID, NODE_A, Some(inputs.dmap_ref.clone()), Some(inputs.dforward_ref.clone()), Some(inputs.runtime_binding_ref.clone()), FRESH, "obs-1"),
+            FRESH,
+        );
+        let a = evaluate_application_diot_convergence(PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW);
+        let b = evaluate_application_diot_convergence(PROJECT, APP, PROJECT, authority.as_ref(), &state, &inputs.runtime_registry, &inputs.fixture.ddeploy, &inputs.fixture.dnode, &policy(), NOW);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn all_finding_codes_inventory_has_no_duplicates_and_includes_diot_codes() {
+        let unique: BTreeSet<&str> = ALL_FINDING_CODES.iter().copied().collect();
+        assert_eq!(unique.len(), ALL_FINDING_CODES.len());
+        for code in [
+            FINDING_RUNTIME_BINDING_NOT_REGISTERED,
+            FINDING_RUNTIME_BINDING_REF_MISSING,
+            FINDING_RUNTIME_BINDING_MISMATCH,
+            FINDING_RUNTIME_BINDING_STALE,
+            FINDING_DMAP_V1_NO_DIOT_SUPPORT,
+            FINDING_NO_DESIRED_DIOT_PLACEMENTS,
+        ] {
+            assert!(ALL_FINDING_CODES.contains(&code));
+        }
     }
 
     // -------------------------------------------------------- DETERMINISM

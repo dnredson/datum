@@ -1,12 +1,18 @@
 //! DMonitor derived desired-vs-observed convergence diagnostic API (Phase
 //! 114C, ADR-0024).
 //!
-//! Lock order: `DDEPLOY_TRANSACTION -> DMONITOR_TRANSACTION`, extending the
-//! established chain (`api::diot_runtime_binding`'s own module doc states
-//! the authoritative order this project already follows). This handler
-//! never acquires the D-Node/D-Call/D-IoT-runtime-binding locks: the
-//! comparison only needs the active D-Deploy placement authority and
-//! persisted DMonitor evidence.
+//! Lock order: `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+//! DIOT_RUNTIME_BINDING_TRANSACTION -> DMONITOR_TRANSACTION` (Phase 114D0A;
+//! `DMONITOR_TRANSACTION` innermost, per the FUTURE ordering Phase 114B1's
+//! own ADR text already reserved for this combination). D-Serv convergence
+//! alone never needed the D-Node/D-IoT-runtime-binding locks (Phase 114C's
+//! `DDEPLOY_TRANSACTION -> DMONITOR_TRANSACTION` order); DIoT convergence
+//! additionally reads `DNodeRegistryStateV1` and
+//! `DIoTRuntimeBindingRegistryStateV1` (via
+//! `verify_runtime_binding_still_current`), so this handler now acquires
+//! all four, always in this same order, even for the D-Serv portion of the
+//! response -- one lock order for the whole handler, never two different
+//! orders depending on which portion of the response is being computed.
 //!
 //! This is a READ-ONLY diagnostic endpoint: it performs no mutation, no
 //! remediation, and no placement decision. `POST` is used only because the
@@ -21,12 +27,17 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use serde::Serialize;
+
 use crate::core::ddeploy::active_placement_authority;
 use crate::core::dmonitor_freshness::{validate_freshness_policy, DMonitorFreshnessPolicyV1};
 use crate::core::dmonitor_interpretation::{
-    evaluate_application_dserv_convergence, DMonitorApplicationConvergenceV1,
+    evaluate_application_dserv_convergence, evaluate_application_diot_convergence,
+    DMonitorApplicationConvergenceV1, DMonitorApplicationDiotConvergenceV1,
 };
 use crate::core::dmonitor_state::load_state as load_dmonitor_state;
+use crate::core::diot_runtime_binding::load_state as load_diot_runtime_binding_state;
+use crate::core::dnode_registry::load_state as load_dnode_registry_state;
 use crate::storage::control_state::default_control_state_db_path;
 
 type ApiError = (StatusCode, JsonResponse<Value>);
@@ -77,20 +88,31 @@ pub struct EvaluateConvergenceRequest {
     pub max_future_clock_skew_seconds: u64,
 }
 
+/// Combined D-Serv + DIoT derived convergence response (Phase 114D0A). Kept
+/// as two SEPARATE result fields (section 31): DIoT evidence being missing
+/// or `Unknown` must never change the D-Serv result, and vice versa.
+#[derive(Debug, Serialize)]
+pub struct EvaluateConvergenceResponse {
+    #[serde(flatten)]
+    pub dserv: DMonitorApplicationConvergenceV1,
+    pub diot: DMonitorApplicationDiotConvergenceV1,
+}
+
 /// `POST /api/v1/dmonitor/convergence/:project_id/:application_id/evaluate`.
 ///
 /// Project isolation (section 29): `project_id` is the path's authoritative
 /// request scope. `active_placement_authority` is queried for EXACTLY this
 /// `(project_id, application_id)` pair (an application belonging to a
-/// different project cannot be named here), and
-/// `evaluate_application_dserv_convergence` additionally filters every
-/// DMonitor record it considers by `server_project_scope == project_id`
-/// (Phase 114C's own second, independent guard -- see that function's doc
-/// comment).
+/// different project cannot be named here), and both
+/// `evaluate_application_dserv_convergence` and
+/// `evaluate_application_diot_convergence` additionally filter every
+/// DMonitor record they consider by `server_project_scope == project_id`
+/// (Phase 114C's own second, independent guard -- see those functions' doc
+/// comments).
 pub async fn post_evaluate_dmonitor_convergence(
     axum::extract::Path((project_id, application_id)): axum::extract::Path<(String, String)>,
     Json(request): Json<EvaluateConvergenceRequest>,
-) -> Result<JsonResponse<DMonitorApplicationConvergenceV1>, ApiError> {
+) -> Result<JsonResponse<EvaluateConvergenceResponse>, ApiError> {
     let policy = DMonitorFreshnessPolicyV1 {
         max_observed_age_seconds: request.max_observed_age_seconds,
         max_received_age_seconds: request.max_received_age_seconds,
@@ -101,6 +123,12 @@ pub async fn post_evaluate_dmonitor_convergence(
     let _ddeploy_transaction = crate::api::ddeploy::ddeploy_transaction()
         .lock()
         .map_err(lock_error)?;
+    let _dnode_transaction = crate::api::dnode_registry::dnode_transaction()
+        .lock()
+        .map_err(lock_error)?;
+    let _diot_runtime_binding_transaction = crate::api::diot_runtime_binding::diot_runtime_binding_transaction()
+        .lock()
+        .map_err(lock_error)?;
     let _dmonitor_transaction = crate::api::dmonitor::dmonitor_transaction()
         .lock()
         .map_err(lock_error)?;
@@ -108,6 +136,8 @@ pub async fn post_evaluate_dmonitor_convergence(
 
     let db_path = db_path();
     let ddeploy_state = crate::core::ddeploy::load_state(&db_path).map_err(internal_error)?;
+    let dnode_registry_state = load_dnode_registry_state(&db_path).map_err(internal_error)?;
+    let diot_runtime_binding_registry = load_diot_runtime_binding_state(&db_path).map_err(internal_error)?;
     let authority = active_placement_authority(&ddeploy_state, &project_id, &application_id)
         .map_err(internal_error)?;
     let dmonitor_state = load_dmonitor_state(&db_path).map_err(internal_error)?;
@@ -115,7 +145,7 @@ pub async fn post_evaluate_dmonitor_convergence(
     // Server-generated; never accepted from the request body (section 27).
     let evaluated_at_utc = Utc::now().to_rfc3339();
 
-    let result = evaluate_application_dserv_convergence(
+    let dserv = evaluate_application_dserv_convergence(
         &project_id,
         &application_id,
         &project_id,
@@ -125,7 +155,20 @@ pub async fn post_evaluate_dmonitor_convergence(
         &evaluated_at_utc,
     );
 
-    Ok(JsonResponse(result))
+    let diot = evaluate_application_diot_convergence(
+        &project_id,
+        &application_id,
+        &project_id,
+        authority.as_ref(),
+        &dmonitor_state,
+        &diot_runtime_binding_registry,
+        &ddeploy_state,
+        &dnode_registry_state,
+        &policy,
+        &evaluated_at_utc,
+    );
+
+    Ok(JsonResponse(EvaluateConvergenceResponse { dserv, diot }))
 }
 
 #[cfg(test)]
@@ -143,6 +186,10 @@ mod tests {
 
     #[test]
     fn post_evaluate_holds_the_established_lock_order() {
+        // Phase 114D0A: extended from DDEPLOY -> DMONITOR to the full
+        // DDEPLOY -> DNODE -> DIOT_RUNTIME_BINDING -> DMONITOR chain, since
+        // DIoT convergence now also reads the D-Node registry and DIoT
+        // runtime binding registry (via `verify_runtime_binding_still_current`).
         let source = production_source();
         let start = source
             .find("pub async fn post_evaluate_dmonitor_convergence(")
@@ -151,18 +198,22 @@ mod tests {
         let ddeploy_pos = body
             .find("ddeploy::ddeploy_transaction()")
             .expect("must acquire DDEPLOY_TRANSACTION");
+        let dnode_pos = body
+            .find("dnode_registry::dnode_transaction()")
+            .expect("must acquire DNODE_TRANSACTION");
+        let diot_runtime_binding_pos = body
+            .find("diot_runtime_binding::diot_runtime_binding_transaction()")
+            .expect("must acquire DIOT_RUNTIME_BINDING_TRANSACTION");
         let dmonitor_pos = body
             .find("dmonitor::dmonitor_transaction()")
             .expect("must acquire DMONITOR_TRANSACTION");
         assert!(
-            ddeploy_pos < dmonitor_pos,
-            "DDEPLOY_TRANSACTION must be acquired before DMONITOR_TRANSACTION"
+            ddeploy_pos < dnode_pos && dnode_pos < diot_runtime_binding_pos && diot_runtime_binding_pos < dmonitor_pos,
+            "lock order must be DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DIOT_RUNTIME_BINDING_TRANSACTION -> DMONITOR_TRANSACTION"
         );
         assert!(
-            !body.contains("dnode_registry::dnode_transaction()")
-                && !body.contains("dcall_transaction()")
-                && !body.contains("diot_runtime_binding_transaction()"),
-            "convergence evaluation must not acquire DNode/DCall/DIoT locks"
+            !body.contains("dcall_transaction()"),
+            "convergence evaluation must not acquire the DCall lock"
         );
     }
 

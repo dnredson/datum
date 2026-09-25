@@ -70,6 +70,19 @@ pub struct DMonitorContractRefV1 {
     pub digest: String,
 }
 
+/// Mirrors `DMonitorRuntimeBindingRefV1` (Phase 114D0A) -- a reference to
+/// Phase 113B1's server-owned `DIoTRuntimeBindingV1`
+/// (`core::diot_runtime_binding`), deliberately a separate type from
+/// `DMonitorContractRefV1`: a runtime binding is operational authority, not
+/// a canonical desired-state "contract".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DMonitorRuntimeBindingRefV1 {
+    pub binding_id: String,
+    pub binding_revision: u64,
+    pub descriptor_digest: String,
+}
+
 /// Mirrors `DMonitorSubjectV1` variant-for-variant, tag-for-tag.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, tag = "kind")]
@@ -114,14 +127,22 @@ pub enum DMonitorSubjectV1 {
         delivery_evidence_digest: Option<String>,
     },
 
+    /// Phase 114D0A: evolved shape -- mirrors
+    /// `agent::canonical_dmonitor::DMonitorSubjectV1::DIoTRealization`
+    /// exactly.
     #[serde(rename = "diot_realization")]
     DIoTRealization {
         project_id: String,
         application_id: String,
+        diot_id: String,
+        diot_placement_id: String,
+        node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dmap_ref: Option<DMonitorContractRefV1>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dforward_ref: Option<DMonitorContractRefV1>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        diot_placement_id: Option<String>,
+        runtime_binding_ref: Option<DMonitorRuntimeBindingRefV1>,
     },
 
     #[serde(rename = "network_reachability")]
@@ -226,6 +247,21 @@ impl CanonicalDMonitorObservationV1 {
                         "observation.project_id must be Some(\"{subject_project_id}\") to match the typed subject's project_id, got None"
                     ),
                 )),
+            }
+        }
+
+        // Phase 114D0A closure (section 7): mirrors the agent-side rule
+        // exactly -- a governed DIoT realization must be of THIS observing
+        // node's own realization.
+        if let DMonitorSubjectV1::DIoTRealization { node_id: subject_node_id, .. } = &self.subject {
+            if subject_node_id != &self.node_id {
+                findings.push(finding(
+                    "subject_node_id_inconsistent",
+                    format!(
+                        "observation.node_id '{}' does not match subject.DIoTRealization.node_id '{subject_node_id}' -- a governed local-runtime DIoT observation must be of THIS observing node's own realization",
+                        self.node_id
+                    ),
+                ));
             }
         }
 
@@ -347,21 +383,29 @@ impl DMonitorSubjectV1 {
             DMonitorSubjectV1::DIoTRealization {
                 project_id,
                 application_id,
-                dforward_ref,
+                diot_id,
                 diot_placement_id,
+                node_id,
+                dmap_ref,
+                dforward_ref,
+                runtime_binding_ref,
             } => {
                 require("project_id", project_id);
                 require("application_id", application_id);
+                require("diot_id", diot_id);
+                require("diot_placement_id", diot_placement_id);
+                require("node_id", node_id);
+                if let Some(dmap_ref) = dmap_ref {
+                    findings.extend(validate_contract_ref("subject.dmap_ref", dmap_ref));
+                }
                 if let Some(dforward_ref) = dforward_ref {
                     findings.extend(validate_contract_ref("subject.dforward_ref", dforward_ref));
                 }
-                if let Some(placement_id) = diot_placement_id {
-                    if placement_id.trim().is_empty() {
-                        findings.push(finding(
-                            "missing_field",
-                            "subject.diot_placement_id, if present, must be non-empty",
-                        ));
-                    }
+                if let Some(runtime_binding_ref) = runtime_binding_ref {
+                    findings.extend(validate_runtime_binding_ref(
+                        "subject.runtime_binding_ref",
+                        runtime_binding_ref,
+                    ));
                 }
             }
             DMonitorSubjectV1::NetworkReachability { node_id, target } => {
@@ -403,6 +447,31 @@ pub fn digest_shape_ok(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     })
+}
+
+/// Mirrors `agent::canonical_dmonitor::validate_runtime_binding_ref` exactly
+/// (Phase 114D0A).
+fn validate_runtime_binding_ref(
+    label: &str,
+    binding_ref: &DMonitorRuntimeBindingRefV1,
+) -> Vec<CanonicalValidationFinding> {
+    let mut findings = Vec::new();
+    if binding_ref.binding_id.trim().is_empty() {
+        findings.push(finding("malformed_ref", format!("{label}.binding_id must be non-empty")));
+    }
+    if binding_ref.binding_revision < 1 {
+        findings.push(finding(
+            "malformed_ref",
+            format!("{label}.binding_revision must be >= 1"),
+        ));
+    }
+    if !digest_shape_ok(&binding_ref.descriptor_digest) {
+        findings.push(finding(
+            "malformed_ref",
+            format!("{label}.descriptor_digest must be the canonical 'sha256:<64 lowercase hex>' form"),
+        ));
+    }
+    findings
 }
 
 fn json_numbers_are_finite(value: &Value) -> bool {
@@ -556,8 +625,12 @@ mod tests {
         observation.subject = DMonitorSubjectV1::DIoTRealization {
             project_id: "proj:lab".to_string(),
             application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: None,
             dforward_ref: None,
-            diot_placement_id: None,
+            runtime_binding_ref: None,
         };
         let findings = observation.validate();
         assert!(findings.iter().any(|f| f.code == "subject_project_id_inconsistent"), "{findings:?}");
@@ -642,19 +715,170 @@ mod tests {
         observation.subject = DMonitorSubjectV1::DIoTRealization {
             project_id: "proj:lab".to_string(),
             application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: Some(DMonitorContractRefV1 {
+                id: "dmap:1".to_string(),
+                revision: 3,
+                digest: format!("sha256:{}", "a".repeat(64)),
+            }),
             dforward_ref: Some(DMonitorContractRefV1 {
                 id: "dforward:1".to_string(),
                 revision: 2,
                 digest: format!("sha256:{}", "b".repeat(64)),
             }),
-            diot_placement_id: Some("diotp:broker".to_string()),
+            runtime_binding_ref: Some(DMonitorRuntimeBindingRefV1 {
+                binding_id: "diot-runtime-binding:proj:lab:app:pipeline:diotp:broker".to_string(),
+                binding_revision: 1,
+                descriptor_digest: format!("sha256:{}", "d".repeat(64)),
+            }),
         };
         assert!(observation.validate().is_empty(), "{:?}", observation.validate());
         let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
         assert_eq!(
             digest,
-            "sha256:20529ff5fa669c9a8c9fe4f47c49da44a2aa3f17bc6c35eec899f13e0e2d7067",
+            "sha256:5e20cf673907d9e89975176a3caf9af31cd647f2a9df378cb3c87872848c2ada",
         );
+    }
+
+    #[test]
+    fn digest_matches_datum_golden_vector_6_diot_realization_missing_authority_refs() {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.subject = DMonitorSubjectV1::DIoTRealization {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        };
+        assert!(observation.validate().is_empty(), "{:?}", observation.validate());
+        let digest = recompute_dmonitor_observation_digest(&observation).unwrap();
+        assert_eq!(
+            digest,
+            "sha256:d71df9036a34815005af3e6972af4d5f7e0d043147deda6fc419967ae0da0e61",
+        );
+    }
+
+    // ---------------------------------------- PHASE 114D0A CLOSURE
+    // (canonical DIoT correlation)
+
+    fn valid_diot_realization() -> DMonitorSubjectV1 {
+        DMonitorSubjectV1::DIoTRealization {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: Some(DMonitorContractRefV1 {
+                id: "dmap:1".to_string(),
+                revision: 3,
+                digest: format!("sha256:{}", "a".repeat(64)),
+            }),
+            dforward_ref: Some(DMonitorContractRefV1 {
+                id: "dforward:1".to_string(),
+                revision: 2,
+                digest: format!("sha256:{}", "b".repeat(64)),
+            }),
+            runtime_binding_ref: Some(DMonitorRuntimeBindingRefV1 {
+                binding_id: "diot-runtime-binding:proj:lab:app:pipeline:diotp:broker".to_string(),
+                binding_revision: 1,
+                descriptor_digest: format!("sha256:{}", "d".repeat(64)),
+            }),
+        }
+    }
+
+    fn diot_observation() -> CanonicalDMonitorObservationV1 {
+        let mut observation = minimal_dnode_observation();
+        observation.project_id = Some("proj:lab".to_string());
+        observation.subject = valid_diot_realization();
+        observation
+    }
+
+    #[test]
+    fn complete_valid_diot_realization_validates_cleanly() {
+        assert!(diot_observation().validate().is_empty(), "{:?}", diot_observation().validate());
+    }
+
+    #[test]
+    fn diot_required_identity_fields_must_be_non_empty() {
+        for mutator in [
+            (|s: &mut DMonitorSubjectV1| if let DMonitorSubjectV1::DIoTRealization { diot_id, .. } = s { *diot_id = String::new(); }) as fn(&mut DMonitorSubjectV1),
+            |s: &mut DMonitorSubjectV1| if let DMonitorSubjectV1::DIoTRealization { diot_placement_id, .. } = s { *diot_placement_id = String::new(); },
+            |s: &mut DMonitorSubjectV1| if let DMonitorSubjectV1::DIoTRealization { node_id, .. } = s { *node_id = String::new(); },
+        ] {
+            let mut observation = diot_observation();
+            mutator(&mut observation.subject);
+            let findings = observation.validate();
+            assert!(findings.iter().any(|f| f.code == "missing_field"), "{findings:?}");
+        }
+    }
+
+    #[test]
+    fn diot_node_consistency_is_enforced() {
+        let mut observation = diot_observation();
+        if let DMonitorSubjectV1::DIoTRealization { node_id, .. } = &mut observation.subject {
+            *node_id = "cloud-01".to_string();
+        }
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "subject_node_id_inconsistent"), "{findings:?}");
+    }
+
+    #[test]
+    fn diot_valid_dmap_ref_is_accepted_and_malformed_one_is_rejected() {
+        assert!(diot_observation().validate().is_empty());
+        let mut observation = diot_observation();
+        if let DMonitorSubjectV1::DIoTRealization { dmap_ref, .. } = &mut observation.subject {
+            *dmap_ref = Some(DMonitorContractRefV1 { id: String::new(), revision: 0, digest: "bad".to_string() });
+        }
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "malformed_ref"), "{findings:?}");
+    }
+
+    #[test]
+    fn diot_valid_dforward_ref_is_accepted_and_malformed_one_is_rejected() {
+        let mut observation = diot_observation();
+        if let DMonitorSubjectV1::DIoTRealization { dforward_ref, .. } = &mut observation.subject {
+            *dforward_ref = Some(DMonitorContractRefV1 { id: "x".to_string(), revision: 1, digest: "not-a-digest".to_string() });
+        }
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "malformed_ref"), "{findings:?}");
+    }
+
+    #[test]
+    fn diot_valid_runtime_binding_ref_is_accepted() {
+        assert!(diot_observation().validate().is_empty());
+    }
+
+    #[test]
+    fn diot_zero_binding_revision_is_rejected() {
+        let mut observation = diot_observation();
+        if let DMonitorSubjectV1::DIoTRealization { runtime_binding_ref, .. } = &mut observation.subject {
+            runtime_binding_ref.as_mut().unwrap().binding_revision = 0;
+        }
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "malformed_ref"), "{findings:?}");
+    }
+
+    #[test]
+    fn diot_malformed_binding_digest_is_rejected() {
+        let mut observation = diot_observation();
+        if let DMonitorSubjectV1::DIoTRealization { runtime_binding_ref, .. } = &mut observation.subject {
+            runtime_binding_ref.as_mut().unwrap().descriptor_digest = "not-sha256".to_string();
+        }
+        let findings = observation.validate();
+        assert!(findings.iter().any(|f| f.code == "malformed_ref"), "{findings:?}");
+    }
+
+    #[test]
+    fn diot_realization_digest_is_deterministic() {
+        let a = recompute_dmonitor_observation_digest(&diot_observation()).unwrap();
+        let b = recompute_dmonitor_observation_digest(&diot_observation()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

@@ -880,6 +880,232 @@ would have caused a genuine wrong-node/unexpected-realization false
 negative for any stream (a central control-plane collector, for instance)
 that ever reported on the same service across more than one node.
 
+## Canonical DIoT correlation closure (Phase 114D0A)
+
+### The gap this pass closes
+
+Phase 114C's audit (see "114C.1 closure audit" above) proved that the
+ORIGINAL `DMonitorSubjectV1::DIoTRealization` shape --
+`{project_id, application_id, dforward_ref: Option<ContractRef>,
+diot_placement_id: Option<String>}` -- could never support exact CURRENT
+DIoT placement convergence, for three independent reasons: it carried no
+observed `node_id` at all, no `dmap_ref` at all (only `dforward_ref`), and
+no reference to Phase 113B1's `DIoTRuntimeBindingV1` operational authority.
+`evaluate_diot_placement_convergence` therefore always failed closed to
+`Unknown`/`insufficient_canonical_correlation`, by design, regardless of
+input. Phase 114D0A closes this gap at the model and interpretation layer:
+canonical DIoT observation correlation, DATUM/DServer mirror parity, exact
+correlation against DMap/2 + DForward + DIoT runtime-binding authority, and
+a real derived DIoT convergence engine. It deliberately does NOT implement
+the long-running runtime producer/heartbeat, readiness, `any_element`, or
+any reconciliation/mutation -- those remain out of scope (114D0B and later).
+
+### Enriched `DIoTRealization` shape
+
+`DIoTRealization` gained three REQUIRED identity fields and three OPTIONAL
+authority-correlation fields, following exactly the pattern already
+established for `DServRealization` (required identity, optional
+correlation refs):
+
+```rust
+DIoTRealization {
+    project_id: String,
+    application_id: String,
+    diot_id: String,
+    diot_placement_id: String,
+    node_id: String,
+    dmap_ref: Option<DMonitorContractRefV1>,
+    dforward_ref: Option<DMonitorContractRefV1>,
+    runtime_binding_ref: Option<DMonitorRuntimeBindingRefV1>,
+}
+```
+
+`node_id`, `diot_id`, and `diot_placement_id` moved from absent/optional to
+REQUIRED non-empty: a `DIoTRealization` observation that cannot honestly
+name which node it was observed running on, or which governed DIoT/
+placement it claims to realize, is not admissible evidence at all, never a
+degraded-but-valid one. A new top-level consistency check
+(`subject_node_id_inconsistent`) requires `observation.node_id ==
+subject.node_id` for this variant specifically -- a governed local-runtime
+DIoT observation must be of the OBSERVING node's own realization, mirroring
+the same "no helpful inference across possibly-different nodes" discipline
+Phase 114C already applied to D-Serv comparison logic.
+
+### A new type, not a reused one: `DMonitorRuntimeBindingRefV1`
+
+```rust
+pub struct DMonitorRuntimeBindingRefV1 {
+    pub binding_id: String,
+    pub binding_revision: u64,
+    pub descriptor_digest: String,
+}
+```
+
+This is deliberately a SEPARATE type from `DMonitorContractRefV1`, even
+though both are structurally `{id-like, revision, digest}` triples.
+`DMonitorContractRefV1` references a CANONICAL CONTRACT (a DMap/DForward
+revision) -- desired-state authority. A `DIoTRuntimeBindingV1` is
+OPERATIONAL authority: a server-derived, currently-resolved answer to
+"which broker does this DIoT placement resolve to right now," itself
+re-derived from and validated against canonical contract authority (Phase
+113B1), but not a contract itself. Collapsing the two into one type would
+blur that distinction at exactly the place it matters most: an observation
+correlating against operational binding authority is making a different,
+narrower claim than one correlating against a DMap/DForward contract
+reference, and the type system now makes that difference visible in the
+wire schema itself.
+
+### Exact-correlation algorithm (`evaluate_application_diot_convergence`)
+
+`dserver::core::dmonitor_interpretation::evaluate_diot_placement_convergence`
+(the Phase 114C stub that always returned `Unknown`) is replaced by
+`evaluate_application_diot_convergence`, a whole-application evaluator
+mirroring `evaluate_application_dserv_convergence`'s own structure (one
+evaluation per desired placement plus a whole-application
+unexpected-realization scan, both built from a single
+`latest_diot_realizations_for_application` enumeration keyed by the full
+`(diot_id, diot_placement_id, node_id)` triple -- the DIoT analogue of
+114C.1's `(service_id, node_id)` fix). For each admitted piece of evidence
+to prove CURRENT convergence, ALL of the following must hold:
+
+1. **Freshness** -- `dmonitor_freshness::evaluate_freshness` accepts it (the
+   same freshness-precedence rule as D-Serv: stale/clock-skewed evidence can
+   prove `Unknown`, never `Diverged` nor `Converged`).
+2. **DMap correlation** -- the observation's `dmap_ref` exactly matches the
+   CURRENT active authority's `{dmap_id, revision, digest}`.
+3. **DForward correlation** -- the observation's `dforward_ref` exactly
+   matches the current authority's `{dforward_id, dforward_revision,
+   dforward_digest}` (from `PlacementAuthorityV2Extras`).
+4. **Runtime-binding correlation** -- the observation's `runtime_binding_ref`
+   exactly matches the CURRENTLY REGISTERED `DIoTRuntimeBindingV1` for this
+   exact `(project_id, application_id, diot_placement_id)`, looked up from
+   `DIoTRuntimeBindingRegistryStateV1::get` -- never merely "some binding
+   once existed."
+5. **Runtime-binding currentness** -- that currently-registered binding
+   itself passes `verify_runtime_binding_still_current` (Phase 113B1's ONE
+   production fail-closed check, reused verbatim, never reimplemented)
+   against the SAME `DDeployStateV1`/`DNodeRegistryStateV1` this evaluation
+   was given.
+6. **Node match** -- the subject's own `node_id` equals the desired
+   placement's `node_id` (wrong-node / conflicting-multi-node-evidence
+   combinatorics are identical to D-Serv's `evaluate_service_placement`).
+
+Any single failure excludes the evidence with the single most specific
+reason, in priority order (a stale/never-registered/mismatched binding is
+reported before a generic authority mismatch, which is reported before a
+generic freshness failure) -- six new finding codes were added to
+`ALL_FINDING_CODES` for this (`runtime_binding_not_registered`,
+`runtime_binding_ref_missing`, `runtime_binding_mismatch`,
+`runtime_binding_stale`, `dmap_v1_no_diot_support`,
+`no_desired_diot_placements`), extending the Phase 114C.1 inventory from 13
+to 19 entries -- none of the original 13 were redefined or renamed.
+`AuthorityCorrelationV1` gained a `NotApplicable` variant reserved for a
+correlation dimension that does not apply in context; it is not currently
+constructed because `datum.dmap/1` (which has no DIoT placement concept at
+all) is handled once at the whole-application level, before any
+per-placement DForward comparison is reached, rather than per-dimension.
+
+### Transitive artifact authority (why the runtime-binding hop matters)
+
+An exact `runtime_binding_ref` match proves something a raw `dmap_ref`/
+`dforward_ref` match alone cannot: `DIoTRuntimeBindingV1` (Phase 113B1)
+already carries `artifact_id`/`execution_generation`/
+`execution_projection_digest`, derived from and continuously re-validated
+against the CURRENT `diot_artifact_authority` the moment
+`verify_runtime_binding_still_current` runs. So correlating against the
+CURRENT registered binding transitively proves correlation against current
+DMap/DForward/artifact-execution authority in one step:
+`DMonitor runtime_binding_ref -> exact DIoTRuntimeBindingV1 descriptor ->
+current DMap/DForward/artifact authority`. The descriptor digest is an
+integrity/correlation mechanism inside this governed state model, not a
+cryptographic authentication mechanism, and `broker_uri` deliberately never
+participates in this identity chain -- a broker URI is a network coordinate
+a binding currently resolves to, never a component of WHICH placement is
+being observed.
+
+### No server-synthesized observation
+
+The mere existence of a registered `DIoTRuntimeBindingV1` never, by itself,
+proves a placement is alive: `evaluate_application_diot_convergence` never
+synthesizes admitted evidence from registry state alone. A currently
+registered-and-current binding with zero fresh, exactly-correlating
+`DIoTRealization` observations remains `Unknown`/`no_evidence` -- exactly as
+a desired D-Serv placement with an active DMap entry but no observations is
+`Unknown`, never `Converged`, under the pre-existing D-Serv rule. This is
+also why a "proven unexpected DIoT realization" (the DIoT analogue of Phase
+114C.1's D-Serv `unexpected_realizations` escalation) is structurally
+unreachable, not merely untested: `verify_runtime_binding_still_current`
+itself fails the instant a binding's `placement_id` is absent from the
+current active DMap/2's `diot_placements`, so a binding can never be both
+"currently registered and current" and "for a placement outside the desired
+set" at the same time. `unexpected_realizations` is still tracked (for
+transparency of excluded/historical evidence, matching D-Serv's Case C
+precedent) but can never escalate DIoT convergence to `Diverged`.
+
+### DServ and DIoT convergence remain separate results
+
+`post_evaluate_dmonitor_convergence`'s response now carries `dserv`
+(`DMonitorApplicationConvergenceV1`, unchanged) and `diot`
+(`DMonitorApplicationDiotConvergenceV1`, new) as two independent top-level
+fields. DIoT evidence being missing or `Unknown` never changes an
+already-computed D-Serv `Converged`/`Diverged` result, and vice versa --
+the same independence rule Phase 114C already applied between freshness,
+authority correlation, placement convergence, and observed health.
+
+### Lock order extended
+
+DIoT convergence additionally reads `DNodeRegistryStateV1` and
+`DIoTRuntimeBindingRegistryStateV1` (via `verify_runtime_binding_still_current`),
+so `post_evaluate_dmonitor_convergence` now acquires all four transaction
+locks, always in this order, for the whole handler (even the D-Serv
+portion): `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION ->
+DIOT_RUNTIME_BINDING_TRANSACTION -> DMONITOR_TRANSACTION`. This is the SAME
+order `diot_runtime_binding.rs`'s own registration/lookup handlers already
+use and the same order Phase 114B1's own module documentation reserved in
+advance for exactly this future combination -- audited, not invented, for
+this pass.
+
+### Pre-integration schema-version decision
+
+`datum.dmonitor-observation/1` is evolved IN PLACE rather than versioned to
+`/2`. This is safe because `agent/dmonitor-v1` (the branch carrying the
+entire Phase 114 arc) has never merged to `main`: `origin/main` has no
+consumer of the old `DIoTRealization` shape to break. Once this work
+integrates, any FUTURE incompatible change to a canonical DMonitor subject
+shape must use the normal `/2` versioning discipline this project applies
+everywhere else.
+
+### Phase 114D0B producer seam: audited, not implemented
+
+Per this pass's explicit scope, the long-running DIoT runtime producer was
+audited but NOT built. The exact seam is
+`DATUM/src/dcall/delivery.rs::run_mqtt_dcall_listener` (`dserver_url,
+dnode_root, project_id, application_id, diot_placement_id, stop`): it loads
+local D-Node identity, calls `client::fetch_current_runtime_binding`
+(`GET .../current`), validates `transport == "mqtt"`, connects via
+`RumqttcPubSub::connect`, and calls `MqttPubSub::subscribe` -- the exact
+point after which the listener can HONESTLY claim "this realization is
+alive." It then enters a `while !stop.load(...)` 500ms poll loop, which is
+where a periodic DMonitor heartbeat should originate in 114D0B. No
+reconnect/disconnect logic exists today (a `poll` error propagates via `?`
+and exits the function), which 114D0B will need to address alongside adding
+the heartbeat itself. Separately, `deliver_via_diot_pubsub` (the source
+side of a DCall grant) already independently re-verifies the current
+binding matches a grant's bound authority
+(`binding_id`/`binding_revision`/`descriptor_digest`/`transport`/
+`project_id`/`application_id`/`placement_id`) before opening any
+connection -- confirming this exact-match comparison pattern already has
+production precedent elsewhere in the codebase, independent of this pass's
+new DMonitor-side comparison.
+
+### Deferred to later phases
+
+Readiness, `any_element`, and reconciliation/mutation semantics remain
+entirely out of scope for 114D0A (and were not touched). Live multinode
+validation of the DIoT correlation algorithm itself remains 114E's job, per
+the same evidentiary-discipline carryover already stated for D-Serv
+convergence above.
+
 ## Migration posture for the legacy SmartSentinel model
 
 This ADR does not migrate or remove any existing SmartSentinel code path.
@@ -922,10 +1148,12 @@ authority over this decision and is not a migration source.
 - D-Serv placement drift/convergence is now derivable, read-only, from
   `dserver::core::dmonitor_interpretation::evaluate_application_dserv_convergence`
   -- see "Derived convergence/drift interpretation (Phase 114C)" above. DIoT
-  placement convergence remains provably impossible from the current
-  `DIoTRealization` subject shape (audited, documented, tested fail-closed);
-  D-Code/D-Call evidence remains deliberately out of scope for placement
-  convergence.
+  placement convergence is now ALSO derivable, read-only, from
+  `evaluate_application_diot_convergence`, exactly correlating against
+  DMap/2 + DForward + DIoT runtime-binding authority -- see "Canonical DIoT
+  correlation closure (Phase 114D0A)" above; the live runtime evidence
+  producer itself remains deferred to 114D0B. D-Code/D-Call evidence remains
+  deliberately out of scope for placement convergence.
 - No readiness/`any_element` feed integration exists yet -- 114D's job.
 - No live multinode validation of this model exists yet -- 114E's job, and
   per this project's established evidentiary discipline (see the Phase 113B

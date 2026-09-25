@@ -227,13 +227,17 @@ pub fn subject_key(subject: &DMonitorSubjectV1) -> String {
         DMonitorSubjectV1::DIoTRealization {
             project_id,
             application_id,
+            diot_id,
             diot_placement_id,
+            node_id,
             ..
         } => vec![
             "diot_realization".to_string(),
             project_id.clone(),
             application_id.clone(),
-            diot_placement_id.clone().unwrap_or_else(|| "-".to_string()),
+            diot_id.clone(),
+            diot_placement_id.clone(),
+            node_id.clone(),
         ],
         DMonitorSubjectV1::NetworkReachability { node_id, target } => vec![
             "network_reachability".to_string(),
@@ -1055,6 +1059,88 @@ mod tests {
         let other_node_key = subject_key(&DMonitorSubjectV1::DNode { node_id: "cloud-01".to_string() });
         assert_eq!(dnode_key, dnode_key_again);
         assert_ne!(dnode_key, other_node_key);
+    }
+
+    /// Phase 114D0A section 9/28: DIoT identity must distinguish at least
+    /// project/application/diot/placement/node -- keying only by
+    /// project/application/placement (the pre-114D0A shape) could collapse
+    /// observations of the SAME governed placement reported on DIFFERENT
+    /// nodes into one subject.
+    #[test]
+    fn diot_realization_subject_key_distinguishes_by_node() {
+        let a = subject_key(&DMonitorSubjectV1::DIoTRealization {
+            project_id: PROJECT.to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        });
+        let b = subject_key(&DMonitorSubjectV1::DIoTRealization {
+            project_id: PROJECT.to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "fog-02".to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        });
+        assert_ne!(a, b, "same project/application/diot/placement on two different nodes must not collapse to one subject");
+    }
+
+    #[test]
+    fn diot_realization_subject_key_distinguishes_by_placement() {
+        let a = subject_key(&DMonitorSubjectV1::DIoTRealization {
+            project_id: PROJECT.to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker-1".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        });
+        let b = subject_key(&DMonitorSubjectV1::DIoTRealization {
+            project_id: PROJECT.to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker-2".to_string(),
+            node_id: "fog-01".to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        });
+        assert_ne!(a, b, "same node hosting two different placements must not collapse to one subject");
+    }
+
+    #[test]
+    fn diot_realizations_on_different_nodes_do_not_collapse_in_subject_index() {
+        let mut state = DMonitorStateV1::empty();
+        let diot_subject = |node_id: &str| DMonitorSubjectV1::DIoTRealization {
+            project_id: PROJECT.to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: node_id.to_string(),
+            dmap_ref: None,
+            dforward_ref: None,
+            runtime_binding_ref: None,
+        };
+        let mut obs1 = observation(1, &obs_id(1));
+        obs1.project_id = Some(PROJECT.to_string());
+        obs1.node_id = "fog-01".to_string();
+        obs1.subject = diot_subject("fog-01");
+        let mut obs2 = observation(1, &obs_id(2));
+        obs2.project_id = Some(PROJECT.to_string());
+        obs2.node_id = "fog-02".to_string();
+        obs2.monitor_instance_id = "fog-02-monitor-1".to_string();
+        obs2.subject = diot_subject("fog-02");
+        ingest_observation(&mut state, PROJECT, obs1, "2026-09-25T00:00:01Z").unwrap();
+        ingest_observation(&mut state, PROJECT, obs2, "2026-09-25T00:00:02Z").unwrap();
+        assert_eq!(state.subject_index.len(), 2, "the same governed placement observed on two different nodes must index as two distinct subjects, not collapse into one");
     }
 
     #[test]
