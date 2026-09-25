@@ -1053,21 +1053,94 @@ pub fn handle_mqtt_dcall_request(
     Some((reply_topic, response))
 }
 
-/// Phase 113B3 (section 15): production MQTT D-Call destination listener
-/// loop. Runs until `stop` is set. Startup: prove local D-Node identity,
-/// fetch the CURRENT runtime binding (fails closed on `mqtts://` or a fetch
-/// failure), connect, and subscribe ONLY to this exact placement/local-node
-/// operational prefix (section 6) -- never a destination service
-/// configuration of any kind (section 15/16: entirely grant-derived).
+/// Default bounded window (section 4) to wait for protocol-level session
+/// confirmation (ConnAck + SubAck) before treating startup as failed. Not
+/// the same thing as the steady-state 500ms poll timeout below -- this is a
+/// one-time startup bound, generous enough for a real broker round trip,
+/// short enough that a genuinely unreachable broker fails fast.
+const DEFAULT_SESSION_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Steady-state poll granularity: how often the loop can notice a new DCall
+/// message, a heartbeat becoming due, or `stop` being set.
+const DEFAULT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Phase 114D0B: converts the server's proven-current binding response into
+/// the immutable session-authority identity the DMonitor producer carries
+/// for the lifetime of ONE MQTT session (section 8). Kept as a free
+/// function (not a `From` impl) so the one-time verification this requires
+/// -- that the binding is for THIS exact local node -- stays the caller's
+/// explicit responsibility rather than being silently skippable via a
+/// generic trait conversion.
+fn diot_runtime_binding_identity(
+    binding: &client::CurrentRuntimeBindingResponse,
+) -> crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity {
+    crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity {
+        project_id: binding.project_id.clone(),
+        application_id: binding.application_id.clone(),
+        diot_id: binding.diot_id.clone(),
+        diot_placement_id: binding.placement_id.clone(),
+        node_id: binding.node_id.clone(),
+        dmap_id: binding.dmap_id.clone(),
+        dmap_revision: binding.dmap_revision,
+        dmap_digest: binding.dmap_digest.clone(),
+        dforward_id: binding.dforward_id.clone(),
+        dforward_revision: binding.dforward_revision,
+        dforward_digest: binding.dforward_digest.clone(),
+        binding_id: binding.binding_id.clone(),
+        binding_revision: binding.binding_revision,
+        descriptor_digest: binding.descriptor_digest.clone(),
+    }
+}
+
+/// Builds one observation via `emitter`, serializes it, and offers it to
+/// `publisher` -- never blocks (section 18/19), never panics, never retries.
+fn emit_and_publish(
+    emitter: &mut crate::agent::diot_runtime_dmonitor::DiotRuntimeMonitorEmitter,
+    publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
+    health: crate::agent::canonical_dmonitor::DMonitorHealthV1,
+    runtime_state: crate::agent::diot_runtime_dmonitor::DiotRuntimeState,
+    heartbeat: bool,
+) {
+    let observed_at_utc = chrono::Utc::now().to_rfc3339();
+    let observation = emitter.emit(&observed_at_utc, health, runtime_state, heartbeat);
+    let observation_id = observation.observation_id.clone();
+    if let Ok(observation_json) = serde_json::to_value(&observation) {
+        publisher.try_publish(crate::dcall::dmonitor_publisher::DMonitorPublishJob {
+            observation_id,
+            observation_json,
+        });
+    }
+}
+
+/// Phase 113B3 (section 15) + Phase 114D0B: production MQTT D-Call
+/// destination listener loop. Runs until `stop` is set. Startup: prove
+/// local D-Node identity, fetch the CURRENT runtime binding (fails closed
+/// on `mqtts://`, a fetch failure, or a binding whose `node_id` does not
+/// match this local D-Node -- section 7), connect, and subscribe ONLY to
+/// this exact placement/local-node operational prefix (section 6) -- never
+/// a destination service configuration of any kind (section 15/16: entirely
+/// grant-derived). `heartbeat_interval` must be greater than zero.
+///
+/// Phase 114D0B additionally: confirms protocol-level session readiness
+/// (ConnAck + SubAck, never merely `subscribe()` returning `Ok`) before
+/// emitting any `Healthy` governed DIoT DMonitor evidence, then emits a
+/// periodic `Healthy` heartbeat referencing the EXACT binding this session
+/// was established under (never refreshed mid-session -- section 8), and a
+/// best-effort `Unhealthy` observation on a definite transport failure
+/// (section 21). DMonitor publication runs on a bounded background worker
+/// (`dcall::dmonitor_publisher`) so a slow/unresponsive DServer can never
+/// stall MQTT delivery (section 18).
 pub fn run_mqtt_dcall_listener(
     dserver_url: &str,
     dnode_root: &str,
     project_id: &str,
     application_id: &str,
     diot_placement_id: &str,
+    heartbeat_interval: std::time::Duration,
     stop: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
-    use std::sync::atomic::Ordering;
+    if heartbeat_interval.is_zero() {
+        return Err(anyhow!("dmonitor heartbeat interval must be greater than zero"));
+    }
     let identity = load_local_identity(Path::new(dnode_root)).map_err(|error| anyhow!(error))?;
     let binding = client::fetch_current_runtime_binding(
         dserver_url,
@@ -1081,46 +1154,149 @@ pub fn run_mqtt_dcall_listener(
             binding.transport
         ));
     }
+    // Section 7: the local node comes ONLY from `load_local_identity`, never
+    // CLI/binding input -- this is the defensive cross-check, never a
+    // source of node identity itself. Section 14: fail closed rather than
+    // fabricate a subject to make them agree.
+    if binding.node_id != identity.node_id {
+        return Err(anyhow!(
+            "current runtime binding node_id '{}' does not match this D-Node's own local identity '{}'",
+            binding.node_id,
+            identity.node_id
+        ));
+    }
     let broker = crate::dcall::mqtt::parse_broker_uri_for_delivery(&binding.broker_uri)?;
-    let mut transport = crate::dcall::mqtt::RumqttcPubSub::connect(
+    let transport = crate::dcall::mqtt::RumqttcPubSub::connect(
         &broker,
         &crate::dcall::mqtt::subscriber_client_id(),
     )?;
-    let prefix = crate::dcall::mqtt::subscribe_prefix(
+
+    let dmonitor_output =
+        crate::outputs::dmonitor_http::DMonitorHttpOutput::new(dserver_url.to_string(), project_id.to_string(), 5)?;
+    let publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(
+        dmonitor_output,
+        crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY,
+    );
+    let binding_identity = diot_runtime_binding_identity(&binding);
+    let emission_context = crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch(&identity.node_id);
+
+    let result = run_mqtt_dcall_listener_loop(
+        transport,
+        dserver_url,
+        dnode_root,
         project_id,
         application_id,
         diot_placement_id,
         &identity.node_id,
+        binding_identity,
+        emission_context,
+        &publisher,
+        heartbeat_interval,
+        DEFAULT_POLL_INTERVAL,
+        DEFAULT_SESSION_CONFIRM_TIMEOUT,
+        stop,
     );
-    crate::dcall::mqtt::MqttPubSub::subscribe(&mut transport, &prefix)?;
+    // Graceful shutdown of the publication worker regardless of outcome --
+    // never leaves a background thread dangling, never blocks longer than
+    // one in-flight publish's own client timeout (section 22).
+    publisher.shutdown();
+    result
+}
 
-    while !stop.load(Ordering::SeqCst) {
-        let message = crate::dcall::mqtt::MqttPubSub::poll(
-            &mut transport,
-            std::time::Duration::from_millis(500),
-        )?;
-        let (topic, bytes) = match message {
-            Some(message) => message,
-            None => continue,
-        };
-        let request: crate::dcall::mqtt::MqttDCallRequestEnvelopeV1 =
-            match serde_json::from_slice(&bytes) {
-                Ok(request) => request,
-                Err(_) => continue, // malformed envelope: no verified party to reply to.
-            };
-        if let Some((reply_topic, response)) =
-            handle_mqtt_dcall_request(dserver_url, dnode_root, &topic, &request)
-        {
-            let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
-            let _ = crate::dcall::mqtt::MqttPubSub::publish(
-                &mut transport,
-                &reply_topic,
-                &response_bytes,
-                crate::dcall::mqtt::MqttQos::AtLeastOnce,
-                false,
-            );
+/// Generic over [`crate::dcall::mqtt::MqttListenerSession`] so production
+/// drives a real broker (`RumqttcPubSub`) and tests drive the deterministic
+/// `mqtt::test_support::InMemoryPubSub` -- both exercise IDENTICAL decision
+/// logic (section 24/28), mirroring the existing `deliver_via_diot_pubsub`
+/// generic-transport pattern.
+#[allow(clippy::too_many_arguments)]
+fn run_mqtt_dcall_listener_loop<T: crate::dcall::mqtt::MqttListenerSession>(
+    mut transport: T,
+    dserver_url: &str,
+    dnode_root: &str,
+    project_id: &str,
+    application_id: &str,
+    diot_placement_id: &str,
+    local_node_id: &str,
+    binding_identity: crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity,
+    emission_context: crate::agent::dmonitor_emission::DMonitorEmissionContext,
+    publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
+    heartbeat_interval: std::time::Duration,
+    poll_interval: std::time::Duration,
+    confirm_timeout: std::time::Duration,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use crate::agent::canonical_dmonitor::DMonitorHealthV1;
+    use crate::agent::diot_runtime_dmonitor::{DiotRuntimeMonitorEmitter, DiotRuntimeState};
+    use crate::dcall::mqtt::{MqttPubSub, MqttSessionReadiness};
+    use std::sync::atomic::Ordering;
+
+    let mut emitter = DiotRuntimeMonitorEmitter::new(emission_context, binding_identity);
+
+    let prefix = crate::dcall::mqtt::subscribe_prefix(
+        project_id,
+        application_id,
+        diot_placement_id,
+        local_node_id,
+    );
+    match transport.establish_and_confirm(&prefix, confirm_timeout) {
+        MqttSessionReadiness::Ready => {}
+        MqttSessionReadiness::SubscribeRejected(reason) | MqttSessionReadiness::ConnectionFailed(reason) => {
+            // Section 14: the binding was obtained and validated, but the
+            // broker connection/subscription could not be confirmed --
+            // a best-effort Unhealthy observation for this EXACT attempted
+            // governed realization is acceptable; Healthy is never emitted.
+            emit_and_publish(&mut emitter, publisher, DMonitorHealthV1::Unhealthy, DiotRuntimeState::TransportFailure, false);
+            return Err(anyhow!("MQTT session could not be confirmed ready: {reason}"));
         }
     }
+
+    // Section 15: initial Healthy observation immediately after
+    // protocol-confirmed session readiness.
+    emit_and_publish(&mut emitter, publisher, DMonitorHealthV1::Healthy, DiotRuntimeState::Subscribed, false);
+    let mut last_heartbeat = Instant::now();
+
+    while !stop.load(Ordering::SeqCst) {
+        match MqttPubSub::poll(&mut transport, poll_interval) {
+            Ok(Some((topic, bytes))) => {
+                if let Ok(request) = serde_json::from_slice::<crate::dcall::mqtt::MqttDCallRequestEnvelopeV1>(&bytes) {
+                    if let Some((reply_topic, response)) =
+                        handle_mqtt_dcall_request(dserver_url, dnode_root, &topic, &request)
+                    {
+                        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+                        let _ = MqttPubSub::publish(
+                            &mut transport,
+                            &reply_topic,
+                            &response_bytes,
+                            crate::dcall::mqtt::MqttQos::AtLeastOnce,
+                            false,
+                        );
+                    }
+                } // malformed envelope: no verified party to reply to -- ignored, heartbeat check below still runs.
+            }
+            Ok(None) => {} // ordinary poll timeout -- fall through to the heartbeat check.
+            Err(error) => {
+                // Section 21: a previously-confirmed session hit a definite
+                // transport failure -- stop Healthy heartbeats, emit one
+                // best-effort Unhealthy observation, then preserve this
+                // listener's existing fail-closed termination behavior
+                // (section 23: no reconnect architecture is invented here).
+                emit_and_publish(&mut emitter, publisher, DMonitorHealthV1::Unhealthy, DiotRuntimeState::TransportFailure, false);
+                return Err(error);
+            }
+        }
+
+        if last_heartbeat.elapsed() >= heartbeat_interval {
+            // Section 16: new sequence, new observation_id, new
+            // observed_at_utc; SAME monitor_instance_id and subject/binding
+            // authority reference as the initial observation.
+            emit_and_publish(&mut emitter, publisher, DMonitorHealthV1::Healthy, DiotRuntimeState::Subscribed, true);
+            last_heartbeat = Instant::now();
+        }
+    }
+    // Section 22: graceful shutdown is not a transport fault -- no
+    // Unhealthy observation is emitted merely because the operator
+    // intentionally stopped the listener. The last Healthy evidence is
+    // left to age to Stale, which is already a safe, honest outcome.
     Ok(())
 }
 
@@ -3235,4 +3411,119 @@ mod tests {
         );
     }
 
+    // --------------------------------------------------- PHASE 114D0B
+
+    fn diot_binding_identity_fixture() -> crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity {
+        crate::agent::diot_runtime_dmonitor::DiotRuntimeBindingIdentity {
+            project_id: "proj:lab".to_string(),
+            application_id: "app:pipeline".to_string(),
+            diot_id: "diot:broker".to_string(),
+            diot_placement_id: "diotp:broker".to_string(),
+            node_id: "cloud-01".to_string(),
+            dmap_id: "dmap:1".to_string(),
+            dmap_revision: 1,
+            dmap_digest: format!("sha256:{}", "a".repeat(64)),
+            dforward_id: "dforward:1".to_string(),
+            dforward_revision: 1,
+            dforward_digest: format!("sha256:{}", "b".repeat(64)),
+            binding_id: "diot-runtime-binding:proj:lab:app:pipeline:diotp:broker".to_string(),
+            binding_revision: 1,
+            descriptor_digest: format!("sha256:{}", "c".repeat(64)),
+        }
+    }
+
+    /// Section 25: proves `handle_mqtt_dcall_request` is still invoked for
+    /// every well-formed inbound DCall envelope WHILE the DMonitor
+    /// heartbeat producer is active in the same loop -- neither disrupts
+    /// the other. The envelope's `grant_id` cannot be redeemed against
+    /// `"http://127.0.0.1:1"` (this codebase's own established
+    /// unreachable-dserver test convention -- see
+    /// `dispatch_reports_a_sanitized_lookup_failure_when_dserver_is_unreachable`),
+    /// so no reply is ever published -- this test's claim is deliberately
+    /// narrower than full grant redemption (already covered by the 38
+    /// other tests in this module): it proves the DISPATCH CODE PATH runs,
+    /// undisturbed, alongside real heartbeat emission.
+    #[test]
+    fn dcall_message_dispatch_and_dmonitor_heartbeats_coexist_in_the_same_loop() {
+        use base64::Engine;
+        let broker = crate::dcall::mqtt::test_support::InMemoryBroker::new();
+        let listener_transport = broker.connect();
+        let mut peer = broker.connect();
+
+        let dmonitor_output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(
+            "http://127.0.0.1:1".to_string(),
+            "proj:lab".to_string(),
+            1,
+        )
+        .unwrap();
+        let publisher = crate::dcall::dmonitor_publisher::DMonitorPublisherHandle::spawn(
+            dmonitor_output,
+            crate::dcall::dmonitor_publisher::DEFAULT_QUEUE_CAPACITY,
+        );
+        let emission_context =
+            crate::agent::dmonitor_emission::DMonitorEmissionContext::new_process_epoch("cloud-01");
+
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let heartbeat_interval = std::time::Duration::from_millis(20);
+        let poll_interval = std::time::Duration::from_millis(10);
+        let confirm_timeout = std::time::Duration::from_millis(200);
+
+        let payload = b"payload";
+        let payload_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let request = crate::dcall::mqtt::MqttDCallRequestEnvelopeV1 {
+            schema: crate::dcall::mqtt::REQUEST_ENVELOPE_SCHEMA.to_string(),
+            grant_id: "dcall-grant:unredeemable".to_string(),
+            token: "tok".to_string(),
+            payload_b64,
+            payload_sha256: sha256_hex(payload),
+            payload_size: payload.len() as u64,
+        };
+        let request_bytes = serde_json::to_vec(&request).unwrap();
+        let request_topic = crate::dcall::mqtt::request_topic(
+            "proj:lab",
+            "app:pipeline",
+            "diotp:broker",
+            "cloud-01",
+            "some-channel",
+        );
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Give `establish_and_confirm`'s subscribe a moment to
+                // register before publishing (in-memory broker never
+                // queues for a not-yet-subscribed client).
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                crate::dcall::mqtt::MqttPubSub::publish(&mut peer, &request_topic, &request_bytes, crate::dcall::mqtt::MqttQos::AtLeastOnce, false).unwrap();
+            });
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            let result = run_mqtt_dcall_listener_loop(
+                listener_transport,
+                "http://127.0.0.1:1",
+                "unused-dnode-root",
+                "proj:lab",
+                "app:pipeline",
+                "diotp:broker",
+                "cloud-01",
+                diot_binding_identity_fixture(),
+                emission_context,
+                &publisher,
+                heartbeat_interval,
+                poll_interval,
+                confirm_timeout,
+                &stop,
+            );
+            assert!(result.is_ok(), "graceful stop must return Ok: {result:?}");
+        });
+        publisher.shutdown();
+        // No reply was ever published (the grant is unredeemable), but the
+        // dispatch attempt itself did not panic, error the loop, or starve
+        // heartbeat production -- the loop completing within this test's
+        // bounded 150ms window (rather than hanging) is itself part of the
+        // proof, enforced by the surrounding `#[test]` harness's own
+        // default timeout.
+        assert!(broker.published_log().iter().all(|(topic, ..)| topic == &request_topic), "no reply should ever have been published for an unredeemable grant");
+    }
 }

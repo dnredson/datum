@@ -72,57 +72,18 @@ use crate::telemetry::{
     ProcessTelemetry, ServiceTelemetry, SmartSentinelTelemetryEnvelope,
 };
 
-/// One DMonitor projection PROCESS EPOCH. See the module doc for the full
-/// rationale on why this is never the legacy `sentinel_instance_id`.
-#[derive(Debug, Clone)]
-pub struct DMonitorProjectionContext {
-    monitor_instance_id: String,
-    next_sequence: u64,
-}
-
-impl DMonitorProjectionContext {
-    /// Starts a NEW process epoch (sections 20/21): a freshly generated,
-    /// globally-unique `monitor_instance_id` and a sequence counter
-    /// beginning at 1. Call this ONCE per one-shot invocation, or ONCE at
-    /// continuous-mode service-loop startup -- never once per collection
-    /// cycle (section 20's explicit prohibition).
-    pub fn new_process_epoch(node_id: &str) -> Self {
-        Self {
-            monitor_instance_id: format!("dmonitor-instance:{node_id}:{}", uuid::Uuid::new_v4()),
-            next_sequence: 1,
-        }
-    }
-
-    pub fn monitor_instance_id(&self) -> &str {
-        &self.monitor_instance_id
-    }
-
-    /// The sequence the NEXT projected observation will receive. Exposed so
-    /// a caller can log/persist current position; never required for
-    /// correctness (the context tracks it internally).
-    pub fn next_sequence(&self) -> u64 {
-        self.next_sequence
-    }
-
-    /// Reserves and returns the next sequence, advancing the counter.
-    /// Sequences are NEVER reused or rewound (sections 4/23): even if a
-    /// caller later decides not to publish an already-allocated
-    /// observation (e.g. a downstream HTTP failure), the next observation
-    /// still receives the FOLLOWING sequence, never the abandoned one --
-    /// gaps are permitted, reuse is not.
-    fn allocate_sequence(&mut self) -> u64 {
-        let sequence = self.next_sequence;
-        self.next_sequence += 1;
-        sequence
-    }
-}
-
-/// `dmonitor-obs:<monitor_instance_id>:<sequence>` (section 5). Deterministic
-/// and stable for retry; never derived from a container/process/service name
-/// or a metric value.
-fn observation_id(monitor_instance_id: &str, sequence: u64) -> String {
-    format!("dmonitor-obs:{monitor_instance_id}:{sequence}")
-}
+/// Phase 114D0B: the process-epoch/sequence-allocation machinery that used
+/// to live here was extracted into the neutral `agent::dmonitor_emission`
+/// module (no SmartSentinel dependency at all), so the SAME "one process
+/// epoch = one `monitor_instance_id` = one monotonic sequence counter" rule
+/// is shared with the new DIoT runtime evidence producer
+/// (`agent::diot_runtime_dmonitor`) instead of being subtly reimplemented a
+/// second time. `DMonitorProjectionContext` is kept as a type alias so
+/// every existing external caller (`agent::service_loop`,
+/// `bin/smartsentinel-observe`) and every test in this file continues to
+/// compile completely unchanged.
+pub use crate::agent::dmonitor_emission::DMonitorEmissionContext as DMonitorProjectionContext;
+use crate::agent::dmonitor_emission::observation_id;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectionError {
@@ -339,10 +300,10 @@ fn base_observation(
     let sequence = context.allocate_sequence();
     CanonicalDMonitorObservationV1 {
         schema: CANONICAL_DMONITOR_OBSERVATION_SCHEMA.to_string(),
-        observation_id: observation_id(&context.monitor_instance_id, sequence),
+        observation_id: observation_id(context.monitor_instance_id(), sequence),
         project_id: None,
         node_id: telemetry.node_id.clone(),
-        monitor_instance_id: context.monitor_instance_id.clone(),
+        monitor_instance_id: context.monitor_instance_id().to_string(),
         sequence,
         observed_at_utc: telemetry.observed_at_utc.to_rfc3339(),
         cycle_id: Some(telemetry.cycle_id.clone()).filter(|value| !value.is_empty()),
@@ -960,17 +921,11 @@ mod tests {
     #[test]
     fn retrying_the_same_context_and_sequence_preserves_id_and_digest() {
         let monitor_instance_id = "dmonitor-instance:fog-01:fixed-for-test".to_string();
-        let mut context = DMonitorProjectionContext {
-            monitor_instance_id: monitor_instance_id.clone(),
-            next_sequence: 1,
-        };
+        let mut context = DMonitorProjectionContext::from_parts(monitor_instance_id.clone(), 1);
         let telemetry = minimal_telemetry();
         let first = project_dnode_observation(&telemetry, NODE, &mut context).unwrap();
 
-        let mut retry_context = DMonitorProjectionContext {
-            monitor_instance_id,
-            next_sequence: 1,
-        };
+        let mut retry_context = DMonitorProjectionContext::from_parts(monitor_instance_id, 1);
         let retried = project_dnode_observation(&telemetry, NODE, &mut retry_context).unwrap();
 
         assert_eq!(first.observation_id, retried.observation_id);

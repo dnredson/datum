@@ -215,6 +215,50 @@ pub trait MqttPubSub {
     fn poll(&mut self, timeout: Duration) -> Result<Option<(String, Vec<u8>)>>;
 }
 
+/// Phase 114D0B: the protocol-level outcome of attempting to establish and
+/// confirm a listener's OWN session readiness. Deliberately NOT collapsed
+/// into a `bool` -- `SubscribeRejected` and `ConnectionFailed` are reported
+/// with a short, non-secret, deterministic category string (section 21:
+/// never raw error text that might expose broker addresses/configuration)
+/// so a caller can distinguish "the broker refused this subscription" from
+/// "the transport itself failed" without inspecting library-internal error
+/// types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MqttSessionReadiness {
+    /// ConnAck accepted AND SubAck accepted for exactly this listener's one
+    /// subscription (section 4). The ONLY state in which a caller may
+    /// honestly emit `Healthy` governed DIoT evidence.
+    Ready,
+    /// The broker responded with a SubAck whose return code was `Failure`
+    /// for this subscription (or, for a multi-filter subscribe, at least
+    /// one filter failed) -- a definite, protocol-level rejection.
+    SubscribeRejected(String),
+    /// The session could not be confirmed at all: a connection error before
+    /// ConnAck, a ConnAck refusal, a disconnect before SubAck, or the
+    /// confirmation window elapsed with no SubAck ever observed. Bounded on
+    /// purpose (section 4: never wait forever) -- a session that never
+    /// confirms is not ready, by the same fail-closed rule as an explicit
+    /// rejection.
+    ConnectionFailed(String),
+}
+
+/// Phase 114D0B (sections 4/5/24/28): an ADDITIVE seam used ONLY by the
+/// DIoT runtime MQTT LISTENER (`dcall::delivery::run_mqtt_dcall_listener`).
+/// `MqttPubSub` itself is completely unchanged -- this trait extends it
+/// rather than replacing/widening any of its methods, so source-side D-Call
+/// delivery (`deliver_via_diot_pubsub`, which only ever needs plain
+/// `MqttPubSub`) is untouched by this addition.
+pub trait MqttListenerSession: MqttPubSub {
+    /// Issues the subscribe request for `topic`, then blocks (bounded by
+    /// `timeout`) until the session's protocol-level readiness can be
+    /// classified: `client.subscribe()`/`InMemoryPubSub::subscribe()`
+    /// returning `Ok(())` is NEVER by itself sufficient (section 3) --
+    /// only an observed ConnAck-then-SubAck-success sequence (production),
+    /// or the deterministic equivalent the test double is configured to
+    /// simulate, produces [`MqttSessionReadiness::Ready`].
+    fn establish_and_confirm(&mut self, topic: &str, timeout: Duration) -> MqttSessionReadiness;
+}
+
 /// Real production MQTT transport, backed by `rumqttc`'s SYNCHRONOUS
 /// `Client`/`Connection` API. DATUM's application code is entirely
 /// synchronous (see this module's own doc / `dcall-mqtt-runtime-audit`
@@ -227,6 +271,12 @@ pub trait MqttPubSub {
 pub struct RumqttcPubSub {
     client: rumqttc::Client,
     connection: rumqttc::Connection,
+    /// Phase 114D0B: any `Publish` event observed WHILE
+    /// `establish_and_confirm` is draining events looking for a ConnAck/
+    /// SubAck is buffered here rather than discarded -- a message could, in
+    /// principle, arrive interleaved with those control packets, and `poll`
+    /// must still deliver it exactly once, in order, rather than losing it.
+    buffered_messages: std::collections::VecDeque<(String, Vec<u8>)>,
 }
 
 impl RumqttcPubSub {
@@ -238,7 +288,7 @@ impl RumqttcPubSub {
         // eventloop drains (mirrors this codebase's established bounded-
         // buffer discipline, e.g. `dcall::delivery::MAX_REMOTE_RESPONSE_BYTES`).
         let (client, connection) = rumqttc::Client::new(options, 64);
-        Ok(Self { client, connection })
+        Ok(Self { client, connection, buffered_messages: std::collections::VecDeque::new() })
     }
 }
 
@@ -261,6 +311,9 @@ impl MqttPubSub for RumqttcPubSub {
     }
 
     fn poll(&mut self, timeout: Duration) -> Result<Option<(String, Vec<u8>)>> {
+        if let Some(buffered) = self.buffered_messages.pop_front() {
+            return Ok(Some(buffered));
+        }
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -274,6 +327,79 @@ impl MqttPubSub for RumqttcPubSub {
                 Ok(Ok(_)) => continue, // PUBACK/PINGRESP/etc: not a message, keep polling.
                 Ok(Err(error)) => return Err(anyhow!("MQTT connection error: {error}")),
                 Err(_timeout_from_channel) => return Ok(None),
+            }
+        }
+    }
+}
+
+impl MqttListenerSession for RumqttcPubSub {
+    /// Phase 114D0B (section 4): rumqttc's synchronous `Client::subscribe`
+    /// only enqueues the Subscribe request -- it returns before any network
+    /// I/O happens at all (the actual TCP connect + MQTT CONNECT/ConnAck
+    /// exchange is deferred until the FIRST call to
+    /// `Connection::recv`/`recv_timeout`, per rumqttc's own `EventLoop::poll`
+    /// implementation). So this drains the connection's event stream itself,
+    /// classifying exactly the sequence audited in this phase: the first
+    /// `Packet::ConnAck` must carry `ConnectReturnCode::Success`, and the
+    /// FIRST `Packet::SubAck` seen after that must carry an all-`Success`
+    /// `return_codes` list -- anything else, or the bounded `timeout`
+    /// elapsing first, is NOT session readiness.
+    fn establish_and_confirm(&mut self, topic: &str, timeout: Duration) -> MqttSessionReadiness {
+        if let Err(error) = MqttPubSub::subscribe(self, topic) {
+            return MqttSessionReadiness::ConnectionFailed(format!("subscribe_request_failed:{error}"));
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        let mut connack_seen = false;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return MqttSessionReadiness::ConnectionFailed(
+                    "timeout_awaiting_subscription_confirmation".to_string(),
+                );
+            }
+            match self.connection.recv_timeout(remaining) {
+                Ok(Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(connack)))) => {
+                    if connack.code != rumqttc::ConnectReturnCode::Success {
+                        return MqttSessionReadiness::ConnectionFailed(format!(
+                            "connect_refused:{:?}",
+                            connack.code
+                        ));
+                    }
+                    connack_seen = true;
+                }
+                Ok(Ok(rumqttc::Event::Incoming(rumqttc::Packet::SubAck(suback)))) => {
+                    if !connack_seen {
+                        // A SubAck without a prior ConnAck observed by THIS
+                        // call cannot happen on a fresh session; fail closed
+                        // rather than assume it is fine.
+                        return MqttSessionReadiness::ConnectionFailed(
+                            "suback_before_connack".to_string(),
+                        );
+                    }
+                    let all_succeeded = suback
+                        .return_codes
+                        .iter()
+                        .all(|code| !matches!(code, rumqttc::SubscribeReasonCode::Failure));
+                    return if all_succeeded {
+                        MqttSessionReadiness::Ready
+                    } else {
+                        MqttSessionReadiness::SubscribeRejected("suback_failure_return_code".to_string())
+                    };
+                }
+                Ok(Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(publish)))) => {
+                    // Section 5: never drop a message merely because it
+                    // arrived during confirmation -- buffer it for `poll`.
+                    self.buffered_messages.push_back((publish.topic, publish.payload.to_vec()));
+                }
+                Ok(Ok(_)) => continue, // PUBACK/PINGRESP/Outgoing/etc: keep waiting.
+                Ok(Err(error)) => {
+                    return MqttSessionReadiness::ConnectionFailed(format!("connection_error:{error}"))
+                }
+                Err(_timeout_from_channel) => {
+                    return MqttSessionReadiness::ConnectionFailed(
+                        "timeout_awaiting_subscription_confirmation".to_string(),
+                    )
+                }
             }
         }
     }
@@ -294,6 +420,7 @@ pub mod test_support {
 
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
 
     struct BrokerState {
@@ -306,9 +433,28 @@ pub mod test_support {
         pub published: Vec<(String, Vec<u8>, MqttQos, bool)>,
     }
 
+    /// Phase 114D0B (section 24): the deterministic outcome
+    /// `InMemoryPubSub::establish_and_confirm` simulates -- proves the SAME
+    /// listener-side decision logic (`dcall::delivery`'s reaction to
+    /// [`MqttSessionReadiness`]) that production drives from real
+    /// ConnAck/SubAck packets, without needing to fabricate raw MQTT bytes
+    /// in a unit test.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SubscribeOutcome {
+        Ready,
+        Rejected,
+        ConnectionFailure,
+    }
+
     pub struct InMemoryBroker {
         state: Mutex<BrokerState>,
         condvar: Condvar,
+        subscribe_outcome: Mutex<SubscribeOutcome>,
+        /// Once set, every subsequent `poll`/`establish_and_confirm` call on
+        /// any handle connected to this broker reports a connection failure
+        /// -- simulates "ready session + connection error" (section 28)
+        /// without needing a real transport to actually drop.
+        connection_lost: AtomicBool,
     }
 
     impl InMemoryBroker {
@@ -321,7 +467,22 @@ pub mod test_support {
                     published: Vec::new(),
                 }),
                 condvar: Condvar::new(),
+                subscribe_outcome: Mutex::new(SubscribeOutcome::Ready),
+                connection_lost: AtomicBool::new(false),
             })
+        }
+
+        /// Configures what `establish_and_confirm` reports for every handle
+        /// connected to this broker from this point on.
+        pub fn set_subscribe_outcome(&self, outcome: SubscribeOutcome) {
+            *self.subscribe_outcome.lock().unwrap() = outcome;
+        }
+
+        /// Simulates a definite transport failure of an already-established
+        /// session: every subsequent `poll()`/`establish_and_confirm()` call
+        /// on any handle connected to this broker fails from this point on.
+        pub fn fail_connection(&self) {
+            self.connection_lost.store(true, Ordering::SeqCst);
         }
 
         pub fn connect(self: &Arc<Self>) -> InMemoryPubSub {
@@ -405,6 +566,9 @@ pub mod test_support {
         }
 
         fn poll(&mut self, timeout: Duration) -> Result<Option<(String, Vec<u8>)>> {
+            if self.broker.connection_lost.load(Ordering::SeqCst) {
+                return Err(anyhow!("simulated MQTT connection lost"));
+            }
             let deadline = std::time::Instant::now() + timeout;
             let mut state = self.broker.state.lock().unwrap();
             loop {
@@ -429,6 +593,32 @@ pub mod test_support {
                         }
                     }
                     return Ok(None);
+                }
+            }
+        }
+    }
+
+    impl MqttListenerSession for InMemoryPubSub {
+        /// Deterministically simulates the SAME `MqttSessionReadiness`
+        /// outcomes production classifies from real ConnAck/SubAck packets
+        /// (section 24) -- driven by `InMemoryBroker::set_subscribe_outcome`/
+        /// `fail_connection`, never by merely returning `Ready` because
+        /// `subscribe()` was called.
+        fn establish_and_confirm(&mut self, topic: &str, _timeout: Duration) -> MqttSessionReadiness {
+            if self.broker.connection_lost.load(Ordering::SeqCst) {
+                return MqttSessionReadiness::ConnectionFailed("simulated_connection_lost".to_string());
+            }
+            let outcome = *self.broker.subscribe_outcome.lock().unwrap();
+            match outcome {
+                SubscribeOutcome::ConnectionFailure => {
+                    MqttSessionReadiness::ConnectionFailed("simulated_connection_failure".to_string())
+                }
+                SubscribeOutcome::Rejected => {
+                    MqttSessionReadiness::SubscribeRejected("simulated_subscribe_rejected".to_string())
+                }
+                SubscribeOutcome::Ready => {
+                    let _ = MqttPubSub::subscribe(self, topic);
+                    MqttSessionReadiness::Ready
                 }
             }
         }
@@ -732,5 +922,67 @@ mod tests {
         subscriber.subscribe("some/topic").unwrap();
         let result = subscriber.poll(Duration::from_millis(50)).unwrap();
         assert!(result.is_none());
+    }
+
+    // -- Phase 114D0B: MqttListenerSession / establish_and_confirm --
+
+    #[test]
+    fn successful_confirmation_yields_ready() {
+        let broker = test_support::InMemoryBroker::new();
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("some/topic", Duration::from_millis(50));
+        assert_eq!(readiness, MqttSessionReadiness::Ready);
+    }
+
+    #[test]
+    fn subscribe_rejection_never_yields_ready() {
+        let broker = test_support::InMemoryBroker::new();
+        broker.set_subscribe_outcome(test_support::SubscribeOutcome::Rejected);
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("some/topic", Duration::from_millis(50));
+        assert!(matches!(readiness, MqttSessionReadiness::SubscribeRejected(_)));
+    }
+
+    #[test]
+    fn connection_failure_during_confirmation_never_yields_ready() {
+        let broker = test_support::InMemoryBroker::new();
+        broker.set_subscribe_outcome(test_support::SubscribeOutcome::ConnectionFailure);
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("some/topic", Duration::from_millis(50));
+        assert!(matches!(readiness, MqttSessionReadiness::ConnectionFailed(_)));
+    }
+
+    #[test]
+    fn ready_session_still_receives_inbound_messages() {
+        let broker = test_support::InMemoryBroker::new();
+        let mut publisher = broker.connect();
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("datum/v1/dcall/x/y/z/w/+", Duration::from_millis(50));
+        assert_eq!(readiness, MqttSessionReadiness::Ready);
+        publisher
+            .publish("datum/v1/dcall/x/y/z/w/chan", b"hello", MqttQos::AtLeastOnce, false)
+            .unwrap();
+        let received = subscriber.poll(Duration::from_millis(500)).unwrap().expect("message must be delivered");
+        assert_eq!(received.1, b"hello");
+    }
+
+    #[test]
+    fn connection_lost_after_ready_surfaces_as_poll_error_not_a_silent_none() {
+        let broker = test_support::InMemoryBroker::new();
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("some/topic", Duration::from_millis(50));
+        assert_eq!(readiness, MqttSessionReadiness::Ready);
+        broker.fail_connection();
+        let result = subscriber.poll(Duration::from_millis(50));
+        assert!(result.is_err(), "a lost connection must surface as an explicit error, never Ok(None)");
+    }
+
+    #[test]
+    fn connection_lost_before_confirmation_never_yields_ready() {
+        let broker = test_support::InMemoryBroker::new();
+        broker.fail_connection();
+        let mut subscriber = broker.connect();
+        let readiness = subscriber.establish_and_confirm("some/topic", Duration::from_millis(50));
+        assert!(matches!(readiness, MqttSessionReadiness::ConnectionFailed(_)));
     }
 }

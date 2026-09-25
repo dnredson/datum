@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod delivery;
+pub mod dmonitor_publisher;
 pub mod evidence;
 pub mod grant;
 pub mod listener;

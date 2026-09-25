@@ -40,10 +40,20 @@ struct Args {
     application_id: String,
     #[arg(long)]
     placement_id: String,
+
+    /// How often, while the governed MQTT session remains established, to
+    /// emit a fresh `Healthy` DIoT DMonitor heartbeat observation. Purely
+    /// operational emission cadence -- NOT the Phase-114D1 freshness/
+    /// readiness policy DServer will evaluate evidence against.
+    #[arg(long, default_value_t = 30)]
+    dmonitor_heartbeat_interval_seconds: u64,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.dmonitor_heartbeat_interval_seconds == 0 {
+        anyhow::bail!("--dmonitor-heartbeat-interval-seconds must be greater than zero");
+    }
 
     // G1-equivalent: local D-Node identity comes ONLY from this
     // installation's own identity file.
@@ -67,6 +77,7 @@ fn main() -> Result<()> {
         &args.project_id,
         &args.application_id,
         &args.placement_id,
+        std::time::Duration::from_secs(args.dmonitor_heartbeat_interval_seconds),
         &stop,
     )
     .context("run MQTT D-Call delivery listener")?;

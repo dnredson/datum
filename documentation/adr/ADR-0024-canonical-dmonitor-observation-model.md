@@ -1106,6 +1106,214 @@ validation of the DIoT correlation algorithm itself remains 114E's job, per
 the same evidentiary-discipline carryover already stated for D-Serv
 convergence above.
 
+## Live governed DIoT runtime evidence producer (Phase 114D0B)
+
+Phase 114D0A closed the canonical/interpretation-layer gap; this phase
+makes a REAL running governed DIoT/MQTT realization emit that evidence.
+DServer-side code is completely untouched -- DServer remains observer only
+(ingestion/persistence/freshness/interpretation), never a producer.
+
+### Why `subscribe()` returning `Ok` was never sufficient
+
+Independent review of `rumqttc` 0.24's synchronous `Client`/`Connection` API
+confirmed the audit's premise exactly: `Client::subscribe`/`try_subscribe`
+only enqueue a Subscribe request onto an internal channel and return
+immediately -- no network I/O happens at all until the FIRST call to
+`Connection::recv`/`recv_timeout`, and the OLD `RumqttcPubSub::poll`
+discarded every non-`Publish` incoming packet (`Ok(Ok(_)) => continue`),
+so `ConnAck`/`SubAck` were never even observed anywhere in this codebase.
+A caller that treated `subscribe()` returning `Ok(())` as "the destination
+is listening" was therefore trusting a value that says nothing about
+whether the broker ever accepted the connection or the subscription at all.
+
+### Protocol-ready condition implemented
+
+A new, ADDITIVE trait, `dcall::mqtt::MqttListenerSession::establish_and_confirm`,
+drains the connection's own event stream and classifies exactly:
+
+- the first `Packet::ConnAck` must carry `ConnectReturnCode::Success`;
+- the FIRST `Packet::SubAck` observed after that must carry an
+  all-`Success` (never `Failure`) `return_codes` list for this listener's
+  one subscription;
+- any `Packet::Publish` observed in between is buffered (never dropped) so
+  `poll` still delivers it once steady-state polling begins;
+- anything else (a connection error, a SubAck before any ConnAck, or the
+  bounded confirmation window elapsing with neither observed) is
+  `MqttSessionReadiness::ConnectionFailed`/`SubscribeRejected`, never
+  `Ready`.
+
+`MqttPubSub` itself (the trait `deliver_via_diot_pubsub`, the SOURCE side of
+D-Call delivery, depends on) is completely unchanged -- `MqttListenerSession`
+extends it additively, so source-side delivery is untouched by this work
+(confirmed by the full pre-existing 38-test `dcall::delivery` suite passing
+unchanged, plus 1 new coexistence test).
+
+### Actual rumqttc reconnect semantics found (section 23's audit)
+
+`rumqttc::Connection::recv`/`iter` are documented, in the crate's own source,
+as: *"Continuing to poll will reconnect to the broker if there is a
+disconnection."* The underlying library primitive is genuinely capable of
+transparent reconnection on continued polling. However, DATUM's OWN
+`RumqttcPubSub::poll` wrapper converts any non-timeout `ConnectionError`
+into a hard `anyhow::Error`, and the existing (pre-114D0B)
+`run_mqtt_dcall_listener` propagates that error via `?`, terminating the
+function immediately. At the DATUM APPLICATION level, therefore, reconnect
+was NOT part of existing production behavior (category A: terminates on
+connection loss) -- only theoretically available in the underlying
+dependency, never exercised. Phase 114D0B preserves this exact fail-closed
+termination behavior unchanged and does NOT invent a reconnect
+architecture: a definite transport failure still ends the listener; the
+only addition is a best-effort `Unhealthy` observation emitted immediately
+before that same termination.
+
+### Monitor epoch, sequence, and observation identity
+
+The Phase 114B2 process-epoch/sequence machinery
+(`DMonitorProjectionContext`) was extracted, unchanged in behavior, into a
+new neutral module `agent::dmonitor_emission` (renamed
+`DMonitorEmissionContext` there; `dmonitor_projection` keeps a `pub use ...
+as DMonitorProjectionContext` alias so every existing external caller and
+test compiles unchanged). Both `agent::dmonitor_projection` (SmartSentinel)
+and the new `agent::diot_runtime_dmonitor` (DIoT runtime) now share the
+IDENTICAL "one process epoch = one `monitor_instance_id` = one monotonic
+sequence counter, never reused or rewound" rule from this ONE module,
+rather than risking a second, subtly different reimplementation. One
+`DMonitorEmissionContext::new_process_epoch` is created once per listener
+process; a restart creates a fresh epoch starting at sequence 1.
+
+### The DIoT runtime observation builder
+
+`agent::diot_runtime_dmonitor::build_diot_realization_observation` (wrapped
+by `DiotRuntimeMonitorEmitter::emit`, which also allocates the sequence) is
+a pure, fully unit-tested function producing one `CanonicalDMonitorObservationV1`
+per call. Every subject/reference field
+(`project_id`/`application_id`/`diot_id`/`diot_placement_id`/`node_id`/
+`dmap_ref`/`dforward_ref`/`runtime_binding_ref`) comes from an explicit
+`DiotRuntimeBindingIdentity`, itself built ONCE from the startup CURRENT
+runtime-binding response (`dcall::client::CurrentRuntimeBindingResponse`,
+the exact same production fetch `run_mqtt_dcall_listener` already made
+pre-114D0B) and never re-derived mid-session. `facts` is a small fixed
+allowlist -- `runtime_state` (`"subscribed"`/`"transport_failure"`, a
+closed category set, never raw error text) and `heartbeat` (bool) -- and
+never carries `broker_uri`, credentials, raw topic/filter strings, tokens,
+grants, or secret configuration; a dedicated test
+(`no_broker_uri_or_secret_field_appears_anywhere_in_the_observation`)
+scans the fully serialized observation for exactly these forbidden
+substrings.
+
+### Session-binding immutability (section 8)
+
+`DiotRuntimeMonitorEmitter` carries its bound `DiotRuntimeBindingIdentity`
+in a private field with no setter -- structurally, nothing in this
+listener's lifetime can make it start referencing a DIFFERENT binding
+revision after construction. If server authority advances to binding N+1
+while this MQTT session remains open under N, every observation this
+session emits keeps honestly referencing N; Phase 114D0A's
+`verify_runtime_binding_still_current` check is exactly what then
+classifies N as no longer current on the server side. This session never
+"refreshes" its own authority reference in place.
+
+### Initial and periodic Healthy evidence
+
+Immediately after `establish_and_confirm` returns `Ready`, the listener
+emits ONE `Healthy` observation (`heartbeat: false`). While the session
+remains established, the steady-state loop emits a fresh `Healthy`
+observation (`heartbeat: true`, new sequence, new `observation_id`, new
+`observed_at_utc`, SAME `monitor_instance_id` and binding reference)
+whenever `--dmonitor-heartbeat-interval-seconds` (default 30, validated
+`> 0`, wired through `smartsentinel-dcall-mqtt-listen`) has elapsed. This
+cadence is purely OPERATIONAL emission configuration -- it is NOT Phase
+114D1's freshness/readiness policy, which DServer will evaluate this
+evidence against independently.
+
+### Transport-failure and graceful-shutdown semantics
+
+A definite transport failure (a previously-`Ready` session's `poll`
+returning `Err`, or `establish_and_confirm` itself failing) stops Healthy
+heartbeats and emits exactly ONE best-effort `Unhealthy` observation
+(`runtime_state: "transport_failure"`) before the listener's existing
+fail-closed termination is preserved unchanged. Graceful shutdown
+(`stop` set, e.g. by Ctrl-C) is explicitly NOT a transport fault: no
+`Unhealthy` observation is emitted merely because the operator
+intentionally stopped the listener -- the last `Healthy` evidence is left
+to age to Stale under Phase 114C's existing freshness rule, which is
+already a safe, honest terminal state requiring no special-casing here.
+
+### Non-blocking, bounded DMonitor publication (section 18/19)
+
+`dcall::dmonitor_publisher::DMonitorPublisherHandle` spawns exactly ONE
+background worker thread per listener process epoch, draining a bounded
+`std::sync::mpsc::sync_channel` (capacity 8) and calling the EXISTING
+production `DMonitorHttpOutput::publish` synchronously -- no second HTTP
+protocol is introduced (reusing the exact Phase 114B2 output, per section
+30). The listener's own thread only ever calls `try_publish`
+(`SyncSender::try_send` underneath), which NEVER blocks: a full queue or a
+disconnected worker silently DROPS the job (logged diagnostically) rather
+than waiting. Because every sequence number is allocated (via
+`DiotRuntimeMonitorEmitter::emit`, itself calling
+`DMonitorEmissionContext::allocate_sequence`) strictly BEFORE a job is ever
+offered to the publisher, a dropped job produces an ordinary, already-
+permitted sequence gap (Phase 114B1's own established rule) -- never a
+reused sequence number. Proven directly by
+`dcall::dmonitor_publisher::tests::try_publish_never_blocks_even_when_the_sink_never_replies`
+and `queue_saturation_drops_observations_without_blocking_and_without_reusing_ids`
+(a deliberately unresponsive HTTP sink, `try_publish` still returning in
+well under 500ms).
+
+### DMonitor publication failure is never MQTT runtime failure (section 20)
+
+`emit_and_publish`'s only interaction with the publisher is `try_publish`,
+whose return value is not even inspected by the listener loop -- a publish
+failure (non-2xx, transport error, timeout) is isolated entirely inside the
+worker thread (logged, then the worker moves on to the next queued job) and
+can never make the calling MQTT session itself `Unhealthy`, retry in a
+loop, or trigger remediation/host mutation. MQTT runtime health and
+DMonitor evidence-delivery health remain two independent systems, exactly
+as Phase 114B2's own established rule requires.
+
+### No server-synthesized liveness (section 36)
+
+No DServer code was touched in this phase. DServer never runs a timer or
+job that creates DMonitor observations, and never synthesizes evidence from
+`DIoTRuntimeBindingRegistryStateV1` -- the registration alone still proves
+nothing about runtime liveness (Phase 114D0A's own rule, now actually
+exercised end to end): DServer remains exactly ingestion, persistence,
+freshness, and interpretation; the MQTT listener is the ONLY producer.
+
+### D0A + D0B end-to-end evidence chain (section 31)
+
+`DATUM/tests/dmonitor_d0a_d0b_integration.rs` (`#[ignore]`d, mirroring the
+established `dmonitor_b2_integration.rs`/`dcall_mqtt_governed_e2e.rs`
+real-DServer-subprocess convention) builds a REAL DMap/2 + DForward + DIoT
+placement + runtime binding through the production HTTP proposal/
+acceptance/registration flow, fetches the CURRENT binding through the exact
+same `dcall::client::fetch_current_runtime_binding` seam
+`run_mqtt_dcall_listener` itself calls, builds one `Healthy` observation
+through the PRODUCTION Phase 114D0B builder, publishes it through the
+PRODUCTION `DMonitorHttpOutput`, and proves the REAL Phase 114D0A
+convergence endpoint returns `diot.convergence == "converged"` with exact
+`dmap_correlation`/`dforward_correlation`/`runtime_binding_correlation` all
+`"exact_match"`, `runtime_binding_current: true`, and `freshness:
+"fresh"`. It deliberately does not require a real MQTT broker or the
+listener subprocess -- MQTT session-readiness classification is proven
+independently at the unit level (`dcall::mqtt`'s deterministic
+`InMemoryBroker`-backed state-machine tests), since a real broker is an
+external dependency this proof does not need in order to exercise the part
+that genuinely spans both phases and crates: authority registration ->
+production observation construction -> production HTTP publication -> real
+server-side exact correlation.
+
+### Readiness still deferred
+
+Phase 114D0B implements ONLY evidence production. No readiness policy, no
+`any_element`, no placement selection, no reconciliation, no automatic
+corrective action, no monitor leader election/health voting, and no
+retention/pruning were implemented or touched. An exact-current DIoT
+realization may legitimately be `convergence = Converged` with
+`health = Unhealthy` simultaneously (Phase 114C/114D0A's health/convergence
+independence, unchanged) -- Phase 114D1 is what will decide whether such a
+state counts as "ready."
+
 ## Migration posture for the legacy SmartSentinel model
 
 This ADR does not migrate or remove any existing SmartSentinel code path.
@@ -1151,9 +1359,17 @@ authority over this decision and is not a migration source.
   placement convergence is now ALSO derivable, read-only, from
   `evaluate_application_diot_convergence`, exactly correlating against
   DMap/2 + DForward + DIoT runtime-binding authority -- see "Canonical DIoT
-  correlation closure (Phase 114D0A)" above; the live runtime evidence
-  producer itself remains deferred to 114D0B. D-Code/D-Call evidence remains
+  correlation closure (Phase 114D0A)" above. D-Code/D-Call evidence remains
   deliberately out of scope for placement convergence.
+- A REAL governed MQTT DIoT realization now produces canonical `Healthy`/
+  `Unhealthy` DMonitor evidence -- protocol-confirmed session readiness
+  (ConnAck+SubAck, never a bare `subscribe()` return), a periodic heartbeat
+  referencing an immutable session-binding authority, and non-blocking
+  bounded publication that can never stall MQTT delivery -- see "Live
+  governed DIoT runtime evidence producer (Phase 114D0B)" above, proven end
+  to end against a real DServer process
+  (`dmonitor_d0a_d0b_integration.rs::d0a_d0b_end_to_end_diot_evidence_converges`).
+  DServer itself was not modified: it remains observer only.
 - No readiness/`any_element` feed integration exists yet -- 114D's job.
 - No live multinode validation of this model exists yet -- 114E's job, and
   per this project's established evidentiary discipline (see the Phase 113B
