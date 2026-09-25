@@ -21,6 +21,19 @@
 //! construct, and no `dscript_digest` field on the type itself
 //! (`recompute_dscript_digest` below is a free function, mirroring
 //! `canonical_dgraph::recompute_dgraph_digest`'s own precedent).
+//!
+//! **Phase 116C: `#[serde(deny_unknown_fields)]`.** Added to both types here
+//! too, for WIRE-CONTRACT PARITY with `dserver::core::canonical_dscript`
+//! (see that module's doc comment for the full rationale: the newer,
+//! stricter Phase-112+ canonical convention, ADR-0024). This crate
+//! deliberately does NOT add `dserver::core::canonical_dscript`'s
+//! `decode_and_validate_dscript_json`/`DScriptInputError`/
+//! `ValidatedDScriptInput` pure input boundary: per
+//! `documentation/reference/phase116c-dscript-input-admission-and-closure.md`,
+//! Phase 117 DCompile is expected to be server-side, and this crate has no
+//! proven consumer for that convenience boundary. Contract parity (the wire
+//! shape, including `deny_unknown_fields`) is mandatory and proven below;
+//! parity of every helper function on top of it is not.
 
 use std::collections::BTreeMap;
 
@@ -49,6 +62,7 @@ fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidatio
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CanonicalDScriptV1 {
     pub schema: String,
     /// ADR-0009 precedent (`canonical_dgraph::CanonicalDGraphV1::application_id`):
@@ -64,6 +78,7 @@ pub struct CanonicalDScriptV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CanonicalDFunctionV1 {
     /// Stable identity, matching this project's `<noun>_id` convention
     /// rather than a display name.
@@ -407,7 +422,11 @@ mod tests {
     /// Real cross-crate mapper fixture (same pattern as
     /// `canonical_dgraph`'s own cross-crate test): the shared canonical-v1
     /// wire shape is IDENTICAL on both sides, so one JSON file proves parity
-    /// directly.
+    /// directly. Phase 116C: the fixture is now the PURE canonical document
+    /// (no sibling `x_note`/`expected_digest_sha256` metadata keys, which
+    /// `deny_unknown_fields` would itself reject) -- the expected digest is
+    /// a literal, matching `dserver::core::canonical_dscript`'s own test
+    /// exactly.
     #[test]
     fn dserver_cross_crate_fixture_produces_the_expected_digest() {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -419,8 +438,6 @@ mod tests {
             .join("dscript.sensor-pipeline.json");
         let text = std::fs::read_to_string(&fixture_path)
             .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
-        let raw: Value = serde_json::from_str(&text).unwrap();
-        let expected_digest = raw["expected_digest_sha256"].as_str().unwrap().to_string();
 
         let dscript: CanonicalDScriptV1 = serde_json::from_str(&text)
             .expect("fixture must deserialize as this crate's CanonicalDScriptV1");
@@ -431,6 +448,50 @@ mod tests {
         );
 
         let digest = recompute_dscript_digest(&dscript).unwrap();
-        assert_eq!(digest, expected_digest, "this crate's recomputed digest must match the fixture's recorded expected_digest_sha256");
+        assert_eq!(
+            digest, "sha256:3f01cf0ee34e8e368d5f0241617588b04e894564f82aa553565e69c723ed38ae",
+            "this crate's recomputed digest must match the fixture's known digest"
+        );
+    }
+
+    // ---- Phase 116C: wire-contract parity for the unknown-field/         //
+    // ---- duplicate-key decisions (no admission-boundary helper mirrored  //
+    // ---- here -- see the module doc comment) ----------------------------//
+
+    /// Contract parity: an unrecognised field must be rejected here exactly
+    /// as it is on the dserver side, since `deny_unknown_fields` is part of
+    /// the shared wire contract, not a dserver-only helper.
+    #[test]
+    fn unknown_field_is_rejected_matching_dserver_side_policy() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[{"function_id":"decode","node_id":"fog-01","annotations":{}}]}"#;
+        let result: Result<CanonicalDScriptV1, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "unknown field 'node_id' must be rejected, not silently ignored"
+        );
+    }
+
+    /// Contract parity: a duplicate JSON object key for a known field is
+    /// rejected by serde's derived `Deserialize` unconditionally (empirically
+    /// verified; independent of `deny_unknown_fields`), matching the
+    /// dserver-side behavior exactly.
+    #[test]
+    fn duplicate_json_object_key_for_a_known_field_is_rejected() {
+        let json = r#"{"schema":"datum.dscript/1","schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[]}"#;
+        let result: Result<CanonicalDScriptV1, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "a duplicate JSON key for a known field must be rejected"
+        );
+    }
+
+    /// A caller-provided `dscript_digest` field must never become trusted
+    /// digest authority -- with `deny_unknown_fields` active it is rejected
+    /// outright, matching the dserver-side test exactly.
+    #[test]
+    fn caller_provided_dscript_digest_field_is_rejected_never_trusted() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"dscript_digest":"sha256:deadbeef","functions":[]}"#;
+        let result: Result<CanonicalDScriptV1, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 }

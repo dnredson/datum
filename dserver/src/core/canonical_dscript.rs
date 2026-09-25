@@ -69,6 +69,35 @@
 //! per this project's established no-shared-crate discipline (ADR-0007):
 //! parity is proven by a real cross-crate fixture + test on each side, never
 //! by type sharing.
+//!
+//! **Phase 116C addition: the pure input boundary.** `decode_and_validate_dscript_json`
+//! is the seam a future caller (Phase 117 DCompile, first and foremost) uses
+//! to turn untrusted serialized `datum.dscript/1` JSON into a typed,
+//! structurally-valid, digest-known `CanonicalDScriptV1` -- or a
+//! deterministic, structured explanation of exactly why not. This grants NO
+//! deployment, placement, execution, current-state, or "accepted" authority:
+//! a successfully decoded-and-validated document means only "this exact
+//! serialized source decoded into the canonical v1 type and passed its
+//! self-contained structural contract," nothing more. This function exists
+//! ONLY on the `dserver` side (see `documentation/reference/phase116c-dscript-input-admission-and-closure.md`
+//! Section on mirror discipline): `DATUM::agent::canonical_dscript` proves
+//! wire-contract parity (including the `deny_unknown_fields` decision below)
+//! but has no proven consumer for this convenience boundary, so it is not
+//! duplicated there merely for symmetry.
+//!
+//! **Phase 116C: `#[serde(deny_unknown_fields)]`.** Added to both types,
+//! following the newer, stricter Phase-112+ canonical convention already
+//! established by `canonical_dforward`/`canonical_dmap_v2`/`canonical_dmonitor`
+//! (see ADR-0024's own words: "the newer, stricter Phase-112+ canonical
+//! convention... `deny_unknown_fields` on every struct") rather than the
+//! older Stage-110-era `canonical_dgraph`/`canonical_dmap` v1 convention.
+//! `datum.dscript/1` is a brand-new v1 contract with no deployed backward-
+//! compatibility burden, so the stricter, newer convention applies with no
+//! migration cost. This closes a real integrity gap: without it, a caller
+//! could write `{"function_id": "decode", "node_id": "fog-01"}` and a human
+//! reader might wrongly believe placement was expressed, when the field was
+//! actually silently ignored. With `deny_unknown_fields`, that input is a
+//! hard deserialization error instead.
 
 use std::collections::BTreeMap;
 
@@ -100,6 +129,7 @@ fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidatio
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CanonicalDScriptV1 {
     pub schema: String,
     /// ADR-0009 precedent (`canonical_dgraph::CanonicalDGraphV1::application_id`):
@@ -120,6 +150,7 @@ pub struct CanonicalDScriptV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CanonicalDFunctionV1 {
     /// Stable identity, matching this project's `<noun>_id` convention
     /// (`service_id`, `call_id`, `dgraph_id`) rather than a display name --
@@ -213,6 +244,74 @@ pub fn recompute_dscript_digest(dscript: &CanonicalDScriptV1) -> Result<String, 
     let value: Value = serde_json::to_value(&sorted)
         .map_err(|error| format!("serialize CanonicalDScriptV1: {error}"))?;
     jcs::canonical_digest_sha256_hex(&value).map_err(|error| error.to_string())
+}
+
+/// Phase 116C. Why "decode_and_validate", not "admit"/"admission": this
+/// repository already uses "admitted"/"admission" with an established,
+/// distinct, authority-adjacent meaning (`dmonitor_interpretation.rs`'s
+/// `admitted`/`admitted_evidence` -- whether an observation contributes to a
+/// drift/convergence decision; `operational_dgraph.rs`'s "re-admission" --
+/// a Resource Registry authority revalidation). Reusing that word here would
+/// invite exactly the confusion Phase 116A/116B have been careful to avoid:
+/// this function grants no authority of any kind.
+#[derive(Debug)]
+pub enum DScriptInputError {
+    /// The input bytes could not even be decoded as `datum.dscript/1`'s
+    /// typed JSON shape -- malformed JSON, a wrong-typed field, a duplicate
+    /// JSON object key for a recognised field (serde's derived
+    /// `Deserialize` rejects this unconditionally; see
+    /// `duplicate_json_object_key_for_a_known_field_is_rejected` below), or
+    /// -- because of `deny_unknown_fields` -- an unrecognised field. This is
+    /// a syntactic failure: `CanonicalDScriptV1::validate()` is never
+    /// reached.
+    Deserialization(String),
+    /// The input decoded successfully into a structurally well-typed
+    /// `CanonicalDScriptV1`, but failed its own self-contained
+    /// `validate()`. These are EXACTLY the findings `validate()` itself
+    /// would produce -- never duplicated or reinterpreted by this function.
+    Validation(Vec<CanonicalValidationFinding>),
+    /// `recompute_dscript_digest` failed on an already-validated document.
+    /// Given this type's field set (`String`/`u64`/`BTreeMap<String, String>`
+    /// only), this is not reachable in practice -- JCS canonicalization can
+    /// only fail on a non-finite float, which no field here can ever hold --
+    /// but it is a real, distinct failure class, not folded into
+    /// `Deserialization` or silently unwrapped.
+    DigestComputation(String),
+}
+
+/// A `CanonicalDScriptV1` that has been decoded and has passed its own
+/// structural `validate()`, together with its independently-recomputed
+/// canonical digest. Carries NO deployment, placement, execution, or
+/// current-state authority -- see the module doc comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedDScriptInput {
+    pub document: CanonicalDScriptV1,
+    pub digest_sha256: String,
+}
+
+/// The pure input boundary: JSON text in, a typed+validated+digested
+/// document or a structured reason why not, out. No I/O, no filesystem
+/// access (a caller reads bytes/text itself and passes them in), no
+/// network access, no persistence, no host mutation. Never trusts a
+/// caller-supplied digest -- there is no `dscript_digest` field on
+/// `CanonicalDScriptV1` to trust in the first place (Phase 116B decision,
+/// preserved here); the digest returned is always freshly recomputed from
+/// the typed document this function itself decoded.
+pub fn decode_and_validate_dscript_json(
+    json: &str,
+) -> Result<ValidatedDScriptInput, DScriptInputError> {
+    let document: CanonicalDScriptV1 = serde_json::from_str(json)
+        .map_err(|error| DScriptInputError::Deserialization(error.to_string()))?;
+    let findings = document.validate();
+    if !findings.is_empty() {
+        return Err(DScriptInputError::Validation(findings));
+    }
+    let digest_sha256 =
+        recompute_dscript_digest(&document).map_err(DScriptInputError::DigestComputation)?;
+    Ok(ValidatedDScriptInput {
+        document,
+        digest_sha256,
+    })
 }
 
 #[cfg(test)]
@@ -484,27 +583,22 @@ mod tests {
         }
     }
 
-    /// Real cross-crate mapper fixture (same pattern as
-    /// `canonical_dgraph`'s own cross-crate test): the shared canonical-v1
-    /// wire shape is IDENTICAL on both sides, so one JSON file proves parity
-    /// directly -- `DATUM::agent::canonical_dscript`'s own test of this
-    /// exact file independently deserializes and re-hashes it; both sides
-    /// must recover the SAME recorded `expected_digest_sha256`.
+    /// Real cross-crate mapper fixture (same pattern
+    /// `canonical_dforward`/`canonical_dmonitor` already use once
+    /// `deny_unknown_fields` is active: the fixture is the PURE canonical
+    /// document with no sibling `x_note`/`expected_digest_sha256` metadata
+    /// keys -- those would themselves be rejected as unknown fields -- and
+    /// the expected digest is instead a literal in the test, exactly like
+    /// `canonical_dforward::real_positive_fixture_digest_matches_dmap_v2_bundle_reference`).
+    /// `DATUM::agent::canonical_dscript`'s own test of this exact file
+    /// independently deserializes and re-hashes it; both sides must recover
+    /// the SAME literal digest.
     #[test]
     fn dserver_cross_crate_fixture_produces_the_expected_digest() {
-        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("scripts")
-            .join("fixtures")
-            .join("datum-contracts")
-            .join("canonical-v1")
-            .join("dscript.sensor-pipeline.json");
-        let text = std::fs::read_to_string(&fixture_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display()));
-        let raw: Value = serde_json::from_str(&text).unwrap();
-        let expected_digest = raw["expected_digest_sha256"].as_str().unwrap().to_string();
-
-        let dscript: CanonicalDScriptV1 = serde_json::from_str(&text)
+        let text = include_str!(
+            "../../../scripts/fixtures/datum-contracts/canonical-v1/dscript.sensor-pipeline.json"
+        );
+        let dscript: CanonicalDScriptV1 = serde_json::from_str(text)
             .expect("fixture must deserialize as this crate's CanonicalDScriptV1");
         assert_eq!(
             dscript.validate(),
@@ -513,6 +607,248 @@ mod tests {
         );
 
         let digest = recompute_dscript_digest(&dscript).unwrap();
-        assert_eq!(digest, expected_digest, "this crate's recomputed digest must match the fixture's recorded expected_digest_sha256");
+        assert_eq!(
+            digest, "sha256:3f01cf0ee34e8e368d5f0241617588b04e894564f82aa553565e69c723ed38ae",
+            "this crate's recomputed digest must match the fixture's known digest"
+        );
+    }
+
+    // ---- Phase 116C: pure input boundary --------------------------------- //
+
+    const SENSOR_PIPELINE_JSON: &str = include_str!(
+        "../../../scripts/fixtures/datum-contracts/canonical-v1/dscript.sensor-pipeline.json"
+    );
+    const EXPECTED_SENSOR_PIPELINE_DIGEST: &str =
+        "sha256:3f01cf0ee34e8e368d5f0241617588b04e894564f82aa553565e69c723ed38ae";
+
+    fn minimal_valid_json() -> String {
+        r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[{"function_id":"solo","annotations":{}}]}"#.to_string()
+    }
+
+    /// I1 -- valid minimal JSON: decode succeeds, validate succeeds, typed
+    /// identity preserved, canonical digest returned.
+    #[test]
+    fn i1_valid_minimal_json_is_decoded_validated_and_digested() {
+        let result = decode_and_validate_dscript_json(&minimal_valid_json())
+            .expect("must decode and validate");
+        assert_eq!(result.document.dscript_id, "dscript:x");
+        assert_eq!(result.document.functions.len(), 1);
+        let recomputed = recompute_dscript_digest(&result.document).unwrap();
+        assert_eq!(result.digest_sha256, recomputed);
+    }
+
+    /// I2 -- representative multi-function DScript succeeds.
+    #[test]
+    fn i2_representative_multi_function_dscript_succeeds() {
+        let result = decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON)
+            .expect("must decode and validate");
+        assert_eq!(result.document.functions.len(), 2);
+        assert_eq!(result.digest_sha256, EXPECTED_SENSOR_PIPELINE_DIGEST);
+    }
+
+    /// I3 -- function array permutation: both succeed, and produce the SAME
+    /// canonical digest through the full input boundary, not merely through
+    /// `recompute_dscript_digest` called directly.
+    #[test]
+    fn i3_function_array_permutation_yields_the_same_digest_through_the_boundary() {
+        let forward = decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON)
+            .expect("forward order must decode");
+        let reversed_json = r#"{"schema":"datum.dscript/1","application_id":"app:smart-sentinel-lab","dscript_id":"dscript:sensor-pipeline","revision":1,"functions":[{"function_id":"threshold_alert","annotations":{"idempotent":"true","stateless":"false"}},{"function_id":"decode_uplink","annotations":{"stateless":"true"}}]}"#;
+        let reversed =
+            decode_and_validate_dscript_json(reversed_json).expect("reversed order must decode");
+        assert_eq!(forward.digest_sha256, reversed.digest_sha256);
+        assert_ne!(
+            forward.document, reversed.document,
+            "the typed documents differ in field order but the digest must not"
+        );
+    }
+
+    /// I4 -- annotations are preserved exactly and contribute to a
+    /// deterministic digest through the boundary.
+    #[test]
+    fn i4_annotations_preserved_exactly_with_deterministic_digest() {
+        let result = decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON).expect("must decode");
+        let decode_uplink = result
+            .document
+            .functions
+            .iter()
+            .find(|function| function.function_id == "decode_uplink")
+            .expect("decode_uplink must be present");
+        assert_eq!(
+            decode_uplink.annotations.get("stateless"),
+            Some(&"true".to_string())
+        );
+        let again =
+            decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON).expect("must decode again");
+        assert_eq!(result.digest_sha256, again.digest_sha256);
+    }
+
+    /// I5 -- the existing shared canonical fixture passes through the new
+    /// input boundary and retains its known digest (same assertion as I2,
+    /// stated separately to match the task's own required-test numbering).
+    #[test]
+    fn i5_shared_fixture_passes_through_the_input_boundary_with_its_known_digest() {
+        let result = decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON)
+            .expect("fixture must pass through the boundary");
+        assert_eq!(result.digest_sha256, EXPECTED_SENSOR_PIPELINE_DIGEST);
+    }
+
+    /// I6 -- malformed JSON is a deserialization failure, not a validation
+    /// failure -- `CanonicalDScriptV1::validate()` is never reached.
+    #[test]
+    fn i6_malformed_json_is_a_deserialization_failure() {
+        let error = decode_and_validate_dscript_json("{ not valid json").unwrap_err();
+        assert!(matches!(error, DScriptInputError::Deserialization(_)));
+    }
+
+    /// I7 -- valid JSON, wrong schema: this decodes fine (schema is just a
+    /// `String` field) but fails structural validation with `schema_invalid`.
+    #[test]
+    fn i7_wrong_schema_is_a_validation_failure_with_schema_invalid() {
+        let json = minimal_valid_json().replace("datum.dscript/1", "datum.dscript/2");
+        let error = decode_and_validate_dscript_json(&json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(
+                    findings.iter().any(|f| f.code == "schema_invalid"),
+                    "{findings:?}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I8 -- blank application_id -> missing_field.
+    #[test]
+    fn i8_blank_application_id_is_missing_field() {
+        let json = minimal_valid_json().replace("\"app:x\"", "\"   \"");
+        let error = decode_and_validate_dscript_json(&json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "missing_field"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I9 -- blank dscript_id -> missing_field.
+    #[test]
+    fn i9_blank_dscript_id_is_missing_field() {
+        let json = minimal_valid_json().replace("\"dscript:x\"", "\"\"");
+        let error = decode_and_validate_dscript_json(&json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "missing_field"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I10 -- revision 0 -> revision_invalid.
+    #[test]
+    fn i10_revision_zero_is_revision_invalid() {
+        let json = minimal_valid_json().replace("\"revision\":1", "\"revision\":0");
+        let error = decode_and_validate_dscript_json(&json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "revision_invalid"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I11 -- blank function_id -> missing_field.
+    #[test]
+    fn i11_blank_function_id_is_missing_field() {
+        let json = minimal_valid_json().replace("\"solo\"", "\"   \"");
+        let error = decode_and_validate_dscript_json(&json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "missing_field"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I12 -- duplicate function_id -> duplicate_function_id.
+    #[test]
+    fn i12_duplicate_function_id_is_rejected() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[{"function_id":"same","annotations":{}},{"function_id":"same","annotations":{}}]}"#;
+        let error = decode_and_validate_dscript_json(json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "duplicate_function_id"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I13 -- blank annotation key -> missing_field.
+    #[test]
+    fn i13_blank_annotation_key_is_missing_field() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[{"function_id":"solo","annotations":{"   ":"value"}}]}"#;
+        let error = decode_and_validate_dscript_json(json).unwrap_err();
+        match error {
+            DScriptInputError::Validation(findings) => {
+                assert!(findings.iter().any(|f| f.code == "missing_field"))
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    /// I14 -- an unrecognised field is REJECTED (the explicit policy this
+    /// phase adopted, Section 9): `deny_unknown_fields` turns it into a
+    /// deserialization failure, never a silently-ignored no-op.
+    #[test]
+    fn i14_unknown_field_is_rejected_not_silently_ignored() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[{"function_id":"decode","node_id":"fog-01","annotations":{}}]}"#;
+        let error = decode_and_validate_dscript_json(json).unwrap_err();
+        assert!(
+            matches!(error, DScriptInputError::Deserialization(_)),
+            "unknown field 'node_id' must be rejected, not ignored: {error:?}"
+        );
+    }
+
+    /// Caller-provided-digest negative case (Section 21): an unsupported
+    /// `dscript_digest` field must never become trusted digest authority --
+    /// with `deny_unknown_fields` active it is rejected outright, exactly
+    /// like any other unrecognised field.
+    #[test]
+    fn caller_provided_dscript_digest_field_is_rejected_never_trusted() {
+        let json = r#"{"schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"dscript_digest":"sha256:deadbeef","functions":[]}"#;
+        let error = decode_and_validate_dscript_json(json).unwrap_err();
+        assert!(matches!(error, DScriptInputError::Deserialization(_)));
+    }
+
+    /// Positive proof that the digest actually used is always recomputed,
+    /// never trusted from any external source: two byte-different but
+    /// semantically identical JSON documents (compact vs. pretty-printed --
+    /// re-serialized via `serde_json::Value` so no string field content is
+    /// ever touched) decoded independently must yield the same
+    /// freshly-recomputed digest.
+    #[test]
+    fn digest_returned_by_the_boundary_is_always_freshly_recomputed() {
+        let a = decode_and_validate_dscript_json(&minimal_valid_json()).unwrap();
+        let value: Value = serde_json::from_str(&minimal_valid_json()).unwrap();
+        let pretty = serde_json::to_string_pretty(&value).unwrap();
+        let b = decode_and_validate_dscript_json(&pretty).unwrap();
+        assert_eq!(a.digest_sha256, b.digest_sha256);
+    }
+
+    /// Documents the empirically-verified serde_json behavior (Section 10):
+    /// a duplicate JSON object key for a KNOWN field is unconditionally
+    /// rejected by serde's derived `Deserialize` impl -- independent of
+    /// `deny_unknown_fields`, which only governs UNRECOGNISED keys. No
+    /// bespoke duplicate-key handling was written because none is needed.
+    #[test]
+    fn duplicate_json_object_key_for_a_known_field_is_rejected() {
+        let json = r#"{"schema":"datum.dscript/1","schema":"datum.dscript/1","application_id":"app:x","dscript_id":"dscript:x","revision":1,"functions":[]}"#;
+        let error = decode_and_validate_dscript_json(json).unwrap_err();
+        match error {
+            DScriptInputError::Deserialization(message) => {
+                assert!(message.contains("duplicate field"), "{message}")
+            }
+            other => panic!("expected Deserialization, got {other:?}"),
+        }
     }
 }

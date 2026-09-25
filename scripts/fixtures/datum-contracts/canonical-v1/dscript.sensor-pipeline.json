@@ -12,7 +12,5 @@
       "function_id": "threshold_alert",
       "annotations": { "idempotent": "true", "stateless": "false" }
     }
-  ],
-  "x_note": "Phase 116B. NOT the obsolete VS1 sketch (scripts/fixtures/datum-contracts/vs1/) -- this is the new, real datum.dscript/1 canonical-v1 wire shape. Real cross-crate mapper fixture: dserver::core::canonical_dscript and DATUM::agent::canonical_dscript both deserialize this exact file and must independently compute the same expected_digest_sha256. functions is a canonically unordered set keyed by function_id; array order carries no execution-order meaning.",
-  "expected_digest_sha256": "sha256:3f01cf0ee34e8e368d5f0241617588b04e894564f82aa553565e69c723ed38ae"
+  ]
 }
