@@ -31,7 +31,8 @@ use api::dcall::{
     put_dcall_endpoint,
 };
 use api::dcode::{
-    get_dserv_artifact, post_authorize_dcode_invocation, post_declare_dserv_artifact,
+    get_dserv_artifact, get_dserv_artifact_revision, post_authorize_dcode_invocation,
+    post_declare_dserv_artifact,
 };
 use api::ddeploy::{
     get_active, get_active_authority_v2, get_proposal, get_proposal_v2, post_accept_proposal,
@@ -447,6 +448,10 @@ async fn main() {
         .route("/api/v1/dnodes/:node_id", delete(delete_dnode))
         .route("/api/v1/dcode/artifacts", post(post_declare_dserv_artifact))
         .route("/api/v1/dcode/artifacts/:application_id/:dserv_id", get(get_dserv_artifact))
+        .route(
+            "/api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest",
+            get(get_dserv_artifact_revision),
+        )
         .route("/api/v1/dcode/authorize", post(post_authorize_dcode_invocation))
         .route("/api/v1/dcall/endpoints/:node_id/:transport", put(put_dcall_endpoint))
         .route("/api/v1/dcall/endpoints/:node_id/:transport", get(get_dcall_endpoint))

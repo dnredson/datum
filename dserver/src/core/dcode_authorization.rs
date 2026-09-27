@@ -14,7 +14,7 @@
 //! established for D-Continuum authority.
 //!
 //! This module never mutates `DDeployStateV1`, `DNodeRegistryStateV1`, or
-//! `DCodeArtifactRegistryStateV1` -- it only reads already-loaded state
+//! `DCodeArtifactRegistryStateV2` -- it only reads already-loaded state
 //! snapshots, so the caller (the API layer) is responsible for acquiring
 //! them under the established `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION`
 //! stable-view lock order before calling in, exactly like
@@ -23,7 +23,7 @@
 use crate::core::canonical_dgraph::DNODE_ABI_V0;
 use crate::core::canonical_dgraph::{recompute_dgraph_digest, CanonicalValidationFinding};
 use crate::core::canonical_dmap::CanonicalContractReferenceV1;
-use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
+use crate::core::dcode_registry::DCodeArtifactRegistryStateV2;
 use crate::core::ddeploy::DDeployStateV1;
 use crate::core::dnode_registry::DNodeRegistryStateV1;
 use crate::core::dserv_artifact::recompute_dserv_artifact_digest;
@@ -53,6 +53,18 @@ pub const F_DCODE_STALE_AUTHORIZATION: &str = "stale_dcode_authorization";
 /// accepts it -- it only means it is not yet EXECUTABLE under v0.1.
 pub const F_DCODE_ARTIFACT_STAGE_CONSTRAINT_UNVERIFIABLE: &str =
     "dcode_artifact_stage_constraint_unverifiable";
+/// Phase 117G: no explicit `dcode_artifact_authority` binding exists for
+/// this service on the active deployment, AND the registry's own
+/// logical-identity lookup is ambiguous (more than one immutable revision
+/// is registered for this `(application_id, service_id)`). This is the
+/// exact fail-closed behavior the versioned registry requires once
+/// ambiguity exists: authorization never guesses "latest"/"newest"/"first".
+/// A service with only one ever-registered revision remains authorizable
+/// without an explicit binding (matching pre-117G one-slot behavior
+/// exactly); registering a second revision for that same logical service
+/// requires a new, explicit, governed binding (a new accepted proposal)
+/// before authorization can resolve unambiguously again.
+pub const F_DCODE_ACTIVE_BINDING_MISSING: &str = "dcode_active_binding_missing";
 
 fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidationFinding {
     CanonicalValidationFinding {
@@ -109,7 +121,7 @@ pub struct DCodeInvocationAuthorizationV1 {
 pub fn authorize_dcode_invocation(
     ddeploy_state: &DDeployStateV1,
     dnode_registry_state: &DNodeRegistryStateV1,
-    dcode_registry_state: &DCodeArtifactRegistryStateV1,
+    dcode_registry_state: &DCodeArtifactRegistryStateV2,
     project_id: &str,
     application_id: &str,
     service_id: &str,
@@ -201,15 +213,43 @@ pub fn authorize_dcode_invocation(
         ));
     }
 
-    // 6/7/8. registered canonical D-Serv artifact belongs to this
+    // 6/7/8. registered canonical D-Serv artifact REVISION belongs to this
     // service/application, its ABI matches, and its content digest is
     // canonically valid.
-    let artifact = dcode_registry_state.get(application_id, service_id).ok_or_else(|| {
-        finding(
-            F_DCODE_ARTIFACT_NOT_FOUND,
-            format!("no canonical D-Serv artifact is registered for application '{application_id}' service '{service_id}'"),
-        )
-    })?;
+    //
+    // Phase 117G: exact-binding-aware lookup. If the active deployment
+    // explicitly bound this service to a D-Code revision (via
+    // `dcode_artifact_authority` on the accepted proposal -- see
+    // `ddeploy::resolve_active_dcode_binding`), that EXACT revision is the
+    // only one ever consulted, regardless of how many other revisions
+    // exist in the registry -- registering a new revision elsewhere can
+    // never change this (Phase 117F's central invariant). If no explicit
+    // binding exists (a pre-117G proposal, or one that simply never bound
+    // this service), fall back to the registry's own unambiguous-single-
+    // revision lookup -- EXACTLY the pre-117G one-slot behavior -- but only
+    // while it remains unambiguous: the moment a second revision is
+    // registered for this logical service, authorization fails closed
+    // (`F_DCODE_ACTIVE_BINDING_MISSING`) rather than guessing "latest".
+    let artifact = match crate::core::ddeploy::resolve_active_dcode_binding(ddeploy_state, &active, service_id) {
+        Some(binding) => dcode_registry_state.get_exact(application_id, service_id, &binding.descriptor_digest).ok_or_else(|| {
+            finding(
+                F_DCODE_ARTIFACT_NOT_FOUND,
+                format!(
+                    "active binding for service '{service_id}' names descriptor_digest '{}', but no such D-Code revision is registered for application '{application_id}'",
+                    binding.descriptor_digest
+                ),
+            )
+        })?,
+        None => dcode_registry_state
+            .get_logical_if_unambiguous(application_id, service_id)
+            .map_err(|message| finding(F_DCODE_ACTIVE_BINDING_MISSING, message))?
+            .ok_or_else(|| {
+                finding(
+                    F_DCODE_ARTIFACT_NOT_FOUND,
+                    format!("no canonical D-Serv artifact is registered for application '{application_id}' service '{service_id}'"),
+                )
+            })?,
+    };
     let artifact_findings = artifact.validate();
     if !artifact_findings.is_empty() {
         return Err(finding(
@@ -284,7 +324,7 @@ pub fn verify_dcode_authorization_still_current(
     authorization: &DCodeInvocationAuthorizationV1,
     ddeploy_state: &DDeployStateV1,
     dnode_registry_state: &DNodeRegistryStateV1,
-    dcode_registry_state: &DCodeArtifactRegistryStateV1,
+    dcode_registry_state: &DCodeArtifactRegistryStateV2,
 ) -> Result<(), CanonicalValidationFinding> {
     let current = authorize_dcode_invocation(
         ddeploy_state,
@@ -327,7 +367,7 @@ mod tests {
         CanonicalDServResourceRequirementV1, CanonicalDServV1,
     };
     use crate::core::canonical_dmap::{CanonicalDMapV1, CanonicalDServPlacementV1};
-    use crate::core::dcode_registry::{declare_dserv_artifact, DCodeArtifactRegistryStateV1};
+    use crate::core::dcode_registry::{declare_dserv_artifact_revision, DCodeArtifactRegistryStateV2};
     use crate::core::ddeploy::{
         application_key, canonical_dmap_id, ActiveApplicationDeployment, ProposalRecord,
     };
@@ -427,7 +467,7 @@ mod tests {
     fn setup() -> (
         DDeployStateV1,
         DNodeRegistryStateV1,
-        DCodeArtifactRegistryStateV1,
+        DCodeArtifactRegistryStateV2,
     ) {
         let proposal_id = "prop-1".to_string();
         let mut ddeploy_state = DDeployStateV1::empty();
@@ -456,7 +496,9 @@ mod tests {
                         service_id: SVC.to_string(),
                         node_id: NODE.to_string(),
                     }],
-                },
+
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+            },
                 planner_provenance: None,
                 proposal_digest: String::new(),
                 dgraph_snapshot: dgraph(),
@@ -525,8 +567,8 @@ mod tests {
         let mut dnode_registry_state = DNodeRegistryStateV1::empty();
         declare_dnode(&mut dnode_registry_state, node()).unwrap();
 
-        let mut dcode_registry_state = DCodeArtifactRegistryStateV1::empty();
-        declare_dserv_artifact(&mut dcode_registry_state, artifact()).unwrap();
+        let mut dcode_registry_state = DCodeArtifactRegistryStateV2::empty();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, artifact()).unwrap();
 
         (ddeploy_state, dnode_registry_state, dcode_registry_state)
     }
@@ -586,7 +628,7 @@ mod tests {
         dcode_registry_state.artifacts.clear();
         let mut wrong = artifact();
         wrong.dserv_id = "other-service".to_string();
-        declare_dserv_artifact(&mut dcode_registry_state, wrong).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, wrong).unwrap();
         let error = authorize_dcode_invocation(
             &ddeploy_state,
             &dnode_registry_state,
@@ -661,7 +703,7 @@ mod tests {
                 .unwrap();
 
         // Replace the registered artifact with a different-content one
-        // under a new artifact_id (declare_dserv_artifact fails closed on
+        // under a new artifact_id (declare_dserv_artifact_revision fails closed on
         // an in-place conflicting overwrite, exactly as it should).
         dcode_registry_state.artifacts.clear();
         let mut changed = artifact();
@@ -669,7 +711,7 @@ mod tests {
         changed.dcode.sha256 = "c".repeat(64);
         changed.dcode.content_id = format!("sha256:{}", "c".repeat(64));
         changed.dcode.uri = format!("datum-blob://sha256/{}", "c".repeat(64)); // keep F7A's uri/sha256/content_id binding consistent
-        declare_dserv_artifact(&mut dcode_registry_state, changed).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, changed).unwrap();
 
         let error = verify_dcode_authorization_still_current(
             &authorization,
@@ -703,7 +745,7 @@ mod tests {
         dcode_registry_state.artifacts.clear();
         let mut changed = artifact();
         changed.limits.fuel_per_invocation *= 2; // module bytes/sha256 UNCHANGED
-        declare_dserv_artifact(&mut dcode_registry_state, changed).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, changed).unwrap();
 
         let error = verify_dcode_authorization_still_current(
             &authorization,
@@ -731,7 +773,7 @@ mod tests {
             payload_schema: "datum://schemas/extra/1".to_string(),
             external: false,
         });
-        declare_dserv_artifact(&mut dcode_registry_state, changed).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, changed).unwrap();
 
         let error = verify_dcode_authorization_still_current(
             &authorization,
@@ -750,7 +792,7 @@ mod tests {
     /// Independent review v2 (R7) note: this test originally flipped a
     /// `safety` flag (e.g. `network_access = true`) to prove the same point,
     /// but R7 now makes EVERY `safety` flag's only valid value `false` for
-    /// zero-import v0.1 D-Code -- `declare_dserv_artifact` itself rejects any
+    /// zero-import v0.1 D-Code -- `declare_dserv_artifact_revision` itself rejects any
     /// artifact with a `true` safety flag before this test could ever reach
     /// the descriptor-digest comparison being proven here.
     ///
@@ -782,7 +824,7 @@ mod tests {
         dcode_registry_state.artifacts.clear();
         let mut changed = artifact();
         changed.qos = serde_json::json!({ "max_handler_latency_ms": 999 });
-        declare_dserv_artifact(&mut dcode_registry_state, changed).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, changed).unwrap();
 
         let error = verify_dcode_authorization_still_current(
             &authorization,
@@ -830,7 +872,7 @@ mod tests {
             .constraints
             .allowed_stages
             .push("S3-Fog".to_string());
-        declare_dserv_artifact(&mut dcode_registry_state, restricted).unwrap();
+        declare_dserv_artifact_revision(&mut dcode_registry_state, restricted).unwrap();
 
         let result = authorize_dcode_invocation(
             &ddeploy_state,
@@ -933,5 +975,132 @@ mod tests {
             &dcode_registry_state,
         )
         .is_ok());
+    }
+
+    // ===================================================================
+    // Phase 117G: exact-binding authorization test matrix (G30-G38).
+    // ===================================================================
+
+    fn different_artifact() -> CanonicalDServArtifactV1 {
+        let mut a = artifact();
+        a.limits.timeout_ms += 1;
+        a
+    }
+
+    /// Same shape as `setup()`, but the accepted proposal carries an
+    /// explicit `dcode_artifact_authority` binding for `SVC` to the given
+    /// `descriptor_digest`, and the registry is left EMPTY of any
+    /// already-registered revision (the caller registers whatever it needs).
+    fn setup_with_binding(descriptor_digest: &str) -> (DDeployStateV1, DNodeRegistryStateV1, DCodeArtifactRegistryStateV2) {
+        let (mut ddeploy_state, dnode_registry_state, dcode_registry_state) = setup();
+        let record = ddeploy_state.proposals.get_mut("prop-1").unwrap();
+        record.proposal.dcode_artifact_authority.insert(
+            SVC.to_string(),
+            crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 {
+                descriptor_digest: descriptor_digest.to_string(),
+            },
+        );
+        // Keep `proposal_digest` internally consistent (authorize_dcode_invocation
+        // never recomputes it, but staying honest to the real invariant costs nothing here).
+        record.proposal_digest = crate::core::ddeploy::compute_proposal_digest(&record.proposal).unwrap();
+        (ddeploy_state, dnode_registry_state, dcode_registry_state)
+    }
+
+    /// G30: registering a new revision for a service that already has an
+    /// EXPLICIT active binding changes nothing -- authorization keeps
+    /// resolving to the originally-bound digest.
+    #[test]
+    fn g30_registering_a_new_revision_does_not_change_an_explicitly_bound_authorization() {
+        let mut dcode_registry_state = DCodeArtifactRegistryStateV2::empty();
+        let d1_digest = declare_dserv_artifact_revision(&mut dcode_registry_state, artifact()).unwrap();
+        let (ddeploy_state, dnode_registry_state, _) = setup_with_binding(&d1_digest);
+
+        declare_dserv_artifact_revision(&mut dcode_registry_state, different_artifact()).unwrap(); // register D2 too
+
+        let authorization = authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE).unwrap();
+        assert_eq!(authorization.dserv_artifact_descriptor_digest, d1_digest, "registering D2 must never change an authorization that is explicitly bound to D1");
+    }
+
+    /// G31: with NO explicit binding and more than one registered revision,
+    /// authorization fails closed rather than guessing.
+    #[test]
+    fn g31_no_explicit_binding_and_ambiguous_registry_fails_closed() {
+        let (ddeploy_state, dnode_registry_state, mut dcode_registry_state) = setup(); // no explicit binding
+        declare_dserv_artifact_revision(&mut dcode_registry_state, different_artifact()).unwrap(); // now 2 revisions
+        let error = authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE).unwrap_err();
+        assert_eq!(error.code, F_DCODE_ACTIVE_BINDING_MISSING);
+    }
+
+    /// G32/G33/Section 29: the direct, load-bearing test. Two proposals bind
+    /// the SAME service to two DIFFERENT D-Code revisions; switching which
+    /// proposal is active switches authorization EXACTLY ONCE, and an
+    /// authorization issued under the OLD binding becomes stale the moment
+    /// active authority moves to the new one -- even though the OLD
+    /// descriptor revision remains perfectly validly registered throughout.
+    /// Staleness here is caused by "the active deployment's binding
+    /// changed", never by "the old descriptor ceased to exist".
+    #[test]
+    fn g29_rebinding_switches_authorization_once_and_stales_the_old_one() {
+        let mut dcode_registry_state = DCodeArtifactRegistryStateV2::empty();
+        let d1_digest = declare_dserv_artifact_revision(&mut dcode_registry_state, artifact()).unwrap();
+        let d2_digest = declare_dserv_artifact_revision(&mut dcode_registry_state, different_artifact()).unwrap();
+        assert_ne!(d1_digest, d2_digest);
+
+        let (mut ddeploy_state, dnode_registry_state, _) = setup_with_binding(&d1_digest);
+
+        let authorization_under_d1 = authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE).unwrap();
+        assert_eq!(authorization_under_d1.dserv_artifact_descriptor_digest, d1_digest);
+
+        // A second, independently-accepted proposal binds the SAME service
+        // to D2. We insert it directly (bypassing `create_proposal`/
+        // `accept_proposal` end-to-end machinery, which is exercised
+        // elsewhere in `ddeploy.rs`'s own G22-G28 matrix) and then flip
+        // `active_by_application`'s `proposal_id` to it -- exactly the
+        // state transition a real acceptance produces.
+        let mut prop2 = ddeploy_state.proposals.get("prop-1").unwrap().clone();
+        prop2.proposal.proposal_id = "prop-2".to_string();
+        prop2.proposal.dcode_artifact_authority.insert(SVC.to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: d2_digest.clone() });
+        prop2.proposal_digest = crate::core::ddeploy::compute_proposal_digest(&prop2.proposal).unwrap();
+        prop2.accepted_acceptance_id = Some("acc-2".to_string());
+        ddeploy_state.proposals.insert("prop-2".to_string(), prop2);
+        ddeploy_state
+            .active_by_application
+            .get_mut(&application_key(PROJECT, APP))
+            .unwrap()
+            .proposal_id = "prop-2".to_string();
+
+        // D1 STILL validly exists in the registry, untouched, throughout.
+        assert!(dcode_registry_state.get_exact(APP, SVC, &d1_digest).is_some());
+
+        let authorization_under_d2 = authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE).unwrap();
+        assert_eq!(authorization_under_d2.dserv_artifact_descriptor_digest, d2_digest, "active authority must have switched to D2 exactly once");
+
+        let staleness = verify_dcode_authorization_still_current(&authorization_under_d1, &ddeploy_state, &dnode_registry_state, &dcode_registry_state).unwrap_err();
+        assert_eq!(staleness.code, F_DCODE_STALE_AUTHORIZATION, "an authorization issued under the now-superseded D1 binding must be detected as stale, even though D1 itself still validly exists in the registry");
+    }
+
+    /// G34: with an explicit binding present, `authorize_dcode_invocation`
+    /// never falls back to the registry's ambiguous-lookup path even when
+    /// multiple revisions exist -- confirmed by `dserv_artifact_digest`
+    /// matching the EXPLICITLY bound artifact's own module digest, not
+    /// merely "some" registered revision.
+    #[test]
+    fn g34_explicit_binding_is_authoritative_even_with_multiple_revisions_present() {
+        let mut dcode_registry_state = DCodeArtifactRegistryStateV2::empty();
+        let mut d1 = artifact();
+        d1.dcode.sha256 = "1".repeat(64);
+        d1.dcode.content_id = format!("sha256:{}", "1".repeat(64));
+        d1.dcode.uri = format!("datum-blob://sha256/{}", "1".repeat(64));
+        let d1_digest = declare_dserv_artifact_revision(&mut dcode_registry_state, d1).unwrap();
+        let mut d2 = artifact();
+        d2.dcode.sha256 = "2".repeat(64);
+        d2.dcode.content_id = format!("sha256:{}", "2".repeat(64));
+        d2.dcode.uri = format!("datum-blob://sha256/{}", "2".repeat(64));
+        declare_dserv_artifact_revision(&mut dcode_registry_state, d2).unwrap();
+
+        let (ddeploy_state, dnode_registry_state, _) = setup_with_binding(&d1_digest);
+        let authorization = authorize_dcode_invocation(&ddeploy_state, &dnode_registry_state, &dcode_registry_state, PROJECT, APP, SVC, NODE).unwrap();
+        assert_eq!(authorization.dserv_artifact_digest, "1".repeat(64));
+        assert_eq!(authorization.dserv_artifact_descriptor_digest, d1_digest);
     }
 }

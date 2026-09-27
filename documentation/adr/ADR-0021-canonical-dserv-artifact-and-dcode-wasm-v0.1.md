@@ -600,3 +600,48 @@ D-Call will become ONE producer of the byte-string input `invoke_dcode`
 currently receives directly from a CLI/test/file — it does not change the
 authorization chain, the module store, or the fresh-instance execution
 engine this ADR establishes.
+
+## Phase 117G addendum: versioned registry and governed active-binding
+
+Phase 117D/117F identified, and Phase 117G closed, a real lifecycle gap
+this ADR's original v0.1 registry left open: `dcode_registry`'s one-slot
+`(application_id, dserv_id) -> single descriptor` model conflated
+"a D-Code descriptor exists" with "a D-Code descriptor is currently
+executing", so registering a new descriptor for an already-active service
+could silently change what an already-accepted deployment executes. Full
+detail, the corrected security invariant, and the complete design lives in
+`documentation/reference/phase117g-versioned-dcode-governed-binding.md`;
+this addendum records only the two authority-model decisions load-bearing
+enough to belong in this ADR itself:
+
+1. **The registry is now versioned and immutable-per-revision**, keyed by
+   `(application_id, dserv_id, descriptor_digest)`
+   (`core::dcode_registry::DCodeArtifactRegistryStateV2`). Declaring a new
+   descriptor for an already-known logical `(application_id, dserv_id)`
+   never replaces or removes a prior revision — it adds a new, independently
+   addressable one. There is no "latest"/"current" concept anywhere in the
+   registry; **registry existence is not active executable authority**.
+   Which revision is currently EXECUTING is exclusively a `DDeploy`
+   relation: `DDeployProposalV1`/`DDeployProposalV2` both gained a public,
+   digest-covered `dcode_artifact_authority` field naming the exact
+   `descriptor_digest` each bound service must execute, revalidated fresh at
+   acceptance time, and made active only by that acceptance — mirroring the
+   established `diot_artifact_authority` (DIoT) precedent exactly, per
+   Section 3 of this phase's task and this ADR's own layering (D-Code
+   authorization already lived downstream of D-Deploy's active D-Map, never
+   the reverse).
+2. **`project_id` is deliberately NOT part of the registry key.** Both
+   `CanonicalDServArtifactV1` and `CanonicalDGraphV1` are project-less by
+   design, and ADR-0009 explicitly intends one `application_id` to be
+   reused across multiple projects/installations. Content-addressing via
+   `descriptor_digest` already prevents any cross-project collision: two
+   projects deploying identical content safely share one registry entry;
+   two projects deploying genuinely different content under the "same"
+   logical service get two different, non-colliding digest-keyed entries.
+   Project scoping continues to live entirely in D-Deploy's own
+   already-project-scoped proposal/acceptance layer, never in this
+   canonical, project-less content registry.
+
+This addendum changes no other part of this ADR: the module store, the
+fresh-instance execution engine, the WASM ABI, and the D-Node/D-Call
+authorization chain this ADR establishes are all unchanged by Phase 117G.

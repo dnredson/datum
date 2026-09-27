@@ -59,6 +59,18 @@ pub struct DDeployProposalV2 {
     /// deterministic regardless of `CanonicalDForwardV1.diots`'s own order.
     #[serde(default)]
     pub diot_artifact_authority: BTreeMap<String, DIoTArtifactAuthorityBindingV2>,
+    /// Phase 117G: the exact D-Code artifact-revision binding per service,
+    /// mirroring v1's own `DDeployProposalV1::dcode_artifact_authority`
+    /// field-for-field (shared `DCodeArtifactAuthorityBindingV1` type --
+    /// Section 14 of Phase 117G, one binding type, not two divergent ones).
+    /// `skip_serializing_if` preserves the exact pre-117G serialized shape
+    /// (and therefore digest) for any v2 proposal with no D-Code binding.
+    /// Deliberately part of `DDeployProposalV2` itself (like
+    /// `diot_artifact_authority`), so it is automatically covered by
+    /// `proposal_digest()` -- changing a bound descriptor digest changes
+    /// the proposal digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dcode_artifact_authority: BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
 }
 
 /// Phase 113A closure pass 3: the SERVER-OWNED authority binding a DIoT

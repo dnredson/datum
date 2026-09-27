@@ -804,7 +804,8 @@ mod tests {
                 );
                 m
             },
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
 
         let broker_artifact =
             minimal_broker_artifact(project_id, 1, &format!("sha256:{}", "c".repeat(64)));

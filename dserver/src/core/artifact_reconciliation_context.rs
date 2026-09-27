@@ -1865,7 +1865,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &[artifact_svc_a.clone()],
         ).expect("initial proposal must be valid");
         let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &[artifact_svc_a.clone()], Some(&dcontinuum), "2026-01-01T00:00:00Z", "a1".to_string())
@@ -1914,7 +1914,7 @@ mod tests {
         let mut state2 = state;
         let rejected = create_proposal(
             &mut state2,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &[mutated_artifact_svc_a],
         );
         assert!(rejected.is_err_and(|findings| findings.iter().any(|f| f.code == "node_not_eligible")), "a NEW proposal must be rejected against the CURRENT (narrowed) target_nodes eligibility");

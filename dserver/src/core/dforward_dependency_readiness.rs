@@ -633,7 +633,8 @@ mod tests {
                 }
                 m
             },
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
 
         let mut seen_artifact_ids = std::collections::BTreeSet::new();
         let artifacts: Vec<ServiceArtifact> = diots_for_authority

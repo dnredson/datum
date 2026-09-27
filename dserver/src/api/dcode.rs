@@ -17,8 +17,8 @@ use crate::core::dcode_authorization::{
     authorize_dcode_invocation, DCodeInvocationAuthorizationV1,
 };
 use crate::core::dcode_registry::{
-    declare_dserv_artifact, load_state as load_dcode_state, persist_state as persist_dcode_state,
-    DCodeArtifactRegistryStateV1, DeclareDServArtifactError,
+    declare_dserv_artifact_revision, load_state_v2 as load_dcode_state,
+    persist_state_v2 as persist_dcode_state, DeclareDServArtifactRevisionError,
 };
 use crate::core::dserv_artifact::CanonicalDServArtifactV1;
 use crate::storage::control_state::default_control_state_db_path;
@@ -68,45 +68,56 @@ fn findings_json(findings: &[CanonicalValidationFinding]) -> Vec<Value> {
 #[derive(Debug, Serialize)]
 pub struct DeclareDServArtifactResponse {
     pub artifact_id: String,
+    pub descriptor_digest: String,
     pub inserted: bool,
 }
 
-/// Declares (or idempotently re-declares) one canonical D-Serv artifact.
-/// The registry key is `(application_id, dserv_id)` -- NOT `artifact_id`/
-/// `version` -- so a conflicting redeclaration (same `(application_id,
-/// dserv_id)`, different content) fails closed with 409 regardless of what
-/// its `artifact_id`/`version` say (independent review v2, R8: an earlier
-/// version of this comment incorrectly implied `artifact_id`/`version` was
-/// itself an escape hatch). v0.1 has no artifact replacement/version-
-/// transition mechanism at all -- one immutable registered canonical
-/// artifact per `(application_id, dserv_id)`, full stop; see
-/// `core::dcode_registry::declare_dserv_artifact` for the authoritative
-/// wording.
+/// Declares (or idempotently re-declares) one immutable canonical D-Serv
+/// artifact REVISION (Phase 117G). The registry key is now `(application_id,
+/// dserv_id, descriptor_digest)` -- NOT `artifact_id`/`version` and NOT the
+/// old flat `(application_id, dserv_id)` alone -- so declaring a NEW content
+/// revision for an already-known logical service never replaces or removes
+/// any prior revision; it simply adds another immutable entry. Two
+/// declarations with the exact same digest are idempotent (`inserted:
+/// false`); a different digest for the same `(application_id, dserv_id)` is
+/// always accepted as a new revision, never a 409 conflict. Declaring a
+/// revision here changes NOTHING about which revision any already-active
+/// D-Deploy deployment actually executes -- see
+/// `core::dcode_registry::declare_dserv_artifact_revision` and
+/// `documentation/reference/phase117g-versioned-dcode-governed-binding.md`.
 pub async fn post_declare_dserv_artifact(
     Json(artifact): Json<CanonicalDServArtifactV1>,
 ) -> Result<JsonResponse<DeclareDServArtifactResponse>, ApiError> {
     let _transaction = dcode_transaction().lock().map_err(lock_error)?;
     let db_path = db_path();
     let mut state = load_dcode_state(&db_path).map_err(internal_error)?;
-    let key = crate::core::dcode_registry::dserv_artifact_key(
-        &artifact.application_id,
-        &artifact.dserv_id,
-    );
-    let already_present = state.artifacts.contains_key(&key);
     let artifact_id = artifact.artifact_id.clone();
+    let application_id = artifact.application_id.clone();
+    let dserv_id = artifact.dserv_id.clone();
 
-    declare_dserv_artifact(&mut state, artifact).map_err(|error| match error {
-        DeclareDServArtifactError::Invalid(findings) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            JsonResponse(
-                json!({"error": "dserv_artifact_invalid", "findings": findings_json(&findings)}),
+    let already_present_digest = crate::core::dserv_artifact::recompute_dserv_artifact_digest(&artifact)
+        .ok()
+        .filter(|digest| state.get_exact(&application_id, &dserv_id, digest).is_some());
+
+    let descriptor_digest =
+        declare_dserv_artifact_revision(&mut state, artifact).map_err(|error| match error {
+            DeclareDServArtifactRevisionError::Invalid(findings) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                JsonResponse(
+                    json!({"error": "dserv_artifact_invalid", "findings": findings_json(&findings)}),
+                ),
             ),
-        ),
-        DeclareDServArtifactError::Conflict(message) => (
-            StatusCode::CONFLICT,
-            JsonResponse(json!({"error": "dserv_artifact_conflict", "message": message})),
-        ),
-    })?;
+            DeclareDServArtifactRevisionError::Conflict(message) => (
+                StatusCode::CONFLICT,
+                JsonResponse(json!({"error": "dserv_artifact_conflict", "message": message})),
+            ),
+            DeclareDServArtifactRevisionError::DigestComputationFailed(message) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                JsonResponse(json!({"error": "dserv_artifact_digest_computation_failed", "message": message})),
+            ),
+        })?;
+
+    let already_present = already_present_digest.as_deref() == Some(descriptor_digest.as_str());
 
     if !already_present {
         persist_dcode_state(&db_path, &state).map_err(internal_error)?;
@@ -114,23 +125,61 @@ pub async fn post_declare_dserv_artifact(
 
     Ok(JsonResponse(DeclareDServArtifactResponse {
         artifact_id,
+        descriptor_digest,
         inserted: !already_present,
     }))
 }
 
+/// Legacy, logical `(application_id, dserv_id)` lookup, kept ONLY for
+/// backward compatibility and debugging (Phase 117G Section 32) -- it is NOT
+/// suitable for governed invocation once a service has more than one
+/// registered revision. While exactly zero or one revision is registered it
+/// behaves exactly as before (404 / the single revision); the moment a
+/// SECOND revision is declared for the same logical service this endpoint
+/// fails closed with 409 rather than guessing "latest"/"first"/"newest". A
+/// governed caller MUST instead fetch the exact revision it was authorized
+/// for via `GET /api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest`.
 pub async fn get_dserv_artifact(
     axum::extract::Path((application_id, dserv_id)): axum::extract::Path<(String, String)>,
 ) -> Result<JsonResponse<CanonicalDServArtifactV1>, ApiError> {
     let state = load_dcode_state(&db_path()).map_err(internal_error)?;
+    match state.get_logical_if_unambiguous(&application_id, &dserv_id) {
+        Ok(Some(artifact)) => Ok(JsonResponse(artifact.clone())),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({"error": format!(
+                "no canonical D-Serv artifact is registered for application '{application_id}' service '{dserv_id}'"
+            )})),
+        )),
+        Err(message) => Err((
+            StatusCode::CONFLICT,
+            JsonResponse(json!({"error": "dserv_artifact_lookup_ambiguous", "message": message})),
+        )),
+    }
+}
+
+/// Exact-revision governed fetch (Phase 117G Section 31): the ONLY lookup a
+/// governed invocation client should ever use, keyed by the precise
+/// `descriptor_digest` a fresh `DCodeInvocationAuthorizationV1` names in its
+/// own `dserv_artifact_descriptor_digest` field. Never ambiguous, never
+/// "latest" -- either this exact immutable revision exists or it does not.
+pub async fn get_dserv_artifact_revision(
+    axum::extract::Path((application_id, dserv_id, descriptor_digest)): axum::extract::Path<(
+        String,
+        String,
+        String,
+    )>,
+) -> Result<JsonResponse<CanonicalDServArtifactV1>, ApiError> {
+    let state = load_dcode_state(&db_path()).map_err(internal_error)?;
     state
-        .get(&application_id, &dserv_id)
+        .get_exact(&application_id, &dserv_id, &descriptor_digest)
         .cloned()
         .map(JsonResponse)
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
                 JsonResponse(json!({"error": format!(
-                    "no canonical D-Serv artifact is registered for application '{application_id}' service '{dserv_id}'"
+                    "no D-Serv artifact revision '{descriptor_digest}' is registered for application '{application_id}' service '{dserv_id}'"
                 )})),
             )
         })
@@ -195,8 +244,7 @@ pub async fn post_authorize_dcode_invocation(
     let ddeploy_state = crate::core::ddeploy::load_state(&db_path).map_err(internal_error)?;
     let dnode_registry_state =
         crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
-    let dcode_registry_state: DCodeArtifactRegistryStateV1 =
-        load_dcode_state(&db_path).map_err(internal_error)?;
+    let dcode_registry_state = load_dcode_state(&db_path).map_err(internal_error)?;
 
     let authorization = authorize_dcode_invocation(
         &ddeploy_state,

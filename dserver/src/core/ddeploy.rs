@@ -99,8 +99,112 @@ pub const F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED: &str = "project_node_cpu_capacit
 pub const F_PROJECT_NODE_MEMORY_CAPACITY_EXCEEDED: &str = "project_node_memory_capacity_exceeded";
 pub const F_DDEPLOY_V2_ARTIFACT_AUTHORITY_STALE: &str = "ddeploy_v2_artifact_authority_stale";
 
+// ---- Phase 117G: D-Code artifact-authority binding finding codes -------- //
+pub const F_DCODE_BINDING_SERVICE_UNKNOWN: &str = "dcode_binding_service_unknown";
+pub const F_DCODE_BINDING_DIGEST_MALFORMED: &str = "dcode_binding_digest_malformed";
+pub const F_DCODE_BINDING_ARTIFACT_NOT_FOUND: &str = "dcode_binding_artifact_not_found";
+pub const F_DCODE_BINDING_ARTIFACT_INVALID: &str = "dcode_binding_artifact_invalid";
+pub const F_DCODE_BINDING_DESCRIPTOR_DIGEST_MISMATCH: &str = "dcode_binding_descriptor_digest_mismatch";
+pub const F_DCODE_BINDING_APPLICATION_MISMATCH: &str = "dcode_binding_application_mismatch";
+pub const F_DCODE_BINDING_SERVICE_MISMATCH: &str = "dcode_binding_service_mismatch";
+pub const F_DCODE_BINDING_ABI_MISMATCH: &str = "dcode_binding_abi_mismatch";
+pub const F_DCODE_BINDING_STAGE_CONSTRAINT_UNVERIFIABLE: &str = "dcode_binding_stage_constraint_unverifiable";
+
 fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidationFinding {
     CanonicalValidationFinding { code, message: message.into() }
+}
+
+/// Phase 117G: the ONE shared validator for a proposal's
+/// `dcode_artifact_authority` bindings, used identically at proposal
+/// CREATION time (against current registry state) and at ACCEPTANCE time
+/// (against current registry state, re-fetched under the caller's own
+/// stable view -- mirroring `resolve_diot_artifact_authority`'s
+/// acquire-once-then-resolve shape). Unlike D-IoT/`ServiceArtifact`'s own
+/// mutable-registry re-resolution-and-compare pattern, this never needs to
+/// "re-resolve and compare to what was bound before": the binding already
+/// names an exact, immutable revision directly, so the only question is
+/// whether that EXACT revision still exists and validates -- there is no
+/// "current/latest" to drift away from underneath it.
+///
+/// For every `(service_id, binding)`: `service_id` must exist in `dgraph`;
+/// `binding.descriptor_digest` must be the canonical `sha256:<64 lowercase
+/// hex>` form; the exact revision must exist in `registry` for
+/// `(application_id, service_id)`; it must independently validate; its
+/// freshly-recomputed descriptor digest must equal the bound digest (never
+/// trusted from the registry's own storage key); its own
+/// `application_id`/`dserv_id` must match `application_id`/`service_id`;
+/// its ABI must match the D-Graph service's `execution_requirement.dnode_abi`;
+/// and `constraints.allowed_stages` must be empty (Phase 117D: a non-empty
+/// value is structurally legal but permanently unauthorizable under v0.1 --
+/// D-Compile/DDeploy must never bind to an artifact guaranteed to fail
+/// authorization).
+pub fn validate_dcode_artifact_authority_bindings(
+    dgraph: &CanonicalDGraphV1,
+    application_id: &str,
+    registry: &crate::core::dcode_registry::DCodeArtifactRegistryStateV2,
+    bindings: &std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
+) -> Result<(), CanonicalValidationFinding> {
+    for (service_id, binding) in bindings {
+        let service = dgraph.services.iter().find(|service| service.service_id == *service_id).ok_or_else(|| {
+            finding(F_DCODE_BINDING_SERVICE_UNKNOWN, format!("dcode_artifact_authority references service_id '{service_id}', which does not exist in the proposal's D-Graph"))
+        })?;
+        if !jcs::is_canonical_digest_format(&binding.descriptor_digest) {
+            return Err(finding(
+                F_DCODE_BINDING_DIGEST_MALFORMED,
+                format!("dcode_artifact_authority['{service_id}'].descriptor_digest must be 'sha256:<64 lowercase hex>', got '{}'", binding.descriptor_digest),
+            ));
+        }
+        let artifact = registry.get_exact(application_id, service_id, &binding.descriptor_digest).ok_or_else(|| {
+            finding(
+                F_DCODE_BINDING_ARTIFACT_NOT_FOUND,
+                format!("no registered D-Code revision exists for application_id='{application_id}' service_id='{service_id}' descriptor_digest='{}'", binding.descriptor_digest),
+            )
+        })?;
+        let artifact_findings = artifact.validate();
+        if !artifact_findings.is_empty() {
+            return Err(finding(
+                F_DCODE_BINDING_ARTIFACT_INVALID,
+                format!("bound D-Code revision for service '{service_id}' no longer validates cleanly: {artifact_findings:?}"),
+            ));
+        }
+        let recomputed = crate::core::dserv_artifact::recompute_dserv_artifact_digest(artifact)
+            .map_err(|error| finding(F_DCODE_BINDING_ARTIFACT_INVALID, format!("recompute descriptor digest for service '{service_id}': {error}")))?;
+        if recomputed != binding.descriptor_digest {
+            return Err(finding(
+                F_DCODE_BINDING_DESCRIPTOR_DIGEST_MISMATCH,
+                format!("bound descriptor_digest '{}' for service '{service_id}' does not match its own freshly recomputed digest '{recomputed}' -- registry corruption", binding.descriptor_digest),
+            ));
+        }
+        if artifact.application_id != application_id {
+            return Err(finding(
+                F_DCODE_BINDING_APPLICATION_MISMATCH,
+                format!("bound D-Code revision for service '{service_id}' has application_id '{}', expected '{application_id}'", artifact.application_id),
+            ));
+        }
+        if artifact.dserv_id != *service_id {
+            return Err(finding(
+                F_DCODE_BINDING_SERVICE_MISMATCH,
+                format!("bound D-Code revision has dserv_id '{}', expected '{service_id}'", artifact.dserv_id),
+            ));
+        }
+        let artifact_abi = format!("{}/{}", artifact.abi.name, artifact.abi.version);
+        if artifact_abi != service.execution_requirement.dnode_abi {
+            return Err(finding(
+                F_DCODE_BINDING_ABI_MISMATCH,
+                format!("bound D-Code revision for service '{service_id}' declares ABI '{artifact_abi}', but the D-Graph service requires '{}'", service.execution_requirement.dnode_abi),
+            ));
+        }
+        if !artifact.constraints.allowed_stages.is_empty() {
+            return Err(finding(
+                F_DCODE_BINDING_STAGE_CONSTRAINT_UNVERIFIABLE,
+                format!(
+                    "bound D-Code revision for service '{service_id}' declares constraints.allowed_stages={:?}, which cannot currently be authorized under v0.1 -- refusing to bind an artifact guaranteed to fail invocation authorization",
+                    artifact.constraints.allowed_stages
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Stage 111 (ADR-0018 independent review v2, identifier-composition
@@ -177,6 +281,23 @@ pub struct DDeployProposalV1 {
     pub dcontinuum_ref: CanonicalContractReferenceV1,
     #[serde(default)]
     pub placements: Vec<CanonicalDServPlacementV1>,
+    /// Phase 117G: explicit, exact D-Code artifact-revision binding per
+    /// service (`service_id -> DCodeArtifactAuthorityBindingV1`). Empty for
+    /// every pre-117G proposal and for any proposal that binds no D-Code
+    /// service at all -- this is a real proposal-semantic field
+    /// participating in `compute_proposal_digest`, correcting Phase 117F's
+    /// own finding that D-Code binding was invisible to proposal identity
+    /// (117F's "digest collision" wording was itself imprecise: two
+    /// proposals' digests were never literally identical because
+    /// `proposal_id`/`created_at_utc` already differ; the real gap was that
+    /// NO field committed to which D-Code revision was intended, so this
+    /// field closes that gap, not a digest-collision one).
+    /// `skip_serializing_if` deliberately preserves the EXACT pre-117G
+    /// serialized shape (and therefore digest) for any proposal that has no
+    /// D-Code binding at all -- see
+    /// `legacy_proposal_digest_is_unchanged_when_dcode_binding_absent`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dcode_artifact_authority: std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -556,6 +677,57 @@ impl DDeployStateV1 {
         self.active_by_application.remove(&key);
         Ok(acceptance)
     }
+
+    /// Phase 117G Section 14: the DDeploy/2 counterpart to
+    /// `accept_proposal_with_dcode_binding_revalidation`, giving v2 the
+    /// EXACT same acceptance-time D-Code binding revalidation guarantee as
+    /// v1 -- via the SAME shared `validate_dcode_artifact_authority_bindings`
+    /// helper, never a parallel/divergent v2-specific check. Pre-validates
+    /// every explicit `dcode_artifact_authority` binding on a still-PENDING
+    /// proposal against CURRENT registry state BEFORE delegating to the
+    /// real, unmodified `accept_v2_proposal` -- fails closed, mutating
+    /// nothing, if any bound descriptor revision no longer resolves. Skipped
+    /// entirely for an idempotent replay of an already-Accepted proposal
+    /// (mirrors v1: a historical acceptance's own binding remains valid
+    /// regardless of later registry changes) and for a proposal that never
+    /// bound any service (empty map -- nothing to revalidate).
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_v2_proposal_with_dcode_binding_revalidation(
+        &mut self,
+        proposal_id: &str,
+        acceptance_id: String,
+        accepted_by: String,
+        accepted_at_utc: String,
+        current_authoritative_dcontinuum: &CanonicalDContinuumV1,
+        current_artifacts: &[crate::core::service_artifact_registry::ServiceArtifact],
+        dcode_registry: &crate::core::dcode_registry::DCodeArtifactRegistryStateV2,
+        expected_proposal_digest: Option<&str>,
+    ) -> Result<crate::core::ddeploy_v2::DDeployAcceptanceV2, String> {
+        let record = self
+            .phase113_v2
+            .proposals
+            .get(proposal_id)
+            .cloned()
+            .ok_or("proposal not found")?;
+        if record.state != crate::core::ddeploy_v2::ProposalV2State::Accepted && !record.proposal.dcode_artifact_authority.is_empty() {
+            validate_dcode_artifact_authority_bindings(
+                &record.dgraph_snapshot,
+                &record.proposal.application_id,
+                dcode_registry,
+                &record.proposal.dcode_artifact_authority,
+            )
+            .map_err(|finding| format!("{}: {}", finding.code, finding.message))?;
+        }
+        self.accept_v2_proposal(
+            proposal_id,
+            acceptance_id,
+            accepted_by,
+            accepted_at_utc,
+            current_authoritative_dcontinuum,
+            current_artifacts,
+            expected_proposal_digest,
+        )
+    }
 }
 
 pub fn active_placement_authority(
@@ -646,6 +818,29 @@ pub fn active_placement_authority(
     Ok(None)
 }
 
+/// Phase 117G: the exact D-Code artifact-revision binding currently active
+/// for `service_id`, derived ENTIRELY from the active deployment's own
+/// already-accepted, immutable proposal record -- never a second,
+/// independently-persisted copy (mirroring the established D-IoT-artifact-
+/// authority precedent: `ActiveDMapV2`/`ActiveApplicationDeployment` never
+/// duplicate `diot_artifact_authority`/`dcode_artifact_authority` either;
+/// both are always re-read from the accepted proposal via `proposal_id`).
+/// `None` means no explicit binding exists for this service on the active
+/// deployment (a pre-117G proposal, or one that never bound this
+/// particular service) -- the caller must then fall back to the registry's
+/// own unambiguous-single-revision lookup, never guess.
+pub fn resolve_active_dcode_binding<'a>(
+    state: &'a DDeployStateV1,
+    active: &crate::core::ddeploy_v2::PlacementAuthorityView,
+    service_id: &str,
+) -> Option<&'a crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1> {
+    let proposal_id = active.proposal_id.as_deref()?;
+    if active.v2.is_some() {
+        state.phase113_v2.proposals.get(proposal_id)?.proposal.dcode_artifact_authority.get(service_id)
+    } else {
+        state.proposals.get(proposal_id)?.proposal.dcode_artifact_authority.get(service_id)
+    }
+}
 
 // --------------------------------------------------------------------------- //
 // Persistence                                                                  //
@@ -1853,12 +2048,34 @@ pub struct CreateProposalInput {
     /// `PlannerProvenanceV1`. Every existing caller of `create_proposal`
     /// other than `post_plan_proposal` passes `None`.
     pub planner_provenance: Option<PlannerProvenanceV1>,
+    /// Phase 117G: explicit, exact D-Code binding per service the caller
+    /// intends this proposal to activate, if any. Validated against
+    /// CURRENT D-Code registry state inside `create_proposal` (never a
+    /// "latest" lookup -- every binding must name an exact
+    /// `descriptor_digest` that already exists and validates). Empty for
+    /// any proposal that binds no D-Code service -- existing non-D-Code
+    /// callers are entirely unaffected.
+    pub dcode_artifact_authority: std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
 }
 
 /// DServer validates both contracts, recomputes their digests itself, and
 /// constructs the proposal's exact refs itself -- it NEVER trusts a caller-
 /// supplied digest as authoritative (there is no such field on
 /// `CreateProposalInput` to trust in the first place).
+///
+/// Phase 117G: this function copies `input.dcode_artifact_authority`
+/// verbatim into the constructed proposal (so it participates in
+/// `compute_proposal_digest`, closing the gap Phase 117F identified) but
+/// does NOT itself validate those bindings against current D-Code registry
+/// state -- exactly mirroring this file's own established precedent for
+/// `input.planner_provenance`/D-IoT artifact authority (`resolve_diot_artifact_authority`),
+/// which the CALLER must already have run before populating the input. The
+/// caller MUST call `validate_dcode_artifact_authority_bindings` against
+/// current registry state before (or immediately after) calling this
+/// function and reject the whole proposal-creation attempt on any finding.
+/// This design avoids adding a new registry parameter to this single
+/// function's already-numerous call sites, matching the codebase's own
+/// established "separate resolve/validate helper, caller-invoked" shape.
 pub fn create_proposal(
     state: &mut DDeployStateV1,
     input: CreateProposalInput,
@@ -1898,6 +2115,7 @@ pub fn create_proposal(
             digest: dcontinuum_digest,
         },
         placements: input.placements,
+        dcode_artifact_authority: input.dcode_artifact_authority,
     };
 
     let dmap_id_hint = canonical_dmap_id(&input.project_id, &input.application_id);
@@ -1965,6 +2183,12 @@ pub enum AcceptError {
     Internal(String),
     /// Foundation closure v2 (ADR-0019, R1): see `F_STALE_AUTHORITATIVE_DCONTINUUM`.
     StaleAuthority(Vec<CanonicalValidationFinding>),
+    /// Phase 117G: a PENDING proposal's `dcode_artifact_authority` binding
+    /// no longer resolves against current D-Code registry state (the exact
+    /// bound descriptor revision is missing, corrupt, or no longer
+    /// validates). Never raised for an idempotent replay of an
+    /// ALREADY-accepted proposal.
+    DCodeBindingInvalid(Vec<CanonicalValidationFinding>),
 }
 
 /// Mutates `state` IN MEMORY ONLY on the success path -- every validation
@@ -2245,6 +2469,79 @@ pub fn accept_proposal(
     })
 }
 
+/// Phase 117G: D-Code-binding-aware acceptance. Additive wrapper around the
+/// unmodified `accept_proposal` (its own 75+ existing call sites are
+/// entirely unaffected -- this function does not change its signature).
+///
+/// Fetches the SAME persisted `ProposalRecord` `accept_proposal` itself
+/// would fetch, verifies the SAME digest-integrity invariant, then
+/// revalidates `record.proposal.dcode_artifact_authority` against CURRENT
+/// D-Code registry state via `validate_dcode_artifact_authority_bindings`
+/// -- exactly the "does the exact bound revision still exist and
+/// validate" question (Phase 117F Section 11/117G Section 22), never a
+/// "current/latest" resolution. All of this happens BEFORE `accept_proposal`
+/// is ever called, so a D-Code-binding failure here mutates `state` NOT AT
+/// ALL (the real `accept_proposal` call is simply never reached) --
+/// matching this module's own established "every validation step runs
+/// against clones/reads before any field of `state` is written" discipline
+/// for the rest of acceptance.
+///
+/// Idempotent replay (`record.state == Accepted`) is intentionally NOT
+/// re-validated against current registry state here -- exactly mirroring
+/// how `accept_proposal` itself never re-runs `current_authoritative_dcontinuum`
+/// checks on replay: a historical acceptance's binding is immutable
+/// evidence of what WAS true, and later registry changes (including a
+/// bound revision being -- hypothetically, since this registry has no
+/// deletion path -- removed) must never retroactively invalidate a
+/// proposal's own historical record.
+///
+/// Known limitation, stated honestly: this is an ADDITIVE, two-step
+/// integration seam, not a single atomic operation. A real production
+/// caller wiring this into an API handler must acquire a stable view
+/// spanning BOTH the D-Code-registry read here AND the subsequent
+/// `accept_proposal` call (mirroring the established `DDEPLOY_TRANSACTION`
+/// stable-view discipline) to fully close the TOCTOU window between the
+/// two steps; this function alone proves the DECISION logic is correct
+/// and testable, not the full production locking story.
+#[allow(clippy::too_many_arguments)]
+pub fn accept_proposal_with_dcode_binding_revalidation(
+    state: &mut DDeployStateV1,
+    proposal_id: &str,
+    accepted_by: &str,
+    expected_proposal_digest: Option<&str>,
+    artifacts: &[ServiceArtifact],
+    current_authoritative_dcontinuum: Option<&CanonicalDContinuumV1>,
+    dcode_registry: &crate::core::dcode_registry::DCodeArtifactRegistryStateV2,
+    now_utc: &str,
+    new_acceptance_id: String,
+) -> Result<AcceptOutcome, AcceptError> {
+    let record = state
+        .proposals
+        .get(proposal_id)
+        .cloned()
+        .ok_or_else(|| AcceptError::NotFound(format!("proposal '{proposal_id}' not found")))?;
+    let actual_proposal_digest = compute_proposal_digest(&record.proposal).map_err(AcceptError::Internal)?;
+    if actual_proposal_digest != record.proposal_digest {
+        return Err(AcceptError::DigestMismatch(format!(
+            "persisted proposal '{proposal_id}' is internally inconsistent: its recomputed digest '{actual_proposal_digest}' does not match its recorded proposal_digest '{}'",
+            record.proposal_digest
+        )));
+    }
+
+    if record.state != ProposalLifecycleState::Accepted && !record.proposal.dcode_artifact_authority.is_empty() {
+        if let Err(finding) = validate_dcode_artifact_authority_bindings(
+            &record.dgraph_snapshot,
+            &record.proposal.application_id,
+            dcode_registry,
+            &record.proposal.dcode_artifact_authority,
+        ) {
+            return Err(AcceptError::DCodeBindingInvalid(vec![finding]));
+        }
+    }
+
+    accept_proposal(state, proposal_id, accepted_by, expected_proposal_digest, artifacts, current_authoritative_dcontinuum, now_utc, new_acceptance_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2458,7 +2755,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2481,7 +2778,7 @@ mod tests {
         let mut state1 = DDeployStateV1::empty();
         let record1 = create_proposal(
             &mut state1,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2502,7 +2799,7 @@ mod tests {
         let mut state2 = DDeployStateV1::empty();
         let record2 = create_proposal(
             &mut state2,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2524,7 +2821,7 @@ mod tests {
         let mut state1 = DDeployStateV1::empty();
         let record1 = create_proposal(
             &mut state1,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2541,7 +2838,7 @@ mod tests {
         let mut state2 = DDeployStateV1::empty();
         let record2 = create_proposal(
             &mut state2,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2563,7 +2860,7 @@ mod tests {
         let mut proposal_state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut proposal_state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2600,6 +2897,7 @@ mod tests {
             dgraph_ref: CanonicalContractReferenceV1 { id: "dgraph:app-x".to_string(), revision: 1, digest: format!("sha256:{}", "a".repeat(64)) },
             dcontinuum_ref: CanonicalContractReferenceV1 { id: "continuum:proj-x".to_string(), revision: 1, digest: format!("sha256:{}", "b".repeat(64)) },
             placements: sample_placements(),
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2622,7 +2920,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2644,7 +2942,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -2681,7 +2979,9 @@ mod tests {
             dgraph_ref: CanonicalContractReferenceV1 { id: dgraph.dgraph_id.clone(), revision: dgraph.revision, digest: dgraph_digest },
             dcontinuum_ref: CanonicalContractReferenceV1 { id: dcontinuum.dcontinuum_id.clone(), revision: dcontinuum.revision, digest: dcontinuum_digest },
             placements: sample_placements(),
-        };
+
+        dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         let outcome = validate_full(&proposal, &dgraph, &dcontinuum, &sample_artifacts(), "dmap:preview", 1);
         assert_eq!(outcome.findings, Vec::new());
         // No global/mutable state exists for this pure function to have
@@ -2711,7 +3011,495 @@ mod tests {
             dgraph_ref: CanonicalContractReferenceV1 { id: dgraph.dgraph_id.clone(), revision: dgraph.revision, digest: recompute_dgraph_digest(dgraph).unwrap() },
             dcontinuum_ref: CanonicalContractReferenceV1 { id: dcontinuum.dcontinuum_id.clone(), revision: dcontinuum.revision, digest: recompute_dcontinuum_digest(dcontinuum).unwrap() },
             placements,
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
         }
+    }
+
+    // ===================================================================
+    // Phase 117G: DCode proposal-binding test matrix (G11-G21) plus the
+    // legacy proposal-digest compatibility proof (Section 16).
+    // ===================================================================
+
+    fn dserv_artifact_for(application_id: &str, service_id: &str) -> crate::core::dserv_artifact::CanonicalDServArtifactV1 {
+        crate::core::dserv_artifact::CanonicalDServArtifactV1 {
+            schema: crate::core::dserv_artifact::CANONICAL_DSERV_ARTIFACT_SCHEMA.to_string(),
+            artifact_id: format!("dserv:{application_id}:{service_id}"),
+            version: "0.1.0".to_string(),
+            application_id: application_id.to_string(),
+            dserv_id: service_id.to_string(),
+            dcode: crate::core::dserv_artifact::DServArtifactDCodeV1 {
+                uri: format!("datum-blob://sha256/{}", "a".repeat(64)),
+                sha256: "a".repeat(64),
+                content_id: format!("sha256:{}", "a".repeat(64)),
+                size_bytes: 64,
+            },
+            abi: crate::core::dserv_artifact::DServArtifactAbiV1 {
+                name: "datum-dnode".to_string(),
+                version: "0".to_string(),
+                required_exports: crate::core::dserv_artifact::DNODE_ABI_V0_REQUIRED_EXPORTS.iter().map(|s| s.to_string()).collect(),
+                allowed_imports: Vec::new(),
+            },
+            ports: crate::core::dserv_artifact::DServArtifactPortsV1::default(),
+            limits: crate::core::dserv_artifact::DServArtifactLimitsV1 {
+                fuel_per_invocation: 1_000_000,
+                timeout_ms: 100,
+                max_memory_pages: 4,
+                max_message_bytes: 4096,
+                max_emits_per_invocation: 1,
+            },
+            safety: crate::core::dserv_artifact::DServArtifactSafetyV1::default(),
+            state_model: "stateless".to_string(),
+            instantiation: "fresh_instance_per_invocation".to_string(),
+            constraints: crate::core::dserv_artifact::DServArtifactConstraintsV1::default(),
+            qos: serde_json::Value::Null,
+            provenance: serde_json::Value::Null,
+            probes: serde_json::Value::Null,
+            signature_ref: None,
+        }
+    }
+
+    fn registered_binding(
+        registry: &mut crate::core::dcode_registry::DCodeArtifactRegistryStateV2,
+        application_id: &str,
+        service_id: &str,
+    ) -> crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 {
+        let digest = crate::core::dcode_registry::declare_dserv_artifact_revision(registry, dserv_artifact_for(application_id, service_id)).unwrap();
+        crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest }
+    }
+
+    /// Section 16: a pre-117G proposal serializes (and therefore digests)
+    /// IDENTICALLY to a current proposal whose `dcode_artifact_authority`
+    /// is empty -- `skip_serializing_if` means the field is entirely absent
+    /// from the JSON in both cases, so no historical acceptance/digest
+    /// record is invalidated by this phase's schema change.
+    #[test]
+    fn legacy_proposal_digest_is_unchanged_when_dcode_binding_absent() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let dcontinuum = sample_dcontinuum("proj-x", 1);
+        let proposal = proposal_for(&dgraph, &dcontinuum, sample_placements());
+        assert!(proposal.dcode_artifact_authority.is_empty());
+
+        let value = serde_json::to_value(&proposal).unwrap();
+        assert!(
+            value.get("dcode_artifact_authority").is_none(),
+            "an empty dcode_artifact_authority must be entirely absent from the serialized JSON, exactly matching the pre-117G wire shape"
+        );
+
+        // Round-tripping through that exact (field-absent) JSON reproduces
+        // an identical struct (via #[serde(default)]) and therefore an
+        // identical digest -- proving a genuinely pre-117G-serialized
+        // proposal deserializes and re-digests unchanged under the new type.
+        let reconstructed: DDeployProposalV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(reconstructed, proposal);
+        assert_eq!(compute_proposal_digest(&reconstructed).unwrap(), compute_proposal_digest(&proposal).unwrap());
+    }
+
+    /// Section 16 (continued): adding one binding DOES change the digest --
+    /// the field is real digest-covered proposal content, not inert metadata.
+    #[test]
+    fn adding_a_dcode_binding_changes_the_proposal_digest() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let dcontinuum = sample_dcontinuum("proj-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+
+        let without_binding = proposal_for(&dgraph, &dcontinuum, sample_placements());
+        let mut with_binding = without_binding.clone();
+        with_binding.dcode_artifact_authority.insert("svc-a".to_string(), binding);
+
+        assert_ne!(
+            compute_proposal_digest(&without_binding).unwrap(),
+            compute_proposal_digest(&with_binding).unwrap(),
+            "a real, non-empty dcode_artifact_authority binding must change the proposal's digest"
+        );
+    }
+
+    /// G11: a fully valid single binding passes.
+    #[test]
+    fn g11_valid_binding_passes() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), binding);
+        assert!(validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).is_ok());
+    }
+
+    /// G12: binding a service_id absent from the proposal's own D-Graph
+    /// snapshot fails closed.
+    #[test]
+    fn g12_binding_unknown_service_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-ghost");
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-ghost".to_string(), binding);
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_SERVICE_UNKNOWN);
+    }
+
+    /// G13: a malformed (non-canonical-format) descriptor digest fails closed.
+    #[test]
+    fn g13_malformed_digest_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert(
+            "svc-a".to_string(),
+            crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: "not-a-digest".to_string() },
+        );
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_DIGEST_MALFORMED);
+    }
+
+    /// G14: a well-formed digest that names no registered revision fails closed.
+    #[test]
+    fn g14_unregistered_digest_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert(
+            "svc-a".to_string(),
+            crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: format!("sha256:{}", "0".repeat(64)) },
+        );
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_ARTIFACT_NOT_FOUND);
+    }
+
+    /// G15: a revision registered for a DIFFERENT application_id (even with
+    /// the same service_id) never satisfies a binding -- there is no
+    /// cross-application fallback.
+    #[test]
+    fn g15_binding_application_mismatch_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        // Registered under a different logical key than (app-x, svc-a), but
+        // we then reference its digest under app-x/svc-a's binding slot.
+        let digest = crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, dserv_artifact_for("app-other", "svc-a")).unwrap();
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest });
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        // get_exact("app-x", "svc-a", digest) will not find it at all
+        // (different outer key), so this surfaces as ARTIFACT_NOT_FOUND --
+        // still a fail-closed rejection, just via the lookup itself rather
+        // than the post-lookup application_id equality check.
+        assert_eq!(error.code, F_DCODE_BINDING_ARTIFACT_NOT_FOUND);
+    }
+
+    /// G16: an artifact that no longer independently validates (simulated
+    /// registry corruption) fails closed even though its digest key matches.
+    #[test]
+    fn g16_invalid_artifact_content_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let mut bad = dserv_artifact_for("app-x", "svc-a");
+        bad.limits.fuel_per_invocation = 0; // invalid
+        let digest = crate::core::dserv_artifact::recompute_dserv_artifact_digest(&bad).unwrap();
+        let key = crate::core::dcode_registry::dserv_artifact_key("app-x", "svc-a");
+        registry.artifacts.entry(key).or_default().insert(digest.clone(), bad);
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest });
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_ARTIFACT_INVALID);
+    }
+
+    /// G17: a binding digest that does not match its own artifact's freshly
+    /// recomputed digest (stored-key corruption) fails closed.
+    #[test]
+    fn g17_binding_digest_mismatch_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let real_digest = crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, dserv_artifact_for("app-x", "svc-a")).unwrap();
+        // Move it under a bogus digest key -- get_exact requires the exact
+        // key, so this simulates corruption where the digest key itself no
+        // longer matches the content it stores.
+        let key = crate::core::dcode_registry::dserv_artifact_key("app-x", "svc-a");
+        let revisions = registry.artifacts.get_mut(&key).unwrap();
+        let content = revisions.remove(&real_digest).unwrap();
+        let bogus_digest = format!("sha256:{}", "1".repeat(64));
+        revisions.insert(bogus_digest.clone(), content);
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: bogus_digest });
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_DESCRIPTOR_DIGEST_MISMATCH);
+    }
+
+    /// G18: an artifact registered under a digest that itself resolves, but
+    /// whose OWN `dserv_id` does not match the binding's service_id, fails
+    /// closed (a caller cannot "borrow" one service's revision for another).
+    #[test]
+    fn g18_binding_service_mismatch_is_rejected() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        // Registered under the logical key (app-x, svc-a) so get_exact finds
+        // it, but the artifact's OWN dserv_id field says "svc-b".
+        let mut mismatched = dserv_artifact_for("app-x", "svc-b");
+        mismatched.dserv_id = "svc-b".to_string();
+        let digest = crate::core::dserv_artifact::recompute_dserv_artifact_digest(&mismatched).unwrap();
+        let key = crate::core::dcode_registry::dserv_artifact_key("app-x", "svc-a");
+        registry.artifacts.entry(key).or_default().insert(digest.clone(), mismatched);
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest });
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_SERVICE_MISMATCH);
+    }
+
+    /// G19: an ABI mismatch between the bound artifact and the D-Graph
+    /// service's declared execution requirement fails closed.
+    #[test]
+    fn g19_binding_abi_mismatch_is_rejected() {
+        // The D-Serv artifact itself must stay a validly-registerable
+        // "datum-dnode/0" (that is the only ABI `CanonicalDServArtifactV1::validate`
+        // currently accepts) -- the mismatch is expressed on the D-GRAPH
+        // SERVICE side instead, which carries no such restriction on its own
+        // `execution_requirement.dnode_abi` string.
+        let mut dgraph = sample_dgraph("app-x", 1);
+        dgraph.services[0].execution_requirement.dnode_abi = "some-other-abi/1".to_string();
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), binding);
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_ABI_MISMATCH);
+    }
+
+    /// G20: a non-empty `allowed_stages` constraint is unverifiable under
+    /// v0.1 and must fail closed at BINDING time too, not just at
+    /// invocation-authorization time -- a proposal should never be allowed
+    /// to bind an artifact that is guaranteed to fail every invocation.
+    #[test]
+    fn g20_nonempty_allowed_stages_rejected_at_binding_time() {
+        let dgraph = sample_dgraph("app-x", 1);
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let mut staged = dserv_artifact_for("app-x", "svc-a");
+        staged.constraints.allowed_stages = vec!["prod".to_string()];
+        let digest = crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, staged).unwrap();
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest });
+        let error = validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).unwrap_err();
+        assert_eq!(error.code, F_DCODE_BINDING_STAGE_CONSTRAINT_UNVERIFIABLE);
+    }
+
+    /// G21: Section 18 -- partial coverage is legal. A proposal may bind
+    /// only SOME of its D-Graph services to D-Code (or none at all); the
+    /// unbound services are simply not authorizable-as-DCode, which is not
+    /// itself an error at proposal-validation time.
+    #[test]
+    fn g21_partial_binding_coverage_is_accepted() {
+        let dgraph = sample_dgraph("app-x", 1); // has svc-a AND svc-b
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a"); // only svc-a bound
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("svc-a".to_string(), binding);
+        assert!(validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &bindings).is_ok());
+
+        let empty_bindings: std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1> = std::collections::BTreeMap::new();
+        assert!(validate_dcode_artifact_authority_bindings(&dgraph, "app-x", &registry, &empty_bindings).is_ok());
+    }
+
+    // ===================================================================
+    // Phase 117G: acceptance-behavior test matrix (G22-G28).
+    // ===================================================================
+
+    fn create_and_accept_with_binding(
+        state: &mut DDeployStateV1,
+        registry: &crate::core::dcode_registry::DCodeArtifactRegistryStateV2,
+        proposal_id: &str,
+        acceptance_id: &str,
+        binding_digest: Option<String>,
+    ) -> Result<AcceptOutcome, AcceptError> {
+        let dgraph = sample_dgraph("app-x", 1);
+        let dcontinuum = sample_dcontinuum("proj-x", 1);
+        let mut dcode_artifact_authority = std::collections::BTreeMap::new();
+        if let Some(digest) = binding_digest {
+            dcode_artifact_authority.insert(
+                "svc-a".to_string(),
+                crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1 { descriptor_digest: digest },
+            );
+        }
+        create_proposal(
+            state,
+            CreateProposalInput {
+                planner_provenance: None,
+                dcode_artifact_authority,
+                project_id: "proj-x".to_string(),
+                application_id: "app-x".to_string(),
+                source: ProposalSource::Operator,
+                dgraph,
+                dcontinuum: dcontinuum.clone(),
+                placements: sample_placements(),
+            },
+            proposal_id.to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &sample_artifacts(),
+        )
+        .unwrap();
+        accept_proposal_with_dcode_binding_revalidation(
+            state,
+            proposal_id,
+            "operator:alice",
+            None,
+            &sample_artifacts(),
+            Some(&dcontinuum),
+            registry,
+            "2026-01-01T00:00:00Z",
+            acceptance_id.to_string(),
+        )
+    }
+
+    /// G22: registering a NEW revision for a service that is already
+    /// explicitly bound (via an accepted proposal's own
+    /// `dcode_artifact_authority`) changes NOTHING about the active
+    /// binding -- `resolve_active_dcode_binding` still resolves to the
+    /// originally-bound digest, untouched.
+    #[test]
+    fn g22_registering_a_new_revision_does_not_change_the_active_binding() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let d1_binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(d1_binding.descriptor_digest.clone())).unwrap();
+
+        // Register a second, different revision for the SAME logical
+        // service -- an action entirely independent of DDeploy.
+        let mut different = dserv_artifact_for("app-x", "svc-a");
+        different.limits.timeout_ms += 1;
+        crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, different).unwrap();
+        assert_eq!(registry.revision_count("app-x", "svc-a"), 2);
+
+        let active = active_placement_authority(&state, "proj-x", "app-x").unwrap().unwrap();
+        let resolved = resolve_active_dcode_binding(&state, &active, "svc-a").unwrap();
+        assert_eq!(resolved.descriptor_digest, d1_binding.descriptor_digest, "registering D2 alone must never change what the already-active deployment is bound to");
+    }
+
+    /// G23: a still-PENDING proposal (created, never accepted) produces no
+    /// active authority at all, regardless of what it bound.
+    #[test]
+    fn g23_pending_proposal_with_binding_activates_nothing() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut state = DDeployStateV1::empty();
+        create_proposal(
+            &mut state,
+            CreateProposalInput {
+                planner_provenance: None,
+                dcode_artifact_authority: std::collections::BTreeMap::from([("svc-a".to_string(), binding)]),
+                project_id: "proj-x".to_string(),
+                application_id: "app-x".to_string(),
+                source: ProposalSource::Operator,
+                dgraph: sample_dgraph("app-x", 1),
+                dcontinuum: sample_dcontinuum("proj-x", 1),
+                placements: sample_placements(),
+            },
+            "p1".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &sample_artifacts(),
+        )
+        .unwrap();
+        assert!(active_placement_authority(&state, "proj-x", "app-x").unwrap().is_none(), "creating a proposal must never itself produce active authority");
+    }
+
+    /// G24: acceptance-time revalidation fails closed (and mutates nothing)
+    /// when the bound descriptor digest does not resolve against current
+    /// registry state.
+    #[test]
+    fn g24_acceptance_fails_closed_when_bound_digest_is_missing_from_registry() {
+        let registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty(); // nothing registered
+        let mut state = DDeployStateV1::empty();
+        let bogus_digest = format!("sha256:{}", "0".repeat(64));
+        let error = create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(bogus_digest)).unwrap_err();
+        assert!(matches!(error, AcceptError::DCodeBindingInvalid(_)));
+        assert!(active_placement_authority(&state, "proj-x", "app-x").unwrap().is_none(), "a failed acceptance must mutate nothing");
+        assert_eq!(state.proposals.get("p1").unwrap().state, ProposalLifecycleState::Pending, "a failed acceptance must leave the proposal Pending");
+    }
+
+    /// G25: a valid binding accepts normally and the active binding
+    /// resolves to exactly the bound digest.
+    #[test]
+    fn g25_valid_binding_accepts_and_resolves_exactly() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut state = DDeployStateV1::empty();
+        let outcome = create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(binding.descriptor_digest.clone())).unwrap();
+        assert!(!outcome.idempotent_replay);
+        let active = active_placement_authority(&state, "proj-x", "app-x").unwrap().unwrap();
+        let resolved = resolve_active_dcode_binding(&state, &active, "svc-a").unwrap();
+        assert_eq!(resolved.descriptor_digest, binding.descriptor_digest);
+    }
+
+    /// G26: replaying an ALREADY-accepted proposal never re-revalidates its
+    /// D-Code binding against current registry state -- it succeeds even
+    /// against a completely EMPTY registry, exactly mirroring the
+    /// established `current_authoritative_dcontinuum: None`-on-replay
+    /// convention `accept_proposal` itself already uses.
+    #[test]
+    fn g26_idempotent_replay_never_revalidates_dcode_binding() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(binding.descriptor_digest)).unwrap();
+
+        // Replay against a totally empty registry -- if revalidation ran
+        // unconditionally, this would fail closed; it must not.
+        let empty_registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let replay = accept_proposal_with_dcode_binding_revalidation(
+            &mut state, "p1", "operator:alice", None, &sample_artifacts(), None, &empty_registry, "2026-01-01T00:00:01Z", "should-not-be-used".to_string(),
+        )
+        .unwrap();
+        assert!(replay.idempotent_replay);
+    }
+
+    /// G27: a pure D-Code-only redeploy -- identical D-Graph/D-Continuum/
+    /// placements, only the D-Code binding differs -- correctly switches the
+    /// active binding from D1 to D2 exactly once, with no service-id change
+    /// anywhere, and P1's own historical record keeps its ORIGINAL D1
+    /// binding unchanged (immutability of history).
+    #[test]
+    fn g27_pure_dcode_only_redeploy_switches_active_binding_exactly_once() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let d1 = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut different = dserv_artifact_for("app-x", "svc-a");
+        different.limits.timeout_ms += 1;
+        let d2_digest = crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, different).unwrap();
+
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(d1.descriptor_digest.clone())).unwrap();
+        create_and_accept_with_binding(&mut state, &registry, "p2", "a2", Some(d2_digest.clone())).unwrap();
+
+        let active = active_placement_authority(&state, "proj-x", "app-x").unwrap().unwrap();
+        let resolved = resolve_active_dcode_binding(&state, &active, "svc-a").unwrap();
+        assert_eq!(resolved.descriptor_digest, d2_digest, "the SECOND acceptance must be the one and only thing that switched the active binding");
+
+        // P1's own historical proposal record must still show its ORIGINAL
+        // D1 binding, completely unaffected by P2's later acceptance.
+        assert_eq!(
+            state.proposals.get("p1").unwrap().proposal.dcode_artifact_authority.get("svc-a").unwrap().descriptor_digest,
+            d1.descriptor_digest,
+            "an old proposal's own historical binding must never be rewritten by a later proposal's acceptance"
+        );
+    }
+
+    /// G28: after P2 (bound to D2) is active, registering a THIRD revision
+    /// D3 changes nothing -- the active binding remains exactly D2.
+    #[test]
+    fn g28_third_revision_does_not_drift_the_active_binding() {
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let d1 = registered_binding(&mut registry, "app-x", "svc-a");
+        let mut d2_content = dserv_artifact_for("app-x", "svc-a");
+        d2_content.limits.timeout_ms += 1;
+        let d2_digest = crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, d2_content).unwrap();
+
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_with_binding(&mut state, &registry, "p1", "a1", Some(d1.descriptor_digest)).unwrap();
+        create_and_accept_with_binding(&mut state, &registry, "p2", "a2", Some(d2_digest.clone())).unwrap();
+
+        let mut d3_content = dserv_artifact_for("app-x", "svc-a");
+        d3_content.limits.timeout_ms += 2;
+        crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, d3_content).unwrap();
+        assert_eq!(registry.revision_count("app-x", "svc-a"), 3);
+
+        let active = active_placement_authority(&state, "proj-x", "app-x").unwrap().unwrap();
+        let resolved = resolve_active_dcode_binding(&state, &active, "svc-a").unwrap();
+        assert_eq!(resolved.descriptor_digest, d2_digest, "registering a third revision must never drift the currently active binding");
     }
 
     #[test]
@@ -2920,7 +3708,7 @@ mod tests {
     ) -> Result<AcceptOutcome, AcceptError> {
         create_proposal(
             state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: project_id.to_string(),
                 application_id: application_id.to_string(),
                 source: ProposalSource::Operator,
@@ -2955,7 +3743,7 @@ mod tests {
         let artifacts2 = vec![sample_artifact("svc-a", vec!["cloud-01", "fog-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -3003,7 +3791,7 @@ mod tests {
         let swapped_artifacts = vec![sample_artifact("svc-a", vec!["fog-01", "cloud-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &swapped_artifacts,
         ).unwrap();
         let outcome_p2 = accept_proposal(&mut state, "p2", "operator:alice", None, &swapped_artifacts, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
@@ -3039,12 +3827,12 @@ mod tests {
         // Two more proposals, BOTH created expecting revision 1 as active.
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p3".to_string(), "2026-01-01T01:00:01Z".to_string(), &sample_artifacts(),
         ).unwrap();
 
@@ -3078,7 +3866,7 @@ mod tests {
         // Creation itself must reject this (create_proposal validates too).
         let created = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         );
         assert!(created.is_err());
@@ -3090,7 +3878,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         // Simulate tampering: mutate the persisted snapshot without updating the digest.
@@ -3108,7 +3896,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         // Attacker/bug scenario: mutate the persisted PROPOSAL's placements
@@ -3124,7 +3912,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         state.proposals.get_mut("p1").unwrap().proposal.dgraph_ref.revision = 2;
@@ -3137,7 +3925,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         state.proposals.get_mut("p1").unwrap().proposal.dcontinuum_ref.digest = format!("sha256:{}", "0".repeat(64));
@@ -3150,7 +3938,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         state.proposals.get_mut("p1").unwrap().proposal.source = ProposalSource::Ai;
@@ -3164,7 +3952,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         state.proposals.get_mut("p1").unwrap().proposal.expected_active_dmap_revision = Some(41);
@@ -3180,7 +3968,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3202,7 +3990,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         let wrong = format!("sha256:{}", if record.proposal_digest.ends_with('0') { "1".repeat(64) } else { "0".repeat(64) });
@@ -3216,7 +4004,7 @@ mod tests {
         let artifacts_at_creation = sample_artifacts();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &artifacts_at_creation,
         ).unwrap();
         // Artifact eligibility changes AFTER proposal creation, BEFORE acceptance.
@@ -3238,7 +4026,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         let result = accept_proposal(&mut state, "p1", "operator:alice", Some("sha256:wrong"), &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a1".to_string());
@@ -3271,7 +4059,7 @@ mod tests {
         let artifacts2 = vec![sample_artifact("svc-a", vec!["cloud-01", "fog-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: moved },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: moved },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts2,
         ).unwrap();
         accept_proposal(&mut state, "p2", "operator:alice", None, &artifacts2, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
@@ -3370,7 +4158,7 @@ mod tests {
         let mutated_artifacts = vec![sample_artifact("svc-a", vec!["cloud-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
         let result = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() /* still targets fog-01 */ },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() /* still targets fog-01 */ },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &mutated_artifacts,
         );
         assert!(result.is_err_and(|findings| findings.iter().any(|f| f.code == F_NODE_NOT_ELIGIBLE)));
@@ -3404,7 +4192,7 @@ mod tests {
         let artifacts_b = vec![sample_artifact("svc-c", vec!["fog-01"]), sample_artifact("svc-d", vec!["cloud-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "fog-01".to_string() }, CanonicalDServPlacementV1 { service_id: "svc-d".to_string(), node_id: "cloud-01".to_string() }] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "fog-01".to_string() }, CanonicalDServPlacementV1 { service_id: "svc-d".to_string(), node_id: "cloud-01".to_string() }] },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_b,
         ).unwrap();
         accept_proposal(&mut state, "p2", "operator:alice", None, &artifacts_b, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
@@ -3427,7 +4215,7 @@ mod tests {
         dgraph_b.services.truncate(1);
         dgraph_b.services[0].service_id = "svc-c".to_string();
         let artifacts_b = vec![sample_artifact("svc-c", vec!["cloud-01"])];
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "cloud-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_b).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "cloud-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_b).unwrap();
         accept_proposal(&mut state, "p2", "operator:alice", None, &artifacts_b, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
 
         // Re-accept a new revision of app-a.
@@ -3435,7 +4223,7 @@ mod tests {
         let mut dgraph_a2 = sample_dgraph("app-a", 1);
         dgraph_a2.services.truncate(1);
         dgraph_a2.services[0].service_id = "svc-a".to_string();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: dgraph_a2, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "cloud-01".to_string() }] }, "p3".to_string(), "2026-01-01T02:00:00Z".to_string(), &artifacts_a).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: dgraph_a2, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "cloud-01".to_string() }] }, "p3".to_string(), "2026-01-01T02:00:00Z".to_string(), &artifacts_a).unwrap();
         accept_proposal(&mut state, "p3", "operator:alice", None, &artifacts_a, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T02:00:00Z", "a3".to_string()).unwrap();
 
         let projection = active_operational_projection_from_state(&state, "proj-x").unwrap();
@@ -3456,7 +4244,7 @@ mod tests {
         dgraph_b.services.truncate(1);
         dgraph_b.services[0].service_id = "shared-svc".to_string();
         let artifacts_b = vec![sample_artifact("shared-svc", vec!["cloud-01"])];
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "shared-svc".to_string(), node_id: "cloud-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_b).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: dgraph_b, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "shared-svc".to_string(), node_id: "cloud-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_b).unwrap();
         let result = accept_proposal(&mut state, "p2", "operator:alice", None, &artifacts_b, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string());
         assert!(matches!(result, Err(AcceptError::Collision(ref f)) if f.iter().any(|finding| finding.code == F_OPERATIONAL_SERVICE_ID_COLLISION)));
         // app-a must remain untouched.
@@ -3473,7 +4261,7 @@ mod tests {
         let before = state.clone();
 
         // Proposal whose target-node eligibility fails at acceptance time.
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &sample_artifacts()).unwrap();
         let bad_artifacts = vec![sample_artifact("svc-a", vec![]), sample_artifact("svc-b", vec!["cloud-01"])];
         let result = accept_proposal(&mut state, "p2", "operator:alice", None, &bad_artifacts, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string());
         assert!(result.is_err());
@@ -3551,7 +4339,7 @@ mod tests {
 
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3614,7 +4402,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         // Corrupt the persisted record directly (bypassing every in-process
@@ -3633,7 +4421,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3656,7 +4444,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3676,7 +4464,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3700,7 +4488,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3729,7 +4517,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3762,7 +4550,7 @@ mod tests {
         assert!(projection_v1.nodes.iter().any(|n| n.node_id == "fog-01" && n.desired_services.iter().any(|s| s.service_id == "svc-a")));
 
         let placements_v2 = vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "cloud-01".to_string() }];
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum: sample_dcontinuum("proj-x", 1), placements: placements_v2 }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum: sample_dcontinuum("proj-x", 1), placements: placements_v2 }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts).unwrap();
         accept_proposal(&mut state, "p2", "operator:alice", None, &artifacts, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
         let projection_v2 = active_operational_projection_from_state(&state, "proj-x").unwrap();
         assert!(!projection_v2.nodes.iter().any(|n| n.node_id == "fog-01" && n.desired_services.iter().any(|s| s.service_id == "svc-a")), "svc-a must no longer be on fog-01");
@@ -3799,7 +4587,7 @@ mod tests {
         empty_dgraph.calls.clear();
         let result = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-empty".to_string(), application_id: "app-empty".to_string(), source: ProposalSource::Operator, dgraph: empty_dgraph, dcontinuum: sample_dcontinuum("proj-empty", 1), placements: vec![] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-empty".to_string(), application_id: "app-empty".to_string(), source: ProposalSource::Operator, dgraph: empty_dgraph, dcontinuum: sample_dcontinuum("proj-empty", 1), placements: vec![] },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &[],
         );
         // create_proposal itself runs validate_full (schema/identity/
@@ -3836,7 +4624,7 @@ mod tests {
         empty_dgraph.calls.clear();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-empty".to_string(), source: ProposalSource::Operator, dgraph: empty_dgraph, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-empty".to_string(), source: ProposalSource::Operator, dgraph: empty_dgraph, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![] },
             "p-empty".to_string(), "2026-01-01T01:00:00Z".to_string(), &[],
         ).expect("a structurally valid zero-service proposal must still be creatable");
         let outcome = accept_proposal(&mut state, "p-empty", "operator:bob", None, &[], Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a-empty".to_string());
@@ -3880,7 +4668,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -3908,7 +4696,7 @@ mod tests {
     fn proposal_map_key_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("proposal-key-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         let record = state.proposals.remove("p1").unwrap();
         state.proposals.insert("p1-renamed".to_string(), record);
         persist_state(&path, &state).unwrap();
@@ -3930,7 +4718,7 @@ mod tests {
         // merely `is_err()`.
         let path = temp_db_path("proposal-dgraph-ref-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         let record = state.proposals.get_mut("p1").unwrap();
         record.proposal.dgraph_ref.revision = 42;
         record.proposal_digest = compute_proposal_digest(&record.proposal).unwrap();
@@ -3952,7 +4740,7 @@ mod tests {
         // test above.
         let path = temp_db_path("proposal-dgraph-snapshot-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         state.proposals.get_mut("p1").unwrap().dgraph_snapshot.revision = 7;
         persist_state(&path, &state).unwrap();
         let error = load_state(&path).expect_err("a persisted dgraph_snapshot that disagrees with the proposal's own dgraph_ref must fail closed");
@@ -3964,7 +4752,7 @@ mod tests {
     fn proposal_dcontinuum_ref_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("proposal-dcontinuum-ref-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         let record = state.proposals.get_mut("p1").unwrap();
         record.proposal.dcontinuum_ref.revision = 42;
         record.proposal_digest = compute_proposal_digest(&record.proposal).unwrap();
@@ -3978,7 +4766,7 @@ mod tests {
     fn proposal_dcontinuum_snapshot_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("proposal-dcontinuum-snapshot-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         state.proposals.get_mut("p1").unwrap().dcontinuum_snapshot.revision = 7;
         persist_state(&path, &state).unwrap();
         let error = load_state(&path).expect_err("a persisted dcontinuum_snapshot that disagrees with the proposal's own dcontinuum_ref must fail closed");
@@ -3990,7 +4778,7 @@ mod tests {
     fn acceptance_proposal_digest_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("acceptance-proposal-digest-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.acceptances.get_mut("a1").unwrap().proposal_digest = format!("sha256:{}", "0".repeat(64));
         persist_state(&path, &state).unwrap();
@@ -4003,7 +4791,7 @@ mod tests {
     fn acceptance_application_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("acceptance-application-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.acceptances.get_mut("a1").unwrap().application_id = "app-y".to_string();
         persist_state(&path, &state).unwrap();
@@ -4016,7 +4804,7 @@ mod tests {
     fn acceptance_materialized_dmap_ref_corruption_fails_closed_on_reload() {
         let path = temp_db_path("acceptance-materialized-ref-corruption");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         // Corrupt the acceptance's OWN recorded materialized_dmap_ref
         // revision, WITHOUT touching active_by_application at all -- this
@@ -4033,7 +4821,7 @@ mod tests {
     fn active_referencing_missing_acceptance_fails_closed_on_reload() {
         let path = temp_db_path("active-missing-acceptance");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.get_mut(&key).unwrap().acceptance_id = "phantom-acceptance".to_string();
@@ -4047,7 +4835,7 @@ mod tests {
     fn project_operational_revision_zero_fails_closed_on_reload() {
         let path = temp_db_path("project-revision-zero");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.project_operational_revision.insert("proj-x".to_string(), 0);
         persist_state(&path, &state).unwrap();
@@ -4060,7 +4848,7 @@ mod tests {
     fn pending_proposal_with_accepted_acceptance_id_fails_closed_on_reload() {
         let path = temp_db_path("pending-with-acceptance-id");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         state.proposals.get_mut("p1").unwrap().accepted_acceptance_id = Some("phantom-acceptance".to_string());
         persist_state(&path, &state).unwrap();
         assert!(load_state(&path).is_err(), "a Pending proposal carrying a non-None accepted_acceptance_id must fail closed");
@@ -4071,7 +4859,7 @@ mod tests {
     fn acceptance_map_key_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("acceptance-key-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let acceptance = state.acceptances.remove("a1").unwrap();
         state.acceptances.insert("a1-renamed".to_string(), acceptance);
@@ -4087,7 +4875,7 @@ mod tests {
         // since proposals are never deleted by this module.
         let path = temp_db_path("acceptance-missing-proposal");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.proposals.remove("p1");
         persist_state(&path, &state).unwrap();
@@ -4099,7 +4887,7 @@ mod tests {
     fn acceptance_project_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("acceptance-project-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.acceptances.get_mut("a1").unwrap().project_id = "some-other-project".to_string();
         persist_state(&path, &state).unwrap();
@@ -4111,7 +4899,7 @@ mod tests {
     fn active_application_id_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("active-application-id-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.get_mut(&key).unwrap().application_id = "app-y".to_string();
@@ -4124,7 +4912,7 @@ mod tests {
     fn active_referencing_missing_proposal_fails_closed_on_reload() {
         let path = temp_db_path("active-missing-proposal");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.get_mut(&key).unwrap().proposal_id = "phantom-proposal".to_string();
@@ -4137,7 +4925,7 @@ mod tests {
     fn operational_service_snapshot_missing_a_dmap_service_fails_closed_on_reload() {
         let path = temp_db_path("snapshot-missing-service");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.get_mut(&key).unwrap().operational_services.remove("svc-a");
@@ -4150,7 +4938,7 @@ mod tests {
     fn operational_service_snapshot_extra_service_fails_closed_on_reload() {
         let path = temp_db_path("snapshot-extra-service");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         let extra = OperationalDesiredService { service_id: "svc-ghost".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None };
@@ -4164,7 +4952,7 @@ mod tests {
     fn operational_service_snapshot_key_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("snapshot-key-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         let active = state.active_by_application.get_mut(&key).unwrap();
@@ -4180,7 +4968,7 @@ mod tests {
     fn operational_service_invalid_runtime_fails_closed_on_reload() {
         let path = temp_db_path("snapshot-invalid-runtime");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.get_mut(&key).unwrap().operational_services.get_mut("svc-a").unwrap().runtime = "not-a-real-runtime".to_string();
@@ -4193,7 +4981,7 @@ mod tests {
     fn project_operational_revision_mismatch_fails_closed_on_reload() {
         let path = temp_db_path("project-revision-mismatch");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.project_operational_revision.insert("proj-x".to_string(), 99);
         persist_state(&path, &state).unwrap();
@@ -4205,7 +4993,7 @@ mod tests {
     fn project_operational_revision_missing_fails_closed_on_reload() {
         let path = temp_db_path("project-revision-missing");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         state.project_operational_revision.remove("proj-x");
         persist_state(&path, &state).unwrap();
@@ -4256,7 +5044,9 @@ mod tests {
             dgraph_ref: CanonicalContractReferenceV1 { id: dgraph_b.dgraph_id.clone(), revision: dgraph_b.revision, digest: dgraph_digest_b },
             dcontinuum_ref: CanonicalContractReferenceV1 { id: dcontinuum_b.dcontinuum_id.clone(), revision: dcontinuum_b.revision, digest: dcontinuum_digest_b },
             placements: placements_b,
-        };
+
+        dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         let proposal_digest_b = compute_proposal_digest(&proposal_b).unwrap();
         state.proposals.insert("p-b".to_string(), ProposalRecord { planner_provenance: None,
             proposal: proposal_b.clone(),
@@ -4339,7 +5129,9 @@ mod tests {
             dgraph_ref: CanonicalContractReferenceV1 { id: empty_dgraph.dgraph_id.clone(), revision: empty_dgraph.revision, digest: dgraph_digest },
             dcontinuum_ref: CanonicalContractReferenceV1 { id: dcontinuum.dcontinuum_id.clone(), revision: dcontinuum.revision, digest: dcontinuum_digest },
             placements: vec![],
-        };
+
+        dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         let proposal_digest = compute_proposal_digest(&proposal).unwrap();
         state.proposals.insert("p-empty".to_string(), ProposalRecord { planner_provenance: None,
             proposal: proposal.clone(),
@@ -4396,7 +5188,7 @@ mod tests {
         dgraph_a.services[0].service_id = "svc-a".to_string();
         let artifacts_a = vec![sample_artifact("svc-a", vec!["fog-01", "cloud-01"])];
         create_and_accept_with_dgraph(&mut state, "proj-x", "app-a", dgraph_a.clone(), "p-a1", vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "fog-01".to_string() }], &artifacts_a, "operator:alice", "a-a1", "2026-01-01T00:00:00Z").unwrap();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: dgraph_a, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "cloud-01".to_string() }] }, "p-a2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_a).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: dgraph_a, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a".to_string(), node_id: "cloud-01".to_string() }] }, "p-a2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_a).unwrap();
         accept_proposal(&mut state, "p-a2", "operator:alice", None, &artifacts_a, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a-a2".to_string()).unwrap();
 
         let mut dgraph_b = sample_dgraph("app-b", 1);
@@ -4719,7 +5511,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -4788,7 +5580,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -4817,7 +5609,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -4856,7 +5648,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -4892,7 +5684,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -4938,7 +5730,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative_at_creation, placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -4975,7 +5767,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative.clone(), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: authoritative.clone(), placements: sample_placements() },
             "p1".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
             &sample_artifacts(),
@@ -5010,7 +5802,7 @@ mod tests {
         // that could legitimately produce this shape.
         let path = temp_db_path("accepted-app-no-active-entry");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
         let key = application_key("proj-x", "app-x");
         state.active_by_application.remove(&key);
@@ -5058,7 +5850,7 @@ mod tests {
         let mut swapped = sample_placements();
         swapped[0].node_id = "cloud-01".to_string();
         let swapped_artifacts = vec![sample_artifact("svc-a", vec!["fog-01", "cloud-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &swapped_artifacts).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &swapped_artifacts).unwrap();
         accept_proposal(&mut state, "p2", "operator:alice", None, &swapped_artifacts, Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T01:00:00Z", "a2".to_string()).unwrap();
         assert_eq!(state.active_by_application.get(&key).unwrap().active_dmap.revision, 2, "sanity: p2 is now active at revision 2");
 
@@ -5078,7 +5870,7 @@ mod tests {
         // claims p1's REAL acceptance (a1) as its own.
         let path = temp_db_path("accepted-proposal-wrong-acceptance");
         let mut state = DDeployStateV1::empty();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() }, "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts()).unwrap();
         accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
 
         // A second, genuinely PENDING proposal for a different application
@@ -5086,7 +5878,7 @@ mod tests {
         let mut dgraph_c = sample_dgraph("app-c", 1);
         dgraph_c.services.truncate(1);
         dgraph_c.services[0].service_id = "svc-c".to_string();
-        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-c".to_string(), source: ProposalSource::Operator, dgraph: dgraph_c, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "fog-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &[sample_artifact("svc-c", vec!["fog-01"])]).unwrap();
+        create_proposal(&mut state, CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-c".to_string(), source: ProposalSource::Operator, dgraph: dgraph_c, dcontinuum: sample_dcontinuum("proj-x", 1), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-c".to_string(), node_id: "fog-01".to_string() }] }, "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &[sample_artifact("svc-c", vec!["fog-01"])]).unwrap();
 
         // Corrupt: falsely mark p2 Accepted, pointing at p1's REAL acceptance.
         let p2 = state.proposals.get_mut("p2").unwrap();
@@ -5107,7 +5899,7 @@ mod tests {
         let mut state = load_state(&path).unwrap();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: sample_placements() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &sample_artifacts(),
         ).unwrap();
         let outcome_n = accept_proposal(&mut state, "p1", "operator:alice", None, &sample_artifacts(), Some(&sample_dcontinuum("proj-x", 1)), "2026-01-01T00:00:00Z", "a1".to_string()).unwrap();
@@ -5124,7 +5916,7 @@ mod tests {
         let artifacts2 = vec![sample_artifact("svc-a", vec!["cloud-01", "fog-01"]), sample_artifact("svc-b", vec!["cloud-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-x".to_string(), application_id: "app-x".to_string(), source: ProposalSource::Operator, dgraph: sample_dgraph("app-x", 1), dcontinuum: sample_dcontinuum("proj-x", 1), placements: swapped },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts2,
         ).unwrap();
         // The proposal itself IS successfully persisted (a real caller
@@ -5214,7 +6006,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-x".to_string(),
                 application_id: "app-x".to_string(),
                 source: ProposalSource::Operator,
@@ -5356,7 +6148,7 @@ mod tests {
         let artifacts = vec![sample_artifact("svc-a", vec!["fog-01"]), sample_artifact("svc-b", vec!["fog-01"])];
         let record = create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-planned".to_string(),
                 application_id: "app-planned".to_string(),
                 source: ProposalSource::Deterministic,
@@ -5383,7 +6175,7 @@ mod tests {
         let artifacts = vec![sample_artifact("svc-a", vec!["fog-01"]), sample_artifact("svc-b", vec!["fog-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None,
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: "proj-planned".to_string(),
                 application_id: "app-planned".to_string(),
                 source: ProposalSource::Deterministic,
@@ -5490,7 +6282,7 @@ mod tests {
         create_proposal(
             state,
             CreateProposalInput {
-                planner_provenance: None,
+                planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
                 project_id: project.to_string(),
                 application_id: app.to_string(),
                 source: ProposalSource::Operator,
@@ -5555,12 +6347,12 @@ mod tests {
         let artifacts_b = vec![sample_artifact("svc-b1", vec!["shared-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-commit".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-a", "svc-a1", 4, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a1".to_string(), node_id: "shared-01".to_string() }] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-commit".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-a", "svc-a1", 4, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a1".to_string(), node_id: "shared-01".to_string() }] },
             "p-a1".to_string(), "2026-01-01T00:00:00Z".to_string(), &artifacts_a,
         ).expect("app-a's 4-core PENDING proposal must be creatable -- creation only validates within its own D-Graph");
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-commit".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-b", "svc-b1", 4, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-b1".to_string(), node_id: "shared-01".to_string() }] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-commit".to_string(), application_id: "app-b".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-b", "svc-b1", 4, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-b1".to_string(), node_id: "shared-01".to_string() }] },
             "p-b1".to_string(), "2026-01-01T00:01:00Z".to_string(), &artifacts_b,
         ).expect("app-b's 4-core PENDING proposal must ALSO be creatable -- both may legitimately be Pending at once");
         assert_eq!(state.proposals.values().filter(|r| r.state == ProposalLifecycleState::Pending).count(), 2, "both proposals must genuinely be Pending before either is accepted");
@@ -5603,7 +6395,7 @@ mod tests {
         let artifacts_a2 = vec![sample_artifact("svc-a2", vec!["shared-01"])];
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-commit".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-a", "svc-a2", 3, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a2".to_string(), node_id: "shared-01".to_string() }] },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-commit".to_string(), application_id: "app-a".to_string(), source: ProposalSource::Operator, dgraph: one_service_dgraph("app-a", "svc-a2", 3, 1), dcontinuum: dcontinuum.clone(), placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a2".to_string(), node_id: "shared-01".to_string() }] },
             "p-a2".to_string(), "2026-01-01T01:00:00Z".to_string(), &artifacts_a2,
         ).unwrap();
         let result = accept_proposal(&mut state, "p-a2", "operator:dana", None, &artifacts_a2, Some(&dcontinuum), "2026-01-01T01:05:00Z", "acc-a2".to_string());
@@ -5639,7 +6431,9 @@ mod tests {
                 dgraph_ref: CanonicalContractReferenceV1 { id: dgraph.dgraph_id.clone(), revision: 1, digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string() },
                 dcontinuum_ref: CanonicalContractReferenceV1 { id: "continuum:proj-overflow".to_string(), revision: 1, digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string() },
                 placements: vec![CanonicalDServPlacementV1 { service_id: service_id.to_string(), node_id: "shared-01".to_string() }],
-            };
+
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
+        };
             let proposal_digest = compute_proposal_digest(&proposal).unwrap();
             let dcontinuum_snapshot = CanonicalDContinuumV1 { schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(), project_id: "proj-overflow".to_string(), dcontinuum_id: "continuum:proj-overflow".to_string(), revision: 1, nodes: vec![], links: vec![] };
             // dcontinuum_ref.digest above must match a REAL empty-node
@@ -5695,7 +6489,7 @@ mod tests {
                 dgraph,
                 dcontinuum,
                 placements: plan.placements.clone(),
-                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())),
+                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())), dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "planned-proposal-provenance".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -5747,7 +6541,7 @@ mod tests {
                 dgraph,
                 dcontinuum,
                 placements: plan.placements.clone(),
-                planner_provenance: Some(planner_provenance_from_plan(&plan, committed.clone(), eligibility.clone())),
+                planner_provenance: Some(planner_provenance_from_plan(&plan, committed.clone(), eligibility.clone())), dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "planned-proposal-snapshots".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -5788,7 +6582,7 @@ mod tests {
                 dgraph,
                 dcontinuum,
                 placements: plan.placements.clone(),
-                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), eligibility)),
+                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), eligibility)), dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "planned-proposal-eligibility-distinction".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -5869,7 +6663,7 @@ mod tests {
                 dgraph,
                 dcontinuum,
                 placements: plan.placements.clone(),
-                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())),
+                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())), dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "planned-proposal-tampered".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -5964,7 +6758,7 @@ mod tests {
                 dgraph,
                 dcontinuum,
                 placements: plan.placements.clone(),
-                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())),
+                planner_provenance: Some(planner_provenance_from_plan(&plan, BTreeMap::new(), crate::core::canonical_placement::PlacementEligibilityView::unrestricted())), dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "planned-proposal-decision-integrity".to_string(),
             "2026-01-01T00:00:00Z".to_string(),
@@ -6140,7 +6934,8 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision,
             diot_artifact_authority: BTreeMap::new(),
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         state
             .create_v2_proposal(proposal, dgraph, dcontinuum.clone(), dforward)
             .unwrap_or_else(|e| panic!("v2 proposal creation for '{app}' must succeed: {e}"));
@@ -6502,7 +7297,8 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision: None,
             diot_artifact_authority: BTreeMap::new(),
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         state
             .create_v2_proposal(proposal_b, dgraph_b, dcontinuum.clone(), dforward_b)
             .expect("app-b's v2 proposal creation must succeed -- creation only validates within its own D-Graph");
@@ -6761,7 +7557,8 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision: None,
             diot_artifact_authority: BTreeMap::new(),
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         let mut binding_x = crate::core::ddeploy_v2::DIoTArtifactAuthorityBindingV2 {
             artifact_id: "dserv:x".to_string(),
             execution_generation: 1,
@@ -6836,10 +7633,72 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision: None,
             diot_artifact_authority: BTreeMap::new(),
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         state
             .create_v2_proposal(proposal, dgraph, dcontinuum.clone(), dforward)
             .unwrap_or_else(|e| panic!("v2 proposal creation for '{app}' must succeed: {e}"));
+    }
+
+    /// Phase 117G Section 25/47: v1/v2 parity. `resolve_active_dcode_binding`
+    /// must behave IDENTICALLY when active authority is DDeploy/2 as it does
+    /// for DDeploy/1 (see `g22_registering_a_new_revision_does_not_change_the_active_binding`
+    /// for the v1 version of this exact scenario) -- registering a new
+    /// revision for an explicitly-bound v2 service changes nothing.
+    #[test]
+    fn v2_parity_registering_a_new_revision_does_not_change_the_active_v2_binding() {
+        let project = "proj-v2-dcode-parity";
+        let app = "app-a";
+        let service_id = "svc-a1";
+        let dcontinuum = shared_node_dcontinuum(project, 4, 4_294_967_296);
+        let dgraph = one_service_dgraph(app, service_id, 1, 1);
+        let dforward = minimal_dforward(project);
+
+        let mut registry = crate::core::dcode_registry::DCodeArtifactRegistryStateV2::empty();
+        let binding = registered_binding(&mut registry, app, service_id);
+
+        let proposal = crate::core::ddeploy_v2::DDeployProposalV2 {
+            schema: crate::core::ddeploy_v2::DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+            proposal_id: "p-v2-dcode".to_string(),
+            project_id: project.to_string(),
+            application_id: app.to_string(),
+            source: ProposalSource::Operator,
+            created_at_utc: chrono::Utc::now().to_rfc3339(),
+            dgraph_ref: crate::core::canonical_dmap_v2::ContractRefV2 { id: dgraph.dgraph_id.clone(), revision: dgraph.revision, digest: recompute_dgraph_digest(&dgraph).unwrap() },
+            dcontinuum_ref: crate::core::canonical_dmap_v2::ContractRefV2 { id: dcontinuum.dcontinuum_id.clone(), revision: dcontinuum.revision, digest: recompute_dcontinuum_digest(&dcontinuum).unwrap() },
+            dforward_ref: crate::core::canonical_dmap_v2::ContractRefV2 { id: dforward.dforward_id.clone(), revision: dforward.revision, digest: dforward.digest().unwrap() },
+            placements: vec![crate::core::canonical_dmap_v2::DServPlacementV2 { service_id: service_id.to_string(), node_id: "shared-01".to_string() }],
+            diot_placements: vec![],
+            dcall_realizations: vec![],
+            external_port_bindings: vec![],
+            expected_active_dmap_revision: None,
+            diot_artifact_authority: BTreeMap::new(),
+            dcode_artifact_authority: std::collections::BTreeMap::from([(service_id.to_string(), binding.clone())]),
+        };
+        let mut state = DDeployStateV1::empty();
+        state.create_v2_proposal(proposal, dgraph, dcontinuum.clone(), dforward).unwrap();
+        state
+            .accept_v2_proposal_with_dcode_binding_revalidation(
+                "p-v2-dcode",
+                "acc-v2-dcode".to_string(),
+                "operator:dana".to_string(),
+                "2026-01-01T00:00:00Z".to_string(),
+                &dcontinuum,
+                &[],
+                &registry,
+                None,
+            )
+            .unwrap();
+
+        // Register a second, different revision for the same service.
+        let mut different = dserv_artifact_for(app, service_id);
+        different.limits.timeout_ms += 1;
+        crate::core::dcode_registry::declare_dserv_artifact_revision(&mut registry, different).unwrap();
+
+        let active = active_placement_authority(&state, project, app).unwrap().unwrap();
+        assert!(active.v2.is_some(), "this test must exercise the DDeploy/2 branch of resolve_active_dcode_binding");
+        let resolved = resolve_active_dcode_binding(&state, &active, service_id).unwrap();
+        assert_eq!(resolved.descriptor_digest, binding.descriptor_digest, "registering D2 must never change a v2-active explicitly-bound service's authorization, exactly like v1");
     }
 
     #[test]
@@ -7352,7 +8211,8 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision: None,
             diot_artifact_authority: authority,
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         state
             .create_v2_proposal(proposal, dg, dcontinuum.clone(), dforward.clone())
             .unwrap_or_else(|e| panic!("v2 proposal creation for '{app}' must succeed: {e}"));

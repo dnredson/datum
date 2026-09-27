@@ -919,7 +919,8 @@ mod tests {
                 m.insert(ARTIFACT_ID.to_string(), DIoTArtifactAuthorityBindingV2 { artifact_id: ARTIFACT_ID.to_string(), execution_generation: 1, execution_projection_digest: format!("sha256:{}", "c".repeat(64)) });
                 m
             },
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
 
         let broker_artifact = minimal_broker_artifact(PROJECT, 1, &format!("sha256:{}", "c".repeat(64)));
 

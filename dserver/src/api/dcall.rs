@@ -315,7 +315,7 @@ pub async fn post_request_grant(
     let dnode_registry_state =
         crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
     let dcode_registry_state =
-        crate::core::dcode_registry::load_state(&db_path).map_err(internal_error)?;
+        crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
     let endpoint_state = load_endpoint_state(&db_path).map_err(internal_error)?;
     let diot_runtime_binding_state =
         load_diot_runtime_binding_state(&db_path).map_err(internal_error)?;
@@ -510,9 +510,11 @@ pub async fn post_request_grant(
     // is rejected BEFORE a grant is ever inserted into state, so a one-time
     // grant is never wasted on a delivery that could never have succeeded
     // (`dcall-message-limit-audit.txt`).
-    if let Some(destination_artifact) =
-        dcode_registry_state.get(&request.application_id, &route.destination.service_id)
-    {
+    if let Some(destination_artifact) = dcode_registry_state.get_exact(
+        &request.application_id,
+        &route.destination.service_id,
+        &route.destination.dserv_artifact_descriptor_digest,
+    ) {
         if request.payload_size > u64::from(destination_artifact.limits.max_message_bytes) {
             return Err(finding_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -526,9 +528,11 @@ pub async fn post_request_grant(
             ));
         }
     }
-    if let Some(source_artifact) =
-        dcode_registry_state.get(&request.application_id, &route.source.service_id)
-    {
+    if let Some(source_artifact) = dcode_registry_state.get_exact(
+        &request.application_id,
+        &route.source.service_id,
+        &route.source.dserv_artifact_descriptor_digest,
+    ) {
         if request.payload_size > u64::from(source_artifact.limits.max_message_bytes) {
             return Err(finding_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -648,7 +652,7 @@ pub async fn post_redeem_grant(
     let dnode_registry_state =
         crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
     let dcode_registry_state =
-        crate::core::dcode_registry::load_state(&db_path).map_err(internal_error)?;
+        crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
     let endpoint_state = load_endpoint_state(&db_path).map_err(internal_error)?;
     let diot_runtime_binding_state =
         load_diot_runtime_binding_state(&db_path).map_err(internal_error)?;
