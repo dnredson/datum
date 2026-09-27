@@ -159,23 +159,22 @@ fn main() -> Result<()> {
                 .map_err(|error| anyhow::anyhow!(error))
                 .context("resolve local D-Node identity (run `smartsentinel-dcode-init` first)")?
                 .node_id;
-            let authorization = client::fetch_dcode_authorization(
+            // Phase 117H: fresh authorization -> exact authorized descriptor
+            // revision -> relational verification, all in one governed step.
+            // Never the old logical `fetch_dserv_artifact` (that call cannot
+            // execute the valid governed scenario where multiple D-Code
+            // revisions coexist for this service).
+            let preflight = client::fetch_governed_dcode_execution_material(
                 &args.dserver_url,
                 &args.project_id,
                 &args.application_id,
                 &args.service_id,
                 &local_node_id,
             )
-            .context("fetch D-Code authorization from DServer (governed path)")?;
-            let artifact = client::fetch_dserv_artifact(
-                &args.dserver_url,
-                &args.application_id,
-                &args.service_id,
-            )
-                .context("fetch canonical D-Serv artifact from DServer (governed path)")?;
+            .context("governed D-Code preflight (authorization + exact descriptor revision) from DServer")?;
             Resolved {
-                authorization,
-                artifact,
+                authorization: preflight.authorization,
+                artifact: preflight.artifact,
                 node_id: local_node_id,
                 input_port: args.input_port,
                 store_root: args.dnode_root,

@@ -74,7 +74,6 @@ use datum::dcall::mqtt::{
 };
 use datum::dcode::abi::DNODE_ABI_V0_REQUIRED_EXPORTS;
 use datum::dcode::authorization::DCodeInvocationAuthorizationV1;
-use datum::dcode::client::fetch_dcode_authorization;
 use datum::dcode::dserv_artifact::{
     CanonicalDServArtifactV1, DServArtifactAbiV1, DServArtifactConstraintsV1, DServArtifactDCodeV1,
     DServArtifactLimitsV1, DServArtifactPortV1, DServArtifactPortsV1, DServArtifactSafetyV1,
@@ -526,12 +525,16 @@ fn run_real_source_invocation(
     node_root: &std::path::Path,
     node_id: &str,
 ) -> (GovernedDCodeInvocationResult, usize) {
-    let authorization: DCodeInvocationAuthorizationV1 =
-        fetch_dcode_authorization(dserver_url, PROJECT, APP, SOURCE_SVC, node_id)
-            .expect("fetch source D-Code authorization");
-    let artifact: CanonicalDServArtifactV1 =
-        datum::dcode::client::fetch_dserv_artifact(dserver_url, APP, SOURCE_SVC)
-            .expect("fetch source D-Serv artifact");
+    // Phase 117H: mirror the real governed CLI/DCall-dispatch sequence
+    // exactly -- exact-authorized-revision preflight, never the old logical
+    // fetch, so this integration test keeps accurately modeling production
+    // behavior.
+    let preflight = datum::dcode::client::fetch_governed_dcode_execution_material(
+        dserver_url, PROJECT, APP, SOURCE_SVC, node_id,
+    )
+    .expect("governed D-Code preflight (authorization + exact descriptor revision)");
+    let authorization: DCodeInvocationAuthorizationV1 = preflight.authorization;
+    let artifact: CanonicalDServArtifactV1 = preflight.artifact;
     let module_store = DCodeModuleStore::new(node_root);
     let result = invoke_dcode_governed_capturing_emits(
         &module_store,

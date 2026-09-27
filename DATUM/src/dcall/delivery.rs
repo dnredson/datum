@@ -859,24 +859,24 @@ fn execute_destination_delivery(
     grant: &DCallDeliveryGrantV1,
     payload: &[u8],
 ) -> Result<DCodeInvocationEvidenceV1> {
-    let authorization: DCodeInvocationAuthorizationV1 = {
-        // `dcall::grant`'s mirror and `dcode::authorization`'s mirror are
-        // two independently-declared (but wire-identical) types -- fetch
-        // through the real `dcode::client` so the exact same governed
-        // preflight Phase 111 already established applies here unchanged.
-        crate::dcode::client::fetch_dcode_authorization(
-            dserver_url,
-            &grant.project_id,
-            &grant.application_id,
-            &grant.destination.service_id,
-            this_node_id,
-        )?
-    };
-    let artifact: CanonicalDServArtifactV1 = crate::dcode::client::fetch_dserv_artifact(
+    // Phase 117H: one governed preflight call resolves a fresh authorization
+    // AND the EXACT authorized D-Code descriptor revision together (never
+    // the old logical fetch, which cannot execute the valid governed
+    // scenario where multiple revisions coexist for the destination
+    // service) -- `dcall::grant`'s mirror and `dcode::authorization`'s
+    // mirror are two independently-declared (but wire-identical) types, so
+    // this still goes through the real `dcode::client`, applying the exact
+    // same governed preflight Phase 111/117G/117H already established,
+    // unchanged.
+    let preflight = crate::dcode::client::fetch_governed_dcode_execution_material(
         dserver_url,
+        &grant.project_id,
         &grant.application_id,
         &grant.destination.service_id,
+        this_node_id,
     )?;
+    let authorization: DCodeInvocationAuthorizationV1 = preflight.authorization;
+    let artifact: CanonicalDServArtifactV1 = preflight.artifact;
 
     if !artifact.validate().is_empty() {
         return Err(anyhow!(
