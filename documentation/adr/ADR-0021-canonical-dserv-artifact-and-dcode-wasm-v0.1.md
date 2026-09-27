@@ -171,12 +171,20 @@ notice. Closing this required a genuine full mirror of
 the IDENTICAL canonical digest algorithm — proven by a literal cross-crate
 digest-parity test over the real checked-in fixture, not merely "should
 match" reasoning — since the real execution path could not previously even
-compute the descriptor digest it needed to check. The governed CLI now
-fetches this authoritative artifact from
-`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` (v2, R2C) rather
-than trusting an arbitrary local artifact file, and `invoke_dcode`
-cross-checks application_id/dserv_id/artifact_id/ABI/module-digest/
-descriptor-digest all independently before executing.
+compute the descriptor digest it needed to check. The governed CLI fetches
+this authoritative artifact from DServer rather than trusting an arbitrary
+local artifact file (v2, R2C), and `invoke_dcode` cross-checks
+application_id/dserv_id/artifact_id/ABI/module-digest/descriptor-digest all
+independently before executing. **Updated by Phase 117H:** once the D-Code
+registry became versioned (Phase 117G), the governed fetch is
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest`
+(the EXACT revision a fresh authorization's own
+`dserv_artifact_descriptor_digest` names) — the original logical
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` route this
+paragraph originally described the governed CLI as using is now a
+compatibility/debug-only route that cannot resolve once a service has more
+than one registered revision (see
+`documentation/reference/phase117h-governed-exact-dcode-client-closure.md`).
 
 ### Active-D-Serv -> D-Code authorization chain
 
@@ -214,10 +222,12 @@ targets this node, the artifact's identity/module-digest/descriptor-digest/
 ABI all match the authorization exactly, the module's real byte length
 matches its declared `size_bytes`). What changed in v2 is which caller
 supplies those inputs: the GOVERNED `smartsentinel-dcode-invoke invoke`
-subcommand (`dcode::client::fetch_dcode_authorization`/
-`fetch_dserv_artifact`) now calls `POST /api/v1/dcode/authorize` and
-`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` directly,
-IMMEDIATELY before invocation — since `/authorize` always freshly derives
+subcommand (Phase 117H: `dcode::client::fetch_governed_dcode_execution_material`,
+which itself calls `fetch_dcode_authorization`/`fetch_dserv_artifact_revision`)
+now calls `POST /api/v1/dcode/authorize` and (the exact-revision route,
+Phase 117G/117H)
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest`
+directly, IMMEDIATELY before invocation — since `/authorize` always freshly derives
 the chain server-side and never caches, this call itself IS the
 re-verification step; no separate `/verify` endpoint was needed. A
 `smartsentinel-dcode-invoke offline-test-only` subcommand still exists,
