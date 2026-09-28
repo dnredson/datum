@@ -27,6 +27,7 @@ pub mod dcompile_dcode;
 pub mod dcompile_request;
 pub mod dcompile_submission;
 pub mod ddeploy;
+pub mod ddeploy_migration;
 pub mod ddeploy_v2;
 pub mod deployment_assignment;
 pub mod deployment_dependency;
