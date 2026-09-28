@@ -421,9 +421,11 @@ pub struct DCompileDServArtifactCandidate {
 /// The full Phase 117E result: the Phase 117C D-Graph candidate (unchanged,
 /// reused verbatim) plus one D-Code artifact candidate per generated
 /// service. Deliberately NOT a wire contract -- no `Serialize`/
-/// `Deserialize`, no `datum.dcompile-result/1` schema invented; no proven
-/// persistence/API consumer exists yet. Never "accepted," "registered," or
-/// "current" merely by existing.
+/// `Deserialize`. Phase 117J's real production consumer
+/// (`core::dcompile_submission::compile_submission`) maps this into its own
+/// independently-versioned wire type (`DCompileCandidateResponseV1`)
+/// instead of attaching serde here (117I Section 10, Decision B). Never
+/// "accepted," "registered," or "current" merely by existing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DCompileCandidateBundle {
     pub dgraph_candidate: DCompileDGraphCandidate,

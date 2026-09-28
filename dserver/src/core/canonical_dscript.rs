@@ -1,8 +1,11 @@
 //! `datum.dscript/1` (Phase 116B) -- the canonical COMPILE-TIME source
 //! representation of a D-Application (ADR-0001): a D-Script is "a set of
-//! D-Functions with non-functional annotations." D-Compile (Phase 117, not
-//! yet implemented) will map this into a D-Graph and D-Code, with
-//! D-Function -> D-Serv cardinality that may be 1:1, 1:N, M:1, or M:N.
+//! D-Functions with non-functional annotations." D-Compile (Phase 117;
+//! core lowering implemented in 117C/117E, exposed as a production API in
+//! 117J's `POST /api/v1/dcompile/compile`) maps this into a D-Graph and
+//! D-Code, with D-Function -> D-Serv cardinality that is currently an exact
+//! v1 PARTITION (117B) -- the vocabulary's full 1:N/M:N overlap case
+//! remains undefined pending real evidence.
 //!
 //! Phase 116A (`documentation/reference/phase116a-dscript-architecture-audit.md`)
 //! found this concept existed ONLY as documentation before this module: no
@@ -289,19 +292,20 @@ pub struct ValidatedDScriptInput {
     pub digest_sha256: String,
 }
 
-/// The pure input boundary: JSON text in, a typed+validated+digested
-/// document or a structured reason why not, out. No I/O, no filesystem
-/// access (a caller reads bytes/text itself and passes them in), no
-/// network access, no persistence, no host mutation. Never trusts a
-/// caller-supplied digest -- there is no `dscript_digest` field on
-/// `CanonicalDScriptV1` to trust in the first place (Phase 116B decision,
-/// preserved here); the digest returned is always freshly recomputed from
-/// the typed document this function itself decoded.
-pub fn decode_and_validate_dscript_json(
-    json: &str,
+/// Phase 117J: the typed half of the input boundary -- an already-typed
+/// `CanonicalDScriptV1` in (no JSON text, no re-serialization), a
+/// typed+validated+digested document or a structured reason why not, out.
+/// `decode_and_validate_dscript_json` below is now a thin JSON-decode
+/// wrapper around this exact function, so both the historical JSON-string
+/// boundary and any future typed caller (Phase 117J's production
+/// `datum.dcompile-submission/1` HTTP endpoint, first) share ONE semantic
+/// validation/digest implementation -- there is no second, parallel copy of
+/// this logic anywhere. Same "never trust a caller-supplied digest"
+/// discipline as before: the digest returned is always freshly recomputed
+/// from the exact document passed in.
+pub fn validate_and_digest_dscript(
+    document: CanonicalDScriptV1,
 ) -> Result<ValidatedDScriptInput, DScriptInputError> {
-    let document: CanonicalDScriptV1 = serde_json::from_str(json)
-        .map_err(|error| DScriptInputError::Deserialization(error.to_string()))?;
     let findings = document.validate();
     if !findings.is_empty() {
         return Err(DScriptInputError::Validation(findings));
@@ -312,6 +316,20 @@ pub fn decode_and_validate_dscript_json(
         document,
         digest_sha256,
     })
+}
+
+/// The pure input boundary: JSON text in, a typed+validated+digested
+/// document or a structured reason why not, out. No I/O, no filesystem
+/// access (a caller reads bytes/text itself and passes them in), no
+/// network access, no persistence, no host mutation. Deserialization is the
+/// only step owned here -- everything after that is delegated to
+/// `validate_and_digest_dscript`.
+pub fn decode_and_validate_dscript_json(
+    json: &str,
+) -> Result<ValidatedDScriptInput, DScriptInputError> {
+    let document: CanonicalDScriptV1 = serde_json::from_str(json)
+        .map_err(|error| DScriptInputError::Deserialization(error.to_string()))?;
+    validate_and_digest_dscript(document)
 }
 
 #[cfg(test)]
@@ -833,6 +851,35 @@ mod tests {
         let pretty = serde_json::to_string_pretty(&value).unwrap();
         let b = decode_and_validate_dscript_json(&pretty).unwrap();
         assert_eq!(a.digest_sha256, b.digest_sha256);
+    }
+
+    /// Phase 117J Section 9: the JSON-string boundary and the new typed
+    /// boundary must be byte-for-byte/finding-for-finding equivalent --
+    /// proven directly by decoding the SAME JSON both ways and comparing
+    /// both the success value and, on the invalid path, the exact findings.
+    #[test]
+    fn typed_and_json_boundaries_agree_on_a_valid_document() {
+        let via_json = decode_and_validate_dscript_json(SENSOR_PIPELINE_JSON).unwrap();
+        let typed: CanonicalDScriptV1 = serde_json::from_str(SENSOR_PIPELINE_JSON).unwrap();
+        let via_typed = validate_and_digest_dscript(typed).unwrap();
+        assert_eq!(via_json, via_typed);
+    }
+
+    #[test]
+    fn typed_and_json_boundaries_agree_on_the_same_validation_findings() {
+        let mut bad_typed: CanonicalDScriptV1 =
+            serde_json::from_str(&minimal_valid_json()).unwrap();
+        bad_typed.revision = 0;
+        let bad_json = minimal_valid_json().replace("\"revision\":1", "\"revision\":0");
+
+        let via_json = decode_and_validate_dscript_json(&bad_json).unwrap_err();
+        let via_typed = validate_and_digest_dscript(bad_typed).unwrap_err();
+        match (via_json, via_typed) {
+            (DScriptInputError::Validation(a), DScriptInputError::Validation(b)) => {
+                assert_eq!(a, b)
+            }
+            other => panic!("expected both to be Validation with equal findings: {other:?}"),
+        }
     }
 
     /// Documents the empirically-verified serde_json behavior (Section 10):

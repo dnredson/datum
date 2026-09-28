@@ -7,6 +7,7 @@ pub mod controlled_wasm_deployment;
 pub mod dashboard;
 pub mod dcall;
 pub mod dcode;
+pub mod dcompile;
 pub mod ddeploy;
 pub mod deployment_lifecycle;
 pub mod dforward_dependency_readiness;

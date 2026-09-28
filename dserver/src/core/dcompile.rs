@@ -119,11 +119,15 @@ pub enum DCompileLoweringError {
 }
 
 /// The pure result of lowering. Deliberately NOT a wire contract: no
-/// `Serialize`/`Deserialize`, no `datum.dcompile-result/1` schema was
-/// invented for this -- there is no proven persistence/API consumer yet
-/// (Phase 117F may define one once DDeploy integration is real). Also
-/// deliberately carries no `compiled_at`/timestamp: same inputs must always
-/// produce the same result, and a timestamp would destroy that.
+/// `Serialize`/`Deserialize`. Phase 117J added the first real production
+/// API consumer (`core::dcompile_submission::compile_submission`,
+/// `POST /api/v1/dcompile/compile`) without changing this decision: that
+/// consumer maps this internal result into its own independently-versioned
+/// wire type (`DCompileCandidateResponseV1`) rather than attaching serde
+/// here -- see 117I Section 10 (Decision B) for the full rationale, and
+/// `dcompile_submission.rs`'s own module doc comment. Also deliberately
+/// carries no `compiled_at`/timestamp: same inputs must always produce the
+/// same result, and a timestamp would destroy that.
 ///
 /// This is a compiler RESULT, not an authority record: it is never
 /// "accepted," "current," or "active" merely by existing.

@@ -381,17 +381,20 @@ pub struct ValidatedDCompileRequest {
     pub digest_sha256: String,
 }
 
-/// The pure input boundary for `datum.dcompile-request/1`, mirroring
-/// `canonical_dscript::decode_and_validate_dscript_json` exactly: JSON text
-/// in, a structurally-valid typed request + its recomputed digest, or a
-/// structured reason why not, out. No I/O, no cross-validation against any
-/// D-Script (that step is explicit and separate -- see
-/// `validate_against_dscript`).
-pub fn decode_and_validate_dcompile_request_json(
-    json: &str,
+/// Phase 117J: the typed half of the input boundary -- an already-typed
+/// `DCompileRequestV1` in (no JSON text, no re-serialization), a
+/// structurally-valid typed request + its recomputed digest, or a
+/// structured reason why not, out. `decode_and_validate_dcompile_request_json`
+/// below is now a thin JSON-decode wrapper around this exact function, so
+/// both the historical JSON-string boundary and any future typed caller
+/// (Phase 117J's production submission endpoint, which constructs this type
+/// in-memory with a server-derived `dscript_ref` rather than decoding it
+/// from caller-supplied JSON) share ONE semantic validation/digest
+/// implementation. No cross-validation against any D-Script here (that step
+/// is explicit and separate -- see `validate_against_dscript`).
+pub fn validate_and_digest_dcompile_request(
+    request: DCompileRequestV1,
 ) -> Result<ValidatedDCompileRequest, DCompileRequestInputError> {
-    let request: DCompileRequestV1 = serde_json::from_str(json)
-        .map_err(|error| DCompileRequestInputError::Deserialization(error.to_string()))?;
     let findings = request.validate();
     if !findings.is_empty() {
         return Err(DCompileRequestInputError::Validation(findings));
@@ -402,6 +405,20 @@ pub fn decode_and_validate_dcompile_request_json(
         request,
         digest_sha256,
     })
+}
+
+/// The pure input boundary for `datum.dcompile-request/1`, mirroring
+/// `canonical_dscript::decode_and_validate_dscript_json` exactly: JSON text
+/// in, a structurally-valid typed request + its recomputed digest, or a
+/// structured reason why not, out. Deserialization is the only step owned
+/// here -- everything after that is delegated to
+/// `validate_and_digest_dcompile_request`.
+pub fn decode_and_validate_dcompile_request_json(
+    json: &str,
+) -> Result<ValidatedDCompileRequest, DCompileRequestInputError> {
+    let request: DCompileRequestV1 = serde_json::from_str(json)
+        .map_err(|error| DCompileRequestInputError::Deserialization(error.to_string()))?;
+    validate_and_digest_dcompile_request(request)
 }
 
 #[cfg(test)]
@@ -993,6 +1010,33 @@ mod tests {
         ];
         for keyword in forbidden {
             assert!(!text.contains(keyword), "forbidden authority-adjacent key '{keyword}' found in canonical DCompile request JSON: {text}");
+        }
+    }
+
+    // ---- Phase 117J Section 9: typed/JSON boundary equivalence -------------- //
+
+    #[test]
+    fn typed_and_json_boundaries_agree_on_a_valid_request() {
+        let via_json =
+            decode_and_validate_dcompile_request_json(SENSOR_PIPELINE_REQUEST_JSON).unwrap();
+        let typed: DCompileRequestV1 =
+            serde_json::from_str(SENSOR_PIPELINE_REQUEST_JSON).unwrap();
+        let via_typed = validate_and_digest_dcompile_request(typed).unwrap();
+        assert_eq!(via_json, via_typed);
+    }
+
+    #[test]
+    fn typed_and_json_boundaries_agree_on_the_same_validation_findings() {
+        let mut bad = sample_request();
+        bad.output_dgraph_revision = 0;
+        let via_typed = validate_and_digest_dcompile_request(bad.clone()).unwrap_err();
+        let bad_json = serde_json::to_string(&bad).unwrap();
+        let via_json = decode_and_validate_dcompile_request_json(&bad_json).unwrap_err();
+        match (via_json, via_typed) {
+            (DCompileRequestInputError::Validation(a), DCompileRequestInputError::Validation(b)) => {
+                assert_eq!(a, b)
+            }
+            other => panic!("expected both to be Validation with equal findings: {other:?}"),
         }
     }
 
