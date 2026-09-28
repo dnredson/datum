@@ -765,3 +765,54 @@ CURRENTNESS REMAIN OWNED BY THEIR EXISTING AUTHORITIES.
 
 NO VM OR RPI LIVE VALIDATION WAS REQUIRED FOR PHASE 118A.
 ```
+
+## 46. Phase 118B — production derivation (implemented)
+
+Phase 118B implemented exactly the minimum slice recommended in Section 33:
+one pure function,
+
+```rust
+pub fn derive_active_dengine_nodes(
+    view: &crate::core::ddeploy_v2::PlacementAuthorityView,
+) -> Vec<String>
+```
+
+added to `dserver/src/core/ddeploy.rs` immediately after
+`active_placement_authority`, the seam it consumes. **D-Engine remains a
+derived view, not an authority**: this function introduces no identity,
+revision, digest, persistence, wire schema, or API. It reads only
+`view.placements` (`Vec<DServPlacementV2>`, the top-level, v1/v2-neutral
+D-Serv placement list) and returns the deduplicated, lexicographically
+sorted set of `node_id` values found there, via a `BTreeSet<String>`
+intermediate (idiomatic, no new dependency).
+
+DIoT placements (`view.v2.diot_placements`) are never read by this function
+— confirmed both structurally (the function's only parameter access is
+`view.placements`) and by two dedicated tests (`e7_diot_only_node_is_excluded_from_membership`,
+`e8_diot_only_active_authority_yields_empty_membership`) proving a node that
+appears only in `diot_placements` never appears in the returned membership
+set, including when `placements` is otherwise empty.
+
+Runtime health, D-Node capability state, and D-Code executable currentness
+play no role: `DServPlacementV2` carries only `service_id`/`node_id`, and
+`PlacementAuthorityView` carries no health/liveness/capability/D-Code field
+for this function to read even if it wanted to — proven by tests E9–E11 and
+restated in the function's own doc comment.
+
+`None` vs. "active authority, zero placements" (Section 15/21/23) remains an
+authority-level distinction owned entirely by `active_placement_authority`'s
+own `Result<Option<PlacementAuthorityView>, String>` return type, outside
+this function: receiving a `&PlacementAuthorityView` at all already implies
+active authority exists, so `derive_active_dengine_nodes` itself has nothing
+to distinguish — callers must branch on `active_placement_authority`'s
+`Option` before calling it. No wrapper over `active_placement_authority` was
+added, per Section 19/Option A and the absence of any concrete existing
+consumer requiring one.
+
+Twelve focused tests (`E1`–`E12`) were added in a `dengine_derivation` test
+submodule of `dserver/src/core/ddeploy.rs`'s existing `mod tests`, built
+against the real `PlacementAuthorityView`/`DServPlacementV2`/
+`PlacementAuthorityV2Extras`/`DIoTPlacementV2`/`DIoTArtifactBindingV2`
+production types (no shadow structs). No wire type, API route, persistence,
+or ADR change was introduced. `dserver`'s full test suite (1871 tests) and
+the `ddeploy` module's own 240 tests pass unchanged.

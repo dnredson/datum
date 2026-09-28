@@ -818,6 +818,30 @@ pub fn active_placement_authority(
     Ok(None)
 }
 
+/// Phase 118B: D-Engine membership, derived ENTIRELY from `view.placements`
+/// (the top-level, v1/v2-neutral D-Serv placement list `active_placement_authority`
+/// already produces) -- never from `view.v2.map(|v| &v.diot_placements)`, which
+/// is DIoT/D-Forward's own placement domain, structurally and semantically
+/// separate (Phase 118A audit, section 9). D-Engine is a passive, canonical
+/// membership-set noun ("the set of D-Nodes that runs a D-Application"), not an
+/// independent authority: this function has no persistence, identity, revision,
+/// or digest of its own, and consults no D-Node registry, D-Monitor, capability,
+/// or D-Code state -- it is a pure projection of one field of an already-accepted
+/// `PlacementAuthorityView`. Callers that need to distinguish "no active
+/// authority" from "active authority, zero placements" must do so BEFORE calling
+/// this function, via `active_placement_authority`'s own `Result<Option<...>>`
+/// (Phase 118A audit, section 15/21/23) -- receiving a `&PlacementAuthorityView`
+/// here already implies active authority exists.
+pub fn derive_active_dengine_nodes(
+    view: &crate::core::ddeploy_v2::PlacementAuthorityView,
+) -> Vec<String> {
+    let mut nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for placement in &view.placements {
+        nodes.insert(placement.node_id.clone());
+    }
+    nodes.into_iter().collect()
+}
+
 /// Phase 117G: the exact D-Code artifact-revision binding currently active
 /// for `service_id`, derived ENTIRELY from the active deployment's own
 /// already-accepted, immutable proposal record -- never a second,
@@ -9100,5 +9124,216 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 6, "expected at least 6 real ddeploy-v2 negative fixtures to be exercised, found {checked}");
+    }
+
+    // ----------------------------------------------------------------- //
+    // Phase 118B: derive_active_dengine_nodes
+    // ----------------------------------------------------------------- //
+    mod dengine_derivation {
+        use super::*;
+        use crate::core::canonical_dmap_v2::{
+            DIoTArtifactBindingV2, DIoTPlacementV2, DServPlacementV2,
+        };
+        use crate::core::ddeploy_v2::{PlacementAuthorityV2Extras, PlacementAuthorityView};
+
+        fn placement(service_id: &str, node_id: &str) -> DServPlacementV2 {
+            DServPlacementV2 {
+                service_id: service_id.into(),
+                node_id: node_id.into(),
+            }
+        }
+
+        fn view(placements: Vec<DServPlacementV2>) -> PlacementAuthorityView {
+            PlacementAuthorityView {
+                project_id: "p".into(),
+                application_id: "a".into(),
+                dmap_id: "dmap:test".into(),
+                revision: 1,
+                digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                placements,
+                proposal_id: None,
+                acceptance_id: None,
+                dgraph_id: None,
+                dgraph_revision: None,
+                dgraph_digest: None,
+                dgraph_snapshot: None,
+                v2: None,
+            }
+        }
+
+        fn view_with_diot(
+            placements: Vec<DServPlacementV2>,
+            diot_placements: Vec<DIoTPlacementV2>,
+        ) -> PlacementAuthorityView {
+            let mut v = view(placements);
+            v.v2 = Some(PlacementAuthorityV2Extras {
+                dforward_id: "dforward:test".into(),
+                dforward_revision: 1,
+                dforward_digest:
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
+                dcall_realizations: vec![],
+                diot_placements,
+                dforward_snapshot: None,
+                external_port_bindings: vec![],
+            });
+            v
+        }
+
+        fn diot_placement(placement_id: &str, diot_id: &str, node_id: &str) -> DIoTPlacementV2 {
+            DIoTPlacementV2 {
+                placement_id: placement_id.into(),
+                diot_id: diot_id.into(),
+                node_id: node_id.into(),
+                artifact_binding: DIoTArtifactBindingV2 {
+                    artifact_id: "artifact:diot".into(),
+                    descriptor_digest:
+                        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                            .into(),
+                    content_digest: None,
+                },
+            }
+        }
+
+        #[test]
+        fn e1_empty_active_placement_list_yields_empty_membership() {
+            assert_eq!(
+                derive_active_dengine_nodes(&view(vec![])),
+                Vec::<String>::new()
+            );
+        }
+
+        #[test]
+        fn e2_single_placement_yields_single_member() {
+            let v = view(vec![placement("svc", "node-b")]);
+            assert_eq!(derive_active_dengine_nodes(&v), vec!["node-b".to_string()]);
+        }
+
+        #[test]
+        fn e3_multiple_distinct_placements_are_sorted_lexicographically() {
+            let v = view(vec![
+                placement("svc-1", "node-c"),
+                placement("svc-2", "node-a"),
+                placement("svc-3", "node-b"),
+            ]);
+            assert_eq!(
+                derive_active_dengine_nodes(&v),
+                vec![
+                    "node-a".to_string(),
+                    "node-b".to_string(),
+                    "node-c".to_string()
+                ]
+            );
+        }
+
+        #[test]
+        fn e4_multiple_services_on_the_same_node_collapse_to_one_member() {
+            let v = view(vec![
+                placement("svc-1", "node-a"),
+                placement("svc-2", "node-a"),
+            ]);
+            assert_eq!(derive_active_dengine_nodes(&v), vec!["node-a".to_string()]);
+        }
+
+        #[test]
+        fn e5_mixed_duplicate_and_unordered_placements_dedupe_and_sort() {
+            let v = view(vec![
+                placement("svc-1", "node-b"),
+                placement("svc-2", "node-a"),
+                placement("svc-3", "node-b"),
+                placement("svc-4", "node-c"),
+                placement("svc-5", "node-a"),
+            ]);
+            assert_eq!(
+                derive_active_dengine_nodes(&v),
+                vec![
+                    "node-a".to_string(),
+                    "node-b".to_string(),
+                    "node-c".to_string()
+                ]
+            );
+        }
+
+        #[test]
+        fn e6_service_identity_does_not_affect_membership() {
+            let a = view(vec![placement("svc-alpha", "node-a")]);
+            let b = view(vec![placement("svc-completely-different-id", "node-a")]);
+            assert_eq!(
+                derive_active_dengine_nodes(&a),
+                derive_active_dengine_nodes(&b)
+            );
+        }
+
+        #[test]
+        fn e7_diot_only_node_is_excluded_from_membership() {
+            let v = view_with_diot(
+                vec![placement("svc", "node-a")],
+                vec![diot_placement("p1", "diot:1", "node-z")],
+            );
+            let result = derive_active_dengine_nodes(&v);
+            assert_eq!(result, vec!["node-a".to_string()]);
+            assert!(
+                !result.contains(&"node-z".to_string()),
+                "DIoT-only node must not appear in D-Engine membership"
+            );
+        }
+
+        #[test]
+        fn e8_diot_only_active_authority_yields_empty_membership() {
+            let v = view_with_diot(vec![], vec![diot_placement("p1", "diot:1", "node-z")]);
+            assert_eq!(derive_active_dengine_nodes(&v), Vec::<String>::new());
+        }
+
+        #[test]
+        fn e9_function_signature_admits_no_runtime_health_or_monitor_input() {
+            // Structural proof: `derive_active_dengine_nodes` takes exactly one
+            // argument, `&PlacementAuthorityView`, which itself carries no
+            // health/liveness/observation field (see `PlacementAuthorityView`'s
+            // own field list) -- there is no D-Monitor state this function
+            // could consult even if it wanted to. Two views that differ only
+            // in which "node" values they carry (never in any health signal,
+            // because no such field exists) proves membership is placement-
+            // authority-derived and nothing else.
+            let v = view(vec![placement("svc", "node-a")]);
+            assert_eq!(derive_active_dengine_nodes(&v), vec!["node-a".to_string()]);
+        }
+
+        #[test]
+        fn e10_capability_state_has_no_role_in_membership() {
+            // `DServPlacementV2` carries only `service_id`/`node_id` -- no
+            // platform/capacity/ABI-capability field exists on a placement for
+            // this function to read, so membership cannot vary with capability
+            // state by construction.
+            let v = view(vec![placement("svc", "node-a")]);
+            assert_eq!(derive_active_dengine_nodes(&v), vec!["node-a".to_string()]);
+        }
+
+        #[test]
+        fn e11_dcode_executable_currentness_has_no_role_in_membership() {
+            // Same structural argument as E10: `DServPlacementV2` carries no
+            // D-Code artifact/descriptor-digest field, and `PlacementAuthorityView`
+            // itself carries no `dcode_artifact_authority`-shaped field either --
+            // this function has nothing D-Code-related to read.
+            let v = view(vec![placement("svc", "node-a")]);
+            assert_eq!(derive_active_dengine_nodes(&v), vec!["node-a".to_string()]);
+        }
+
+        #[test]
+        fn e12_determinism_across_insertion_order() {
+            let a = view(vec![
+                placement("svc-1", "node-c"),
+                placement("svc-2", "node-a"),
+                placement("svc-3", "node-b"),
+            ]);
+            let b = view(vec![
+                placement("svc-3", "node-b"),
+                placement("svc-1", "node-c"),
+                placement("svc-2", "node-a"),
+            ]);
+            assert_eq!(
+                derive_active_dengine_nodes(&a),
+                derive_active_dengine_nodes(&b)
+            );
+        }
     }
 }
