@@ -23,7 +23,7 @@
 //! No Stage 113 telemetry is read: only Stage 110's structural
 //! capacity/capability fields participate in any decision.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,7 @@ use crate::core::canonical_dmap::{
 };
 use crate::core::jcs;
 use crate::core::operational_dgraph::{
-    OperationalDGraph, OperationalDesiredService, OperationalNodeDesiredState,
+    OperationalCleanupDirective, OperationalDGraph, OperationalDesiredService, OperationalNodeDesiredState,
     OPERATIONAL_DGRAPH_SCHEMA_VERSION,
 };
 use crate::core::service_artifact_registry::ServiceArtifact;
@@ -2072,6 +2072,231 @@ pub fn union_project_operational_graph(
             "applications": application_provenance,
         })),
     })
+}
+
+// --------------------------------------------------------------------------- //
+// Phase 119G: governed source-cleanup directive derivation                    //
+// --------------------------------------------------------------------------- //
+
+/// Phase 119G, implementing the Phase 119F-R1 corrected design (section 5.1):
+/// a pure, read-only, NEVER-PERSISTED derivation of which services this node
+/// once ran under some historically-accepted D-Map, but does not currently
+/// run under CURRENT accepted placement authority.
+///
+/// Full-history scan, not a single-hop "immediately-prior acceptance"
+/// lookback (Phase 119F-R1 section 3 found the latter loses any node
+/// displaced two or more revisions ago). For every application with ANY
+/// historical acceptance -- in EITHER `state.acceptances` (v1) or
+/// `state.phase113_v2.acceptances` (v2) -- for `project_id`:
+///
+/// 1. Reconstruct that acceptance's historical placements via
+///    `acceptance.proposal_id` -> the exact persisted proposal record's own
+///    IMMUTABLE `placements` (never by treating `materialized_dmap_ref` as
+///    if it stored a placement payload of its own -- it does not; it is
+///    only an `{id, revision, digest}` reference, section 5 of the Phase
+///    119G task). This mirrors `accept_proposal`'s own idempotent-replay
+///    branch, which already reconstructs a proposal's historical
+///    materialization the same way via `build_candidate_dmap`.
+/// 2. Validates relational integrity BEFORE trusting any reconstructed
+///    placement: the proposal exists, is `Accepted`, its own
+///    `accepted_acceptance_id` names this exact acceptance (never the
+///    reverse -- an acceptance claiming a proposal that does not itself
+///    claim it back is corruption), its digest recomputes correctly and
+///    matches both its own recorded `proposal_digest` and the acceptance's
+///    recorded `proposal_digest`, and project/application identity agree
+///    between proposal and acceptance. For v1, ALSO recomputes the
+///    historical D-Map digest via `build_candidate_dmap` and verifies it
+///    against `acceptance.materialized_dmap_ref.digest`, exactly like
+///    `accept_proposal`'s replay branch. A failure anywhere in this
+///    integrity chain fails the WHOLE call closed (`Err`) -- this reads
+///    already-committed state that should never be corrupt; if it is, that
+///    must never be silently papered over by skipping just that one record.
+/// 3. Every historical placement naming `node_id` becomes a candidate
+///    `(application_id, service_id, previous_dmap_ref)` tuple, deduplicated
+///    by the FULL tuple -- never collapsed to "latest per service" (Phase
+///    119F-R1 section 5.3): two non-adjacent historical placements of the
+///    same service on the same node produce two distinct directives, since
+///    local runtime identity evidence -- not server-side guessing -- is
+///    what determines which (if any) still corresponds to something
+///    actually running.
+/// 4. Each surviving candidate is checked against CURRENT active authority
+///    (`active_placement_authority`, re-read fresh from `state` on every
+///    call, never cached) for that `application_id`. Current authority
+///    ALWAYS wins (Phase 119F-R1 section 7): if it currently places
+///    `service_id` on `node_id`, the candidate is dropped, not emitted.
+///
+/// Never emits a directive from a transport failure, missing binding,
+/// unknown node, or any other absence of information -- only ever from a
+/// GENUINE historical acceptance record plus a GENUINE current-absence
+/// check (Phase 119E's M16/M17, preserved by construction here exactly as
+/// Phase 119F section 23 and Phase 119F-R1 section 13.12 require).
+pub fn derive_cleanup_directives_for_node(
+    state: &DDeployStateV1,
+    project_id: &str,
+    node_id: &str,
+) -> Result<Vec<OperationalCleanupDirective>, String> {
+    let node_id = node_id.trim();
+
+    // Same defensive cross-version ambiguity check `ddeploy_migration::locate_acceptance`
+    // already establishes for identity resolution (Phase 119C): the exact
+    // same `acceptance_id` naming two DIFFERENT records across the v1/v2
+    // maps is itself corruption, never silently resolved by picking one.
+    for acceptance_id in state.acceptances.keys() {
+        if state.phase113_v2.acceptances.contains_key(acceptance_id) {
+            return Err(format!(
+                "cleanup derivation: acceptance_id '{acceptance_id}' exists in BOTH v1 and v2 acceptance maps (cross-version identity ambiguity)"
+            ));
+        }
+    }
+
+    // (application_id, service_id, dmap_id, dmap_revision, dmap_digest) --
+    // the full dedup key. A `BTreeSet` both deduplicates and gives
+    // deterministic iteration order for free.
+    let mut candidates: BTreeSet<(String, String, String, u64, String)> = BTreeSet::new();
+
+    for acceptance in state.acceptances.values() {
+        if acceptance.project_id != project_id {
+            continue;
+        }
+        let proposal_record = state.proposals.get(&acceptance.proposal_id).ok_or_else(|| {
+            format!(
+                "cleanup derivation: v1 acceptance '{}' references missing proposal '{}'",
+                acceptance.acceptance_id, acceptance.proposal_id
+            )
+        })?;
+        if proposal_record.state != ProposalLifecycleState::Accepted
+            || proposal_record.accepted_acceptance_id.as_deref() != Some(acceptance.acceptance_id.as_str())
+        {
+            return Err(format!(
+                "cleanup derivation: v1 proposal '{}' is not correctly linked back to acceptance '{}' (corrupt acceptance<->proposal linkage)",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        let actual_proposal_digest = compute_proposal_digest(&proposal_record.proposal)
+            .map_err(|error| format!("cleanup derivation: failed to recompute v1 proposal '{}' digest: {error}", acceptance.proposal_id))?;
+        if actual_proposal_digest != proposal_record.proposal_digest || actual_proposal_digest != acceptance.proposal_digest {
+            return Err(format!(
+                "cleanup derivation: v1 proposal '{}' digest is internally inconsistent with its own record and/or acceptance '{}' (proposal digest corruption)",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        if proposal_record.proposal.project_id != acceptance.project_id || proposal_record.proposal.application_id != acceptance.application_id {
+            return Err(format!(
+                "cleanup derivation: v1 proposal '{}' project/application identity does not match acceptance '{}'",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        let historical_dmap = build_candidate_dmap(&proposal_record.proposal, &acceptance.materialized_dmap_ref.id, acceptance.materialized_dmap_ref.revision);
+        let historical_digest = recompute_dmap_digest(&historical_dmap)
+            .map_err(|error| format!("cleanup derivation: failed to recompute historical D-Map digest for acceptance '{}': {error}", acceptance.acceptance_id))?;
+        if historical_digest != acceptance.materialized_dmap_ref.digest {
+            return Err(format!(
+                "cleanup derivation: v1 acceptance '{}' materialized_dmap_ref.digest does not match its own recomputed historical D-Map digest (acceptance corruption)",
+                acceptance.acceptance_id
+            ));
+        }
+        for placement in &proposal_record.proposal.placements {
+            if placement.node_id.trim() == node_id {
+                candidates.insert((
+                    acceptance.application_id.clone(),
+                    placement.service_id.clone(),
+                    acceptance.materialized_dmap_ref.id.clone(),
+                    acceptance.materialized_dmap_ref.revision,
+                    acceptance.materialized_dmap_ref.digest.clone(),
+                ));
+            }
+        }
+    }
+
+    for acceptance in state.phase113_v2.acceptances.values() {
+        if acceptance.project_id != project_id {
+            continue;
+        }
+        let proposal_record = state.phase113_v2.proposals.get(&acceptance.proposal_id).ok_or_else(|| {
+            format!(
+                "cleanup derivation: v2 acceptance '{}' references missing proposal '{}'",
+                acceptance.acceptance_id, acceptance.proposal_id
+            )
+        })?;
+        if proposal_record.state != crate::core::ddeploy_v2::ProposalV2State::Accepted
+            || proposal_record.accepted_acceptance_id.as_deref() != Some(acceptance.acceptance_id.as_str())
+        {
+            return Err(format!(
+                "cleanup derivation: v2 proposal '{}' is not correctly linked back to acceptance '{}' (corrupt acceptance<->proposal linkage)",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        let actual_proposal_digest = crate::core::ddeploy_v2::DDeployStateV2::proposal_digest(&proposal_record.proposal)
+            .map_err(|error| format!("cleanup derivation: failed to recompute v2 proposal '{}' digest: {error}", acceptance.proposal_id))?;
+        if actual_proposal_digest != proposal_record.proposal_digest || actual_proposal_digest != acceptance.proposal_digest {
+            return Err(format!(
+                "cleanup derivation: v2 proposal '{}' digest is internally inconsistent with its own record and/or acceptance '{}' (proposal digest corruption)",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        if proposal_record.proposal.project_id != acceptance.project_id || proposal_record.proposal.application_id != acceptance.application_id {
+            return Err(format!(
+                "cleanup derivation: v2 proposal '{}' project/application identity does not match acceptance '{}'",
+                acceptance.proposal_id, acceptance.acceptance_id
+            ));
+        }
+        // Phase 119F-R1 section 5.1 (normalizing `ContractRefV2` into
+        // `CanonicalContractReferenceV1` for this ephemeral cleanup view
+        // only -- the same field-copy pattern Phase 119C's own
+        // `ddeploy_migration::locate_acceptance` already established, E14).
+        for placement in &proposal_record.proposal.placements {
+            if placement.node_id.trim() == node_id {
+                candidates.insert((
+                    acceptance.application_id.clone(),
+                    placement.service_id.clone(),
+                    acceptance.materialized_dmap_ref.id.clone(),
+                    acceptance.materialized_dmap_ref.revision,
+                    acceptance.materialized_dmap_ref.digest.clone(),
+                ));
+            }
+        }
+    }
+
+    // Current authority always wins (Phase 119F-R1 section 7): re-read fresh
+    // for every distinct application_id encountered, never cached across
+    // calls to this function.
+    let mut current_placements_by_app: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut directives = Vec::new();
+    for (application_id, service_id, dmap_id, dmap_revision, dmap_digest) in candidates {
+        if !current_placements_by_app.contains_key(&application_id) {
+            let view = active_placement_authority(state, project_id, &application_id)?;
+            let placements = view
+                .map(|view| view.placements.into_iter().map(|p| (p.service_id, p.node_id)).collect())
+                .unwrap_or_default();
+            current_placements_by_app.insert(application_id.clone(), placements);
+        }
+        let currently_placed_here = current_placements_by_app[&application_id]
+            .iter()
+            .any(|(current_service_id, current_node_id)| current_service_id == &service_id && current_node_id == node_id);
+        if currently_placed_here {
+            continue;
+        }
+        directives.push(OperationalCleanupDirective {
+            service_id,
+            application_id,
+            previous_dmap_ref: CanonicalContractReferenceV1 { id: dmap_id, revision: dmap_revision, digest: dmap_digest },
+        });
+    }
+    directives.sort_by(|a, b| {
+        (&a.application_id, &a.service_id, a.previous_dmap_ref.revision)
+            .cmp(&(&b.application_id, &b.service_id, b.previous_dmap_ref.revision))
+    });
+    Ok(directives)
+}
+
+/// The centralized read accessor for API callers (mirroring
+/// `active_operational_projection`/`is_canonical_authority_active`'s own
+/// established pattern exactly): loads current persisted `DDeployStateV1`
+/// fresh from disk and derives cleanup directives from it. Never caches
+/// anything -- every call re-reads already-persisted state.
+pub fn cleanup_directives_for_node(project_id: &str, node_id: &str) -> Result<Vec<OperationalCleanupDirective>, String> {
+    let state = load_state(&resolved_db_path())?;
+    derive_cleanup_directives_for_node(&state, project_id, node_id)
 }
 
 // --------------------------------------------------------------------------- //
@@ -6314,6 +6539,35 @@ mod tests {
     // misattributed to `F_OPERATIONAL_SERVICE_ID_COLLISION` instead of the
     // capacity codes actually under test.
 
+    /// Phase 119G: a D-Continuum declaring `node_ids.len()` structurally
+    /// known nodes (each with the same capacity), plus the always-present
+    /// "shared-01" node -- used by the cleanup-derivation multi-hop tests,
+    /// which move a service across several distinct node names.
+    fn multi_node_dcontinuum(project: &str, node_ids: &[&str], cpu_cores: u32, memory_bytes: u64) -> CanonicalDContinuumV1 {
+        let mut nodes = vec![CanonicalDNodeV1 {
+            node_id: "shared-01".to_string(),
+            platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "amd64".to_string() },
+            capacity: CanonicalNodeCapacityV1 { cpu_cores, memory_bytes },
+            capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] },
+        }];
+        for node_id in node_ids {
+            nodes.push(CanonicalDNodeV1 {
+                node_id: node_id.to_string(),
+                platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "amd64".to_string() },
+                capacity: CanonicalNodeCapacityV1 { cpu_cores, memory_bytes },
+                capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] },
+            });
+        }
+        CanonicalDContinuumV1 {
+            schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(),
+            project_id: project.to_string(),
+            dcontinuum_id: format!("continuum:{project}"),
+            revision: 1,
+            nodes,
+            links: vec![],
+        }
+    }
+
     fn shared_node_dcontinuum(project: &str, cpu_cores: u32, memory_bytes: u64) -> CanonicalDContinuumV1 {
         CanonicalDContinuumV1 {
             schema: CANONICAL_DCONTINUUM_SCHEMA.to_string(),
@@ -7019,6 +7273,75 @@ mod tests {
             diot_artifact_authority: BTreeMap::new(),
                 dcode_artifact_authority: std::collections::BTreeMap::new(),
     };
+        state
+            .create_v2_proposal(proposal, dgraph, dcontinuum.clone(), dforward)
+            .unwrap_or_else(|e| panic!("v2 proposal creation for '{app}' must succeed: {e}"));
+        state.accept_v2_proposal(
+            proposal_id,
+            acceptance_id.to_string(),
+            "operator:dana".to_string(),
+            "2026-01-01T00:05:00Z".to_string(),
+            dcontinuum,
+            &[],
+            None,
+        )
+    }
+
+    /// Phase 119G: same as `create_and_accept_v2_on_shared_node`, but the
+    /// placement targets an arbitrary `target_node` instead of always
+    /// hardcoding "shared-01" -- needed by the cleanup-derivation tests that
+    /// move a service to a DIFFERENT node under v2 authority.
+    fn create_and_accept_v2_on_node(
+        state: &mut DDeployStateV1,
+        project: &str,
+        app: &str,
+        service_id: &str,
+        target_node: &str,
+        cpu_cores: u32,
+        memory_bytes: u64,
+        dcontinuum: &CanonicalDContinuumV1,
+        proposal_id: &str,
+        acceptance_id: &str,
+        expected_active_dmap_revision: Option<u64>,
+    ) -> Result<crate::core::ddeploy_v2::DDeployAcceptanceV2, String> {
+        let dgraph = one_service_dgraph(app, service_id, cpu_cores, memory_bytes);
+        let dforward = minimal_dforward(project);
+        let dgraph_ref = crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dgraph.dgraph_id.clone(),
+            revision: dgraph.revision,
+            digest: recompute_dgraph_digest(&dgraph).unwrap(),
+        };
+        let dcontinuum_ref = crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dcontinuum.dcontinuum_id.clone(),
+            revision: dcontinuum.revision,
+            digest: recompute_dcontinuum_digest(dcontinuum).unwrap(),
+        };
+        let dforward_ref = crate::core::canonical_dmap_v2::ContractRefV2 {
+            id: dforward.dforward_id.clone(),
+            revision: dforward.revision,
+            digest: dforward.digest().unwrap(),
+        };
+        let proposal = crate::core::ddeploy_v2::DDeployProposalV2 {
+            schema: crate::core::ddeploy_v2::DDEPLOY_PROPOSAL_V2_SCHEMA.to_string(),
+            proposal_id: proposal_id.to_string(),
+            project_id: project.to_string(),
+            application_id: app.to_string(),
+            source: ProposalSource::Operator,
+            created_at_utc: chrono::Utc::now().to_rfc3339(),
+            dgraph_ref,
+            dcontinuum_ref,
+            dforward_ref,
+            placements: vec![crate::core::canonical_dmap_v2::DServPlacementV2 {
+                service_id: service_id.to_string(),
+                node_id: target_node.to_string(),
+            }],
+            diot_placements: vec![],
+            dcall_realizations: vec![],
+            external_port_bindings: vec![],
+            expected_active_dmap_revision,
+            diot_artifact_authority: BTreeMap::new(),
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
+        };
         state
             .create_v2_proposal(proposal, dgraph, dcontinuum.clone(), dforward)
             .unwrap_or_else(|e| panic!("v2 proposal creation for '{app}' must succeed: {e}"));
@@ -9280,6 +9603,221 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 6, "expected at least 6 real ddeploy-v2 negative fixtures to be exercised, found {checked}");
+    }
+
+    // ----------------------------------------------------------------- //
+    // Phase 119G: derive_cleanup_directives_for_node
+    // ----------------------------------------------------------------- //
+    mod cleanup_directive_derivation {
+        use super::*;
+
+        // H1: A -> B. Querying A yields a directive for A's historical
+        // placement; querying B yields none (B is current).
+        #[test]
+        fn h1_single_hop_move_yields_directive_for_historical_source_only() {
+            let dcontinuum = multi_node_dcontinuum("proj-h1", &["other-01"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h1", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 accept on shared-01 must succeed");
+            // Move to a different node: create/accept a second proposal
+            // placing the same service on "other-01" instead.
+            let dgraph2 = one_service_dgraph("app", "svc", 1, 1);
+            let artifacts = vec![sample_artifact("svc", vec!["other-01"])];
+            create_proposal(&mut state, CreateProposalInput {
+                planner_provenance: None, dcode_artifact_authority: BTreeMap::new(),
+                project_id: "proj-h1".to_string(), application_id: "app".to_string(),
+                source: ProposalSource::Operator, dgraph: dgraph2, dcontinuum: dcontinuum.clone(),
+                placements: vec![CanonicalDServPlacementV1 { service_id: "svc".to_string(), node_id: "other-01".to_string() }],
+            }, "p2".to_string(), "2026-01-01T00:10:00Z".to_string(), &artifacts)
+                .expect("rev2 proposal creation must succeed");
+            accept_proposal(&mut state, "p2", "operator:dana", None, &artifacts, Some(&dcontinuum), "2026-01-01T00:15:00Z", "acc2".to_string())
+                .expect("rev2 acceptance must succeed");
+
+            let directives_a = derive_cleanup_directives_for_node(&state, "proj-h1", "shared-01").unwrap();
+            assert_eq!(directives_a.len(), 1, "shared-01 must show exactly one cleanup candidate: {directives_a:?}");
+            assert_eq!(directives_a[0].application_id, "app");
+            assert_eq!(directives_a[0].service_id, "svc");
+            assert_eq!(directives_a[0].previous_dmap_ref.revision, 1);
+
+            let directives_b = derive_cleanup_directives_for_node(&state, "proj-h1", "other-01").unwrap();
+            assert!(directives_b.is_empty(), "the CURRENT node must never show a cleanup directive for its own current service: {directives_b:?}");
+        }
+
+        // H2: A -> B -> C, A offline throughout. Querying A and B
+        // individually each yield their own historical directive -- this is
+        // R1-A's own counterexample, now proven fixed.
+        #[test]
+        fn h2_multi_hop_a_to_b_to_c_yields_directives_for_both_historical_nodes() {
+            let dcontinuum = multi_node_dcontinuum("proj-h2", &["node-b", "node-c"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h2", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 (A) must succeed");
+            move_service(&mut state, "proj-h2", "app", "svc", &dcontinuum, "node-b", "p2", "acc2", 1);
+            move_service(&mut state, "proj-h2", "app", "svc", &dcontinuum, "node-c", "p3", "acc3", 1);
+
+            let directives_a = derive_cleanup_directives_for_node(&state, "proj-h2", "shared-01").unwrap();
+            assert_eq!(directives_a.len(), 1, "A (2 revisions back) must still be found by the full-history scan: {directives_a:?}");
+            assert_eq!(directives_a[0].previous_dmap_ref.revision, 1);
+
+            let directives_b = derive_cleanup_directives_for_node(&state, "proj-h2", "node-b").unwrap();
+            assert_eq!(directives_b.len(), 1, "B (1 revision back) must be found too: {directives_b:?}");
+            assert_eq!(directives_b[0].previous_dmap_ref.revision, 2);
+
+            let directives_c = derive_cleanup_directives_for_node(&state, "proj-h2", "node-c").unwrap();
+            assert!(directives_c.is_empty(), "C is CURRENT -- must never show a directive for itself");
+        }
+
+        // H3: A -> B -> A -> C. Querying A yields TWO distinct historical
+        // directives (rev1's dmap_ref and rev3's dmap_ref), never collapsed.
+        #[test]
+        fn h3_duplicate_historical_placement_on_same_node_yields_distinct_directives() {
+            let dcontinuum = multi_node_dcontinuum("proj-h3", &["node-b", "node-c"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h3", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 (A) must succeed");
+            move_service(&mut state, "proj-h3", "app", "svc", &dcontinuum, "node-b", "p2", "acc2", 1);
+            move_service(&mut state, "proj-h3", "app", "svc", &dcontinuum, "shared-01", "p3", "acc3", 1);
+            move_service(&mut state, "proj-h3", "app", "svc", &dcontinuum, "node-c", "p4", "acc4", 1);
+
+            let directives_a = derive_cleanup_directives_for_node(&state, "proj-h3", "shared-01").unwrap();
+            assert_eq!(directives_a.len(), 2, "both the rev1 AND rev3 historical placements on shared-01 must each produce their own directive: {directives_a:?}");
+            let revisions: BTreeSet<u64> = directives_a.iter().map(|d| d.previous_dmap_ref.revision).collect();
+            assert_eq!(revisions, BTreeSet::from([1, 3]), "the two directives must carry the two DIFFERENT historical dmap_ref revisions");
+        }
+
+        // H4: A -> B -> A (current). Zero cleanup for A: current
+        // return-to-source always wins.
+        #[test]
+        fn h4_return_to_source_suppresses_cleanup_for_current_placement() {
+            let dcontinuum = multi_node_dcontinuum("proj-h4", &["node-b"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h4", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 (A) must succeed");
+            move_service(&mut state, "proj-h4", "app", "svc", &dcontinuum, "node-b", "p2", "acc2", 1);
+            move_service(&mut state, "proj-h4", "app", "svc", &dcontinuum, "shared-01", "p3", "acc3", 1);
+
+            let directives_a = derive_cleanup_directives_for_node(&state, "proj-h4", "shared-01").unwrap();
+            assert!(directives_a.is_empty(), "shared-01 is CURRENT again (rev3) -- no candidate may survive, regardless of rev1's history: {directives_a:?}");
+
+            let directives_b = derive_cleanup_directives_for_node(&state, "proj-h4", "node-b").unwrap();
+            assert_eq!(directives_b.len(), 1, "node-b (rev2, now vacated) must still show its own directive");
+        }
+
+        // H5: repeated derivation is deterministic.
+        #[test]
+        fn h5_repeated_derivation_is_deterministic() {
+            let dcontinuum = multi_node_dcontinuum("proj-h5", &["node-b"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h5", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 must succeed");
+            move_service(&mut state, "proj-h5", "app", "svc", &dcontinuum, "node-b", "p2", "acc2", 1);
+
+            let first = derive_cleanup_directives_for_node(&state, "proj-h5", "shared-01").unwrap();
+            let second = derive_cleanup_directives_for_node(&state, "proj-h5", "shared-01").unwrap();
+            assert_eq!(first, second, "repeated derivation over unchanged state must be byte-identical");
+        }
+
+        // H7: v1 historical placement, application now v2-active elsewhere.
+        // The v1 historical cleanup directive must still be derived.
+        #[test]
+        fn h7_v1_historical_placement_survives_transition_to_v2_active() {
+            let dcontinuum = multi_node_dcontinuum("proj-h7", &["node-b"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h7", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("v1 rev1 (A, on shared-01) must succeed");
+            create_and_accept_v2_on_node(&mut state, "proj-h7", "app", "svc", "node-b", 1, 1, &dcontinuum, "p2", "acc2", Some(1))
+                .expect("v2 acceptance transitioning app to v2-active on node-b must succeed");
+
+            assert!(
+                !state.active_by_application.contains_key(&application_key("proj-h7", "app")),
+                "the v1->v2 transition must have retired the v1 active pointer"
+            );
+            let directives = derive_cleanup_directives_for_node(&state, "proj-h7", "shared-01").unwrap();
+            assert_eq!(directives.len(), 1, "the v1-era historical placement must still be found by scanning state.acceptances directly, independent of the active pointer: {directives:?}");
+            assert_eq!(directives[0].previous_dmap_ref.revision, 1);
+        }
+
+        // H8: corrupt acceptance->proposal linkage fails closed.
+        #[test]
+        fn h8_corrupt_acceptance_proposal_linkage_fails_closed() {
+            let dcontinuum = shared_node_dcontinuum("proj-h8", 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h8", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 must succeed");
+            // Corrupt: the proposal no longer claims to be accepted by this
+            // acceptance (relational linkage broken).
+            state.proposals.get_mut("p1").unwrap().accepted_acceptance_id = Some("some-other-acceptance".to_string());
+            let result = derive_cleanup_directives_for_node(&state, "proj-h8", "shared-01");
+            assert!(result.is_err(), "corrupt acceptance<->proposal linkage must fail the whole derivation closed, never silently skip it: {result:?}");
+        }
+
+        // H9: proposal digest corruption fails closed.
+        #[test]
+        fn h9_proposal_digest_corruption_fails_closed() {
+            let dcontinuum = shared_node_dcontinuum("proj-h9", 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h9", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 must succeed");
+            // Corrupt: mutate the persisted proposal's placements without
+            // recomputing its recorded digest.
+            state.proposals.get_mut("p1").unwrap().proposal.placements.push(
+                CanonicalDServPlacementV1 { service_id: "svc-injected".to_string(), node_id: "shared-01".to_string() },
+            );
+            let result = derive_cleanup_directives_for_node(&state, "proj-h9", "shared-01");
+            assert!(result.is_err(), "a tampered proposal whose recomputed digest no longer matches its recorded digest must fail closed: {result:?}");
+        }
+
+        // H10: the same acceptance_id existing in both v1 and v2 acceptance
+        // maps is cross-version identity ambiguity -- fails closed.
+        #[test]
+        fn h10_cross_version_acceptance_id_ambiguity_fails_closed() {
+            let dcontinuum = shared_node_dcontinuum("proj-h10", 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h10", "app-a", "svc-a", 1, 1, &dcontinuum, "p1", "shared-acc-id")
+                .expect("v1 acceptance must succeed");
+            create_and_accept_v2_on_shared_node(&mut state, "proj-h10", "app-b", "svc-b", 1, 1, &dcontinuum, "p2", "shared-acc-id", None)
+                .expect("v2 acceptance reusing the SAME acceptance_id string must succeed at the storage layer (no cross-map uniqueness enforced there)");
+            let result = derive_cleanup_directives_for_node(&state, "proj-h10", "shared-01");
+            assert!(result.is_err(), "the same acceptance_id existing in both v1 and v2 maps must fail derivation closed: {result:?}");
+        }
+
+        // No-directive-for-unknown-project / never-known node (M16/M17 shape).
+        #[test]
+        fn no_directive_for_project_never_structurally_known() {
+            let state = DDeployStateV1::empty();
+            let directives = derive_cleanup_directives_for_node(&state, "proj-unknown", "any-node").unwrap();
+            assert!(directives.is_empty(), "empty state must never synthesize a directive");
+        }
+
+        /// Test helper: creates+accepts a new proposal moving `service_id`
+        /// to `target_node` for `application_id`, expecting
+        /// `expected_active_dmap_revision` to be the CURRENT active
+        /// revision beforehand (mirrors `create_and_accept_on_shared_node`
+        /// but for an arbitrary target node on a later revision).
+        fn move_service(
+            state: &mut DDeployStateV1,
+            project: &str,
+            application_id: &str,
+            service_id: &str,
+            dcontinuum: &CanonicalDContinuumV1,
+            target_node: &str,
+            proposal_id: &str,
+            acceptance_id: &str,
+            revision_hint: u64,
+        ) {
+            let dgraph = one_service_dgraph(application_id, service_id, 1, 1);
+            let artifacts = vec![sample_artifact(service_id, vec![target_node])];
+            create_proposal(state, CreateProposalInput {
+                planner_provenance: None, dcode_artifact_authority: BTreeMap::new(),
+                project_id: project.to_string(), application_id: application_id.to_string(),
+                source: ProposalSource::Operator, dgraph, dcontinuum: dcontinuum.clone(),
+                placements: vec![CanonicalDServPlacementV1 { service_id: service_id.to_string(), node_id: target_node.to_string() }],
+            }, proposal_id.to_string(), format!("2026-01-01T00:{revision_hint:02}:00Z"), &artifacts)
+                .unwrap_or_else(|e| panic!("move_service: proposal creation to '{target_node}' must succeed: {e:?}"));
+            accept_proposal(state, proposal_id, "operator:dana", None, &artifacts, Some(dcontinuum), format!("2026-01-01T00:{revision_hint:02}:30Z").as_str(), acceptance_id.to_string())
+                .unwrap_or_else(|e| panic!("move_service: acceptance to '{target_node}' must succeed: {e:?}"));
+        }
+
     }
 
     // ----------------------------------------------------------------- //

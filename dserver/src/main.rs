@@ -107,6 +107,7 @@ use api::operational_analysis_context::{
 use api::operational_dgraph::{
     get_operational_dgraph, get_operational_dgraph_slice, get_operational_projects,
     post_operational_project, post_operational_reconciliation_authorization,
+    post_operational_reconciliation_cleanup_authorization,
     post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
@@ -306,6 +307,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/operational-reconciliation/rollback-authorize",
             post(post_operational_reconciliation_rollback_authorization),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/operational-reconciliation/cleanup-authorize",
+            post(post_operational_reconciliation_cleanup_authorization),
         )
         .route(
             "/api/v1/operational-evidence",
