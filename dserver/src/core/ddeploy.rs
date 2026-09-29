@@ -365,13 +365,20 @@ pub struct PlannerProvenanceV1 {
     /// C1C fix: must relationally match `DDeployProposalV1.dcontinuum_ref`
     /// exactly.
     pub dcontinuum_ref: CanonicalContractReferenceV1,
-    /// C1A fix: the EXACT per-node structural commitment baseline
-    /// (`compute_project_node_commitments`'s own return value) actually
+    /// C1A fix: the EXACT per-node structural commitment baseline actually
     /// supplied to `plan_canonical_placements` for this successful call --
     /// structural only, never live telemetry; for a redeployment of this
     /// same application it already excludes that application's own prior
-    /// active allocation (R3B). An empty map legitimately means "no other
-    /// active application in this project committed anything at plan time."
+    /// active allocation (R3B). Phase 120B correction: this is
+    /// `compute_project_node_commitments_versioned`'s own return value, not
+    /// `compute_project_node_commitments`'s -- it reflects every OTHER
+    /// active application's structural commitment across BOTH DMap/1 and
+    /// DMap/2, not DMap/1 alone (an earlier version of this comment named
+    /// the non-versioned function, which was a real gap: an active DMap/2
+    /// application's commitment was invisible to the planner until this
+    /// fix). An empty map legitimately means "no other active application
+    /// in this project committed anything, under either D-Map version, at
+    /// plan time."
     pub committed_by_node: BTreeMap<String, crate::core::canonical_placement::NodeCommitmentV1>,
     /// C1B fix: the EXACT `PlacementEligibilityView` actually supplied to
     /// `plan_canonical_placements` for this successful call -- preserves the
@@ -2701,16 +2708,59 @@ pub fn accept_proposal(
     // is NOT sufficient -- two proposals can each be validly planned/created
     // against the same free structural capacity (R3D), and only ONE of
     // their eventual acceptances may actually commit it. Revalidate the
-    // CANDIDATE active set's (`updated_active`, already formed above,
-    // exactly as every other check in this function uses it) total
-    // committed CPU/memory per D-Node against the CURRENT authoritative
-    // D-Continuum, BEFORE this acceptance is allowed to commit. This is
-    // D-Deploy acceptance safety, not a deterministic-planner-only concern
-    // -- it applies uniformly regardless of `ProposalSource`. Never repairs
-    // or regenerates placement on failure: the operator must create a new
-    // proposal against the now-current structural reality.
-    let candidate_commitments = compute_project_node_commitments(&record.proposal.project_id, &updated_active, &state.proposals, None)
-        .map_err(AcceptError::Internal)?;
+    // CANDIDATE's total committed CPU/memory per D-Node against the CURRENT
+    // authoritative D-Continuum, BEFORE this acceptance is allowed to
+    // commit. This is D-Deploy acceptance safety, not a
+    // deterministic-planner-only concern -- it applies uniformly regardless
+    // of `ProposalSource`. Never repairs or regenerates placement on
+    // failure: the operator must create a new proposal against the
+    // now-current structural reality.
+    //
+    // Phase 120B fix: `state` here is the PRE-acceptance state, so
+    // `compute_project_node_commitments_versioned(..., state, None)` alone
+    // would NOT reflect this candidate's own new commitment (this
+    // application's prior entry, if any, is either absent -- a first
+    // deploy -- or still the OLD accepted revision about to be replaced).
+    // Using `updated_active` alone (the previous v1-only approach) instead
+    // omitted every OTHER application's DMap/2 commitment entirely. The
+    // correct baseline is therefore: every OTHER active application's
+    // commitment across BOTH DMap/1 and DMap/2 (this application excluded,
+    // exactly mirroring `accept_with_previous`'s own DMap/2 acceptance
+    // pattern immediately above), with this candidate's own placements
+    // added on top exactly once.
+    let mut candidate_commitments = compute_project_node_commitments_versioned(
+        &record.proposal.project_id,
+        state,
+        Some(&record.proposal.application_id),
+    )
+    .map_err(AcceptError::Internal)?;
+    let candidate_services: BTreeMap<&str, &crate::core::canonical_dgraph::CanonicalDServV1> = record
+        .dgraph_snapshot
+        .services
+        .iter()
+        .map(|s| (s.service_id.as_str(), s))
+        .collect();
+    for placement in &record.proposal.placements {
+        let service = candidate_services.get(placement.service_id.as_str()).ok_or_else(|| {
+            AcceptError::Internal(format!(
+                "proposal '{proposal_id}' places service '{}', which is absent from its own dgraph_snapshot -- cannot derive structural commitment",
+                placement.service_id
+            ))
+        })?;
+        let entry = candidate_commitments.entry(placement.node_id.clone()).or_default();
+        entry.cpu_cores = entry.cpu_cores.checked_add(service.resource_requirement.cpu_cores as u64).ok_or_else(|| {
+            AcceptError::Internal(format!(
+                "D-Node '{}' structural CPU commitment overflow while evaluating candidate proposal '{proposal_id}'",
+                placement.node_id
+            ))
+        })?;
+        entry.memory_bytes = entry.memory_bytes.checked_add(service.resource_requirement.memory_bytes).ok_or_else(|| {
+            AcceptError::Internal(format!(
+                "D-Node '{}' structural memory commitment overflow while evaluating candidate proposal '{proposal_id}'",
+                placement.node_id
+            ))
+        })?;
+    }
     for node in &authoritative_dcontinuum.nodes {
         let Some(commitment) = candidate_commitments.get(&node.node_id) else { continue };
         if commitment.cpu_cores > node.capacity.cpu_cores as u64 {
@@ -7398,6 +7448,229 @@ mod tests {
                 .contains_key(&application_key("proj-v2-commit-a", "app-b")),
             "the rejected v2 acceptance must not have mutated v2 active authority"
         );
+    }
+
+    // ---- Phase 120B: cross-version (DMap/1 vs DMap/2) structural -------- //
+    // ---- commitment accounting closure ---------------------------------- //
+
+    #[test]
+    fn v2_active_app_plus_v1_candidate_exceeding_cpu_capacity_is_rejected() {
+        // The exact Phase 120A counterexample: app-x is active under DMap/2
+        // consuming shared-01's full 4-core capacity; a v1 candidate for a
+        // DIFFERENT application (app-y) requiring any CPU on the same node
+        // must be rejected. Before the Phase 120B fix, `accept_proposal`'s
+        // R3C gate used the v1-only `compute_project_node_commitments`,
+        // which was structurally blind to app-x's v2 commitment.
+        let dcontinuum = shared_node_dcontinuum("proj-120b-cpu", 4, 4_294_967_296);
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-120b-cpu", "app-x", "svc-x1", 4, 1,
+            &dcontinuum, "p-v2-x1", "acc-v2-x1", None,
+        )
+        .expect("app-x's v2 acceptance (4 cores) must exactly fit shared-01 alone");
+
+        let result = create_and_accept_on_shared_node(
+            &mut state, "proj-120b-cpu", "app-y", "svc-y1", 1, 1,
+            &dcontinuum, "p-v1-y1", "acc-v1-y1",
+        );
+        assert!(
+            matches!(result, Err(AcceptError::Invalid(ref findings)) if findings.iter().any(|f| f.code == F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED)),
+            "v2-active app-x (4) + v1-candidate app-y (1) = 5 > shared-01's 4-core capacity -- got {result:?}"
+        );
+
+        // The candidate proposal must remain Pending, never Accepted.
+        let record = state.proposals.get("p-v1-y1").expect("app-y's proposal must still exist");
+        assert_eq!(record.state, ProposalLifecycleState::Pending, "a rejected acceptance must leave the proposal Pending, not Accepted");
+
+        // Active v2 authority for app-x must be byte-identical to before.
+        let v2_key = application_key("proj-120b-cpu", "app-x");
+        let v2_active = state.phase113_v2.active.get(&v2_key).expect("app-x's v2 active authority must still exist");
+        assert_eq!(v2_active.map.revision, 1, "app-x's v2 active authority must be untouched by the rejected v1 acceptance");
+
+        // No v1 active authority may appear for app-y.
+        assert!(
+            !state.active_by_application.contains_key(&application_key("proj-120b-cpu", "app-y")),
+            "the rejected v1 acceptance must not have created any v1 active authority"
+        );
+    }
+
+    #[test]
+    fn v2_active_app_plus_v1_candidate_exceeding_memory_capacity_is_rejected() {
+        // Memory-dimension equivalent of the CPU test above: node CPU is
+        // generously provisioned (never the limiting dimension here) so
+        // only the memory gate can fire. app-x (v2) commits 768 bytes;
+        // app-y's v1 candidate requests 512 more -- 768 + 512 = 1280 > 1024.
+        let dcontinuum = shared_node_dcontinuum("proj-120b-mem", 100, 1024);
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-120b-mem", "app-x", "svc-x1", 1, 768,
+            &dcontinuum, "p-v2-x1", "acc-v2-x1", None,
+        )
+        .expect("app-x's v2 acceptance (768 bytes) must fit shared-01's 1024-byte capacity alone");
+
+        let result = create_and_accept_on_shared_node(
+            &mut state, "proj-120b-mem", "app-y", "svc-y1", 1, 512,
+            &dcontinuum, "p-v1-y1", "acc-v1-y1",
+        );
+        assert!(
+            matches!(result, Err(AcceptError::Invalid(ref findings)) if findings.iter().any(|f| f.code == F_PROJECT_NODE_MEMORY_CAPACITY_EXCEEDED)),
+            "v2-active app-x (768) + v1-candidate app-y (512) = 1280 > shared-01's 1024-byte capacity -- got {result:?}"
+        );
+    }
+
+    #[test]
+    fn v2_active_app_plus_v1_candidate_within_capacity_is_accepted() {
+        // Positive control: v2 occupancy is structural CAPACITY CONSUMPTION,
+        // never an absolute block on the node. app-x (v2) commits 2 of
+        // shared-01's 4 cores; app-y's v1 candidate requesting the
+        // remaining 2 cores must be accepted.
+        let dcontinuum = shared_node_dcontinuum("proj-120b-fit", 4, 4_294_967_296);
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-120b-fit", "app-x", "svc-x1", 2, 1,
+            &dcontinuum, "p-v2-x1", "acc-v2-x1", None,
+        )
+        .expect("app-x's v2 acceptance (2 cores) must fit shared-01 alone");
+
+        let result = create_and_accept_on_shared_node(
+            &mut state, "proj-120b-fit", "app-y", "svc-y1", 2, 1,
+            &dcontinuum, "p-v1-y1", "acc-v1-y1",
+        );
+        assert!(
+            result.is_ok(),
+            "v2-active app-x (2) + v1-candidate app-y (2) = 4 <= shared-01's 4-core capacity -- must be accepted, got {result:?}"
+        );
+        assert!(
+            state.active_by_application.contains_key(&application_key("proj-120b-fit", "app-y")),
+            "app-y's v1 acceptance must have created active v1 authority"
+        );
+    }
+
+    /// Exercises the SAME sequence of core calls `post_plan_proposal`
+    /// itself makes (`compute_project_node_commitments_versioned` ->
+    /// `plan_canonical_placements` -> `create_proposal` with the exact
+    /// `PlannerProvenanceV1` that run produced), rather than only calling
+    /// `plan_canonical_placements` with a hand-constructed commitment map --
+    /// this proves the real wiring the Phase 120B fix changed, not merely
+    /// the already-correct pure planner policy in isolation.
+    #[test]
+    fn planner_sees_active_v2_commitment_and_persists_it_in_provenance() {
+        let project = "proj-120b-plan";
+        let mut dcontinuum = shared_node_dcontinuum(project, 4, 4_294_967_296);
+        dcontinuum.nodes[0].node_id = "a-node".to_string();
+        dcontinuum.nodes.push(CanonicalDNodeV1 {
+            node_id: "b-node".to_string(),
+            platform: CanonicalNodePlatformV1 { os: "linux".to_string(), architecture: "amd64".to_string() },
+            capacity: CanonicalNodeCapacityV1 { cpu_cores: 4, memory_bytes: 4_294_967_296 },
+            capabilities: CanonicalNodeCapabilitiesV1 { dnode_abi_versions: vec![DNODE_ABI_V0.to_string()] },
+        });
+
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_node(
+            &mut state, project, "app-x", "svc-x1", "a-node", 3, 1,
+            &dcontinuum, "p-v2-x1", "acc-v2-x1", None,
+        )
+        .expect("app-x's v2 acceptance (3 cores on a-node) must succeed");
+
+        // Step 1: the exact commitment baseline `post_plan_proposal` computes.
+        let commitments = compute_project_node_commitments_versioned(project, &state, Some("app-y"))
+            .expect("versioned commitment aggregation must succeed");
+        assert_eq!(
+            commitments.get("a-node").map(|c| c.cpu_cores),
+            Some(3),
+            "app-x's active v2 commitment (3 cores on a-node) must be visible to the planner's baseline"
+        );
+
+        // Step 2: the exact planning call `post_plan_proposal` makes.
+        let dgraph_y = one_service_dgraph("app-y", "svc-y1", 2, 1);
+        let plan = crate::core::canonical_placement::plan_canonical_placements(
+            &dgraph_y, &dcontinuum, &commitments,
+            &crate::core::canonical_placement::PlacementEligibilityView::unrestricted(),
+        )
+        .expect("2-core service must be plannable: a-node has only 1 residual core (4-3), but b-node has 4");
+        assert_eq!(plan.placements[0].node_id, "b-node", "a-node's residual capacity (1 core) is insufficient once app-x's v2 commitment is correctly seen -- b-node must be chosen");
+
+        // Step 3: the exact `PlannerProvenanceV1` construction and
+        // `create_proposal` call `post_plan_proposal` makes, to prove the
+        // PERSISTED provenance -- not just the in-memory plan -- carries the
+        // real versioned baseline.
+        let planner_provenance = PlannerProvenanceV1 {
+            planner_version: plan.provenance.planner_version.clone(),
+            policy_name: plan.provenance.policy_name.clone(),
+            policy_version: plan.provenance.policy_version.clone(),
+            dgraph_ref: CanonicalContractReferenceV1 {
+                id: plan.provenance.dgraph_id.clone(),
+                revision: plan.provenance.dgraph_revision,
+                digest: plan.provenance.dgraph_digest.clone(),
+            },
+            dcontinuum_ref: CanonicalContractReferenceV1 {
+                id: plan.provenance.dcontinuum_id.clone(),
+                revision: plan.provenance.dcontinuum_revision,
+                digest: plan.provenance.dcontinuum_digest.clone(),
+            },
+            committed_by_node: commitments.clone(),
+            eligibility: crate::core::canonical_placement::PlacementEligibilityView::unrestricted(),
+            decisions: plan.provenance.decisions.clone(),
+        };
+        let record = create_proposal(
+            &mut state,
+            CreateProposalInput {
+                planner_provenance: Some(planner_provenance),
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+                project_id: project.to_string(),
+                application_id: "app-y".to_string(),
+                source: ProposalSource::Deterministic,
+                dgraph: dgraph_y,
+                dcontinuum: dcontinuum.clone(),
+                placements: plan.placements.clone(),
+            },
+            "p-plan-y1".to_string(),
+            "2026-01-01T00:10:00Z".to_string(),
+            &[sample_artifact("svc-y1", vec!["a-node", "b-node"])],
+        )
+        .expect("deterministic proposal creation must succeed");
+
+        let persisted = record
+            .planner_provenance
+            .as_ref()
+            .expect("a Deterministic proposal must persist planner provenance");
+        assert_eq!(
+            persisted.committed_by_node.get("a-node").map(|c| c.cpu_cores),
+            Some(3),
+            "the PERSISTED provenance must carry app-x's v2 commitment exactly as supplied to the planner, not reconstructed later"
+        );
+    }
+
+    #[test]
+    fn planner_fails_closed_and_creates_no_proposal_when_v2_commitment_exhausts_node() {
+        // app-x's v2 acceptance consumes shared-01's ENTIRE 4-core capacity;
+        // planning ANY new service for a different application must fail
+        // with unsatisfied_static_capacity (never silently plan onto a node
+        // the planner incorrectly believes has residual capacity), and
+        // real callers (post_plan_proposal) never reach `create_proposal`
+        // on this path -- confirmed here by the fact this test never calls
+        // it, mirroring the `?` early-return in the real handler.
+        let dcontinuum = shared_node_dcontinuum("proj-120b-exhausted", 4, 4_294_967_296);
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-120b-exhausted", "app-x", "svc-x1", 4, 1,
+            &dcontinuum, "p-v2-x1", "acc-v2-x1", None,
+        )
+        .expect("app-x's v2 acceptance (4 cores) must exactly fit shared-01 alone");
+
+        let commitments = compute_project_node_commitments_versioned("proj-120b-exhausted", &state, Some("app-y"))
+            .expect("versioned commitment aggregation must succeed");
+        let dgraph_y = one_service_dgraph("app-y", "svc-y1", 1, 1);
+        let error = crate::core::canonical_placement::plan_canonical_placements(
+            &dgraph_y, &dcontinuum, &commitments,
+            &crate::core::canonical_placement::PlacementEligibilityView::unrestricted(),
+        )
+        .expect_err("shared-01 has zero residual capacity once app-x's v2 commitment is correctly seen");
+        assert!(
+            error.iter().any(|f| f.code == crate::core::canonical_placement::F_PLANNER_UNSATISFIED_STATIC_CAPACITY),
+            "expected unsatisfied_static_capacity, got {error:?}"
+        );
+        assert!(state.proposals.is_empty(), "a failed plan must never result in a persisted proposal");
     }
 
     // ---- Phase 119G: fail-closed v1-downgrade-from-v2 hardening -------- //

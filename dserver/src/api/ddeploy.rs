@@ -31,7 +31,7 @@ use crate::core::canonical_dmap_v2::{
 };
 use crate::core::ddeploy::{
     accept_proposal, active_operational_projection, active_placement_authority,
-    check_artifact_list_project_scope, compute_project_node_commitments, create_proposal,
+    check_artifact_list_project_scope, compute_project_node_commitments_versioned, create_proposal,
     derive_placement_eligibility_view, is_canonical_authority_active, load_state,
     operational_dgraph_id_for_project, persist_state, resolve_diot_artifact_authority,
     validate_full, validate_proposal_context, AcceptError, AcceptOutcome, CreateProposalInput,
@@ -464,7 +464,13 @@ pub async fn post_plan_proposal(
     // REPLACES it rather than adding a second, simultaneously-authoritative
     // one (transient dual-running migration headroom is a future phase-119
     // concern; this model is POST-ACCEPTANCE steady state only).
-    let commitments = compute_project_node_commitments(&project_id, &ddeploy_state.active_by_application, &ddeploy_state.proposals, Some(&payload.application_id))
+    // Phase 120B fix: use the versioned aggregator so an active DMap/2
+    // application's structural commitment is visible to the planner exactly
+    // like a DMap/1 application's would be -- the non-versioned function
+    // used here previously was structurally blind to any active v2
+    // application, letting the planner recommend a node that a v2
+    // application had already fully consumed.
+    let commitments = compute_project_node_commitments_versioned(&project_id, &ddeploy_state, Some(&payload.application_id))
         .map_err(internal_error)?;
 
     let (plan, record) = state
