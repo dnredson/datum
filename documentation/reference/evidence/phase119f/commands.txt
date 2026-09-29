@@ -63,6 +63,44 @@ git grep -n "CanonicalContractReferenceV1" 97646f3 -- dserver/src/core/canonical
 git show 97646f3:dserver/src/core/ddeploy_migration.rs | sed -n '231,300p'
 git show 97646f3:dserver/src/core/ddeploy_migration.rs | grep -n "fn locate_acceptance"
 
+=== Phase 119F-R1 supplemental commands (E15-E20) ===
+
+git grep -n "authorization_key\|authorizations.insert\|authorizations\.get\|fn.*authorization_key" 97646f3 -- dserver/src/api/operational_dgraph.rs dserver/src/core/operational_dgraph_persistence.rs dserver/src/core/operational_dgraph.rs
+git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | sed -n '298,305p'
+git show 97646f3:dserver/src/api/operational_dgraph.rs | sed -n '660,695p'
+
+git grep -n "struct ServiceArtifactRegistryState\|artifacts_by_project\|struct ServiceArtifact\b" 97646f3 -- dserver/src/core/service_artifact_registry.rs
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '451,467p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '905,925p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '92,140p'
+
+git grep -n "phase113_v2:" 97646f3 -- dserver/src/core/ddeploy.rs
+git grep -n "struct DDeployStateV2\|struct DDeployAcceptanceV2\|struct DDeployProposalV2Record\|struct.*ProposalV2\|pub proposals\|pub acceptances\|pub active" 97646f3 -- dserver/src/core/ddeploy_v2.rs
+git show 97646f3:dserver/src/core/ddeploy_v2.rs | sed -n '100,145p'
+git grep -n "active_by_application.remove\|active_by_application\.insert\|phase113_v2.active.remove\|phase113_v2\.active\.insert" 97646f3 -- dserver/src/core/ddeploy.rs dserver/src/core/ddeploy_v2.rs
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '660,690p'
+git show 97646f3:dserver/src/core/ddeploy.rs | awk 'NR==2236,NR==2236+250' | grep -n "phase113_v2\|active_placement_authority\|dual active\|v2\."
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '/fn active_placement_authority/,/^}/p'
+
+git grep -n "struct DispatchContainerMapping" 97646f3 -- DATUM/src/ dserver/src/
+git show 97646f3:DATUM/src/config.rs | sed -n '185,210p'
+
+git grep -n "DATUM_LABEL_" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '54,90p'
+git grep -n "fn derive_application_operational_services" 97646f3 -- dserver/src/core/ddeploy.rs
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '/fn derive_application_operational_services/,+40p'
+git grep -n "struct ArtifactReconciliationAssignment\|fn build_artifact_reconciliation" 97646f3 -- dserver/src/core/artifact_reconciliation_context.rs
+git show 97646f3:dserver/src/core/artifact_reconciliation_context.rs | sed -n '217,290p'
+
+git grep -n "check_generation_and_projection\|stage107a_service_check" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1730,1770p'
+git grep -n "rollback_trusted_container_intent(" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '2000,2050p'
+git grep -n "rollback_service_block" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '985,1010p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1925,1950p'
+
 Validation commands (run after writing the bundle, not evidence-gathering):
 git status --short
 git diff --stat

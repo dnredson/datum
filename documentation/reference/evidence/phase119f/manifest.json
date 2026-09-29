@@ -116,6 +116,51 @@
         { "path": "dserver/src/core/canonical_dmap_v2.rs", "symbol": "ContractRefV2" },
         { "path": "dserver/src/core/ddeploy_migration.rs", "symbol": "locate_acceptance" }
       ]
+    },
+    {
+      "id": "E15",
+      "claim": "Operational authorization persistence is keyed by (project_id, node_id) only; a newer durable authorization overwrites the prior one for that key, so no durable history of old authorization snapshots is retained.",
+      "sources": [
+        { "path": "dserver/src/core/operational_dgraph_persistence.rs", "symbol": "authorization_key" },
+        { "path": "dserver/src/api/operational_dgraph.rs", "symbol": "candidate.authorizations.insert (authorize-request handler)" }
+      ]
+    },
+    {
+      "id": "E16",
+      "claim": "The ServiceArtifact registry retains only the current artifact content plus a generation high-water counter, not complete historical artifact snapshots.",
+      "sources": [
+        { "path": "dserver/src/core/service_artifact_registry.rs", "symbol": "ServiceArtifactRegistryState / artifact update path" }
+      ]
+    },
+    {
+      "id": "E17",
+      "claim": "DDeploy v2 (DDeployStateV2) mirrors v1's proposals/acceptances/active structure, and a v1-to-v2 transition preserves old v1 acceptance records (only the active pointer is retargeted).",
+      "sources": [
+        { "path": "dserver/src/core/ddeploy_v2.rs", "symbol": "DDeployAcceptanceV2 / DDeployStateV2 / ActiveDMapV2" },
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "v1-to-v2 acceptance transition (active_by_application.remove)" }
+      ]
+    },
+    {
+      "id": "E18",
+      "claim": "Container datum.* labels and the static DispatchContainerMapping config carry no project_id/application_id/service_id/dmap_ref identity.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "DATUM_LABEL_* constants" },
+        { "path": "DATUM/src/config.rs", "symbol": "DispatchContainerMapping" }
+      ]
+    },
+    {
+      "id": "E19",
+      "claim": "No server code path binds a fresh artifact assignment to historical (as-originally-placed) identity; every join resolves against the current registry, and a single unmatched service fails the whole node's context.",
+      "sources": [
+        { "path": "dserver/src/core/artifact_reconciliation_context.rs", "symbol": "resolve_assignments_from_registry_with_authority" }
+      ]
+    },
+    {
+      "id": "E20",
+      "claim": "M8 rollback already excludes image/target-identity verification from blocking removal and never checks physical container labels before docker rm -f; its safety rests on trusted container_name plus authorization/lease freshness, not per-instance identity proof.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "rollback_service_block_from" }
+      ]
     }
   ]
 }
