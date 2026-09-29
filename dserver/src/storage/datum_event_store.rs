@@ -88,7 +88,7 @@
 //! representable range -- this has no realistic overflow exposure at all.
 //! See the Phase 123 hardening report for the exact figures.
 
-use std::{fs, path::Path, sync::Mutex, time::Duration};
+use std::{fs, path::Path, time::Duration};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, ToSql, TransactionBehavior};
@@ -637,7 +637,7 @@ struct StoredRow {
 ///    be silently returned to a `ProjectFilter::Project("A")` query --
 ///    see `project_id_corruption_is_never_returned_under_the_wrong_project_filter`
 ///    below, which proves this exact scenario is now caught.
-fn fetch_by_id(
+pub(crate) fn fetch_by_id(
     connection: &Connection,
     event_id: &str,
 ) -> Result<Option<StoredDatumEvent>, DatumEventStoreError> {
@@ -856,7 +856,7 @@ fn canonical_utc_now() -> String {
 /// subsec_nanos)` pair [`admit_event`]/[`list_events`] use for ordering
 /// and range comparisons -- see the module doc comment for why this pair,
 /// not a combined nanoseconds value, is the sortable representation.
-fn canonicalize_and_derive_sortable(raw: &str) -> Result<(i64, u32), String> {
+pub(crate) fn canonicalize_and_derive_sortable(raw: &str) -> Result<(i64, u32), String> {
     let parsed = DateTime::parse_from_rfc3339(raw)
         .map_err(|error| format!("'{raw}' is not a valid RFC 3339 timestamp: {error}"))?;
     let utc = parsed.with_timezone(&Utc);
@@ -869,34 +869,53 @@ fn canonicalize_and_derive_sortable(raw: &str) -> Result<(i64, u32), String> {
     Ok((utc.timestamp(), utc.timestamp_subsec_nanos()))
 }
 
-/// Serializes schema-initialization DDL (`CREATE TABLE`/`CREATE INDEX`)
-/// across threads WITHIN this process. Discovered necessary empirically,
-/// not assumed: `connection.busy_timeout` only retries `SQLITE_BUSY`
-/// (whole-database contention); concurrent `CREATE TABLE IF NOT
-/// EXISTS`/`CREATE INDEX IF NOT EXISTS` from sibling connections can
-/// instead collide with `SQLITE_LOCKED` ("database is locked", a
-/// SCHEMA-lock conflict, a different error class busy_timeout's handler
-/// does not cover), which the module's own concurrency tests caught
-/// directly on first run under real 8-way concurrent load.
+/// Creates the `datum_events` table and its indexes if absent. Callable
+/// by any `storage::` module that shares this database file and needs
+/// `datum_events` to exist before creating its own FK-referencing tables
+/// (currently `storage::datum_alert_store`) -- see that module's
+/// "Foreign Keys"/"Database Colocation" documentation for why it calls
+/// this rather than duplicating the DDL.
 ///
-/// **Multi-process scope, stated explicitly (Phase 123 freeze review,
-/// F3):** this `Mutex` is PROCESS-LOCAL. It guarantees safe concurrent
-/// schema initialization across THREADS within one DServer process. It
-/// provides NO protection across independent OS processes -- two
-/// DServer processes racing to initialize schema against a freshly
-/// shared database file for the first time could hit the identical
-/// `SQLITE_LOCKED` failure this mutex fixes for the same-process case,
-/// with no mitigation here. The ordinary DML this store performs once
-/// schema exists (the `BEGIN IMMEDIATE` admission transactions, plain
-/// reads) rests on SQLite's own WAL-mode multi-process locking protocol,
-/// which is standard, documented SQLite behavior -- but this module does
-/// not itself add or test any additional cross-process coordination
-/// beyond what SQLite already provides. Phase 126 integration MUST
-/// either guarantee one DServer process per event database file, or
-/// introduce explicit cross-process-safe initialization/startup
-/// coordination -- this is an explicit Phase 126 acceptance criterion,
-/// not something Phase 123 resolves.
-static SCHEMA_INIT_LOCK: Mutex<()> = Mutex::new(());
+/// Deliberately does NOT acquire `schema_init::SCHEMA_INIT_LOCK` or set
+/// any connection-level `PRAGMA` itself -- the caller is required to hold
+/// the shared lock and have already configured its own connection's
+/// pragmas (`journal_mode`/`synchronous`/`foreign_keys`) before calling
+/// this, exactly as [`open_database`] does for its own connection. This
+/// keeps pragma configuration (connection-scoped, must be set on every
+/// connection SQLite hands out, even to the same file) cleanly separate
+/// from schema DDL (file-scoped, genuinely idempotent once run by any
+/// connection).
+pub(crate) fn ensure_datum_events_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS datum_events (
+                 event_id TEXT PRIMARY KEY,
+                 event_digest TEXT NOT NULL,
+                 schema TEXT NOT NULL,
+                 project_id TEXT,
+                 application_id TEXT,
+                 category TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 severity TEXT NOT NULL,
+                 source TEXT NOT NULL,
+                 occurred_at_utc TEXT NOT NULL,
+                 occurred_at_epoch_seconds INTEGER NOT NULL,
+                 occurred_at_subsec_nanos INTEGER NOT NULL,
+                 admitted_at_utc TEXT NOT NULL,
+                 event_json TEXT NOT NULL
+             );
+
+             CREATE INDEX IF NOT EXISTS idx_datum_events_project_occurred
+                 ON datum_events(project_id, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
+             CREATE INDEX IF NOT EXISTS idx_datum_events_project_severity_occurred
+                 ON datum_events(project_id, severity, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
+             CREATE INDEX IF NOT EXISTS idx_datum_events_project_kind_occurred
+                 ON datum_events(project_id, kind, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
+             CREATE INDEX IF NOT EXISTS idx_datum_events_occurred
+                 ON datum_events(occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);",
+        )
+        .map_err(|error| format!("initialize SQLite datum_events schema: {error}"))
+}
 
 fn open_database(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path
@@ -943,42 +962,17 @@ fn open_database(path: &Path) -> Result<Connection, String> {
     // acceptance criterion, not a Phase 123 change (this schema
     // addition did not, by itself, make deferring this unsafe).
     {
-        let _schema_init_guard = SCHEMA_INIT_LOCK
+        let _schema_init_guard = crate::storage::schema_init::SCHEMA_INIT_LOCK
             .lock()
-            .map_err(|_| "SQLite datum_events schema-init lock poisoned".to_string())?;
+            .map_err(|_| "SQLite schema-init lock poisoned".to_string())?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
                  PRAGMA synchronous=FULL;
-                 PRAGMA foreign_keys=ON;
-
-                 CREATE TABLE IF NOT EXISTS datum_events (
-                     event_id TEXT PRIMARY KEY,
-                     event_digest TEXT NOT NULL,
-                     schema TEXT NOT NULL,
-                     project_id TEXT,
-                     application_id TEXT,
-                     category TEXT NOT NULL,
-                     kind TEXT NOT NULL,
-                     severity TEXT NOT NULL,
-                     source TEXT NOT NULL,
-                     occurred_at_utc TEXT NOT NULL,
-                     occurred_at_epoch_seconds INTEGER NOT NULL,
-                     occurred_at_subsec_nanos INTEGER NOT NULL,
-                     admitted_at_utc TEXT NOT NULL,
-                     event_json TEXT NOT NULL
-                 );
-
-                 CREATE INDEX IF NOT EXISTS idx_datum_events_project_occurred
-                     ON datum_events(project_id, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
-                 CREATE INDEX IF NOT EXISTS idx_datum_events_project_severity_occurred
-                     ON datum_events(project_id, severity, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
-                 CREATE INDEX IF NOT EXISTS idx_datum_events_project_kind_occurred
-                     ON datum_events(project_id, kind, occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);
-                 CREATE INDEX IF NOT EXISTS idx_datum_events_occurred
-                     ON datum_events(occurred_at_epoch_seconds DESC, occurred_at_subsec_nanos DESC, event_id DESC);",
+                 PRAGMA foreign_keys=ON;",
             )
-            .map_err(|error| format!("initialize SQLite datum_events schema: {error}"))?;
+            .map_err(|error| format!("configure SQLite datum_events connection: {error}"))?;
+        ensure_datum_events_schema(&connection)?;
     }
 
     Ok(connection)
