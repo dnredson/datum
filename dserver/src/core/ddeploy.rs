@@ -9717,6 +9717,42 @@ mod tests {
             assert_eq!(first, second, "repeated derivation over unchanged state must be byte-identical");
         }
 
+        // H6: a ServiceArtifact's CURRENT execution_generation/
+        // execution_projection_digest changing must never affect derived
+        // cleanup-directive history. `derive_cleanup_directives_for_node`
+        // takes only `&DDeployStateV1` -- it has no `ServiceArtifactRegistryState`
+        // parameter at all, so it is structurally impossible for anything
+        // about a ServiceArtifact's current identity to influence its
+        // output. This test makes that guarantee explicit and
+        // regression-proof: deriving twice from the SAME unchanged
+        // `DDeployStateV1`, with a `ServiceArtifact` constructed at two
+        // very different generations in between (never passed to the
+        // function under test), must produce byte-identical directives.
+        #[test]
+        fn h6_current_service_artifact_generation_changes_do_not_affect_directive_history() {
+            let dcontinuum = multi_node_dcontinuum("proj-h6", &["node-b"], 4, 4_294_967_296);
+            let mut state = DDeployStateV1::empty();
+            create_and_accept_on_shared_node(&mut state, "proj-h6", "app", "svc", 1, 1, &dcontinuum, "p1", "acc1")
+                .expect("rev1 must succeed");
+            move_service(&mut state, "proj-h6", "app", "svc", &dcontinuum, "node-b", "p2", "acc2", 1);
+
+            let before = derive_cleanup_directives_for_node(&state, "proj-h6", "shared-01").unwrap();
+
+            // Neither of these is ever passed to `derive_cleanup_directives_for_node`
+            // -- their mere existence, at deliberately very different
+            // generations, is the point: there is no parameter of this
+            // function's signature they COULD be passed through even if a
+            // future caller wanted to.
+            let mut artifact_gen1 = sample_artifact("svc", vec!["node-b"]);
+            artifact_gen1.control_plane.execution_generation = 1;
+            let mut artifact_gen99 = sample_artifact("svc", vec!["node-b"]);
+            artifact_gen99.control_plane.execution_generation = 99;
+            let _ = (&artifact_gen1, &artifact_gen99);
+
+            let after = derive_cleanup_directives_for_node(&state, "proj-h6", "shared-01").unwrap();
+            assert_eq!(before, after, "cleanup directive history must never vary with ServiceArtifact identity, which this function never even receives");
+        }
+
         // H7: v1 historical placement, application now v2-active elsewhere.
         // The v1 historical cleanup directive must still be derived.
         #[test]

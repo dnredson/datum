@@ -618,6 +618,7 @@ fn run_hybrid_control_cycle(
         options.execute,
         false,
         false,
+        false,
     ) {
         Ok(mut report) => {
             *last_control_signature = Some(signature.clone());
