@@ -109,6 +109,24 @@ pub const F_DCODE_BINDING_APPLICATION_MISMATCH: &str = "dcode_binding_applicatio
 pub const F_DCODE_BINDING_SERVICE_MISMATCH: &str = "dcode_binding_service_mismatch";
 pub const F_DCODE_BINDING_ABI_MISMATCH: &str = "dcode_binding_abi_mismatch";
 pub const F_DCODE_BINDING_STAGE_CONSTRAINT_UNVERIFIABLE: &str = "dcode_binding_stage_constraint_unverifiable";
+/// Phase 119G (independent review, R1-adjacent hardening): a v1→v2 transition
+/// (`DDeployStateV1::accept_v2_proposal`) already retires v1's
+/// `active_by_application` pointer when it installs v2 authority for an
+/// application. The REVERSE direction has no such symmetric guard anywhere
+/// in this file: `create_proposal`/`accept_proposal` (both v1-only) never
+/// consult `state.phase113_v2.active` at all. Without this finding, a v1
+/// proposal could be created and accepted for an application that is
+/// CURRENTLY v2-active, producing simultaneous `active_by_application` and
+/// `phase113_v2.active` entries for the same application key -- exactly the
+/// "dual active DMap authority" corruption `active_placement_authority`
+/// fails closed on for every subsequent read, and
+/// `validate_persisted_state_integrity` refuses to ever reload. This finding
+/// fails the v1 path closed at creation AND at acceptance, BEFORE any
+/// mutation, rather than allowing that corruption to occur and only be
+/// detected reactively later. Reverse-version-transition support (safely
+/// retiring v2 authority to accept a v1 proposal) is an explicit
+/// non-goal of this phase -- see `phase119g-governed-source-cleanup-implementation.md`.
+pub const F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED: &str = "ddeploy_v1_downgrade_from_v2_unsupported";
 
 fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidationFinding {
     CanonicalValidationFinding { code, message: message.into() }
@@ -2116,6 +2134,26 @@ pub fn create_proposal(
     let dgraph_digest = recompute_dgraph_digest(&input.dgraph).map_err(|error| vec![finding("internal_error", error)])?;
     let dcontinuum_digest = recompute_dcontinuum_digest(&input.dcontinuum).map_err(|error| vec![finding("internal_error", error)])?;
 
+    // Phase 119G (fail-closed v1-downgrade-from-v2 hardening): refuse to even
+    // CREATE a v1 proposal for an application that currently has active v2
+    // authority. Checked here (in addition to `accept_proposal`) so the
+    // operator learns of the unsupported direction at the earliest possible
+    // point, not only when they later attempt to accept. See
+    // `F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED`'s own doc comment.
+    if state
+        .phase113_v2
+        .active
+        .contains_key(&application_key(&input.project_id, &input.application_id))
+    {
+        return Err(vec![finding(
+            F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED,
+            format!(
+                "application '{}' currently has active DMap/2 authority; creating a DMap/1 proposal for it is unsupported (v2->v1 downgrade is not a supported transition)",
+                application_key(&input.project_id, &input.application_id)
+            ),
+        )]);
+    }
+
     let expected_active_dmap_revision = state
         .active_for(&input.project_id, &input.application_id)
         .map(|active| active.active_dmap.revision);
@@ -2357,6 +2395,27 @@ pub fn accept_proposal(
     // Compare-and-swap against the CURRENT active revision (re-checked now,
     // not merely at proposal-creation time).
     let key = application_key(&record.proposal.project_id, &record.proposal.application_id);
+
+    // Phase 119G (fail-closed v1-downgrade-from-v2 hardening): a PENDING v1
+    // proposal must never be allowed to activate while this application is
+    // currently v2-active -- `create_proposal` already refuses to create one
+    // in this state, but state can change between creation and acceptance
+    // (a v2 acceptance for the same application in between), so this is
+    // re-checked here, immediately before any mutation, exactly like every
+    // other acceptance-time revalidation in this function. See
+    // `F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED`'s own doc comment. Never
+    // reached on the idempotent-replay path above: an already-accepted v1
+    // proposal already IS the active v1 authority (or was, historically),
+    // so this question cannot arise for it.
+    if state.phase113_v2.active.contains_key(&key) {
+        return Err(AcceptError::Invalid(vec![finding(
+            F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED,
+            format!(
+                "application '{key}' currently has active DMap/2 authority; accepting a DMap/1 proposal for it is unsupported (v2->v1 downgrade is not a supported transition)"
+            ),
+        )]));
+    }
+
     let current_active_revision = state.active_by_application.get(&key).map(|active| active.active_dmap.revision);
     if record.proposal.expected_active_dmap_revision != current_active_revision {
         return Err(AcceptError::Stale(format!(
@@ -7015,6 +7074,103 @@ mod tests {
                 .active
                 .contains_key(&application_key("proj-v2-commit-a", "app-b")),
             "the rejected v2 acceptance must not have mutated v2 active authority"
+        );
+    }
+
+    // ---- Phase 119G: fail-closed v1-downgrade-from-v2 hardening -------- //
+
+    #[test]
+    fn v1_create_proposal_fails_closed_when_application_is_currently_v2_active() {
+        let dcontinuum = shared_node_dcontinuum("proj-v1-downgrade-create", 4, 4_294_967_296);
+        let mut state = DDeployStateV1::empty();
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-v1-downgrade-create", "app-a", "svc-a1", 1, 1,
+            &dcontinuum, "p-v2-a1", "acc-v2-a1", None,
+        )
+        .expect("app-a's v2 acceptance must succeed");
+
+        let dgraph = one_service_dgraph("app-a", "svc-a1", 1, 1);
+        let result = create_proposal(
+            &mut state,
+            CreateProposalInput {
+                planner_provenance: None,
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+                project_id: "proj-v1-downgrade-create".to_string(),
+                application_id: "app-a".to_string(),
+                source: ProposalSource::Operator,
+                dgraph,
+                dcontinuum: dcontinuum.clone(),
+                placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a1".to_string(), node_id: "shared-01".to_string() }],
+            },
+            "p-v1-downgrade".to_string(),
+            "2026-01-01T00:10:00Z".to_string(),
+            &[sample_artifact("svc-a1", vec!["shared-01"])],
+        );
+        assert!(
+            matches!(&result, Err(findings) if findings.iter().any(|f| f.code == F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED)),
+            "creating a v1 proposal for a currently v2-active application must fail closed with F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED -- got {result:?}"
+        );
+        assert!(state.proposals.is_empty(), "the refused v1 proposal must never be persisted");
+        assert!(
+            state.phase113_v2.active.contains_key(&application_key("proj-v1-downgrade-create", "app-a")),
+            "v2 active authority must remain byte-identical after the refusal"
+        );
+    }
+
+    #[test]
+    fn v1_accept_proposal_fails_closed_when_application_becomes_v2_active_after_proposal_creation() {
+        // The CAS-race case create_proposal's own guard cannot catch: the v1
+        // proposal is created FIRST (while app-a has no active authority at
+        // all), and only becomes v2-active AFTERWARDS -- acceptance must
+        // independently re-check and fail closed, exactly like every other
+        // acceptance-time revalidation in this function.
+        let dcontinuum = shared_node_dcontinuum("proj-v1-downgrade-accept", 4, 4_294_967_296);
+        let mut state = DDeployStateV1::empty();
+        let dgraph = one_service_dgraph("app-a", "svc-a1", 1, 1);
+        let artifacts = vec![sample_artifact("svc-a1", vec!["shared-01"])];
+        create_proposal(
+            &mut state,
+            CreateProposalInput {
+                planner_provenance: None,
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+                project_id: "proj-v1-downgrade-accept".to_string(),
+                application_id: "app-a".to_string(),
+                source: ProposalSource::Operator,
+                dgraph,
+                dcontinuum: dcontinuum.clone(),
+                placements: vec![CanonicalDServPlacementV1 { service_id: "svc-a1".to_string(), node_id: "shared-01".to_string() }],
+            },
+            "p-v1-downgrade-2".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            &artifacts,
+        )
+        .expect("proposal creation must succeed while app-a has no active authority yet");
+
+        create_and_accept_v2_on_shared_node(
+            &mut state, "proj-v1-downgrade-accept", "app-a", "svc-a1", 1, 1,
+            &dcontinuum, "p-v2-a1", "acc-v2-a1", None,
+        )
+        .expect("app-a's v2 acceptance must succeed, making it v2-active out from under the pending v1 proposal");
+
+        let result = accept_proposal(
+            &mut state, "p-v1-downgrade-2", "operator:dana", None, &artifacts,
+            Some(&dcontinuum), "2026-01-01T00:20:00Z", "acc-v1-downgrade-2".to_string(),
+        );
+        assert!(
+            matches!(&result, Err(AcceptError::Invalid(findings)) if findings.iter().any(|f| f.code == F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED)),
+            "accepting a v1 proposal for an application that became v2-active in the meantime must fail closed -- got {result:?}"
+        );
+        assert!(
+            !state.active_by_application.contains_key(&application_key("proj-v1-downgrade-accept", "app-a")),
+            "the refused v1 acceptance must never create a v1 active-authority entry"
+        );
+        assert!(
+            state.phase113_v2.active.contains_key(&application_key("proj-v1-downgrade-accept", "app-a")),
+            "v2 active authority must remain byte-identical after the refusal"
+        );
+        assert!(
+            active_placement_authority(&state, "proj-v1-downgrade-accept", "app-a").is_ok(),
+            "the refused v1 acceptance must never produce dual active-authority corruption"
         );
     }
 
