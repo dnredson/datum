@@ -194,7 +194,9 @@ async function render(route: Route): Promise<void> {
     }
   }
 }
-refresh.addEventListener("click", () => void render(currentRoute));
+refresh.addEventListener("click", () => {
+  if (!refresh.disabled) void render(currentRoute);
+});
 menuToggle.addEventListener("click", () => {
   sidebar.classList.toggle(tabletNavigation.matches ? "expanded" : "compact");
   syncNavigation();

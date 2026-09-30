@@ -24,6 +24,117 @@ function object(value: unknown): value is ObjectValue {
 function count(value: unknown): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
+function timestamp(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+function nullableText(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+function signedInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+function subject(value: unknown): boolean {
+  return (
+    object(value) &&
+    typeof value.kind === "string" &&
+    value.kind.length > 0 &&
+    [
+      "node_id",
+      "service_id",
+      "application_id",
+      "project_id",
+      "entity_id",
+      "entity_kind",
+      "call_id",
+      "artifact_id",
+      "dmap_id",
+      "proposal_id",
+      "diot_id",
+    ].every((key) => value[key] === undefined || nullableText(value[key]))
+  );
+}
+function temporalMetadata(value: unknown): boolean {
+  if (!object(value)) return false;
+  if (value.availability === "absent") return true;
+  if (value.availability === "invalid") return safeIssue(value.value);
+  if (value.availability !== "available" || !object(value.value)) return false;
+  const context = value.value;
+  return (
+    timestamp(context.server_evaluated_at_utc) &&
+    Array.isArray(context.evidence) &&
+    context.evidence.length <= 16 &&
+    context.evidence.every(
+      (record) =>
+        object(record) &&
+        nullableText(record.observation_id) &&
+        timestamp(record.source_observed_at_utc) &&
+        timestamp(record.server_received_at_utc) &&
+        [
+          "observed_receipt_delta_seconds",
+          "source_age_seconds",
+          "receipt_age_seconds",
+        ].every((key) => signedInteger(record[key])),
+    )
+  );
+}
+function event(value: unknown): boolean {
+  return (
+    object(value) &&
+    typeof value.event_id === "string" &&
+    nullableText(value.project_id) &&
+    nullableText(value.application_id) &&
+    ["category", "kind", "source"].every(
+      (key) => typeof value[key] === "string",
+    ) &&
+    ["info", "warning", "high", "critical"].includes(String(value.severity)) &&
+    subject(value.subject) &&
+    timestamp(value.occurred_at_utc) &&
+    timestamp(value.admitted_at_utc) &&
+    [
+      "historical",
+      "attention_related",
+      "recovery",
+      "control_plane",
+      "monitoring",
+    ].includes(String(value.classification)) &&
+    temporalMetadata(value.temporal_context)
+  );
+}
+function alert(value: unknown): boolean {
+  if (!object(value)) return false;
+  const active = ["open", "acknowledged", "in_progress"].includes(
+    String(value.lifecycle_status),
+  );
+  const group = active
+    ? "operationally_active"
+    : value.lifecycle_status === "resolved"
+      ? "pending_closure"
+      : "historical_closed";
+  return (
+    typeof value.alert_id === "string" &&
+    nullableText(value.project_id) &&
+    nullableText(value.application_id) &&
+    typeof value.category === "string" &&
+    typeof value.kind === "string" &&
+    subject(value.subject) &&
+    ["open", "acknowledged", "in_progress", "resolved", "closed"].includes(
+      String(value.lifecycle_status),
+    ) &&
+    value.group === group &&
+    value.is_operationally_active === active &&
+    ["info", "warning", "high", "critical"].includes(String(value.severity)) &&
+    timestamp(value.first_observed_at_utc) &&
+    timestamp(value.last_observed_at_utc) &&
+    count(value.condition_confirmation_count) &&
+    (value.condition_duration_seconds === null ||
+      count(value.condition_duration_seconds)) &&
+    event(value.latest_condition_event)
+  );
+}
 function safeIssue(value: unknown): boolean {
   return (
     object(value) &&
@@ -127,6 +238,7 @@ function validate(value: unknown, project: boolean): void {
         "desired_service_assignment_count",
         "alerts",
         "recent_event_count",
+        "recent_events",
         "projects_with_attention",
         "temporal_quality",
         "scheduler",
@@ -208,6 +320,52 @@ function validate(value: unknown, project: boolean): void {
           (item) => typeof item === "string",
         ) &&
         (v.source_issues as unknown[]).every(safeIssue) &&
+        payload(v, "recent_events", (value) => page(value, event)) &&
+        payload(
+          v,
+          "alerts",
+          (value) => object(value) && page(value.attention_ordered, alert),
+        ) &&
+        payload(
+          v,
+          "scheduler",
+          (value) =>
+            object(value) &&
+            typeof value.configured === "boolean" &&
+            ["unwired", "stopped", "stopping", "indeterminate"].includes(
+              String(value.driver_activity),
+            ) &&
+            (value.lifecycle === null ||
+              ["running", "stopping", "stopped"].includes(
+                String(value.lifecycle),
+              )) &&
+            [
+              "dropped_output_full",
+              "dropped_output_closed",
+              "completed_count",
+            ].every((key) => value[key] === null || count(value[key])),
+        ) &&
+        payload(v, "temporal_quality", (value) =>
+          page(
+            value,
+            (record) =>
+              object(record) &&
+              typeof record.project_id === "string" &&
+              nullableText(record.application_id) &&
+              subject(record.subject) &&
+              timestamp(record.evaluated_at_utc) &&
+              ["server_received_at_utc", "source_observed_at_utc"].every(
+                (key) => record[key] === null || timestamp(record[key]),
+              ) &&
+              [
+                "received_age_seconds",
+                "observed_age_seconds",
+                "observed_receipt_delta_seconds",
+              ].every(
+                (key) => record[key] === null || signedInteger(record[key]),
+              ),
+          ),
+        ) &&
         payload(v, "projects_with_attention", (value) =>
           page(
             value,

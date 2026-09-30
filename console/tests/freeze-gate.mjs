@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { wallboardFixture } from "./wallboard-fixture.mjs";
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -88,6 +89,379 @@ const ready = (window) =>
     window,
     () => !window.document.querySelector("#page").hasAttribute("aria-busy"),
   );
+async function wallboardCheck(data, assertion, width = 1440) {
+  const window = boot("/", width, () => data);
+  try {
+    await ready(window);
+    await assertion(window);
+  } finally {
+    await window.happyDOM.close();
+  }
+}
+
+test("F1 canonical stream/application/map/proposal identities remain distinct and inspectable", async () => {
+  const data = wallboardFixture();
+  const original = data.temporal_quality.value.items[0];
+  const longId = "stream-A-" + "long-canonical-identity-".repeat(30);
+  data.temporal_quality.value.items = [
+    {
+      ...structuredClone(original),
+      application_id: "app-A",
+      subject: {
+        kind: "other",
+        entity_kind: "dmonitor_stream",
+        entity_id: longId,
+      },
+    },
+    {
+      ...structuredClone(original),
+      application_id: "app-B",
+      subject: {
+        kind: "other",
+        entity_kind: "dmonitor_stream",
+        entity_id: "stream-B",
+      },
+    },
+    {
+      ...structuredClone(original),
+      application_id: null,
+      subject: {
+        kind: "other",
+        entity_kind: "dmonitor_stream",
+        entity_id: "stream-no-app",
+      },
+    },
+  ];
+  const base = data.recent_events.value.items[0];
+  data.recent_events.value.items = [
+    ...["map-A", "map-B"].map((dmap_id) => ({
+      ...structuredClone(base),
+      application_id: "event-app",
+      subject: { kind: "dmap", dmap_id, application_id: "event-app" },
+    })),
+    ...["proposal-A", "proposal-B"].map((proposal_id) => ({
+      ...structuredClone(base),
+      application_id: null,
+      subject: { kind: "deployment_proposal", proposal_id },
+    })),
+  ];
+  await wallboardCheck(data, (window) => {
+    const entries = [...window.document.querySelectorAll(".temporal-entry")];
+    assert.equal(entries.length, 3);
+    assert.ok(entries[0].textContent.includes(longId));
+    assert.ok(entries[1].textContent.includes("stream-B"));
+    assert.notEqual(entries[0].textContent, entries[1].textContent);
+    assert.match(entries[0].textContent, /Application · app-A/);
+    assert.match(entries[1].textContent, /Application · app-B/);
+    assert.doesNotMatch(entries[2].textContent, /Application ·/);
+    const rows = [...window.document.querySelectorAll(".event-row")];
+    for (const [index, id] of [
+      "map-A",
+      "map-B",
+      "proposal-A",
+      "proposal-B",
+    ].entries())
+      assert.ok(rows[index].textContent.includes(id));
+    assert.match(rows[0].textContent, /Application · event-app/);
+    assert.doesNotMatch(rows[2].textContent, /Application ·/);
+    for (const link of window.document.querySelectorAll(
+      ".temporal-entry a, .event-row a",
+    ))
+      assert.equal(link.getAttribute("href"), "/projects/alpha");
+    assert.match(css, /\.entity-identity\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  });
+});
+
+for (const [loaded, hasMore, partial] of [
+  [6, false, false],
+  [15, false, false],
+  [10, true, false],
+  [15, true, false],
+  [6, false, true],
+  [10, true, true],
+]) {
+  test(`F2 DOM continuation and coverage: ${loaded}/${hasMore}/${partial}`, async () => {
+    const data = wallboardFixture();
+    data.known_projects.page.items = Array.from(
+      { length: loaded },
+      (_, i) => `project-${i}`,
+    );
+    data.known_projects.page.has_more = hasMore;
+    data.known_projects.coverage.completeness = partial
+      ? "partial"
+      : "complete";
+    await wallboardCheck(data, (window) => {
+      const section = window.document.querySelector(".wallboard-projects");
+      assert.equal(
+        section.querySelectorAll(".wallboard-project").length,
+        Math.min(10, loaded),
+      );
+      assert.equal(
+        section.textContent.includes(
+          "View Projects for the remaining loaded references",
+        ),
+        loaded > 10,
+      );
+      assert.equal(
+        section.textContent.includes("Console pagination is not yet exposed"),
+        hasMore,
+      );
+      assert.ok(
+        section.textContent
+          .toLowerCase()
+          .includes(partial ? "partial" : "complete"),
+      );
+    });
+    const window = boot("/projects", 1440, () => data);
+    try {
+      await ready(window);
+      assert.equal(
+        window.document.querySelectorAll("#page a[data-route]").length,
+        loaded,
+      );
+    } finally {
+      await window.happyDOM.close();
+    }
+  });
+}
+
+test("wallboard summary renders normal available counts with transparent provenance", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const summary = window.document.querySelector(".summary-strip");
+    assert.equal(summary.querySelectorAll(".metric-card").length, 7);
+    assert.match(summary.textContent, /Managed projects2/);
+    assert.match(summary.textContent, /Known applications loaded1/);
+    assert.match(summary.textContent, /Active alerts3/);
+    assert.match(summary.textContent, /Pending closure1/);
+    assert.match(summary.textContent, /not canonical inventory/);
+  });
+});
+test("wallboard unavailable count is not zero and unwired output loss is not zero", async () => {
+  const data = wallboardFixture();
+  data.managed_operational_project_count = { availability: "not_configured" };
+  await wallboardCheck(data, (window) => {
+    const cards = Array.from(window.document.querySelectorAll(".metric-card"));
+    for (const label of ["Managed projects", "Monitoring output loss"]) {
+      const card = cards.find(
+        (c) => c.querySelector("h2").textContent === label,
+      );
+      assert.equal(card.querySelector(".metric-value"), null);
+      assert.match(card.textContent, /Not configured/);
+    }
+  });
+});
+test("Attention Now displays active canonical alerts and exact subject/evidence", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const attention = window.document.querySelector(".wallboard-attention");
+    assert.equal(attention.querySelectorAll(".attention-item").length, 3);
+    assert.match(attention.textContent, /Critical/);
+    assert.match(attention.textContent, /mqtt-service/);
+    assert.match(attention.textContent, /120 confirmations/);
+    assert.match(attention.textContent, /condition-alert-open/);
+  });
+});
+test("Resolved and Closed never become active wallboard attention", async () => {
+  const data = wallboardFixture();
+  data.alerts.value.attention_ordered.items =
+    data.alerts.value.attention_ordered.items.slice(3);
+  await wallboardCheck(data, (window) => {
+    assert.equal(window.document.querySelectorAll(".attention-item").length, 0);
+    assert.match(
+      window.document.querySelector(".wallboard-attention").textContent,
+      /No active alert items/,
+    );
+  });
+});
+test("known-project coverage stays Partial and does not imply all inventory", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const projects = window.document.querySelector(".wallboard-projects");
+    assert.match(projects.textContent, /Known projects/);
+    assert.match(projects.textContent, /Discovery is partial/);
+    assert.match(projects.textContent, /Placement \/ runtime: not included/);
+    assert.doesNotMatch(projects.textContent, /All projects|System healthy/);
+  });
+});
+test("recent receipt with old observation retains Fresh/Stale/Behind separately", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const row = window.document.querySelector(
+      ".wallboard-temporal .temporal-row",
+    );
+    assert.match(row.textContent, /CommunicationFresh/);
+    assert.match(row.textContent, /ObservationStale/);
+    assert.match(row.textContent, /Source timeBehind \/ delayed/);
+    assert.doesNotMatch(row.textContent, /Down|Offline|Unreachable/);
+  });
+});
+test("aligned stale observation/receipt never implies clock discrepancy", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const row = window.document.querySelectorAll(
+      ".wallboard-temporal .temporal-row",
+    )[1];
+    assert.match(row.textContent, /CommunicationStale/);
+    assert.match(row.textContent, /ObservationStale/);
+    assert.match(row.textContent, /Source timeAligned \/ no discrepancy/);
+  });
+});
+test("source ahead remains an independent time-quality dimension", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const row = window.document.querySelectorAll(
+      ".wallboard-temporal .temporal-row",
+    )[2];
+    assert.match(row.textContent, /CommunicationFresh/);
+    assert.match(row.textContent, /ObservationFresh/);
+    assert.match(row.textContent, /Source timeAhead \/ skew/);
+    assert.doesNotMatch(row.textContent, /Down|Offline/);
+  });
+});
+test("scheduler output-loss counters and owner/driver uncertainty stay separate", async () => {
+  const data = wallboardFixture();
+  data.scheduler.value = {
+    configured: true,
+    lifecycle: "running",
+    driver_activity: "indeterminate",
+    dropped_output_full: 3,
+    dropped_output_closed: 2,
+    completed_count: 9,
+  };
+  await wallboardCheck(data, (window) => {
+    const sources = window.document.querySelector(".wallboard-sources");
+    assert.match(sources.textContent, /Activity unknown/);
+    assert.match(sources.textContent, /owner lifecycle: running/);
+    assert.match(sources.textContent, /Output full: 3 · output closed: 2/);
+    assert.match(sources.textContent, /Monitoring output loss reported/);
+    assert.equal(window.document.querySelectorAll(".attention-item").length, 3);
+  });
+});
+test("source issues, events and alerts are distinct wallboard semantics", async () => {
+  const data = wallboardFixture();
+  data.source_issues = [
+    {
+      source: "dmonitor",
+      kind: "source_unavailable",
+      code: "storage_unavailable",
+      safe_message: "Evidence source unavailable.",
+      scope: null,
+    },
+  ];
+  await wallboardCheck(data, (window) => {
+    assert.match(
+      window.document.querySelector(".wallboard-attention").textContent,
+      /ALERT · persistent/,
+    );
+    assert.match(
+      window.document.querySelector(".wallboard-events").textContent,
+      /EVENT · immutable/,
+    );
+    assert.match(
+      window.document.querySelector(".wallboard-sources").textContent,
+      /SOURCE ISSUE/,
+    );
+    assert.match(
+      window.document.querySelector("#connection").textContent,
+      /Degraded/,
+    );
+    assert.equal(window.document.querySelectorAll(".attention-item").length, 3);
+  });
+});
+test("recent events remain bounded, preserve occurrence order and recovery class", async () => {
+  await wallboardCheck(wallboardFixture(), (window) => {
+    const events = window.document.querySelector(".wallboard-events");
+    assert.equal(events.querySelectorAll(".event-row").length, 15);
+    assert.match(events.querySelector(".event-row").textContent, /recovery/);
+    assert.match(events.textContent, /D-Map accepted/);
+    assert.equal(
+      events.querySelectorAll("time")[0].dateTime,
+      "2026-09-30T14:59:00Z",
+    );
+    assert.match(events.textContent, /not the Historical Explorer/);
+  });
+});
+test("empty partial discovery does not claim that no projects exist", async () => {
+  const data = wallboardFixture();
+  data.known_projects.page.items = [];
+  await wallboardCheck(data, (window) =>
+    assert.match(
+      window.document.querySelector(".wallboard-projects").textContent,
+      /No projects are currently discoverable from the available sources/,
+    ),
+  );
+});
+test("degraded wallboard retains independent available sections", async () => {
+  const data = wallboardFixture();
+  data.temporal_quality = {
+    availability: "corrupt",
+    value: {
+      source: "dmonitor",
+      code: "invalid_snapshot",
+      kind: "source_corrupt",
+      safe_message: "Evidence integrity check failed.",
+      scope: null,
+    },
+  };
+  await wallboardCheck(data, (window) => {
+    assert.match(
+      window.document.querySelector(".wallboard-temporal").textContent,
+      /Integrity error/,
+    );
+    assert.equal(window.document.querySelectorAll(".attention-item").length, 3);
+    assert.equal(window.document.querySelectorAll(".event-row").length, 15);
+    assert.match(
+      window.document.querySelector("#connection").textContent,
+      /Degraded/,
+    );
+  });
+});
+test("wallboard project click-through is URL-driven with no N+1 initial requests", async () => {
+  let requests = 0;
+  const window = boot("/", 1440, (url) => {
+    requests++;
+    return url.includes("/projects/")
+      ? { ...liveProject, project_id: "alpha" }
+      : wallboardFixture();
+  });
+  try {
+    await ready(window);
+    assert.equal(requests, 1);
+    click(window, ".wallboard-projects .project-link");
+    await ready(window);
+    assert.equal(window.location.pathname, "/projects/alpha");
+    assert.equal(requests, 2);
+    assert.equal(calls.at(-1).init.headers["X-Datum-Project"], "alpha");
+  } finally {
+    await window.happyDOM.close();
+  }
+});
+test("manual refresh cannot overlap and navigation aborts obsolete request", async () => {
+  let requests = 0;
+  let release;
+  const window = boot("/", 1440, () => {
+    requests++;
+    return requests === 2
+      ? new Promise((resolve) => {
+          release = resolve;
+        })
+      : wallboardFixture();
+  });
+  try {
+    await ready(window);
+    click(window, "#refresh");
+    assert.equal(requests, 2);
+    assert.equal(window.document.querySelector("#refresh").disabled, true);
+    click(window, "#refresh");
+    assert.equal(requests, 2);
+    const obsoleteSignal = calls.at(-1).init.signal;
+    click(window, '[data-nav="projects"]');
+    await ready(window);
+    assert.equal(requests, 3);
+    assert.equal(obsoleteSignal.aborted, true);
+    release(wallboardFixture());
+    assert.equal(window.location.pathname, "/projects");
+    assert.match(text(window), /Known projects/);
+    assert.equal(window.document.querySelector(".wallboard"), null);
+  } finally {
+    await window.happyDOM.close();
+  }
+});
 function click(window, selector) {
   window.document
     .querySelector(selector)
@@ -178,7 +552,7 @@ test("actual bundled app boots with real runtime projection and scoped project r
       window.document.querySelector("#connection").textContent,
       /Degraded/,
     );
-    assert.equal(window.document.querySelectorAll(".metric-card").length, 4);
+    assert.equal(window.document.querySelectorAll(".metric-card").length, 7);
     assert.match(
       window.document.querySelector(".sidebar-footer").textContent,
       /Read-only/,
@@ -254,7 +628,11 @@ test("1440/1024/768 CSS cascade and tablet navigation focus contract", async () 
       assert.match(
         window.getComputedStyle(window.document.querySelector(".metric-grid"))
           .gridTemplateColumns,
-        width === 1440 ? /repeat\(4/u : /repeat\(2/u,
+        width === 1440
+          ? /repeat\(7/u
+          : width === 1024
+            ? /repeat\(3/u
+            : /repeat\(2/u,
       );
       if (width === 768) {
         click(window, "#menu-toggle");
@@ -471,7 +849,17 @@ test("partial/complete empty discovery and all availability states never fabrica
   const window = boot("/", 1440, () => data);
   try {
     await ready(window);
-    assert.equal(window.document.querySelectorAll(".metric-value").length, 0);
+    for (const metric of window.document.querySelectorAll(".metric-card")) {
+      if (
+        [
+          "Managed projects",
+          "Active alerts",
+          "Pending closure",
+          "Recent events",
+        ].includes(metric.querySelector("h2").textContent)
+      )
+        assert.equal(metric.querySelector(".metric-value"), null);
+    }
     assert.match(text(window), /Not configured/);
     assert.match(text(window), /Indeterminate/);
     assert.match(text(window), /Integrity error/);

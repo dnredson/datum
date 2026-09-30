@@ -245,6 +245,89 @@ main {
   display: flex;
   flex-direction: column;
 }
+.summary-strip {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+}
+.summary-strip .metric-card {
+  padding: 14px;
+}
+.summary-strip .section-title {
+  font-size: 0.76rem;
+}
+.summary-strip .metric-value {
+  font-size: 1.55rem;
+  margin: 3px 0 5px;
+}
+.summary-strip .metric-note {
+  font-size: 0.67rem;
+}
+.summary-strip .source-state p {
+  display: none;
+}
+.section-explanation {
+  margin-bottom: 16px;
+}
+.attention-item,
+.wallboard-project,
+.event-row {
+  padding: 14px 0;
+  border-bottom: 1px solid #edf1f4;
+  min-width: 0;
+}
+.attention-item:last-child,
+.wallboard-project:last-child,
+.event-row:last-child {
+  border-bottom: 0;
+}
+.attention-heading,
+.attention-scope,
+.attention-evidence,
+.event-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.attention-condition {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+.attention-scope {
+  margin: 9px 0 6px;
+}
+.attention-evidence {
+  color: var(--datum-muted);
+  font-size: 0.76rem;
+}
+.attention-evidence > *,
+.attention-scope > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.wallboard-project > .project-link {
+  display: inline-block;
+  margin-bottom: 6px;
+}
+.event-row {
+  display: grid;
+  gap: 6px;
+}
+.wallboard-sources .source-notices {
+  padding: 16px 0 0;
+}
+.scheduler-summary {
+  padding-top: 16px;
+}
+.temporal-entry {
+  padding-top: 10px;
+}
+.temporal-entry > .project-link {
+  font-size: 0.75rem;
+}
 .metric-value {
   font-size: 1.85rem;
   font-weight: 650;
@@ -423,6 +506,9 @@ summary:focus-visible,
   outline-offset: 3px;
 }
 @media (max-width: 1200px) {
+  .metric-grid.summary-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -434,6 +520,9 @@ summary:focus-visible,
   }
 }
 @media (max-width: 900px) {
+  .metric-grid.summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .sidebar {
     transform: translateX(-100%);
     transition: transform 0.15s;
@@ -466,6 +555,9 @@ summary:focus-visible,
   }
 }
 @media (max-width: 550px) {
+  .metric-grid.summary-strip {
+    grid-template-columns: 1fr;
+  }
   .metric-grid {
     grid-template-columns: 1fr;
   }
@@ -482,4 +574,16 @@ summary:focus-visible,
   .console-card {
     padding: 20px;
   }
+}
+.entity-identity {
+  display: block;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.identity-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
 }
