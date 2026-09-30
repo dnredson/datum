@@ -758,6 +758,139 @@ pub fn start_alert_work(
 /// Marks the underlying condition as no longer active
 /// (`Open`/`Acknowledged`/`InProgress -> Resolved`). `resolution_reason`
 /// is recommended but not required.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConditionRecoveryOutcome {
+    Resolved(String),
+    AlreadyResolved(String),
+    AlreadyClosed(String),
+    NoMatchingAlert,
+    IgnoredNewerEvidence(String),
+    AlreadyApplied,
+}
+
+/// Phase 126: admitted, exact-condition recovery only. Resolution and replay
+/// marker commit together; an old replay cannot touch a later episode.
+/// Recovery evidence does not count as another anomaly confirmation.
+pub fn resolve_condition_from_event(
+    db_path: &Path,
+    stored: &StoredDatumEvent,
+    condition_kind: &str,
+) -> Result<ConditionRecoveryOutcome, DatumAlertStoreError> {
+    use crate::core::datum_event::{DatumEventCategoryV1, DatumEventSourceV1};
+    if !matches!(
+        condition_kind,
+        "observation_stale"
+            | "observation_missing"
+            | "observation_clock_skew"
+            | "evaluation_before_receipt"
+    ) || stored.event.source != DatumEventSourceV1::ActiveMonitor
+        || stored.event.category != DatumEventCategoryV1::Observation
+        || stored.event.kind != format!("{condition_kind}_cleared")
+        || stored.event.attributes["condition_kind"] != condition_kind
+    {
+        return Err(DatumAlertStoreError::InvalidQuery(
+            "invalid condition recovery identity".into(),
+        ));
+    }
+    let mut original = stored.event.clone();
+    original.kind = condition_kind.into();
+    let key = derive_correlation_key(&original).map_err(DatumAlertStoreError::Storage)?;
+    if stored.event.attributes["condition_correlation_key"] != key {
+        return Err(DatumAlertStoreError::InvalidQuery(
+            "recovery correlation mismatch".into(),
+        ));
+    }
+    let mut connection = open_database(db_path).map_err(DatumAlertStoreError::Storage)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    let admitted = datum_event_store::fetch_by_id(&transaction, &stored.event.event_id)?
+        .ok_or_else(|| DatumAlertStoreError::EventNotFound(stored.event.event_id.clone()))?;
+    if admitted != *stored {
+        return Err(DatumAlertStoreError::Storage(
+            "recovery differs from admitted event".into(),
+        ));
+    }
+    let previous: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT correlation_key, outcome_json FROM datum_alert_recoveries WHERE event_id = ?1",
+            params![stored.event.event_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    if let Some((previous_key, outcome)) = previous {
+        if previous_key != key {
+            return Err(DatumAlertStoreError::Storage(
+                "recovery marker mismatch".into(),
+            ));
+        }
+        serde_json::from_str::<ConditionRecoveryOutcome>(&outcome)
+            .map_err(|e| DatumAlertStoreError::Storage(e.to_string()))?;
+        return Ok(ConditionRecoveryOutcome::AlreadyApplied);
+    }
+    let id: Option<String> = transaction
+        .query_row(
+            "SELECT alert_id FROM datum_alerts WHERE correlation_key = ?1 ORDER BY id DESC LIMIT 1",
+            params![key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let outcome = if let Some(id) = id {
+        let mut alert = fetch_alert_by_id(&transaction, &id)?
+            .ok_or_else(|| DatumAlertStoreError::AlertNotFound(id.clone()))?;
+        if alert.status == DatumAlertStatusV1::Closed {
+            ConditionRecoveryOutcome::AlreadyClosed(id)
+        } else if alert.status == DatumAlertStatusV1::Resolved {
+            ConditionRecoveryOutcome::AlreadyResolved(id)
+        } else if parse_occurred_at(&stored.event.occurred_at_utc)?
+            < parse_occurred_at(&alert.last_observed_at_utc)?
+        {
+            ConditionRecoveryOutcome::IgnoredNewerEvidence(id)
+        } else {
+            let actor = DatumAlertActorV1::system();
+            let reason = "monitoring condition cleared";
+            let now = canonical_utc_now();
+            let from = alert.status;
+            if !is_valid_transition(from, DatumAlertStatusV1::Resolved) {
+                return Err(DatumAlertStoreError::InvalidTransition {
+                    alert_id: id,
+                    from,
+                    to: DatumAlertStatusV1::Resolved,
+                });
+            }
+            alert.status = DatumAlertStatusV1::Resolved;
+            alert.resolved_by = Some(actor.clone());
+            alert.resolved_at_utc = Some(now.clone());
+            alert.resolution_reason = Some(reason.into());
+            let invalid = alert.validate();
+            if !invalid.is_empty() {
+                return Err(DatumAlertStoreError::InvalidAlert(invalid));
+            }
+            update_alert_row(&transaction, &alert)?;
+            insert_transition(
+                &transaction,
+                &alert.alert_id,
+                Some(from),
+                alert.status,
+                &actor,
+                Some(reason),
+                &now,
+                Some(&stored.event.event_id),
+            )?;
+            ConditionRecoveryOutcome::Resolved(id)
+        }
+    } else {
+        ConditionRecoveryOutcome::NoMatchingAlert
+    };
+    transaction.execute("INSERT INTO datum_alert_recoveries(event_id,correlation_key,outcome_json) VALUES(?1,?2,?3)",
+        params![stored.event.event_id,key,serde_json::to_string(&outcome).map_err(|e| DatumAlertStoreError::Storage(e.to_string()))?])
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
+    Ok(outcome)
+}
+
 pub fn resolve_alert(
     db_path: &Path,
     alert_id: &str,
@@ -1705,6 +1838,14 @@ fn insert_transition(
     Ok(())
 }
 
+/// Phase 126 durable initialization; reuses Event-before-Alert schema setup
+/// and the shared same-process schema lock. No synthetic event is inserted.
+pub fn initialize_database(path: &Path) -> Result<(), DatumAlertStoreError> {
+    open_database(path)
+        .map(|_| ())
+        .map_err(DatumAlertStoreError::Storage)
+}
+
 fn open_database(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1755,7 +1896,11 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             transitioned_at_utc TEXT NOT NULL,
             related_event_id TEXT REFERENCES datum_events(event_id)
         );
-        CREATE INDEX IF NOT EXISTS idx_datum_alert_transitions_alert ON datum_alert_transitions(alert_id, id);"
+        CREATE INDEX IF NOT EXISTS idx_datum_alert_transitions_alert ON datum_alert_transitions(alert_id, id);
+        CREATE TABLE IF NOT EXISTS datum_alert_recoveries (
+            event_id TEXT PRIMARY KEY REFERENCES datum_events(event_id),
+            correlation_key TEXT NOT NULL, outcome_json TEXT NOT NULL
+        );"
     ).map_err(|e| format!("initialize alert schema: {e}"))?;
     Ok(connection)
 }

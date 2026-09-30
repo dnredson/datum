@@ -589,7 +589,7 @@ pub async fn post_accept_proposal(
     // Foundation closure v2 (ADR-0019, R1 TOCTOU requirement): acquire the
     // D-Node registry's own transaction lock too, NESTED inside
     // `DDEPLOY_TRANSACTION` (fixed order, documented on `dnode_transaction`
-    // itself) and held for the ENTIRE remainder of this call -- through the
+    // itself) and held through the authority commit -- through the
     // authority revalidation below, the `ServiceArtifact` stable view, the
     // acceptance mutation, and the final SQLite persist. A concurrent
     // `PUT`/`DELETE` on a D-Node cannot commit anywhere in that window, so
@@ -679,6 +679,22 @@ pub async fn post_accept_proposal(
             Ok(outcome)
         })
         .map_err(internal_error)??;
+
+    // Phase 126: the authority SQLite commit above already succeeded. This
+    // separate observability write cannot roll back or fail that acceptance.
+    drop(_dcode_transaction);
+    drop(_dnode_transaction);
+    drop(_transaction);
+    crate::core::event_producers::report_after_authority_commit(
+        crate::core::event_producers::PostAuthorityEventContext::new(
+            &outcome.acceptance.project_id,
+            &outcome.acceptance.application_id,
+            &outcome.acceptance.acceptance_id,
+            "ddeploy_acceptance_v1",
+        ),
+        crate::core::event_producers::acceptance_event_v1(&outcome.acceptance),
+    )
+    .await;
 
     Ok(JsonResponse(AcceptResponse {
         acceptance: outcome.acceptance,
@@ -1260,6 +1276,22 @@ pub async fn post_accept_proposal_v2(
     })?;
     let currently_active = active.acceptance_id == acceptance.acceptance_id;
     let materialized_dmap = active.map.clone();
+
+    // Record this acceptance's OWN immutable reference, never a later active
+    // DMap returned by a historical replay. Same post-commit rule as v1.
+    drop(_dcode_transaction);
+    drop(_dnode_transaction);
+    drop(_transaction);
+    crate::core::event_producers::report_after_authority_commit(
+        crate::core::event_producers::PostAuthorityEventContext::new(
+            &acceptance.project_id,
+            &acceptance.application_id,
+            &acceptance.acceptance_id,
+            "ddeploy_acceptance_v2",
+        ),
+        crate::core::event_producers::acceptance_event_v2(&acceptance),
+    )
+    .await;
 
     Ok(JsonResponse(AcceptV2Response {
         acceptance,

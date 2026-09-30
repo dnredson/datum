@@ -4682,6 +4682,92 @@ mod tests {
         std::env::temp_dir().join(format!("datum-ddeploy-test-{tag}-{}.db", uuid::Uuid::new_v4()))
     }
 
+    #[test]
+    fn phase126_committed_acceptance_records_history_and_observability_failure_never_rolls_back() {
+        use crate::core::event_producers::{acceptance_event_v1, EventProducerPipeline, ProducerError};
+        use crate::storage::{datum_alert_store, datum_event_store};
+        let authority_path = temp_db_path("phase126-authority");
+        let event_path = temp_db_path("phase126-events");
+        let pipeline = EventProducerPipeline::open(event_path.clone()).unwrap();
+        let mut state = DDeployStateV1::empty();
+        create_proposal(
+            &mut state,
+            CreateProposalInput {
+                planner_provenance: None,
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+                project_id: "proj-x".into(),
+                application_id: "app-x".into(),
+                source: ProposalSource::Operator,
+                dgraph: sample_dgraph("app-x", 1),
+                dcontinuum: sample_dcontinuum("proj-x", 1),
+                placements: sample_placements(),
+            },
+            "phase126-proposal".into(),
+            "2026-01-01T00:00:00Z".into(),
+            &sample_artifacts(),
+        )
+        .unwrap();
+        // Failed canonical acceptance never reaches the post-commit adapter.
+        assert!(accept_proposal(
+            &mut state,
+            "absent",
+            "operator",
+            None,
+            &sample_artifacts(),
+            Some(&sample_dcontinuum("proj-x", 1)),
+            "2026-01-01T00:00:00Z",
+            "absent-acceptance".into()
+        )
+        .is_err());
+        assert!(
+            datum_event_store::list_events(&event_path, &Default::default())
+                .unwrap()
+                .is_empty()
+        );
+        let outcome = accept_proposal(
+            &mut state,
+            "phase126-proposal",
+            "operator",
+            None,
+            &sample_artifacts(),
+            Some(&sample_dcontinuum("proj-x", 1)),
+            "2026-01-01T00:00:00Z",
+            "phase126-acceptance".into(),
+        )
+        .unwrap();
+        persist_state(&authority_path, &state).unwrap();
+        let committed = load_state(&authority_path).unwrap();
+        let event = acceptance_event_v1(&outcome.acceptance).unwrap();
+        let connection = rusqlite::Connection::open(&event_path).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_observability BEFORE INSERT ON datum_events BEGIN SELECT RAISE(ABORT,'test recording failure'); END;").unwrap();
+        assert!(matches!(
+            pipeline.record(event.clone()),
+            Err(ProducerError::EventStore { .. })
+        ));
+        assert_eq!(load_state(&authority_path).unwrap(), committed);
+        connection
+            .execute_batch("DROP TRIGGER fail_observability")
+            .unwrap();
+        let recorded = pipeline.record(event.clone()).unwrap();
+        assert!(recorded.alert.is_none());
+        assert_eq!(event.kind, "dmap_accepted");
+        assert!(event.validate().is_empty());
+        assert!(
+            datum_alert_store::list_alerts(&event_path, &Default::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            pipeline.record(event).unwrap().admission,
+            datum_event_store::DatumEventAdmission::IdempotentReplay(_)
+        ));
+        assert_eq!(load_state(&authority_path).unwrap(), committed);
+        drop(connection);
+        drop(pipeline);
+        cleanup_db(&authority_path);
+        cleanup_db(&event_path);
+    }
+
     fn cleanup_db(path: &std::path::Path) {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));

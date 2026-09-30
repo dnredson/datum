@@ -62,6 +62,7 @@ pub mod dmonitor_readiness;
 pub mod dmonitor_state;
 pub mod dnode_registry;
 pub mod dserv_artifact;
+pub mod event_producers;
 pub mod events;
 pub mod execution_projection;
 pub mod external_ai_inference;

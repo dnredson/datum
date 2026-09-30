@@ -121,6 +121,9 @@ pub fn validate_freshness_policy(policy: &DMonitorFreshnessPolicyV1) -> Result<(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DMonitorFreshnessEvaluationV1 {
+    /// Independent age predicate, including when ClockSkew takes display priority.
+    /// Exposed for condition-scoped recovery; uses the exact existing age rules.
+    pub age_dimensions_satisfied: bool,
     pub freshness: DMonitorFreshnessV1,
     /// `evaluation_time - observed_at_utc`, in seconds. May be negative if
     /// `evaluation_time` somehow precedes the observation (e.g. a caller
@@ -166,17 +169,18 @@ pub fn evaluate_freshness(
     let observed_age_seconds = (evaluated_at - observed_at).num_seconds();
     let received_age_seconds = (evaluated_at - received_at).num_seconds();
     let observed_ahead_of_received_seconds = (observed_at - received_at).num_seconds();
+    let within_observed_age = observed_age_seconds <= policy.max_observed_age_seconds as i64;
+    let within_received_age = received_age_seconds <= policy.max_received_age_seconds as i64;
+    let age_dimensions_satisfied = within_observed_age && within_received_age;
 
     if observed_ahead_of_received_seconds > policy.max_future_clock_skew_seconds as i64 {
         return Ok(DMonitorFreshnessEvaluationV1 {
+            age_dimensions_satisfied,
             freshness: DMonitorFreshnessV1::ClockSkew,
             observed_age_seconds,
             received_age_seconds,
         });
     }
-
-    let within_observed_age = observed_age_seconds <= policy.max_observed_age_seconds as i64;
-    let within_received_age = received_age_seconds <= policy.max_received_age_seconds as i64;
 
     let freshness = if within_observed_age && within_received_age {
         DMonitorFreshnessV1::Fresh
@@ -185,6 +189,7 @@ pub fn evaluate_freshness(
     };
 
     Ok(DMonitorFreshnessEvaluationV1 {
+        age_dimensions_satisfied,
         freshness,
         observed_age_seconds,
         received_age_seconds,

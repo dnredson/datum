@@ -977,7 +977,7 @@ impl DMonitorStreamSelector {
         ))
     }
 
-    fn subject(&self) -> DatumEventSubjectV1 {
+    pub(crate) fn subject(&self) -> DatumEventSubjectV1 {
         DatumEventSubjectV1::Other {
             project_id: Some(self.project_scope.clone()),
             entity_kind: MONITORING_SUBJECT_KIND.into(),
@@ -998,6 +998,12 @@ pub struct MonitoringEvidenceSnapshot {
     state: Arc<DMonitorStateV1>,
 }
 impl MonitoringEvidenceSnapshot {
+    /// Read-only evidence lookup for Phase 126 temporal provenance. Records
+    /// come exclusively from this already-validated immutable snapshot.
+    pub fn observation(&self, id: &str) -> Option<DMonitorObservationRecordV1> {
+        self.state.by_observation_id(id).cloned()
+    }
+
     pub fn from_state(state: DMonitorStateV1) -> Result<Self, MonitoringCheckError> {
         validate_persisted_dmonitor_state_integrity(&state)
             .map_err(MonitoringCheckError::InvalidEvidence)?;
@@ -1005,7 +1011,7 @@ impl MonitoringEvidenceSnapshot {
             state: Arc::new(state),
         })
     }
-    fn stream_head(
+    pub(crate) fn stream_head(
         &self,
         selector: &DMonitorStreamSelector,
     ) -> Option<DMonitorObservationRecordV1> {
@@ -1102,79 +1108,87 @@ impl DMonitorFreshnessCheck {
     }
 }
 
+impl DMonitorFreshnessCheck {
+    /// Pure reusable adapter boundary; evaluates precisely the supplied validated snapshot.
+    pub(crate) fn evaluate_snapshot(
+        &self,
+        snapshot: &MonitoringEvidenceSnapshot,
+        evaluated_at_utc: DateTime<Utc>,
+    ) -> Result<MonitoringCheckResult, MonitoringCheckError> {
+        let Some(record) = snapshot.stream_head(&self.selector) else {
+            return self.finding(
+                MonitoringOutcome::Indeterminate, "observation_missing", MonitoringSeverityHint::Warning, None,
+                Some(json!({
+                    "max_observed_age_seconds": self.policy.max_observed_age_seconds,
+                    "max_received_age_seconds": self.policy.max_received_age_seconds,
+                })),
+                Vec::new(),
+                json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
+            );
+        };
+        let evaluation_time = format_utc(evaluated_at_utc);
+        let freshness = match evaluate_freshness(&record, &self.policy, &evaluation_time) {
+            Ok(result) => result,
+            Err(error) => {
+                let before_receipt = chrono::DateTime::parse_from_rfc3339(&record.received_at_utc)
+                    .map(|value| evaluated_at_utc < value.with_timezone(&Utc))
+                    .unwrap_or(false);
+                if !before_receipt {
+                    return Err(MonitoringCheckError::InvalidEvidence(error));
+                }
+                return self.finding(
+                    MonitoringOutcome::Indeterminate, "evaluation_before_receipt", MonitoringSeverityHint::Warning,
+                    Some(json!({"evaluated_at_utc": evaluation_time, "received_at_utc": record.received_at_utc})),
+                    None,
+                    vec![DatumEventEvidenceRefV1::DMonitorObservation {
+                        observation_id: record.observation.observation_id,
+                    }],
+                    json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
+                );
+            }
+        };
+        let evidence_ref = DatumEventEvidenceRefV1::DMonitorObservation {
+            observation_id: record.observation.observation_id,
+        };
+        match freshness.freshness {
+            DMonitorFreshnessV1::Fresh =>
+                MonitoringCheckResult::new(MonitoringOutcome::Satisfied, Vec::new()),
+            DMonitorFreshnessV1::Stale => self.finding(
+                MonitoringOutcome::Finding, "observation_stale", MonitoringSeverityHint::Warning,
+                Some(json!({
+                    "observed_age_seconds": freshness.observed_age_seconds,
+                    "received_age_seconds": freshness.received_age_seconds,
+                })),
+                Some(json!({
+                    "max_observed_age_seconds": self.policy.max_observed_age_seconds,
+                    "max_received_age_seconds": self.policy.max_received_age_seconds,
+                })),
+                vec![evidence_ref],
+                json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
+            ),
+            DMonitorFreshnessV1::ClockSkew => self.finding(
+                MonitoringOutcome::Indeterminate, "observation_clock_skew", MonitoringSeverityHint::Warning,
+                Some(json!({
+                    "observed_at_utc": record.observation.observed_at_utc,
+                    "received_at_utc": record.received_at_utc,
+                    "observed_age_seconds": freshness.observed_age_seconds,
+                    "received_age_seconds": freshness.received_age_seconds,
+                })),
+                Some(json!({"max_future_clock_skew_seconds": self.policy.max_future_clock_skew_seconds})),
+                vec![evidence_ref],
+                json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
+            ),
+        }
+    }
+}
 impl MonitoringCheck for DMonitorFreshnessCheck {
     fn evaluate(&self, evaluated_at_utc: DateTime<Utc>) -> MonitoringCheckFuture<'_> {
         Box::pin(async move {
             let snapshot = self.source.snapshot()?;
-            let Some(record) = snapshot.stream_head(&self.selector) else {
-                return self.finding(
-                    MonitoringOutcome::Indeterminate, "observation_missing", MonitoringSeverityHint::Warning, None,
-                    Some(json!({
-                        "max_observed_age_seconds": self.policy.max_observed_age_seconds,
-                        "max_received_age_seconds": self.policy.max_received_age_seconds,
-                    })),
-                    Vec::new(),
-                    json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
-                );
-            };
-            let evaluation_time = format_utc(evaluated_at_utc);
-            let freshness = match evaluate_freshness(&record, &self.policy, &evaluation_time) {
-                Ok(result) => result,
-                Err(error) => {
-                    let before_receipt =
-                        chrono::DateTime::parse_from_rfc3339(&record.received_at_utc)
-                            .map(|value| evaluated_at_utc < value.with_timezone(&Utc))
-                            .unwrap_or(false);
-                    if !before_receipt {
-                        return Err(MonitoringCheckError::InvalidEvidence(error));
-                    }
-                    return self.finding(
-                        MonitoringOutcome::Indeterminate, "evaluation_before_receipt", MonitoringSeverityHint::Warning,
-                        Some(json!({"evaluated_at_utc": evaluation_time, "received_at_utc": record.received_at_utc})),
-                        None,
-                        vec![DatumEventEvidenceRefV1::DMonitorObservation {
-                            observation_id: record.observation.observation_id,
-                        }],
-                        json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
-                    );
-                }
-            };
-            let evidence_ref = DatumEventEvidenceRefV1::DMonitorObservation {
-                observation_id: record.observation.observation_id,
-            };
-            match freshness.freshness {
-                DMonitorFreshnessV1::Fresh =>
-                    MonitoringCheckResult::new(MonitoringOutcome::Satisfied, Vec::new()),
-                DMonitorFreshnessV1::Stale => self.finding(
-                    MonitoringOutcome::Finding, "observation_stale", MonitoringSeverityHint::Warning,
-                    Some(json!({
-                        "observed_age_seconds": freshness.observed_age_seconds,
-                        "received_age_seconds": freshness.received_age_seconds,
-                    })),
-                    Some(json!({
-                        "max_observed_age_seconds": self.policy.max_observed_age_seconds,
-                        "max_received_age_seconds": self.policy.max_received_age_seconds,
-                    })),
-                    vec![evidence_ref],
-                    json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
-                ),
-                DMonitorFreshnessV1::ClockSkew => self.finding(
-                    MonitoringOutcome::Indeterminate, "observation_clock_skew", MonitoringSeverityHint::Warning,
-                    Some(json!({
-                        "observed_at_utc": record.observation.observed_at_utc,
-                        "received_at_utc": record.received_at_utc,
-                        "observed_age_seconds": freshness.observed_age_seconds,
-                        "received_age_seconds": freshness.received_age_seconds,
-                    })),
-                    Some(json!({"max_future_clock_skew_seconds": self.policy.max_future_clock_skew_seconds})),
-                    vec![evidence_ref],
-                    json!({"node_id": self.selector.node_id, "monitor_instance_id": self.selector.monitor_instance_id}),
-                ),
-            }
+            self.evaluate_snapshot(&snapshot, evaluated_at_utc)
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

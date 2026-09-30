@@ -200,6 +200,9 @@ fn load_server_config() -> anyhow::Result<AppConfig> {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
+    // Freeze only the Event/Alert path once; do not start a scheduler or open
+    // SQLite here. Post-commit observability failures never gate authority.
+    let _event_producer_runtime = core::event_producers::process_runtime();
 
     // Restore the accepted control-plane state before opening any listener or
     // initializing external clients. A failed recovery is a startup failure,
