@@ -81,6 +81,20 @@ function temporalMetadata(value: unknown): boolean {
     )
   );
 }
+// Compare an identity with its OWN envelope, never a correlated event with
+// the alert's scope. DNode subjects intentionally carry no project scope.
+function subjectScope(
+  value: unknown,
+  project: unknown,
+  application: unknown,
+): boolean {
+  return (
+    object(value) &&
+    (typeof value.project_id !== "string" || value.project_id === project) &&
+    (typeof value.application_id !== "string" ||
+      value.application_id === application)
+  );
+}
 function event(value: unknown): boolean {
   return (
     object(value) &&
@@ -92,6 +106,7 @@ function event(value: unknown): boolean {
     ) &&
     ["info", "warning", "high", "critical"].includes(String(value.severity)) &&
     subject(value.subject) &&
+    subjectScope(value.subject, value.project_id, value.application_id) &&
     timestamp(value.occurred_at_utc) &&
     timestamp(value.admitted_at_utc) &&
     [
@@ -121,6 +136,7 @@ function alert(value: unknown): boolean {
     typeof value.category === "string" &&
     typeof value.kind === "string" &&
     subject(value.subject) &&
+    subjectScope(value.subject, value.project_id, value.application_id) &&
     ["open", "acknowledged", "in_progress", "resolved", "closed"].includes(
       String(value.lifecycle_status),
     ) &&
@@ -132,7 +148,10 @@ function alert(value: unknown): boolean {
     count(value.condition_confirmation_count) &&
     (value.condition_duration_seconds === null ||
       count(value.condition_duration_seconds)) &&
-    event(value.latest_condition_event)
+    event(value.latest_condition_event) &&
+    (value.recovery_event === undefined ||
+      value.recovery_event === null ||
+      event(value.recovery_event))
   );
 }
 function safeIssue(value: unknown): boolean {
@@ -217,7 +236,13 @@ function discovery(value: unknown): boolean {
     ["complete", "partial", "indeterminate"].includes(
       String(coverage.completeness),
     ) &&
-    !!coverage.source_coverage
+    object(coverage.source_coverage) &&
+    Object.values(coverage.source_coverage).every(
+      (source) =>
+        object(source) &&
+        typeof source.state === "string" &&
+        (source.issue === undefined || safeIssue(source.issue)),
+    )
   );
 }
 function validate(value: unknown, project: boolean): void {
@@ -269,6 +294,7 @@ function validate(value: unknown, project: boolean): void {
       ];
   const knownApps = v.known_applications as ObjectValue;
   const valid =
+    timestamp(v.generated_at_utc) &&
     numberSections.every((key) => payload(v, key, count)) &&
     page(knownApps.page, application) &&
     payload(
@@ -312,7 +338,69 @@ function validate(value: unknown, project: boolean): void {
       ? payload(v, "recent_events", (value) =>
           page(
             value,
-            (item) => object(item) && typeof item.event_id === "string",
+            (item) =>
+              event(item) && (item as ObjectValue).project_id === v.project_id,
+          ),
+        ) &&
+        payload(
+          v,
+          "alerts",
+          (value) =>
+            object(value) &&
+            page(
+              value.attention_ordered,
+              (item) =>
+                alert(item) &&
+                (item as ObjectValue).project_id === v.project_id,
+            ),
+        ) &&
+        Array.isArray((knownApps.page as ObjectValue).items) &&
+        ((knownApps.page as ObjectValue).items as ObjectValue[]).every(
+          (a) => a.project_id === v.project_id,
+        ) &&
+        payload(
+          v,
+          "operational_graph",
+          (value) =>
+            object(value) &&
+            typeof value.dgraph_id === "string" &&
+            count(value.revision) &&
+            count(value.node_count) &&
+            count(value.desired_service_assignment_count),
+        ) &&
+        payload(v, "accepted_deployments", (value) =>
+          page(
+            value,
+            (item) =>
+              object(item) &&
+              typeof item.application_id === "string" &&
+              typeof item.dmap_id === "string" &&
+              count(item.revision) &&
+              item.project_id === v.project_id,
+          ),
+        ) &&
+        payload(v, "temporal_quality", (value) =>
+          page(
+            value,
+            (item) =>
+              object(item) &&
+              item.project_id === v.project_id &&
+              nullableText(item.application_id) &&
+              subject(item.subject) &&
+              subjectScope(
+                item.subject,
+                item.project_id,
+                item.application_id,
+              ) &&
+              timestamp(item.evaluated_at_utc) &&
+              ["server_received_at_utc", "source_observed_at_utc"].every(
+                (key) => item[key] === null || timestamp(item[key]),
+              ) &&
+              [
+                "received_age_seconds",
+                "observed_age_seconds",
+                "observed_receipt_delta_seconds",
+              ].every((key) => item[key] === null || signedInteger(item[key])),
           ),
         )
       : page(

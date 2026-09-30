@@ -8,6 +8,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { wallboardFixture } from "./wallboard-fixture.mjs";
+import { projectFixture, sharedEvidence } from "./project-fixture.mjs";
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -39,6 +40,195 @@ const liveProject = await (
 const known = structuredClone(live);
 known.known_projects.page.items = ["foundation-demo"];
 const calls = [];
+
+for (const [state, label] of [
+  ["available-zero", "Available"],
+  ["available-active", "Available"],
+  ["not_configured", "Not configured"],
+  ["unavailable", "Unavailable"],
+  ["corrupt", "Integrity error"],
+  ["indeterminate", "Indeterminate"],
+]) {
+  test(`Phase130 F1 application alert source state: ${state}`, async () => {
+    const data = projectFixture();
+    if (state === "available-zero")
+      data.alerts.value.attention_ordered.items = [];
+    else if (!state.startsWith("available-"))
+      data.alerts =
+        state === "not_configured"
+          ? { availability: state }
+          : state === "indeterminate"
+            ? {
+                availability: state,
+                value: "Internal source diagnostic must not render",
+              }
+            : {
+                availability: state,
+                value: {
+                  source: "datum_alerts",
+                  kind: "storage",
+                  code: "storage_unavailable",
+                  safe_message: "Alert source cannot be projected.",
+                  scope: null,
+                },
+              };
+    await projectCheck(data, (window) => {
+      const row = window.document.querySelector(".application-item");
+      assert.equal(
+        row.querySelector(".application-alert-state .status-badge").textContent,
+        label,
+      );
+      const count = row.querySelector(".application-alert-count");
+      if (state.startsWith("available-"))
+        assert.match(
+          count.textContent,
+          state === "available-zero"
+            ? /^0 active alert records/
+            : /^3 active alert records/,
+        );
+      else assert.equal(count, null);
+      assert.doesNotMatch(
+        row.textContent,
+        /Internal source diagnostic|Alert source unavailable for/,
+      );
+    });
+  });
+}
+for (const project of ["alpha", "beta", null]) {
+  test(`Phase130 F2 latest correlated evidence scope: ${project ?? "absent"}`, async () => {
+    const data = projectFixture();
+    const alert = data.alerts.value.attention_ordered.items[0];
+    alert.subject = { kind: "dnode", node_id: "fog-01" };
+    alert.latest_condition_event = sharedEvidence(
+      project,
+      `event-${project ?? "unscoped"}`,
+    );
+    await projectCheck(data, (window) => {
+      assert.equal(
+        window.document.querySelectorAll(".attention-item").length,
+        3,
+      );
+      const evidence = window.document.querySelector(
+        ".attention-item .correlated-evidence",
+      );
+      assert.equal(
+        evidence.dataset.scope,
+        project === null
+          ? "unscoped"
+          : project === "alpha"
+            ? "project_local"
+            : "cross_project",
+      );
+      assert.match(evidence.textContent, /Subject ·.*fog-01/);
+      if (project !== null)
+        assert.ok(
+          evidence.textContent.includes(`Evidence project · ${project}`),
+        );
+      else assert.doesNotMatch(evidence.textContent, /Evidence project/);
+      if (project === "beta") {
+        assert.match(
+          evidence.textContent,
+          /another project.*Evidence project · beta/s,
+        );
+        assert.doesNotMatch(
+          evidence.textContent,
+          /Evidence project · alpha|corrupt|wrong project/i,
+        );
+      }
+      assert.equal(
+        window.document.querySelector(".project-header h1").textContent,
+        "alpha",
+      );
+    });
+  });
+}
+test("Phase130 F2 cross-project recovery remains inspectable, not active attention", async () => {
+  const data = projectFixture();
+  const alert = data.alerts.value.attention_ordered.items.find(
+    (a) => a.lifecycle_status === "resolved",
+  );
+  alert.recovery_event = sharedEvidence("beta", "recovery-from-beta");
+  alert.recovery_event.kind = "observation_stale_cleared";
+  alert.recovery_event.classification = "recovery";
+  alert.recovery_event.application_id = "beta-application";
+  await projectCheck(data, (window) => {
+    assert.equal(window.document.querySelectorAll(".attention-item").length, 3);
+    const recovery = window.document.querySelector(".recovery-references");
+    assert.match(
+      recovery.textContent,
+      /not active attention.*Resolved · pending closure/s,
+    );
+    assert.match(
+      recovery.textContent,
+      /another project.*Evidence project · beta.*Evidence application · beta-application.*recovery-from-beta/s,
+    );
+  });
+});
+test("Phase130 F2 shared latest evidence preserves application identity without inventing a local application", async () => {
+  const data = projectFixture();
+  const alert = data.alerts.value.attention_ordered.items[0];
+  alert.latest_condition_event = sharedEvidence("beta", "beta-scoped-event");
+  alert.latest_condition_event.application_id = "beta-app";
+  alert.latest_condition_event.subject = {
+    kind: "dserv",
+    project_id: "beta",
+    application_id: "beta-app",
+    service_id: "beta-service",
+  };
+  await projectCheck(data, (window) => {
+    const evidence = window.document.querySelector(
+      ".attention-item .correlated-evidence",
+    );
+    assert.match(
+      evidence.textContent,
+      /Evidence project · beta.*Evidence application · beta-app.*beta-scoped-event.*beta-service/s,
+    );
+    assert.doesNotMatch(
+      evidence.textContent,
+      /Evidence application · mqtt|Evidence project · alpha/,
+    );
+    assert.equal(evidence.querySelectorAll("a").length, 0);
+  });
+});
+test("Phase130 F2 multiple global DNode references retain their own evidence projects without corruption", async () => {
+  const data = projectFixture();
+  for (const [index, alert] of data.alerts.value.attention_ordered.items
+    .slice(0, 2)
+    .entries()) {
+    alert.subject = { kind: "dnode", node_id: "fog-01" };
+    alert.latest_condition_event = sharedEvidence(
+      index ? "gamma" : "beta",
+      `global-node-evidence-${index}`,
+    );
+    if (index) {
+      alert.kind = "observation_clock_skew";
+      alert.latest_condition_event.kind = "observation_clock_skew";
+    }
+  }
+  await projectCheck(data, (window) => {
+    const evidence = [
+      ...window.document.querySelectorAll(
+        '.attention-item .correlated-evidence[data-scope="cross_project"]',
+      ),
+    ];
+    assert.equal(evidence.length, 2);
+    assert.match(evidence[0].textContent, /beta.*global-node-evidence-0/s);
+    assert.match(evidence[1].textContent, /gamma.*global-node-evidence-1/s);
+    assert.doesNotMatch(
+      window.document.querySelector(".project-attention").textContent,
+      /Integrity error|invalid projection/,
+    );
+  });
+});
+test("Phase130 F2 contradictory nested event scope surfaces safe validation error", async () => {
+  const data = projectFixture();
+  data.alerts.value.attention_ordered.items[0].latest_condition_event.subject.project_id =
+    "beta";
+  await projectCheck(data, (window) => {
+    assert.match(text(window), /invalid projection values/);
+    assert.doesNotMatch(text(window), /Evidence project · beta/);
+  });
+});
 
 function waitFor(window, predicate) {
   if (predicate()) return Promise.resolve();
@@ -98,6 +288,336 @@ async function wallboardCheck(data, assertion, width = 1440) {
     await window.happyDOM.close();
   }
 }
+
+async function projectCheck(data, assertion, width = 1440) {
+  const firstCall = calls.length;
+  const window = boot(
+    `/projects/${encodeURIComponent(data.project_id)}`,
+    width,
+    () => data,
+  );
+  try {
+    await ready(window);
+    await assertion(window, calls.slice(firstCall));
+  } finally {
+    await window.happyDOM.close();
+  }
+}
+
+test("project workspace canonical identity, breadcrumb and global navigation remain explicit", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    assert.equal(window.document.querySelector("h1").textContent, "alpha");
+    assert.match(
+      window.document.querySelector('[aria-label="Breadcrumb"]').textContent,
+      /Projects.*alpha.*Overview/,
+    );
+    assert.ok(window.document.querySelector('[data-nav="overview"]'));
+    assert.match(text(window), /PROJECT WORKSPACE/);
+    assert.match(
+      window.document.querySelector(".header-attention").textContent,
+      /3 active alerts/,
+    );
+  });
+});
+test("project known applications are discovered references with multi-source provenance", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    const section = window.document.querySelector(".project-applications");
+    assert.match(
+      section.textContent,
+      /Known applications.*Discovered references/s,
+    );
+    assert.match(section.textContent, /Event history · Alert lifecycle/);
+    assert.equal(section.querySelectorAll(".application-item").length, 1);
+    assert.doesNotMatch(section.textContent, /All applications/);
+  });
+});
+
+test("one discovered application keeps multiple provenance markers without duplicate cards", async () => {
+  const data = projectFixture();
+  data.known_applications.page.items[0].provenance = [
+    "accepted_dmap",
+    "dmonitor",
+    "event",
+    "alert",
+  ];
+  await projectCheck(data, (window) => {
+    const cards = window.document.querySelectorAll(".application-item");
+    assert.equal(cards.length, 1);
+    assert.match(
+      cards[0].textContent,
+      /Accepted D-Map · D-Monitor evidence · Event history · Alert lifecycle/,
+    );
+  });
+});
+
+test("project source availability stays explicit across not configured, unavailable and indeterminate", async () => {
+  const data = projectFixture();
+  data.accepted_deployments = {
+    availability: "unavailable",
+    value: {
+      source: "ddeploy",
+      kind: "source_unavailable",
+      code: "storage_unavailable",
+      safe_message: "Deployment source unavailable.",
+      scope: { project_id: "alpha", application_id: null },
+    },
+  };
+  data.operational_graph = {
+    availability: "indeterminate",
+    value: "internal source details not for UI",
+  };
+  await projectCheck(data, (window) => {
+    const sources = window.document.querySelector(".project-sources");
+    assert.match(sources.textContent, /Unavailable/);
+    assert.match(sources.textContent, /Indeterminate/);
+    assert.match(sources.textContent, /Not configured/);
+    assert.doesNotMatch(text(window), /internal source details/);
+    assert.equal(
+      window.document
+        .querySelectorAll(".project-summary .metric-card")[5]
+        .querySelector(".metric-value"),
+      null,
+    );
+  });
+});
+test("proposal provenance never establishes pending or accepted authority", async () => {
+  const data = projectFixture();
+  data.accepted_deployments.value.items = [];
+  data.known_applications.page.items[0].provenance = ["ddeploy_proposal"];
+  await projectCheck(data, (window) => {
+    const row = window.document.querySelector(".application-item");
+    assert.match(row.textContent, /proposal reference/);
+    assert.match(row.textContent, /Not in loaded accepted page/);
+    assert.match(row.textContent, /Planned \/ pending proposal.*Not included/s);
+    assert.doesNotMatch(row.textContent, /accepted-map-only/);
+  });
+});
+test("project desired, observed, convergence and accepted sections never collapse", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    const row = window.document.querySelector(".application-item");
+    for (const label of [
+      "Accepted placement",
+      "Desired runtime",
+      "Observed runtime",
+      "Convergence",
+      "Planned / pending proposal",
+    ])
+      assert.ok(row.textContent.includes(label));
+    const dimensions = window.document.querySelector(".project-dimensions");
+    assert.match(
+      dimensions.textContent,
+      /desired-graph.*6 desired service assignments/,
+    );
+    assert.match(
+      dimensions.textContent,
+      /Desired is not observed or converged/,
+    );
+  });
+});
+test("no alerts is never a Healthy assertion", async () => {
+  const data = projectFixture();
+  data.alerts.value.attention_ordered.items = [];
+  data.alerts.value.counts.open =
+    data.alerts.value.counts.acknowledged =
+    data.alerts.value.counts.in_progress =
+      0;
+  await projectCheck(data, (window) => {
+    assert.match(
+      window.document.querySelector(".project-attention").textContent,
+      /not a positive runtime-health assertion/,
+    );
+    assert.doesNotMatch(
+      text(window),
+      /\bHealthy\b|Application Health|Project Health =/,
+    );
+  });
+});
+test("project active attention excludes Resolved and Closed; counts preserve pending closure", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    assert.equal(
+      window.document.querySelectorAll(".project-attention .attention-item")
+        .length,
+      3,
+    );
+    assert.doesNotMatch(
+      window.document.querySelector(".project-attention").textContent,
+      /Resolved ·|Closed ·/,
+    );
+    assert.match(
+      window.document.querySelector(".project-summary").textContent,
+      /Pending closure.*1.*Resolved, not active/s,
+    );
+  });
+});
+test("project temporal subjects retain three independent dimensions and canonical stream identity", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    const rows = window.document.querySelectorAll(
+      ".project-temporal .temporal-entry",
+    );
+    assert.match(rows[0].textContent, /Fresh.*Stale.*Behind \/ delayed/);
+    assert.match(rows[1].textContent, /Stale.*Stale.*Aligned/);
+    assert.match(rows[2].textContent, /Fresh.*Fresh.*Ahead \/ skew/);
+    assert.ok(rows[0].textContent.includes("alpha/fog-01/monitor"));
+    assert.equal(rows[0].querySelectorAll(".dimension-label").length, 3);
+  });
+});
+test("unavailable project counts are not zero and source issues are not runtime failures", async () => {
+  const data = projectFixture();
+  data.temporal_quality = {
+    availability: "corrupt",
+    value: {
+      source: "dmonitor",
+      kind: "source_corrupt",
+      code: "invalid_snapshot",
+      safe_message: "Cannot project observation evidence.",
+      scope: { project_id: "alpha", application_id: null },
+    },
+  };
+  await projectCheck(data, (window) => {
+    const metrics = [
+      ...window.document.querySelectorAll(".project-summary .metric-card"),
+    ];
+    assert.equal(metrics[4].querySelector(".metric-value"), null);
+    assert.match(metrics[4].textContent, /Integrity error/);
+    const sources = window.document.querySelector(".project-sources");
+    assert.match(sources.textContent, /SOURCE ISSUE.*not runtime failure/s);
+    assert.match(sources.textContent, /invalid_snapshot/);
+    assert.match(
+      window.document.querySelector("#connection").textContent,
+      /^Degraded/,
+    );
+    assert.ok(window.document.querySelector(".project-applications"));
+  });
+});
+test("project recent events retain application/project/subject identity and occurrence chronology", async () => {
+  await projectCheck(projectFixture(), (window) => {
+    const rows = window.document.querySelectorAll(".project-events .event-row");
+    assert.equal(rows.length, 10);
+    assert.match(rows[0].textContent, /Project · alpha.*Application · mqtt/s);
+    assert.equal(
+      rows[0].querySelector("time").dateTime,
+      "2026-09-30T14:59:00Z",
+    );
+    assert.match(rows[0].textContent, /recovery/);
+  });
+});
+test("accepted map identity is read only from accepted projection, never from event subject", async () => {
+  const data = projectFixture();
+  data.recent_events.value.items[0].subject = {
+    kind: "dmap",
+    dmap_id: "historical-map",
+    project_id: "alpha",
+    application_id: "mqtt",
+  };
+  await projectCheck(data, (window) => {
+    assert.match(
+      window.document.querySelector(".project-dimensions").textContent,
+      /accepted-map-only/,
+    );
+    assert.doesNotMatch(
+      window.document.querySelector(".project-dimensions").textContent,
+      /historical-map/,
+    );
+    assert.match(
+      window.document.querySelector(".project-events").textContent,
+      /historical-map/,
+    );
+  });
+});
+test("non-discovered project is a valid scoped snapshot, not canonical Not Found", async () => {
+  const data = projectFixture();
+  data.project_id = "unknown-scope";
+  data.known_applications.page.items = [];
+  data.alerts = { availability: "not_configured" };
+  data.recent_events = { availability: "not_configured" };
+  data.temporal_quality = { availability: "not_configured" };
+  data.accepted_deployments = { availability: "not_configured" };
+  data.operational_graph = { availability: "indeterminate", value: "no graph" };
+  await projectCheck(data, (window) => {
+    assert.match(text(window), /No applications are currently discoverable/);
+    assert.match(text(window), /not proof of registration/);
+    assert.doesNotMatch(
+      text(window),
+      /Project does not exist|Project not found/,
+    );
+    assert.equal(
+      window.document.querySelector("h1").textContent,
+      "unknown-scope",
+    );
+  });
+});
+test("one scoped project request, no application or overview fan-out", async () => {
+  await projectCheck(projectFixture(), (_window, requests) => {
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/api/v1/operations/projects/alpha");
+    assert.equal(requests[0].init.headers["X-Datum-Project"], "alpha");
+    assert.equal(requests[0].init.method, "GET");
+  });
+});
+test("long project/application identities wrap safely with no HTML authority", async () => {
+  const data = projectFixture();
+  data.project_id = "project-".repeat(30);
+  data.known_applications.page.items = [
+    {
+      project_id: data.project_id,
+      application_id: "<app>".repeat(50),
+      provenance: ["event", "alert"],
+    },
+  ];
+  for (const key of [
+    "alerts",
+    "recent_events",
+    "temporal_quality",
+    "accepted_deployments",
+  ])
+    data[key] = { availability: "not_configured" };
+  await projectCheck(
+    data,
+    (window) => {
+      assert.equal(
+        window.document.querySelector("h1").textContent,
+        data.project_id,
+      );
+      assert.ok(text(window).includes("<app>".repeat(50)));
+      assert.equal(window.document.querySelector("app"), null);
+      assert.equal(
+        window.getComputedStyle(
+          window.document.querySelector(".entity-identity"),
+        ).overflowWrap,
+        "anywhere",
+      );
+    },
+    768,
+  );
+});
+test("project future navigation is disabled, contains no fake routes or write controls", async () => {
+  for (const width of [1440, 1024, 768])
+    await projectCheck(
+      projectFixture(),
+      (window) => {
+        const nav = window.document.querySelector(".project-subnav");
+        assert.equal(nav.querySelectorAll("a").length, 1);
+        assert.equal(nav.querySelectorAll('[aria-disabled="true"]').length, 6);
+        assert.match(
+          nav.textContent,
+          /Services · Phase 133A \/ 133B.*Graph · Phase 131 \/ 132/s,
+        );
+        assert.equal(nav.querySelectorAll("button").length, 0);
+        assert.equal(
+          window.document.querySelectorAll("#page button").length,
+          0,
+        );
+        assert.equal(window.getComputedStyle(nav).flexWrap, "wrap");
+        assert.equal(
+          window.getComputedStyle(
+            window.document.querySelector(".project-summary"),
+          ).gridTemplateColumns,
+          `repeat(${width === 1440 ? 4 : width === 1024 ? 3 : 2}, minmax(0, 1fr))`,
+        );
+      },
+      width,
+    );
+});
 
 test("F1 canonical stream/application/map/proposal identities remain distinct and inspectable", async () => {
   const data = wallboardFixture();
@@ -775,6 +1295,16 @@ test("three temporal dimensions, long identities/provenance and safe notices rem
       ],
     },
   };
+  project.temporal_quality.value.items =
+    project.temporal_quality.value.items.map((record, i) => ({
+      ...structuredClone(wallboardFixture().temporal_quality.value.items[i]),
+      ...record,
+      project_id: project.project_id,
+      subject: {
+        ...wallboardFixture().temporal_quality.value.items[i].subject,
+        project_id: project.project_id,
+      },
+    }));
   const window = boot(`/projects/${project.project_id}`, 768, () => project);
   try {
     await ready(window);

@@ -109,6 +109,7 @@ export interface OperationalAlert {
   condition_confirmation_count: number;
   condition_duration_seconds: number | null;
   latest_condition_event: OperationalEvent;
+  recovery_event?: OperationalEvent | null;
 }
 export interface ProjectAttention {
   project_id: string;
@@ -175,9 +176,14 @@ export interface ProjectOverview {
   canonical_application_count: SourceSection<number>;
   known_applications: DiscoveryPage<KnownApplication>;
   alerts: SourceSection<AlertSection>;
-  recent_events: SourceSection<Page<{ event_id: string }>>;
+  recent_events: SourceSection<Page<OperationalEvent>>;
   accepted_deployments: SourceSection<
-    Page<{ application_id: string; dmap_id: string; revision: number }>
+    Page<{
+      project_id: string;
+      application_id: string;
+      dmap_id: string;
+      revision: number;
+    }>
   >;
   temporal_quality: SourceSection<Page<TemporalQuality>>;
 }
