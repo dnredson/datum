@@ -86,6 +86,7 @@ pub mod operational_dgraph_acquisition;
 pub mod operational_dgraph_persistence;
 pub mod operational_dgraph_recovery;
 pub mod operational_evidence;
+pub mod operations_read_models;
 pub mod planner;
 pub mod resource_binding;
 pub mod resource_observation;

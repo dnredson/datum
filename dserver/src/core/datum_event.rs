@@ -676,7 +676,7 @@ impl DatumEventSubjectV1 {
         }
     }
 
-    fn validate(&self) -> Vec<CanonicalValidationFinding> {
+    pub(crate) fn validate(&self) -> Vec<CanonicalValidationFinding> {
         let mut findings = Vec::new();
         let mut require = |label: &'static str, value: &str| {
             if value.trim().is_empty() {

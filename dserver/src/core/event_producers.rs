@@ -793,6 +793,11 @@ pub fn process_runtime() -> std::sync::Arc<EventProducerRuntime> {
         .clone()
 }
 impl EventProducerRuntime {
+    /// Read-only consumers reuse the same retained configuration without
+    /// initializing SQLite or independently rereading environment/cwd.
+    pub fn database_path(&self) -> Result<&Path, ProducerError> {
+        self.db_path.as_deref().map_err(Clone::clone)
+    }
     pub fn from_path(path: &str, base: &Path) -> Result<Self, ProducerError> {
         Ok(Self {
             db_path: Ok(resolve_database_path(Some(path), base)?),

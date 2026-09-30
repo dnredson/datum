@@ -1523,7 +1523,7 @@ fn map_alert_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AlertRow> {
 
 /// Reconstructs and structurally validates the row, then verifies all
 /// association aggregation and lifecycle history in the caller's snapshot.
-fn fetch_alert_by_id(
+pub(crate) fn fetch_alert_by_id(
     connection: &Connection,
     alert_id: &str,
 ) -> Result<Option<DatumAlertV1>, DatumAlertStoreError> {
@@ -1888,6 +1888,7 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             associated_at_utc TEXT NOT NULL, UNIQUE(alert_id, event_id)
         );
         CREATE INDEX IF NOT EXISTS idx_datum_alert_events_alert ON datum_alert_events(alert_id, id);
+        CREATE INDEX IF NOT EXISTS idx_datum_alert_events_event ON datum_alert_events(event_id, alert_id);
         CREATE TABLE IF NOT EXISTS datum_alert_transitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, transition_id TEXT NOT NULL UNIQUE,
             alert_id TEXT NOT NULL REFERENCES datum_alerts(alert_id),
@@ -1897,6 +1898,7 @@ fn open_database(path: &Path) -> Result<Connection, String> {
             related_event_id TEXT REFERENCES datum_events(event_id)
         );
         CREATE INDEX IF NOT EXISTS idx_datum_alert_transitions_alert ON datum_alert_transitions(alert_id, id);
+        CREATE INDEX IF NOT EXISTS idx_datum_alert_transitions_related_event ON datum_alert_transitions(related_event_id, alert_id);
         CREATE TABLE IF NOT EXISTS datum_alert_recoveries (
             event_id TEXT PRIMARY KEY REFERENCES datum_events(event_id),
             correlation_key TEXT NOT NULL, outcome_json TEXT NOT NULL

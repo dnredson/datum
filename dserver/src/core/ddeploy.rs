@@ -946,7 +946,7 @@ pub fn load_state(db_path: &std::path::Path) -> Result<DDeployStateV1, String> {
 /// logically implied by those relations and is not the first failure
 /// `self_consistent_tamper_is_still_detected` actually reaches. It is
 /// retained as defense-in-depth, not as the mechanism that test proves.
-fn validate_persisted_state_integrity(state: &DDeployStateV1) -> Result<(), String> {
+pub(crate) fn validate_persisted_state_integrity(state: &DDeployStateV1) -> Result<(), String> {
     fn violation(message: impl Into<String>) -> String {
         format!("persisted state integrity violation: {} -- refusing to load potentially corrupted controller state", message.into())
     }
