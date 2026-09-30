@@ -1,5 +1,7 @@
 import type { GlobalOverview, ProjectOverview } from "../types/operations.ts";
 import { validProjectId } from "../app/router.ts";
+import type { ProjectGraph } from "../types/graph.ts";
+import { validProjectGraph } from "../pages/graph-model.ts";
 
 export class ApiError extends Error {
   readonly code: string;
@@ -483,6 +485,7 @@ export class OperationsClient {
     path: string,
     signal: AbortSignal,
     projectId?: string,
+    validateBody?: (body: unknown) => void,
   ): Promise<T> {
     const controller = new AbortController();
     const abort = () => controller.abort(signal.reason);
@@ -530,7 +533,8 @@ export class OperationsClient {
           response.status,
         );
       }
-      validate(body, projectId !== undefined);
+      if (validateBody) validateBody(body);
+      else validate(body, projectId !== undefined);
       if (
         projectId !== undefined &&
         (body as ProjectOverview).project_id !== projectId
@@ -572,6 +576,25 @@ export class OperationsClient {
       `/api/v1/operations/projects/${encodeURIComponent(id)}`,
       signal,
       id,
+    );
+  }
+  graph(id: string, signal: AbortSignal): Promise<ProjectGraph> {
+    if (!validProjectId(id))
+      return Promise.reject(
+        new ApiError("invalid_scope", "Invalid project identifier.", null),
+      );
+    return this.request(
+      `/api/v1/operations/projects/${encodeURIComponent(id)}/graph`,
+      signal,
+      id,
+      (body) => {
+        if (!validProjectGraph(body, id))
+          throw new ApiError(
+            "invalid_response",
+            "DServer returned an invalid logical graph projection.",
+            null,
+          );
+      },
     );
   }
 }

@@ -30,6 +30,84 @@ use std::{
 };
 
 pub const DEFAULT_LIMIT: u32 = 100;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProjectGraphOverview {
+    pub project_id: String,
+    pub generated_at_utc: String,
+    pub source_kind: &'static str,
+    pub graph: SourceSection<super::project_graph_read_model::GraphContent>,
+}
+impl OperationsSources {
+    pub fn project_graph_overview(
+        &self,
+        project: &str,
+        at: DateTime<Utc>,
+    ) -> Result<ProjectGraphOverview, OperationsReadError> {
+        if project.is_empty()
+            || project.len() > 256
+            || project.trim() != project
+            || project.chars().any(char::is_control)
+        {
+            return Err(invalid("invalid project scope"));
+        }
+        let graph = match &self.deployment {
+            SourceSection::Available(state) => SourceSection::from_result((|| {
+                let mut applications = BTreeSet::new();
+                for a in state.active_by_application.values() {
+                    if a.active_dmap.project_id == project {
+                        applications.insert(a.application_id.clone());
+                    }
+                }
+                for a in state.phase113_v2.active.values() {
+                    if a.map.project_id == project {
+                        applications.insert(a.map.application_id.clone());
+                    }
+                }
+                let mut snapshots = vec![];
+                for application in applications {
+                    let a = ddeploy::active_placement_authority(state, project, &application)
+                        .map_err(|e| error(ReadErrorKind::SourceCorrupt, "ddeploy", e))?
+                        .ok_or_else(|| {
+                            error(
+                                ReadErrorKind::SourceCorrupt,
+                                "ddeploy",
+                                "missing active authority",
+                            )
+                        })?;
+                    let snapshot = a.dgraph_snapshot.ok_or_else(|| {
+                        error(
+                            ReadErrorKind::SourceCorrupt,
+                            "ddeploy",
+                            "missing accepted graph snapshot",
+                        )
+                    })?;
+                    snapshots.push((
+                        snapshot,
+                        a.dgraph_digest.ok_or_else(|| {
+                            error(
+                                ReadErrorKind::SourceCorrupt,
+                                "ddeploy",
+                                "missing accepted graph digest",
+                            )
+                        })?,
+                        a.acceptance_id,
+                    ));
+                }
+                super::project_graph_read_model::build(snapshots)
+                    .map_err(|e| error(ReadErrorKind::SourceCorrupt, "ddeploy", e))
+            })()),
+            _ => self.deployment.map(|_| unreachable!()),
+        }
+        .scoped(Some(project), None);
+        Ok(ProjectGraphOverview {
+            project_id: project.into(),
+            generated_at_utc: canonical_at(at),
+            source_kind: "accepted_application_dgraph_snapshots",
+            graph,
+        })
+    }
+}
 pub const MAX_LIMIT: u32 = 1000;
 pub const MAX_SAFE_MESSAGE_BYTES: usize = 512;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2790,6 +2868,54 @@ mod tests {
         sources
             .application_overview("p", "app", at(60), &OverviewQuery::at(at(60)))
             .unwrap()
+    }
+    #[test]
+    fn project_graph_uses_only_accepted_snapshots_not_proposals_operational_nodes_or_events() {
+        let pending = OperationsSources::default().with_deployment(deployment(false));
+        let pending_view = pending.project_graph_overview("p", at(60)).unwrap();
+        assert!(
+            matches!(pending_view.graph, SourceSection::Available(ref g) if g.nodes.is_empty())
+        );
+        let state = deployment(true);
+        let before = serde_json::to_value(&state).unwrap();
+        let sources = OperationsSources::default()
+            .with_deployment(state.clone())
+            .with_project_graphs(BTreeMap::from([("p".into(), graph("p"))]));
+        let view = sources.project_graph_overview("p", at(60)).unwrap();
+        assert_eq!(view.source_kind, "accepted_application_dgraph_snapshots");
+        assert_eq!(view.generated_at_utc, text(60));
+        let SourceSection::Available(content) = view.graph else {
+            panic!("expected accepted graph");
+        };
+        assert_eq!(content.applications[0].application_id, "app");
+        assert_eq!(content.applications[0].dgraph_id, "graph");
+        assert_eq!(content.nodes.len(), 2);
+        assert!(content.nodes.iter().all(|n| n.canonical_id != "node"));
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert!(
+            matches!(sources.project_graph_overview("other",at(60)).unwrap().graph,SourceSection::Available(ref g) if g.nodes.is_empty())
+        );
+    }
+    #[test]
+    fn project_graph_never_falls_back_to_operational_document_and_preserves_source_failure() {
+        let sources = OperationsSources::default()
+            .with_project_graphs(BTreeMap::from([("p".into(), graph("p"))]));
+        assert!(matches!(
+            sources.project_graph_overview("p", at(60)).unwrap().graph,
+            SourceSection::NotConfigured
+        ));
+        let sources = sources.with_source_error(
+            OperationsSource::Deployment,
+            error(
+                ReadErrorKind::SourceCorrupt,
+                "ddeploy",
+                "private SQL C:\\secrets.db",
+            ),
+        );
+        let json =
+            serde_json::to_string(&sources.project_graph_overview("p", at(60)).unwrap()).unwrap();
+        assert!(json.contains("corrupt"));
+        assert!(!json.contains("secrets.db"));
     }
     fn scheduler() -> MonitoringSchedulerStatus {
         let check = |id: &str| MonitoringCheckStatus {

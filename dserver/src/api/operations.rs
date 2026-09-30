@@ -256,6 +256,10 @@ pub fn router(runtime: OperationsApiRuntime) -> Router {
             "/api/v1/operations/projects/:project_id",
             get(project_overview),
         )
+        .route(
+            "/api/v1/operations/projects/:project_id/graph",
+            get(project_graph),
+        )
         .with_state(runtime)
 }
 async fn overview(
@@ -290,6 +294,30 @@ async fn project_overview(
         .map(|body| ([("cache-control", "no-store")], body))
 }
 
+async fn project_graph(
+    State(runtime): State<OperationsApiRuntime>,
+    path: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiFailure> {
+    let Path(project) = path.map_err(|_| ApiFailure::invalid())?;
+    if project.is_empty()
+        || project.len() > 256
+        || project.trim() != project
+        || project.chars().any(char::is_control)
+        || headers
+            .get("x-datum-project")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            != Some(project.as_str())
+    {
+        return Err(ApiFailure::invalid());
+    }
+    runtime
+        .build(move |sources, at, _| sources.project_graph_overview(&project, at))
+        .await
+        .map(|body| ([("cache-control", "no-store")], body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +347,73 @@ mod tests {
         let mut runtime = OperationsApiRuntime::new(|| Ok(OperationsSources::default()));
         runtime.clock = Arc::new(|| "2026-09-30T15:00:00Z".parse().unwrap());
         runtime
+    }
+    #[tokio::test]
+    async fn graph_api_is_scoped_thin_read_projection_and_has_no_write_route() {
+        let runtime = fixed_runtime();
+        let expected = serde_json::to_value(
+            OperationsSources::default()
+                .project_graph_overview("project one", (runtime.clock)())
+                .unwrap(),
+        )
+        .unwrap();
+        let server = serve(runtime).await;
+        let path = format!(
+            "{}/api/v1/operations/projects/project%20one/graph",
+            server.base
+        );
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&path)
+            .header("X-Datum-Project", "project one")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.json::<Value>().await.unwrap(), expected);
+        assert_eq!(
+            client
+                .get(&path)
+                .header("X-Datum-Project", "other")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            client.post(&path).send().await.unwrap().status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    #[tokio::test]
+    async fn graph_api_degrades_safely_without_leaking_diagnostics() {
+        let server = serve(OperationsApiRuntime::new(|| {
+            Ok(OperationsSources::default().with_source_error(
+                OperationsSource::Deployment,
+                issue(
+                    ReadErrorKind::SourceCorrupt,
+                    "ddeploy",
+                    "SQL private-secret C:\\hidden.db",
+                ),
+            ))
+        }))
+        .await;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{}/api/v1/operations/projects/p/graph",
+                server.base
+            ))
+            .header("X-Datum-Project", "p")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("corrupt"));
+        assert!(!body.contains("private-secret"));
+        assert!(!body.contains("hidden.db"));
     }
     #[tokio::test]
     async fn overview_is_exact_phase127_projection() {

@@ -2,6 +2,7 @@ export type Route =
   | { kind: "overview" }
   | { kind: "projects" }
   | { kind: "project"; projectId: string }
+  | { kind: "project_graph"; projectId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -15,11 +16,12 @@ export function parseRoute(pathname: string): Route {
   if (pathname === "/") return { kind: "overview" };
   if (pathname === "/projects" || pathname === "/projects/")
     return { kind: "projects" };
-  const match = /^\/projects\/([^/]+)\/?$/u.exec(pathname);
+  const match = /^\/projects\/([^/]+)(\/graph)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
       const projectId = decodeURIComponent(match[1]);
-      if (validProjectId(projectId)) return { kind: "project", projectId };
+      if (validProjectId(projectId))
+        return { kind: match[2] ? "project_graph" : "project", projectId };
     } catch {
       /* malformed encoding is Not Found, never a crash */
     }

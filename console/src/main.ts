@@ -7,6 +7,7 @@ import { ApiError, OperationsClient } from "./api/client.ts";
 import { badge, el } from "./components/presentation.ts";
 import { overviewView, projectsView, projectView } from "./pages/views.ts";
 import type { GlobalOverview, ProjectOverview } from "./types/operations.ts";
+import { projectGraphView } from "./pages/project-graph.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -23,6 +24,7 @@ const page = document.querySelector<HTMLDivElement>("#page")!;
 const refresh = document.querySelector<HTMLButtonElement>("#refresh")!;
 const connection = document.querySelector<HTMLDivElement>("#connection")!;
 const client = new OperationsClient();
+let disposeGraph: (() => void) | undefined;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const menuToggle = document.querySelector<HTMLButtonElement>("#menu-toggle")!;
 const workspace = document.querySelector<HTMLElement>("#workspace")!;
@@ -104,6 +106,8 @@ function stateView(title: string, message: string, error = false): HTMLElement {
   return box;
 }
 async function render(route: Route): Promise<void> {
+  disposeGraph?.();
+  disposeGraph = undefined;
   const navigationChanged =
     JSON.stringify(currentRoute) !== JSON.stringify(route);
   currentRoute = route;
@@ -115,25 +119,32 @@ async function render(route: Route): Promise<void> {
   if (navigationChanged) workspace.focus();
   page.removeAttribute("aria-busy");
   const title =
-    route.kind === "project"
-      ? "Project"
-      : route.kind === "projects"
-        ? "Projects"
-        : route.kind === "not_found"
-          ? "Not found"
-          : "Overview";
+    route.kind === "project_graph"
+      ? "Graph"
+      : route.kind === "project"
+        ? "Project"
+        : route.kind === "projects"
+          ? "Projects"
+          : route.kind === "not_found"
+            ? "Not found"
+            : "Overview";
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" ? route.projectId : "";
+    route.kind === "project" || route.kind === "project_graph"
+      ? route.projectId
+      : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" ? route.projectId : "";
+    route.kind === "project" || route.kind === "project_graph"
+      ? route.projectId
+      : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
     "[data-nav]",
   )) {
     const active =
       nav.dataset.nav === route.kind ||
-      (nav.dataset.nav === "projects" && route.kind === "project");
+      (nav.dataset.nav === "projects" &&
+        (route.kind === "project" || route.kind === "project_graph"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
@@ -158,7 +169,23 @@ async function render(route: Route): Promise<void> {
   );
   refresh.disabled = true;
   try {
-    if (route.kind === "project") {
+    if (route.kind === "project_graph") {
+      const data = await client.graph(route.projectId, signal);
+      if (signal.aborted) return;
+      const view = projectGraphView(data);
+      page.replaceChildren(view.element);
+      disposeGraph = view.dispose;
+      view.mount();
+      setConnection(
+        ["unavailable", "corrupt", "indeterminate"].includes(
+          data.graph.availability,
+        ) ||
+          (data.graph.availability === "available" &&
+            data.graph.value.coverage.completeness === "partial")
+          ? "Degraded"
+          : "Connected",
+      );
+    } else if (route.kind === "project") {
       const data = await client.project(route.projectId, signal);
       if (signal.aborted) return;
       page.replaceChildren(projectView(data));
@@ -214,12 +241,14 @@ function closeNavigation(event: KeyboardEvent): void {
 }
 document.addEventListener("keydown", closeNavigation);
 window.addEventListener("pagehide", () => {
+  disposeGraph?.();
   controller?.abort();
 });
 setConnection("Disconnected");
 const stopRouter = startRouter((route) => void render(route));
 if (import.meta.hot)
   import.meta.hot.dispose(() => {
+    disposeGraph?.();
     controller?.abort();
     stopRouter();
     tabletNavigation.removeEventListener("change", syncNavigation);

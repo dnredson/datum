@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { wallboardFixture } from "./wallboard-fixture.mjs";
 import { projectFixture, sharedEvidence } from "./project-fixture.mjs";
+import { graphFixture, unevenGraphFixture } from "./graph-fixture.mjs";
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -40,6 +41,344 @@ const liveProject = await (
 const known = structuredClone(live);
 known.known_projects.page.items = ["foundation-demo"];
 const calls = [];
+
+async function graphCheck(data, assertion, width = 1440) {
+  const start = calls.length;
+  const window = boot(
+    `/projects/${encodeURIComponent(data.project_id)}/graph`,
+    width,
+    () => data,
+  );
+  try {
+    await ready(window);
+    await assertion(window, calls.slice(start));
+  } finally {
+    await window.happyDOM.close();
+  }
+}
+test("Phase131 graph navigation aborts obsolete reads and does not overwrite project Overview", async () => {
+  let oldSignal;
+  const window = boot("/projects/alpha/graph", 1440, (url, init) => {
+    if (url.endsWith("/graph")) {
+      oldSignal = init.signal;
+      return new Promise((_resolve, reject) =>
+        init.signal.addEventListener(
+          "abort",
+          () => reject(init.signal.reason),
+          { once: true },
+        ),
+      );
+    }
+    return projectFixture();
+  });
+  try {
+    window.history.pushState(null, "", "/projects/alpha");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await ready(window);
+    assert.equal(oldSignal.aborted, true);
+    assert.ok(window.document.querySelector(".project-workspace"));
+    assert.equal(window.document.querySelector(".project-graph"), null);
+    const graphLink = window.document.querySelector(
+      '.project-subnav a[href="/projects/alpha/graph"]',
+    );
+    assert.ok(graphLink);
+  } finally {
+    await window.happyDOM.close();
+  }
+});
+test("Phase131 graph route identifies accepted logical source and enables only Overview / Graph", async () => {
+  await graphCheck(graphFixture(), (window, requests) => {
+    assert.match(
+      text(window),
+      /Logical graph overview.*Accepted application D-Graph snapshots.*logical structure/s,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/api/v1/operations/projects/alpha/graph");
+    assert.equal(requests[0].init.headers["X-Datum-Project"], "alpha");
+    const nav = window.document.querySelector(".project-subnav");
+    assert.equal(nav.querySelectorAll("a").length, 2);
+    assert.equal(nav.querySelectorAll('[aria-disabled="true"]').length, 5);
+    assert.equal(
+      nav.querySelector('[aria-current="page"]').textContent,
+      "Graph",
+    );
+    assert.match(
+      window.document.querySelector(".graph-legend").textContent,
+      /cycles.*self-calls.*No deployment-order/s,
+    );
+    assert.equal(
+      window.document.querySelectorAll(".graph-entity-button").length,
+      12,
+    );
+  });
+});
+test("Phase131 keyboard alternative selects full typed node identity and bounded declared metadata", async () => {
+  await graphCheck(graphFixture(), (window) => {
+    const button = window.document.querySelector(
+      '[data-entity-id="app-a-one"]',
+    );
+    button.focus();
+    assert.equal(window.document.activeElement, button);
+    button.click();
+    const detail = window.document.querySelector(".graph-detail-body");
+    assert.match(
+      detail.textContent,
+      /D-Serv.*Canonical ID · one.*Application · app-a.*D-Graph · logical-app-a.*revision · 4/s,
+    );
+    assert.match(
+      detail.textContent,
+      /Incoming D-Calls · 2 \/ Outgoing D-Calls · 2/,
+    );
+    assert.ok(detail.textContent.includes("18446744073709551615"));
+    assert.doesNotMatch(
+      detail.textContent,
+      /Healthy|Running correctly|Placed on/,
+    );
+  });
+});
+test("Phase131 D-Call selection preserves source/target/canonical call identity without editing", async () => {
+  await graphCheck(graphFixture(), (window) => {
+    window.document.querySelector('[data-entity-id="app-a-self"]').click();
+    const detail =
+      window.document.querySelector(".graph-detail-body").textContent;
+    assert.match(
+      detail,
+      /D-Call.*Canonical ID · self.*Source D-Serv · one.*Target D-Serv · one/s,
+    );
+    assert.equal(
+      window.document.querySelectorAll(".graph-details button").length,
+      0,
+    );
+    assert.doesNotMatch(
+      text(window),
+      /Save graph|Add node|Remove node|Deploy now|Assign service/,
+    );
+  });
+});
+test("Phase131 local application filter changes visible structure only and Reset clears selection", async () => {
+  const data = graphFixture();
+  const original = JSON.stringify(data);
+  await graphCheck(data, (window, requests) => {
+    const filter = window.document.querySelector(".graph-filter");
+    filter.value = "app-b";
+    filter.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.equal(
+      window.document.querySelectorAll(".graph-entity-button").length,
+      6,
+    );
+    assert.match(
+      window.document.querySelector(".graph-entity-list").textContent,
+      /app-b/,
+    );
+    assert.doesNotMatch(
+      window.document.querySelector(".graph-entity-list").textContent,
+      /app-a/,
+    );
+    window.document.querySelector('[data-entity-id="app-b-one"]').click();
+    [...window.document.querySelectorAll(".graph-toolbar button")]
+      .find((b) => b.textContent.startsWith("Reset"))
+      .click();
+    assert.match(
+      window.document.querySelector(".graph-detail-body").textContent,
+      /Select an entity/,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(JSON.stringify(data), original);
+  });
+});
+test("Phase131 partial graph coverage remains explicit and source revision is the DGraph revision", async () => {
+  const data = graphFixture();
+  data.graph.value.coverage.completeness = "partial";
+  data.graph.value.coverage.active_application_count = 5;
+  await graphCheck(data, (window) => {
+    assert.match(
+      text(window),
+      /Partial accepted-snapshot coverage.*Bounded graph preview: 2 of 5 accepted/s,
+    );
+    assert.match(
+      window.document.querySelector("#connection").textContent,
+      /Degraded/,
+    );
+    assert.match(
+      window.document.querySelector(".graph-application-list").textContent,
+      /D-Graph · logical-app-a · revision 4/,
+    );
+    assert.doesNotMatch(text(window), /DMap revision/);
+    assert.match(
+      text(window),
+      /3 accepted snapshots were omitted by preview limits/,
+    );
+    assert.match(text(window), /later snapshots are not considered/);
+  });
+});
+
+test("Phase131 bounded-empty partial graph explicitly describes omitted snapshots, never empty project", async () => {
+  const data = graphFixture();
+  Object.assign(data.graph.value, {
+    applications: [],
+    nodes: [],
+    edges: [],
+    coverage: {
+      scope: "active_accepted_applications_only",
+      completeness: "partial",
+      active_application_count: 2,
+      included_application_count: 0,
+    },
+  });
+  await graphCheck(data, (window) => {
+    assert.match(text(window), /Bounded graph preview: 0 of 2 accepted/);
+    assert.match(
+      text(window),
+      /2 accepted snapshots were omitted by preview limits/,
+    );
+    assert.match(
+      text(window),
+      /No accepted application snapshot fit inside the bounded graph preview/,
+    );
+    assert.match(text(window), /not an empty project/);
+    assert.equal(window.document.querySelector(".graph-canvas"), null);
+  });
+});
+
+test("Phase131 manual-review uneven fixture preserves accessible membership and view controls at 1440/1024", async () => {
+  for (const width of [1440, 1024])
+    await graphCheck(
+      unevenGraphFixture(),
+      (window, requests) => {
+        const groups = [
+          ...window.document.querySelectorAll(".graph-application-list"),
+        ];
+        assert.deepEqual(
+          groups.map(
+            (group) =>
+              [...group.querySelectorAll("button")].filter((b) =>
+                b.textContent.startsWith("D-Serv"),
+              ).length,
+          ),
+          [2, 3, 2, 8],
+        );
+        assert.match(text(window), /Accepted application D-Graph snapshots/);
+        const buttons = [
+          ...window.document.querySelectorAll(".graph-toolbar button"),
+        ];
+        assert.ok(buttons.find((b) => b.textContent === "Fit graph"));
+        buttons.find((b) => b.textContent.startsWith("Reset")).click();
+        assert.match(
+          window.document.querySelector(".graph-detail-body").textContent,
+          /Select an entity/,
+        );
+        assert.equal(requests.length, 1);
+      },
+      width,
+    );
+});
+for (const state of [
+  "empty",
+  "not_configured",
+  "unavailable",
+  "corrupt",
+  "indeterminate",
+])
+  test(`Phase131 graph source / empty state: ${state}`, async () => {
+    const data = graphFixture();
+    if (state === "empty")
+      Object.assign(data.graph.value, {
+        applications: [],
+        nodes: [],
+        edges: [],
+        coverage: {
+          scope: "active_accepted_applications_only",
+          completeness: "complete",
+          active_application_count: 0,
+          included_application_count: 0,
+        },
+      });
+    else
+      data.graph =
+        state === "not_configured"
+          ? { availability: state }
+          : {
+              availability: state,
+              value:
+                state === "indeterminate"
+                  ? "internal secret path diagnostic"
+                  : {
+                      source: "ddeploy",
+                      kind: "storage",
+                      code: "source_unavailable",
+                      safe_message: "Graph source cannot be read.",
+                      scope: null,
+                    },
+            };
+    await graphCheck(data, (window) => {
+      const expected = {
+        empty: /No active accepted logical application graph/,
+        not_configured: /Not configured/,
+        unavailable: /Unavailable/,
+        corrupt: /Integrity error/,
+        indeterminate: /Indeterminate/,
+      };
+      assert.match(text(window), expected[state]);
+      assert.equal(window.document.querySelector(".graph-canvas"), null);
+      assert.doesNotMatch(
+        text(window),
+        /internal secret path diagnostic|project does not exist/i,
+      );
+      if (state !== "empty")
+        assert.doesNotMatch(text(window), /0 of 0 active accepted/);
+    });
+  });
+test("Phase131 graph identities remain inspectable at desktop/tablet widths with accessible fallback", async () => {
+  for (const width of [1440, 1024, 768]) {
+    const data = graphFixture();
+    const id = "canonical-service-".repeat(40);
+    data.graph.value.nodes[1].canonical_id = id;
+    await graphCheck(
+      data,
+      (window) => {
+        const button = window.document.querySelector(
+          '[data-entity-id="app-a-one"]',
+        );
+        assert.ok(button.textContent.includes(id));
+        button.click();
+        assert.ok(
+          window.document
+            .querySelector(".graph-detail-body")
+            .textContent.includes(id),
+        );
+        const layout = window.getComputedStyle(
+          window.document.querySelector(".graph-workspace-grid"),
+        );
+        assert.equal(
+          layout.gridTemplateColumns,
+          width === 768
+            ? "minmax(0, 1fr)"
+            : "minmax(0, 1fr) minmax(16rem, 22rem)",
+        );
+        assert.match(
+          window.document.querySelector(".graph-renderer-notice").textContent,
+          /accessible structure and details remain available/,
+        );
+        assert.equal(
+          window.getComputedStyle(
+            window.document.querySelector(".graph-entity-button"),
+          ).overflowWrap,
+          "anywhere",
+        );
+      },
+      width,
+    );
+  }
+});
+test("Phase131 malformed cross-project graph is rejected with safe error, not silently rewritten", async () => {
+  const data = graphFixture();
+  data.graph.value.nodes[0].project_id = "beta";
+  await graphCheck(data, (window) => {
+    assert.match(text(window), /invalid logical graph projection/);
+    assert.equal(window.document.querySelector(".graph-canvas"), null);
+    assert.doesNotMatch(text(window), /beta/);
+  });
+});
 
 for (const [state, label] of [
   ["available-zero", "Available"],
@@ -596,12 +935,9 @@ test("project future navigation is disabled, contains no fake routes or write co
       projectFixture(),
       (window) => {
         const nav = window.document.querySelector(".project-subnav");
-        assert.equal(nav.querySelectorAll("a").length, 1);
-        assert.equal(nav.querySelectorAll('[aria-disabled="true"]').length, 6);
-        assert.match(
-          nav.textContent,
-          /Services · Phase 133A \/ 133B.*Graph · Phase 131 \/ 132/s,
-        );
+        assert.equal(nav.querySelectorAll("a").length, 2);
+        assert.equal(nav.querySelectorAll('[aria-disabled="true"]').length, 5);
+        assert.match(nav.textContent, /Services · Phase 133A \/ 133B.*Graph/s);
         assert.equal(nav.querySelectorAll("button").length, 0);
         assert.equal(
           window.document.querySelectorAll("#page button").length,
@@ -1186,8 +1522,9 @@ test("1440/1024/768 CSS cascade and tablet navigation focus contract", async () 
 });
 
 test("lifecycle primitives and long API error retain explicit semantics", async () => {
-  const { lifecycleBadge, availability } =
-    await import("../src/components/presentation.ts");
+  const { lifecycleBadge, availability } = await import(
+    "../src/components/presentation.ts"
+  );
   const window = boot("/unknown");
   const previous = globalThis.document;
   globalThis.document = window.document;
