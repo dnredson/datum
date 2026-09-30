@@ -59,6 +59,23 @@ static PERSISTENCE_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
 fn graph_store() -> &'static RwLock<BTreeMap<String, OperationalDGraph>> {
     OPERATIONAL_DGRAPHS.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
+
+/// Phase 128 read acquisition: never initialize persistence from a GET.
+/// Startup owns initialization; this clones the already-restored graph source.
+pub(crate) fn operations_graph_snapshot(
+) -> Result<Option<BTreeMap<String, OperationalDGraph>>, String> {
+    match PERSISTENCE_INITIALIZED.get() {
+        None => Ok(None),
+        Some(Err(error)) => Err(error.clone()),
+        Some(Ok(())) => {
+            let _transaction = state_transaction().lock().map_err(string_lock_error)?;
+            let graphs = OPERATIONAL_DGRAPHS
+                .get()
+                .ok_or("initialized graph source missing")?;
+            Ok(Some(graphs.read().map_err(string_lock_error)?.clone()))
+        }
+    }
+}
 fn authorization_store() -> &'static RwLock<AuthorizationMap> {
     OPERATIONAL_AUTHORIZATIONS.get_or_init(|| RwLock::new(BTreeMap::new()))
 }

@@ -699,7 +699,10 @@ async fn main() {
             "/api/v1/events/materialized",
             get(get_materialized_global_events),
         )
-        .with_state(state);
+        .with_state(state)
+        .merge(api::operations::router(
+            api::operations::OperationsApiRuntime::from_process(),
+        ));
 
     if let Some(cors_layer) = build_cors_layer(config.as_ref()) {
         app = app.layer(cors_layer);
