@@ -12,6 +12,7 @@ import {
 } from "../src/pages/graph-model.ts";
 import { parseRoute, projectPath } from "../src/app/router.ts";
 import { OperationsClient } from "../src/api/client.ts";
+import { graphVisualStyles } from "../src/components/graph-visuals.ts";
 
 test("source explicitly identifies accepted logical snapshots, not operational/runtime graph", () => {
   assert.match(
@@ -60,35 +61,7 @@ function layoutCore(graph, application = null) {
     styleEnabled: true,
     elements: graphElements(graph, application),
     layout: { name: "preset" },
-    style: [
-      {
-        selector: "node",
-        style: {
-          width: 48,
-          height: 34,
-          label: "data(label)",
-          "font-size": 11,
-          "text-valign": "bottom",
-          "text-margin-y": 7,
-          "text-wrap": "wrap",
-          "text-max-width": 140,
-        },
-      },
-      {
-        selector: 'node[kind = "application"]',
-        style: {
-          padding: 30,
-          width: 180,
-          height: 80,
-          "min-width": 180,
-          "min-height": 80,
-          "text-valign": "top",
-          "text-margin-y": -10,
-          "text-max-width": 180,
-          "border-width": 1,
-        },
-      },
-    ],
+    style: graphVisualStyles(),
   });
 }
 function positions(cy) {

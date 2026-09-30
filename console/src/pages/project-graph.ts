@@ -2,6 +2,10 @@ import cytoscape from "cytoscape";
 import type { Core } from "cytoscape";
 import type { ProjectGraph } from "../types/graph.ts";
 import { el, badge, sectionValue } from "../components/presentation.ts";
+import {
+  graphLegendView,
+  graphVisualStyles,
+} from "../components/graph-visuals.ts";
 import { projectPath } from "../app/router.ts";
 import { PROJECT_SECTIONS } from "./project-workspace.ts";
 import {
@@ -293,13 +297,24 @@ export function projectGraphView(data: ProjectGraph) {
       };
       populate();
       const legend = el("section", "graph-legend mt-3");
+      const legendItems = el("div", "graph-visible-legend");
+      const updateLegend = () => {
+        const current = filter.value || null;
+        legendItems.replaceChildren(
+          graphLegendView({
+            nodes: graph.nodes.filter(
+              (node) => current === null || node.application_id === current,
+            ),
+            edges: graph.edges.filter(
+              (edge) => current === null || edge.application_id === current,
+            ),
+          }),
+        );
+      };
+      updateLegend();
       legend.append(
         el("h2", "section-title", "Legend / source"),
-        el(
-          "p",
-          "small",
-          "Application · presentation grouping of an accepted logical D-Graph snapshot. D-Serv · rounded rectangle, logical service. D-Call · directed arrow, logical call; cycles, reciprocal calls and self-calls are allowed. No deployment-order implication.",
-        ),
+        legendItems,
         el(
           "p",
           "small text-secondary",
@@ -320,63 +335,7 @@ export function projectGraphView(data: ProjectGraph) {
             maxZoom: 3,
             boxSelectionEnabled: false,
             layout: { name: "preset", fit: false },
-            style: [
-              {
-                selector: "node",
-                style: {
-                  "background-color": "#597a90",
-                  shape: "round-rectangle",
-                  label: "data(label)",
-                  color: "#263847",
-                  "font-size": 11,
-                  "text-valign": "bottom",
-                  "text-margin-y": 7,
-                  "text-wrap": "wrap",
-                  "text-max-width": "140px",
-                  width: 48,
-                  height: 34,
-                },
-              },
-              {
-                selector: 'node[kind = "application"]',
-                style: {
-                  "background-color": "#e8eef2",
-                  "border-color": "#8199aa",
-                  "border-width": 1,
-                  shape: "round-rectangle",
-                  "text-valign": "top",
-                  "text-margin-y": -10,
-                  "text-max-width": "180px",
-                  padding: "30px",
-                  "min-width": "180px",
-                  "min-height": "80px",
-                  width: 180,
-                  height: 80,
-                },
-              },
-              {
-                selector: "edge",
-                style: {
-                  width: 1.5,
-                  "line-color": "#7f929e",
-                  "target-arrow-color": "#7f929e",
-                  "target-arrow-shape": "triangle",
-                  "curve-style": "bezier",
-                  label: "data(label)",
-                  "font-size": 9,
-                  color: "#425869",
-                },
-              },
-              {
-                selector: ":selected",
-                style: {
-                  "border-color": "#244f70",
-                  "border-width": 3,
-                  "line-color": "#244f70",
-                  "target-arrow-color": "#244f70",
-                },
-              },
-            ],
+            style: graphVisualStyles(),
           });
           layoutGroupedGraph(cy);
           cy.fit(undefined, 35);
@@ -400,6 +359,7 @@ export function projectGraphView(data: ProjectGraph) {
       filter.addEventListener("change", () => {
         clear();
         populate();
+        updateLegend();
         if (!disposed && element.isConnected) draw();
       });
       mount = () => {

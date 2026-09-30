@@ -170,6 +170,7 @@ export function graphElements(
         id: n.id,
         parent: n.parent_id ?? undefined,
         kind: n.kind,
+        visual_category: n.kind === "dserv" ? "software" : undefined,
         label:
           n.canonical_id.length > 28
             ? `${n.canonical_id.slice(0, 25)}…`
@@ -183,6 +184,7 @@ export function graphElements(
         source: e.source,
         target: e.target,
         kind: e.kind,
+        visual_relation: "logical",
         label: "D-Call",
       },
     })),

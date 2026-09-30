@@ -212,6 +212,40 @@ test("Phase131 partial graph coverage remains explicit and source revision is th
   });
 });
 
+test("graph visual semantics legend shows only supported visible types without fabricated future categories", async () => {
+  const data = graphFixture();
+  data.graph.value.nodes = data.graph.value.nodes.filter(
+    (node) => node.application_id !== "app-b" || node.kind === "application",
+  );
+  data.graph.value.edges = data.graph.value.edges.filter(
+    (edge) => edge.application_id !== "app-b",
+  );
+  await graphCheck(data, (window) => {
+    const legend = window.document.querySelector(".graph-visible-legend");
+    assert.match(legend.textContent, /Logical software.*D-Serv/);
+    assert.match(legend.textContent, /D-Call.*Directed logical invocation/);
+    assert.doesNotMatch(
+      legend.textContent,
+      /Infrastructure|Runtime realization|IoT \/ device|Data \/ storage|Placement/,
+    );
+    assert.ok(
+      [
+        ...legend.querySelectorAll(
+          ".graph-category-swatch,.graph-relation-swatch",
+        ),
+      ].every((swatch) => swatch.getAttribute("aria-hidden") === "true"),
+    );
+    const filter = window.document.querySelector(".graph-filter");
+    filter.value = "app-b";
+    filter.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.match(legend.textContent, /Application grouping.*Presentation-only/);
+    assert.doesNotMatch(legend.textContent, /Logical software|D-Call/);
+    filter.value = "";
+    filter.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.match(legend.textContent, /Logical software.*D-Serv/);
+  });
+});
+
 test("Phase131 bounded-empty partial graph explicitly describes omitted snapshots, never empty project", async () => {
   const data = graphFixture();
   Object.assign(data.graph.value, {
