@@ -2,6 +2,8 @@ import type { GlobalOverview, ProjectOverview } from "../types/operations.ts";
 import { validProjectId } from "../app/router.ts";
 import type { ProjectGraph } from "../types/graph.ts";
 import { validProjectGraph } from "../pages/graph-model.ts";
+import type { ProjectRuntimeGraph } from "../types/runtime-graph.ts";
+import { validRuntimeGraph } from "../pages/runtime-graph-model.ts";
 
 export class ApiError extends Error {
   readonly code: string;
@@ -592,6 +594,25 @@ export class OperationsClient {
           throw new ApiError(
             "invalid_response",
             "DServer returned an invalid logical graph projection.",
+            null,
+          );
+      },
+    );
+  }
+  runtimeGraph(id: string, signal: AbortSignal): Promise<ProjectRuntimeGraph> {
+    if (!validProjectId(id))
+      return Promise.reject(
+        new ApiError("invalid_scope", "Invalid project identifier.", null),
+      );
+    return this.request(
+      `/api/v1/operations/projects/${encodeURIComponent(id)}/runtime-graph`,
+      signal,
+      id,
+      (body) => {
+        if (!validRuntimeGraph(body, id))
+          throw new ApiError(
+            "invalid_response",
+            "DServer returned an invalid runtime evidence projection.",
             null,
           );
       },

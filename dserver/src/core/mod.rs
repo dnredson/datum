@@ -94,6 +94,7 @@ pub mod resource_observation;
 pub mod resource_registry;
 pub mod resource_registry_persistence;
 pub mod runtime_kind;
+pub mod runtime_graph_read_model;
 pub mod secret_preflight;
 pub mod secret_resolver_contract;
 pub mod sentinel_registration;

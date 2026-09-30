@@ -220,6 +220,28 @@ export function layoutGroupedGraph(cy: Core): void {
         y: Math.floor(i / columns) * 160 + 60,
       }),
     );
+    if (children.some((child) => child.data("kind") === "runtime_evidence")) {
+      const logical = children.filter(
+        (child) => child.data("kind") !== "runtime_evidence",
+      );
+      const localColumns = Math.max(1, Math.ceil(Math.sqrt(logical.length)));
+      let y = 60;
+      for (let start = 0; start < logical.length; start += localColumns) {
+        const row = logical.slice(start, start + localColumns);
+        let height = 160;
+        row.forEach((service, col) => {
+          const realizations = children.filter(
+            (child) => child.data("logical_node_id") === service.id(),
+          );
+          service.position({ x: col * 200, y });
+          realizations.forEach((child, i) =>
+            child.position({ x: col * 200, y: y + (i + 1) * 100 }),
+          );
+          height = Math.max(height, (realizations.length + 1) * 100 + 60);
+        });
+        y += height;
+      }
+    }
     if (!children.length) group.position({ x: 0, y: 0 });
     const bounds = group.boundingBox({
       includeLabels: true,

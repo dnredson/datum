@@ -260,6 +260,10 @@ pub fn router(runtime: OperationsApiRuntime) -> Router {
             "/api/v1/operations/projects/:project_id/graph",
             get(project_graph),
         )
+        .route(
+            "/api/v1/operations/projects/:project_id/runtime-graph",
+            get(project_runtime_graph),
+        )
         .with_state(runtime)
 }
 async fn overview(
@@ -318,6 +322,30 @@ async fn project_graph(
         .map(|body| ([("cache-control", "no-store")], body))
 }
 
+async fn project_runtime_graph(
+    State(runtime): State<OperationsApiRuntime>,
+    path: Result<Path<String>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiFailure> {
+    let Path(project) = path.map_err(|_| ApiFailure::invalid())?;
+    if project.is_empty()
+        || project.len() > 256
+        || project.trim() != project
+        || project.chars().any(char::is_control)
+        || headers
+            .get("x-datum-project")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            != Some(project.as_str())
+    {
+        return Err(ApiFailure::invalid());
+    }
+    runtime
+        .build(move |sources, at, _| sources.project_runtime_graph(&project, at))
+        .await
+        .map(|body| ([("cache-control", "no-store")], body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +375,76 @@ mod tests {
         let mut runtime = OperationsApiRuntime::new(|| Ok(OperationsSources::default()));
         runtime.clock = Arc::new(|| "2026-09-30T15:00:00Z".parse().unwrap());
         runtime
+    }
+    #[tokio::test]
+    async fn runtime_graph_api_scoped_read_only_projection_with_blocking_acquisition() {
+        let async_thread = std::thread::current().id();
+        let runtime = OperationsApiRuntime::new(move || {
+            assert_ne!(std::thread::current().id(), async_thread);
+            Ok(OperationsSources::default())
+        });
+        let server = serve(runtime).await;
+        let path = format!("{}/api/v1/operations/projects/p/runtime-graph", server.base);
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&path)
+            .header("X-Datum-Project", "p")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.json::<Value>().await.unwrap();
+        assert_eq!(body["project_id"], "p");
+        assert_eq!(body["logical"]["project_id"], "p");
+        assert_eq!(
+            body["runtime_source_kind"],
+            "admitted_dserv_realization_evidence"
+        );
+        assert_eq!(body["runtime"]["availability"], "not_configured");
+        assert_eq!(
+            client
+                .get(&path)
+                .header("X-Datum-Project", "q")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            client.post(&path).send().await.unwrap().status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    #[tokio::test]
+    async fn runtime_graph_source_failure_remains_successful_safe_and_separate() {
+        let server = serve(OperationsApiRuntime::new(|| {
+            Ok(OperationsSources::default().with_source_error(
+                OperationsSource::DMonitor,
+                issue(
+                    ReadErrorKind::SourceCorrupt,
+                    "dmonitor",
+                    "SQL secret C:\\private.db",
+                ),
+            ))
+        }))
+        .await;
+        let response = reqwest::Client::new()
+            .get(format!(
+                "{}/api/v1/operations/projects/p/runtime-graph",
+                server.base
+            ))
+            .header("X-Datum-Project", "p")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.json::<Value>().await.unwrap();
+        assert_eq!(body["runtime"]["availability"], "corrupt");
+        assert_eq!(body["logical"]["graph"]["availability"], "not_configured");
+        assert_eq!(body["temporal_quality"], serde_json::json!([]));
+        assert!(!body.to_string().contains("secret"));
+        assert!(!body.to_string().contains("private.db"));
     }
     #[tokio::test]
     async fn graph_api_is_scoped_thin_read_projection_and_has_no_write_route() {

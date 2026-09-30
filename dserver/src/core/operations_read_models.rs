@@ -32,6 +32,54 @@ use std::{
 pub const DEFAULT_LIMIT: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProjectRuntimeGraph {
+    pub project_id: String,
+    pub logical: ProjectGraphOverview,
+    pub runtime_source_kind: &'static str,
+    pub runtime: SourceSection<super::runtime_graph_read_model::RuntimeContent>,
+    pub temporal_quality: Vec<TemporalQualityView>,
+}
+impl OperationsSources {
+    pub fn project_runtime_graph(
+        &self,
+        project: &str,
+        at: DateTime<Utc>,
+    ) -> Result<ProjectRuntimeGraph, OperationsReadError> {
+        let logical = self.project_graph_overview(project, at)?;
+        let mut temporal_quality = vec![];
+        let runtime = match &self.dmonitor {
+            SourceSection::Available(state) => SourceSection::from_result((|| {
+                let graph = match &logical.graph {
+                    SourceSection::Available(g) => Some(g),
+                    _ => None,
+                };
+                let content = super::runtime_graph_read_model::build(project, state, graph)
+                    .map_err(|e| error(ReadErrorKind::SourceCorrupt, "dmonitor", e))?;
+                for evidence in &content.evidence {
+                    let record = state.by_observation_id(&evidence.observation_id).ok_or_else(|| {
+                        error(ReadErrorKind::SourceCorrupt, "dmonitor", "missing evidence")
+                    })?;
+                    temporal_quality.push(temporal(record, &self.policy, at)?);
+                }
+                Ok(content)
+            })()),
+            _ => self.dmonitor.map(|_| unreachable!()),
+        }
+        .scoped(Some(project), None);
+        if !matches!(runtime, SourceSection::Available(_)) {
+            temporal_quality.clear();
+        }
+        Ok(ProjectRuntimeGraph {
+            project_id: project.into(),
+            logical,
+            runtime_source_kind: "admitted_dserv_realization_evidence",
+            runtime,
+            temporal_quality,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProjectGraphOverview {
     pub project_id: String,
     pub generated_at_utc: String,

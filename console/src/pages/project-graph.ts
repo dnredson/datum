@@ -1,22 +1,35 @@
 import cytoscape from "cytoscape";
 import type { Core } from "cytoscape";
 import type { ProjectGraph } from "../types/graph.ts";
+import type {
+  ProjectRuntimeGraph,
+  RuntimeEvidence,
+} from "../types/runtime-graph.ts";
+import { runtimeElements, realizationEdgeId } from "./runtime-graph-model.ts";
 import { el, badge, sectionValue } from "../components/presentation.ts";
 import {
-  graphLegendView,
   graphVisualStyles,
+  graphLegendItemsFor,
+  renderGraphLegend,
 } from "../components/graph-visuals.ts";
 import { projectPath } from "../app/router.ts";
 import { PROJECT_SECTIONS } from "./project-workspace.ts";
 import {
   GRAPH_SOURCE_LABEL,
-  graphElements,
   edgeCounts,
   layoutGroupedGraph,
   graphCoverageText,
 } from "./graph-model.ts";
 
-export function projectGraphView(data: ProjectGraph) {
+export function projectGraphView(
+  data: ProjectGraph,
+  runtime?: ProjectRuntimeGraph,
+) {
+  const expanded = new Set<string>();
+  const evidence =
+    runtime?.runtime.availability === "available"
+      ? runtime.runtime.value.evidence
+      : [];
   let cy: Core | undefined;
   let disposed = false;
   let resize: ResizeObserver | undefined;
@@ -45,7 +58,7 @@ export function projectGraphView(data: ProjectGraph) {
     el(
       "p",
       "small text-secondary",
-      "Only currently accepted application snapshots are shown. This is not a canonical application registry, operational deployment document, placement or observed runtime topology.",
+      "Accepted logical snapshots remain separate from admitted DMonitor realization evidence. This is not an application registry, complete runtime topology or placement view.",
     ),
   );
   const nav = el("nav", "project-subnav");
@@ -73,6 +86,129 @@ export function projectGraphView(data: ProjectGraph) {
     }
   }
   element.append(breadcrumb, header, nav);
+  const runtimeDetails = el("section", "console-card graph-runtime-source");
+  runtimeDetails.append(
+    el("h2", "section-title", "Runtime realization evidence"),
+  );
+  const evidenceDetails = el("div", "graph-evidence-details");
+  evidenceDetails.setAttribute("aria-live", "polite");
+  const inspectEvidence = (e: RuntimeEvidence) => {
+    evidenceDetails.replaceChildren(
+      el("h3", "small fw-semibold", "Observed D-Serv realization evidence"),
+    );
+    for (const [label, value] of [
+      [
+        "Canonical observed subject",
+        `${e.project_id} / ${e.application_id} / ${e.service_id} / ${e.node_id}`,
+      ],
+      ["Monitor epoch (not execution-instance ID)", e.monitor_instance_id],
+      ["Reporting node (transport stream)", e.reporting_node_id],
+      ["Observation ID", e.observation_id],
+      ["Observation digest", e.observation_digest],
+      ["Observed / associated node reference (not ownership)", e.node_id],
+      ["Collector", e.collector],
+      ["Source observation time", e.observed_at_utc],
+      ["Server receipt time", e.received_at_utc],
+      ["Collector health claim at observation time", e.observed_health_claim],
+      [
+        "Runtime kind / process / container / artifact identity",
+        "Not included in this typed observation subject",
+      ],
+      [
+        "Observed D-Map reference (not convergence)",
+        e.dmap_ref
+          ? `${e.dmap_ref.id} · revision ${e.dmap_ref.revision} · ${e.dmap_ref.digest}`
+          : "Not included",
+      ],
+      [
+        "Logical association",
+        e.logical_node_id
+          ? "Exact application/service identity in loaded accepted snapshot; not a current deployment/convergence verdict"
+          : "Not matched to loaded accepted logical snapshots",
+      ],
+    ])
+      evidenceDetails.append(
+        el("p", "small entity-identity", `${label} · ${value}`),
+      );
+    // The client validates observation-ID uniqueness and positional evidence /
+    // temporal correspondence before this view is created.
+    const temporal = runtime?.temporal_quality.find(
+      (t) => t.observation_id === e.observation_id,
+    );
+    if (temporal)
+      for (const [label, value] of [
+        ["Communication", temporal.communication_freshness],
+        ["Observation", temporal.observation_freshness],
+        ["Source time", temporal.source_time_quality],
+      ])
+        evidenceDetails.append(
+          el("p", "small", `${label} · ${String(value).replaceAll("_", " ")}`),
+        );
+    evidenceDetails.append(
+      el(
+        "p",
+        "small text-secondary",
+        "An invocation can be realized at one instant without being a continuously running process. Evidence is not desired state, current health, convergence or resource reservation.",
+      ),
+    );
+  };
+  if (runtime)
+    runtimeDetails.append(
+      sectionValue(runtime.runtime, (value) => {
+        const box = el("div");
+        box.append(
+          badge(
+            value.completeness === "partial"
+              ? "Partial evidence preview"
+              : "Admitted evidence subjects included",
+            value.completeness === "partial" ? "warning" : "info",
+          ),
+          el(
+            "p",
+            "small",
+            `${value.included_evidence_count} of ${value.total_evidence_count} latest subject/monitor-epoch records included. Limit: 1,000; inclusion stops before the first service exceeding the budget, with whole-service omission.`,
+          ),
+          el(
+            "p",
+            "small text-secondary",
+            "DMonitor observations, not an execution-instance registry. Independent monitor epochs are not distinct running processes. No loaded evidence does not mean stopped, failed or healthy.",
+          ),
+        );
+        if (!value.evidence.length)
+          box.append(
+            el(
+              "p",
+              "empty-text",
+              value.completeness === "partial"
+                ? "No whole service evidence set fit inside this bounded preview."
+                : "No admitted D-Serv realization evidence in this snapshot.",
+            ),
+          );
+        const unmatched = value.evidence.filter((e) => !e.logical_node_id);
+        if (unmatched.length) {
+          box.append(
+            el(
+              "h3",
+              "small fw-semibold",
+              "Evidence not matched to loaded accepted logical snapshots",
+            ),
+          );
+          for (const e of unmatched) {
+            const button = el(
+              "button",
+              "btn btn-sm btn-outline-secondary entity-identity",
+              `${e.application_id} / ${e.service_id} · ${e.observation_id}`,
+            );
+            button.type = "button";
+            button.addEventListener("click", () => inspectEvidence(e));
+            box.append(button);
+          }
+        }
+        return box;
+      }),
+    );
+  runtimeDetails.append(evidenceDetails);
+  if (runtime) element.append(runtimeDetails);
   element.append(
     sectionValue(data.graph, (graph) => {
       const content = el("section", "console-card graph-structure");
@@ -153,6 +289,28 @@ export function projectGraphView(data: ProjectGraph) {
       grid.append(canvasArea, details);
       content.append(grid);
       const select = (id: string) => {
+        const observed = evidence.find(
+          (e) => e.id === id || realizationEdgeId(e.id) === id,
+        );
+        if (observed) {
+          inspectEvidence(observed);
+          detailBody.replaceChildren(
+            el(
+              "p",
+              "small entity-identity",
+              `Realization evidence · ${observed.observation_id}`,
+            ),
+            el(
+              "p",
+              "small",
+              "Typed evidence details are above the logical structure. The relationship means logical service → admitted realization evidence, not placement.",
+            ),
+          );
+          cy?.elements().unselect();
+          cy?.getElementById(id).select();
+          return;
+        }
+        evidenceDetails.replaceChildren();
         const node = graph.nodes.find((n) => n.id === id),
           edge = graph.edges.find((e) => e.id === id);
         const entity = node ?? edge;
@@ -291,6 +449,66 @@ export function projectGraphView(data: ProjectGraph) {
             button.dataset.entityId = entity.id;
             button.addEventListener("click", () => select(entity.id));
             group.append(button);
+            if (entity.kind === "dserv" && runtime) {
+              const toggle = el(
+                "button",
+                "btn btn-sm btn-outline-secondary graph-expand",
+              );
+              toggle.type = "button";
+              toggle.dataset.serviceId = entity.id;
+              toggle.setAttribute(
+                "aria-expanded",
+                String(expanded.has(entity.id)),
+              );
+              const associated = evidence.filter(
+                (e) => e.logical_node_id === entity.id,
+              );
+              toggle.textContent =
+                runtime.runtime.availability !== "available"
+                  ? "Runtime source not available · inspect source state above"
+                  : associated.length
+                    ? `${expanded.has(entity.id) ? "Collapse" : "Expand"} ${associated.length} evidence record(s)`
+                    : "No loaded realization evidence · no runtime state inferred";
+              toggle.disabled = !associated.length;
+              toggle.addEventListener("click", () => {
+                if (expanded.has(entity.id)) expanded.delete(entity.id);
+                else expanded.add(entity.id);
+                clear();
+                evidenceDetails.replaceChildren();
+                populate();
+                updateLegend();
+                if (!disposed && element.isConnected) draw();
+                // Reconstruction replaces the activated control. Restore focus by
+                // application-qualified presentation identity, never label/order.
+                const replacement = [...listBody.querySelectorAll<HTMLButtonElement>(
+                  ".graph-expand",
+                )].find((button) => button.dataset.serviceId === entity.id);
+                replacement?.focus({ preventScroll: true });
+              });
+              group.append(toggle);
+              if (expanded.has(entity.id))
+                for (const e of associated) {
+                  const entry = el(
+                    "button",
+                    "graph-entity-button btn btn-sm btn-outline-secondary entity-identity",
+                    `Realization evidence · ${e.observation_id} · node reference ${e.node_id}`,
+                  );
+                  entry.type = "button";
+                  entry.dataset.entityId = e.id;
+                  entry.addEventListener("click", () => select(e.id));
+                  group.append(entry);
+                  const relation = el(
+                    "button",
+                    "graph-entity-button btn btn-sm btn-outline-secondary entity-identity",
+                    `Realization relationship · ${entity.canonical_id} → ${e.observation_id}`,
+                  );
+                  relation.type = "button";
+                  relation.addEventListener("click", () =>
+                    select(realizationEdgeId(e.id)),
+                  );
+                  group.append(relation);
+                }
+            }
           }
           listBody.append(group);
         }
@@ -300,15 +518,44 @@ export function projectGraphView(data: ProjectGraph) {
       const legendItems = el("div", "graph-visible-legend");
       const updateLegend = () => {
         const current = filter.value || null;
+        const visible = runtimeElements(graph, runtime, expanded, current);
+        const hasRuntime = visible.some(
+          (e) => e.data.kind === "runtime_evidence",
+        );
         legendItems.replaceChildren(
-          graphLegendView({
-            nodes: graph.nodes.filter(
-              (node) => current === null || node.application_id === current,
+          renderGraphLegend(
+            graphLegendItemsFor(
+              [
+                ...(visible.some((e) => e.data.kind === "dserv")
+                  ? ["software" as const]
+                  : []),
+                ...(hasRuntime ? ["runtime" as const] : []),
+              ],
+              [
+                ...(visible.some((e) => e.data.kind === "dcall")
+                  ? ["logical" as const]
+                  : []),
+                ...(hasRuntime ? ["realization" as const] : []),
+              ],
+              visible.some((e) => e.data.kind === "application"),
+            ).map((item) =>
+              item.id === "runtime"
+                ? {
+                    ...item,
+                    label: "Runtime realization · evidence",
+                    meaning:
+                      "Admitted DServRealization observation, not an execution-instance registry",
+                  }
+                : item.id === "realization"
+                  ? {
+                      ...item,
+                      label: "Realization relationship",
+                      meaning:
+                        "Logical service → admitted realization evidence; not placement",
+                    }
+                  : item,
             ),
-            edges: graph.edges.filter(
-              (edge) => current === null || edge.application_id === current,
-            ),
-          }),
+          ),
         );
       };
       updateLegend();
@@ -330,7 +577,12 @@ export function projectGraphView(data: ProjectGraph) {
             throw new Error("canvas unavailable");
           cy = cytoscape({
             container: canvas,
-            elements: graphElements(graph, filter.value || null),
+            elements: runtimeElements(
+              graph,
+              runtime,
+              expanded,
+              filter.value || null,
+            ),
             minZoom: 0.15,
             maxZoom: 3,
             boxSelectionEnabled: false,
@@ -351,12 +603,16 @@ export function projectGraphView(data: ProjectGraph) {
       };
       fit.addEventListener("click", () => cy?.fit(undefined, 35));
       reset.addEventListener("click", () => {
+        expanded.clear();
+        evidenceDetails.replaceChildren();
+        populate();
+        updateLegend();
         clear();
-        cy?.elements().unselect();
-        if (cy) layoutGroupedGraph(cy);
-        cy?.fit(undefined, 35);
+        if (!disposed && element.isConnected) draw();
       });
       filter.addEventListener("change", () => {
+        expanded.clear();
+        evidenceDetails.replaceChildren();
         clear();
         populate();
         updateLegend();

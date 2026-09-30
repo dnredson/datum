@@ -170,16 +170,22 @@ async function render(route: Route): Promise<void> {
   refresh.disabled = true;
   try {
     if (route.kind === "project_graph") {
-      const data = await client.graph(route.projectId, signal);
+      const runtime = await client.runtimeGraph(route.projectId, signal);
+      const data = runtime.logical;
       if (signal.aborted) return;
-      const view = projectGraphView(data);
+      const view = projectGraphView(data, runtime);
       page.replaceChildren(view.element);
       disposeGraph = view.dispose;
       view.mount();
       setConnection(
         ["unavailable", "corrupt", "indeterminate"].includes(
-          data.graph.availability,
+          runtime.runtime.availability,
         ) ||
+          (runtime.runtime.availability === "available" &&
+            runtime.runtime.value.completeness === "partial") ||
+          ["unavailable", "corrupt", "indeterminate"].includes(
+            data.graph.availability,
+          ) ||
           (data.graph.availability === "available" &&
             data.graph.value.coverage.completeness === "partial")
           ? "Degraded"

@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { wallboardFixture } from "./wallboard-fixture.mjs";
 import { projectFixture, sharedEvidence } from "./project-fixture.mjs";
 import { graphFixture, unevenGraphFixture } from "./graph-fixture.mjs";
+import { runtimeFixture } from "./runtime-graph-fixture.mjs";
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -56,10 +57,223 @@ async function graphCheck(data, assertion, width = 1440) {
     await window.happyDOM.close();
   }
 }
+
+test("Phase132 F1 focus follows qualified service through repeated expansion and collapse", async () => {
+  await graphCheck(runtimeFixture(), (window) => {
+    const doc = window.document;
+    const control = (id) => [...doc.querySelectorAll(".graph-expand")]
+      .find((b) => b.dataset.serviceId === id);
+    for (const id of ["app-a-two", "app-b-one", "app-a-one", "app-b-one"]) {
+      const collapsed = control(id);
+      collapsed.focus();
+      assert.equal(doc.activeElement, collapsed);
+      collapsed.click(); // Native button activation shared by keyboard/pointer.
+      const expanded = control(id);
+      assert.equal(doc.activeElement, expanded);
+      assert.equal(expanded.getAttribute("aria-expanded"), "true");
+      const entries = [...expanded.parentElement.querySelectorAll(".graph-entity-button")]
+        .filter((b) => b.textContent.startsWith("Realization evidence"));
+      assert.equal(entries.length, 2);
+      entries[1].focus();
+      entries[1].click();
+      assert.ok(doc.querySelector(".graph-evidence-details").textContent);
+      expanded.focus();
+      expanded.click();
+      assert.equal(doc.activeElement, control(id));
+      assert.equal(control(id).getAttribute("aria-expanded"), "false");
+      assert.equal(doc.querySelector(".graph-evidence-details").textContent, "");
+    }
+  });
+});
+test("Phase132 F2 duplicate observation response renders safe error and no partial graph", async () => {
+  const data = runtimeFixture();
+  data.runtime.value.evidence[1].observation_id = data.runtime.value.evidence[0].observation_id;
+  data.temporal_quality[1].observation_id = data.runtime.value.evidence[0].observation_id;
+  await graphCheck(data, (window) => {
+    assert.match(text(window), /invalid runtime evidence projection/);
+    assert.equal(window.document.querySelector(".project-graph"), null);
+    assert.equal(window.document.querySelector(".graph-expand"), null);
+    assert.equal(window.document.querySelector(".graph-canvas"), null);
+    assert.doesNotMatch(text(window), /observation-app|epoch-|sha256/);
+  });
+});
+test("Phase132 F2 selected evidence retains its exact timestamps and temporal dimensions", async () => {
+  const data = runtimeFixture();
+  const second = data.runtime.value.evidence[1];
+  second.observed_at_utc = "2026-09-30T15:01:00Z";
+  second.received_at_utc = "2026-09-30T15:00:30Z";
+  Object.assign(data.temporal_quality[1], {
+    source_observed_at_utc: second.observed_at_utc,
+    server_received_at_utc: second.received_at_utc,
+    communication_freshness: "stale", observation_freshness: "fresh",
+    source_time_quality: "source_ahead",
+  });
+  await graphCheck(data, (window) => {
+    const doc = window.document;
+    doc.querySelector('.graph-expand[data-service-id="app-a-one"]').click();
+    const entries = [...doc.querySelectorAll(".graph-entity-button")]
+      .filter((b) => b.textContent.startsWith("Realization evidence"));
+    for (const i of [0, 1, 0]) {
+      entries[i].click();
+      const detail = doc.querySelector(".graph-evidence-details").textContent;
+      const e = data.runtime.value.evidence[i], t = data.temporal_quality[i];
+      for (const value of [e.observation_id, e.observed_at_utc, e.received_at_utc,
+        `Communication · ${t.communication_freshness}`,
+        `Observation · ${t.observation_freshness}`,
+        `Source time · ${t.source_time_quality.replaceAll("_", " ")}`])
+        assert.ok(detail.includes(value), value);
+      assert.ok(!detail.includes(data.runtime.value.evidence[1 - i].observation_id));
+    }
+  });
+});
+test("Phase132 runtime expansion, details, filter and Reset remain read-only and local", async () => {
+  const data = runtimeFixture();
+  const start = calls.length;
+  const window = boot("/projects/alpha/graph", 1024, () => data);
+  try {
+    await ready(window);
+    const doc = window.document;
+    assert.ok(
+      [...doc.querySelectorAll(".graph-expand")].every(
+        (b) => b.getAttribute("aria-expanded") === "false",
+      ),
+    );
+    const toggle = doc.querySelector(".graph-expand");
+    toggle.click();
+    assert.equal(
+      doc.querySelector(".graph-expand").getAttribute("aria-expanded"),
+      "true",
+    );
+    const entry = [...doc.querySelectorAll(".graph-entity-button")].find((b) =>
+      b.textContent.startsWith("Realization evidence"),
+    );
+    entry.click();
+    assert.match(text(window), /Monitor epoch \(not execution-instance ID\)/);
+    assert.match(text(window), /Source observation time.*Server receipt time/s);
+    assert.match(
+      text(window),
+      /Communication · fresh.*Observation · stale.*Source time · behind or delayed/s,
+    );
+    assert.match(text(window), /node reference \(not ownership\)/);
+    assert.doesNotMatch(text(window), /fog-0 belongs|owns fog-0|occupied by/);
+    assert.match(
+      doc.querySelector(".graph-visible-legend").textContent,
+      /Runtime realization/,
+    );
+    const filter = doc.querySelector(".graph-filter");
+    filter.value = "app-b";
+    filter.dispatchEvent(new window.Event("change"));
+    assert.ok(
+      [...doc.querySelectorAll(".graph-expand")].every(
+        (b) => b.getAttribute("aria-expanded") === "false",
+      ),
+    );
+    assert.equal(doc.querySelector(".graph-evidence-details").textContent, "");
+    filter.value = "";
+    filter.dispatchEvent(new window.Event("change"));
+    doc.querySelector(".graph-expand").click();
+    const reset = [...doc.querySelectorAll("button")].find(
+      (b) => b.textContent === "Reset selection / view",
+    );
+    reset.click();
+    assert.ok(
+      [...doc.querySelectorAll(".graph-expand")].every(
+        (b) => b.getAttribute("aria-expanded") === "false",
+      ),
+    );
+    assert.doesNotMatch(
+      doc.querySelector(".graph-visible-legend").textContent,
+      /Runtime realization/,
+    );
+    assert.equal(calls.length - start, 1);
+  } finally {
+    await window.happyDOM.close();
+  }
+});
+test("Phase132 runtime bounded previews expose included/omitted evidence, including bounded-empty", async () => {
+  for (const empty of [false, true]) {
+    const f = runtimeFixture(undefined, !empty);
+    f.runtime.value.completeness = "partial";
+    f.runtime.value.total_evidence_count = 1001;
+    const window = boot("/projects/alpha/graph", 1440, () => f);
+    try {
+      await ready(window);
+      assert.match(text(window), /Partial evidence preview/);
+      assert.match(
+        text(window),
+        /of 1001 latest subject\/monitor-epoch records included/,
+      );
+      assert.match(text(window), /whole-service omission/);
+      if (empty)
+        assert.match(text(window), /No whole service evidence set fit/);
+      assert.match(
+        window.document.querySelector("#connection").textContent,
+        /Degraded/,
+      );
+    } finally {
+      await window.happyDOM.close();
+    }
+  }
+});
+test("Phase132 unmatched evidence remains inspectable; degraded source does not remove logical structure", async () => {
+  const data = runtimeFixture();
+  data.runtime.value.evidence[0].service_id = "not-in-logical";
+  data.runtime.value.evidence[0].logical_node_id = null;
+  const unmatched = data.runtime.value.evidence[0];
+  unmatched.id = JSON.stringify([
+    "runtime_evidence",
+    unmatched.project_id,
+    unmatched.application_id,
+    unmatched.service_id,
+    unmatched.node_id,
+    unmatched.reporting_node_id,
+    unmatched.monitor_instance_id,
+  ]);
+  const window = boot("/projects/alpha/graph", 768, () => data);
+  try {
+    await ready(window);
+    assert.match(text(window), /Evidence not matched to loaded accepted/);
+    assert.ok(window.document.querySelector(".graph-entity-list"));
+  } finally {
+    await window.happyDOM.close();
+  }
+  for (const availability of [
+    "not_configured",
+    "indeterminate",
+    "unavailable",
+    "corrupt",
+  ]) {
+    const f = runtimeFixture();
+    f.runtime = {
+      availability,
+      value:
+        availability === "indeterminate"
+          ? "uncertain"
+          : {
+              source: "dmonitor",
+              code: "source_failed",
+              safe_message: "Safe failure",
+            },
+    };
+    f.temporal_quality = [];
+    const w = boot("/projects/alpha/graph", 1440, () => f);
+    try {
+      await ready(w);
+      assert.ok(w.document.querySelector(".graph-entity-list"));
+      assert.match(text(w), /No zero or health claim|cannot currently provide/);
+      assert.doesNotMatch(
+        w.document.querySelector(".graph-runtime-source").textContent,
+        /0 of/,
+      );
+    } finally {
+      await w.happyDOM.close();
+    }
+  }
+});
 test("Phase131 graph navigation aborts obsolete reads and does not overwrite project Overview", async () => {
   let oldSignal;
   const window = boot("/projects/alpha/graph", 1440, (url, init) => {
-    if (url.endsWith("/graph")) {
+    if (url.endsWith("/runtime-graph")) {
       oldSignal = init.signal;
       return new Promise((_resolve, reject) =>
         init.signal.addEventListener(
@@ -93,7 +307,10 @@ test("Phase131 graph route identifies accepted logical source and enables only O
       /Logical graph overview.*Accepted application D-Graph snapshots.*logical structure/s,
     );
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, "/api/v1/operations/projects/alpha/graph");
+    assert.equal(
+      requests[0].url,
+      "/api/v1/operations/projects/alpha/runtime-graph",
+    );
     assert.equal(requests[0].init.headers["X-Datum-Project"], "alpha");
     const nav = window.document.querySelector(".project-subnav");
     assert.equal(nav.querySelectorAll("a").length, 2);
@@ -408,7 +625,7 @@ test("Phase131 malformed cross-project graph is rejected with safe error, not si
   const data = graphFixture();
   data.graph.value.nodes[0].project_id = "beta";
   await graphCheck(data, (window) => {
-    assert.match(text(window), /invalid logical graph projection/);
+    assert.match(text(window), /invalid runtime evidence projection/);
     assert.equal(window.document.querySelector(".graph-canvas"), null);
     assert.doesNotMatch(text(window), /beta/);
   });
@@ -634,7 +851,12 @@ function boot(path = "/", width = 1440, response = () => known) {
   window.TextEncoder = globalThis.TextEncoder;
   window.fetch = async (url, init) => {
     calls.push({ url, init });
-    const body = await response(url, init);
+    let body = await response(url, init);
+    if (
+      url.endsWith("/runtime-graph") &&
+      body?.source_kind === "accepted_application_dgraph_snapshots"
+    )
+      body = runtimeFixture(body, false);
     return body instanceof Response
       ? body
       : new Response(JSON.stringify(body), { status: 200 });
