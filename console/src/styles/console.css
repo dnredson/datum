@@ -751,3 +751,11 @@ summary:focus-visible,
     height: 28rem;
   }
 }
+/* Catalog shares operational card/typography tokens; no new visual system. */
+.catalog-grid { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(20rem, 1.3fr); gap: var(--datum-section-gap); }
+.catalog-grid > * { min-width: 0; overflow-wrap: anywhere; }
+.catalog-row { margin-bottom: 1rem; }
+.catalog-form fieldset { min-width: 0; }
+.catalog-form button { margin-right: .5rem; }
+.catalog-error:not(:empty) { border-left: 3px solid var(--bs-danger); padding: .75rem; margin-bottom: 1rem; }
+@media (max-width: 900px) { .catalog-grid { grid-template-columns: minmax(0, 1fr); } }

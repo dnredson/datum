@@ -236,6 +236,7 @@ async fn main() {
         .clone()
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
+    let catalog = api::service_catalog::CatalogApi::from_process(state.service_artifacts.as_ref().clone());
     let mut app = Router::new()
         .route("/graphql", post(graphql_post))
         .route("/graphiql", get(graphiql))
@@ -702,7 +703,8 @@ async fn main() {
         .with_state(state)
         .merge(api::operations::router(
             api::operations::OperationsApiRuntime::from_process(),
-        ));
+        ))
+        .merge(api::service_catalog::router(catalog));
 
     if let Some(cors_layer) = build_cors_layer(config.as_ref()) {
         app = app.layer(cors_layer);

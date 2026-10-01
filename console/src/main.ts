@@ -8,6 +8,8 @@ import { badge, el } from "./components/presentation.ts";
 import { overviewView, projectsView, projectView } from "./pages/views.ts";
 import type { GlobalOverview, ProjectOverview } from "./types/operations.ts";
 import { projectGraphView } from "./pages/project-graph.ts";
+import { catalogView } from "./pages/catalog.ts";
+import { CatalogClient } from "./api/catalog.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -21,6 +23,12 @@ root.innerHTML = `<a class="skip-link" href="#workspace">Skip to workspace</a>
   <div class="console-layout"><header class="topbar"><div class="topbar-left"><button id="menu-toggle" class="menu-toggle btn btn-sm" aria-controls="sidebar" aria-expanded="true" aria-label="Collapse navigation"><i class="bi bi-list" aria-hidden="true"></i></button><a class="topbar-product" href="/" data-route aria-label="DATUM Console — Overview"><img src="/brand/datum-logo-horizontal.png" alt="" width="108" height="36" /></a><span class="topbar-divider" aria-hidden="true">/</span><span id="page-title">Overview</span><span id="project-context" class="project-context"></span></div><div id="connection" class="connection" aria-live="polite" aria-label="DServer connection / projection quality"></div></header>
   <main id="workspace" tabindex="-1"><div class="workspace-toolbar"><span class="eyebrow">THIS DSERVER · OPERATIONS PROJECTIONS</span><button id="refresh" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise me-2" aria-hidden="true"></i>Refresh</button></div><div id="page" aria-live="polite"></div></main><footer class="console-footer">DATUM control plane <span>Evidence ≠ authority · Console foundation</span></footer></div>`;
 const page = document.querySelector<HTMLDivElement>("#page")!;
+const catalogNav = el("a");
+const catalogIcon = el("i", "bi bi-journal-code"); catalogIcon.setAttribute("aria-hidden", "true");
+catalogNav.append(catalogIcon, el("span", "nav-text", "Catalog"));
+catalogNav.href = "/catalog"; catalogNav.dataset.route = ""; catalogNav.dataset.nav = "catalog";
+catalogNav.setAttribute("aria-label", "Global Artifact & Service Catalog");
+document.querySelector(".sidebar nav")!.append(catalogNav);
 const refresh = document.querySelector<HTMLButtonElement>("#refresh")!;
 const connection = document.querySelector<HTMLDivElement>("#connection")!;
 const client = new OperationsClient();
@@ -119,7 +127,7 @@ async function render(route: Route): Promise<void> {
   if (navigationChanged) workspace.focus();
   page.removeAttribute("aria-busy");
   const title =
-    route.kind === "project_graph"
+    route.kind === "catalog" ? "Catalog" : route.kind === "project_graph"
       ? "Graph"
       : route.kind === "project"
         ? "Project"
@@ -159,6 +167,17 @@ async function render(route: Route): Promise<void> {
     );
     return;
   }
+  if (route.kind === "catalog") {
+    document.querySelector(".workspace-toolbar .eyebrow")!.textContent = "GLOBAL · CATALOG MODELING";
+    setConnection("Connecting");
+    page.replaceChildren(catalogView(new CatalogClient(signal), ready => {
+      if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
+    }));
+    document.querySelector(".sidebar-footer span")!.textContent = "Catalog modeling only · operational actions remain read-only";
+    return;
+  }
+  document.querySelector(".workspace-toolbar .eyebrow")!.textContent = "THIS DSERVER · OPERATIONS PROJECTIONS";
+  document.querySelector(".sidebar-footer span")!.textContent = "Read-only foundation · No operational write actions";
   setConnection("Connecting");
   page.setAttribute("aria-busy", "true");
   page.replaceChildren(

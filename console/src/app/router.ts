@@ -1,6 +1,7 @@
 export type Route =
   | { kind: "overview" }
   | { kind: "projects" }
+  | { kind: "catalog" }
   | { kind: "project"; projectId: string }
   | { kind: "project_graph"; projectId: string }
   | { kind: "not_found" };
@@ -14,6 +15,7 @@ export function validProjectId(id: string): boolean {
 }
 export function parseRoute(pathname: string): Route {
   if (pathname === "/") return { kind: "overview" };
+  if (pathname === "/catalog" || pathname === "/catalog/") return { kind: "catalog" };
   if (pathname === "/projects" || pathname === "/projects/")
     return { kind: "projects" };
   const match = /^\/projects\/([^/]+)(\/graph)?\/?$/u.exec(pathname);

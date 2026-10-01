@@ -100,6 +100,7 @@ pub mod secret_resolver_contract;
 pub mod sentinel_registration;
 pub mod sentinel_telemetry;
 pub mod service_artifact_registry;
+pub mod service_catalog;
 pub mod sha256;
 pub mod topology;
 pub mod wasm_module_registry;

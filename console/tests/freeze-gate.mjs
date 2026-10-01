@@ -11,6 +11,7 @@ import { wallboardFixture } from "./wallboard-fixture.mjs";
 import { projectFixture, sharedEvidence } from "./project-fixture.mjs";
 import { graphFixture, unevenGraphFixture } from "./graph-fixture.mjs";
 import { runtimeFixture } from "./runtime-graph-fixture.mjs";
+import { catalogFixture, containerSnapshot, compositeFixture } from "./catalog-fixture.mjs";
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -42,6 +43,83 @@ const liveProject = await (
 const known = structuredClone(live);
 known.known_projects.page.items = ["foundation-demo"];
 const calls = [];
+
+test("Phase133A catalog form saves modeling only, preserves tenancy and references", async () => {
+  const f=catalogFixture(); let saved;
+  const window=boot("/catalog",768,(url,init)=>{
+    if(url.endsWith("artifacts"))return f.artifacts;
+    if(init.method==="POST"){saved=JSON.parse(init.body);return {...f.record,definition:saved.definition};}
+    return f.page;
+  });
+  try {
+    await waitFor(window,()=>!!window.document.querySelector('[data-catalog-form]'));
+    const doc=window.document;
+    assert.match(text(window),/Global reusable definitions/);
+    const form=doc.querySelector('form');
+    form.elements.namedItem("id").value="p4-sniffer";form.elements.namedItem("name").value="P4 Sniffer";
+    const tenancy=form.elements.namedItem("tenancy");tenancy.value="shared_tenant_aware";tenancy.dispatchEvent(new window.Event("change"));
+    form.elements.namedItem("tenant-unit").value="domain";form.elements.namedItem("cadence").value="30";
+    [...form.querySelectorAll('button')].find(b=>b.textContent==="Review definition").click();assert.match(text(window),/Shared tenant-aware/);
+    form.dispatchEvent(new window.Event("submit",{bubbles:true,cancelable:true}));
+    await waitFor(window,()=>text(window).includes("Saved p4-sniffer revision 1"));
+    assert.equal(saved.expected_revision,0);assert.equal(saved.definition.tenant_unit,"domain");assert.equal(saved.definition.monitoring.cadence_seconds,30);
+    assert.equal(doc.querySelector('input[type="password"]'),null);assert.doesNotMatch(text(window),/Deploy now|Accept D-Map|Create tenant binding/);
+    assert.equal(window.getComputedStyle(doc.querySelector('.catalog-grid')).gridTemplateColumns,"minmax(0, 1fr)");
+  }finally{await window.happyDOM.close();}
+});
+test("Phase133A historical revisions are read-only and validation errors are safely associated",async()=>{
+ const f=catalogFixture();const window=boot("/catalog",1024,(url)=>url.endsWith("artifacts")?f.artifacts:url.includes("/revisions/")?f.record:f.page);
+ try{await waitFor(window,()=>!!window.document.querySelector('form'));
+ const doc=window.document;[...doc.querySelectorAll('button')].find(b=>b.textContent==="Inspect historical revision").click();
+ await waitFor(window,()=>!!doc.querySelector('fieldset:disabled'));
+ assert.match(text(window),/Historical revision 1.*read-only/s);assert.ok(doc.querySelector('label[for="catalog-cadence"]'));
+ assert.equal(doc.querySelector('#catalog-secret-ref').getAttribute('aria-describedby'),'catalog-validation-error');
+ }finally{await window.happyDOM.close();}
+});
+test("Phase133A selected native/container artifacts expose complete immutable pins before Save",async()=>{
+ const f=catalogFixture(),container=containerSnapshot();f.artifacts.items.push(container);
+ const window=boot("/catalog",1024,url=>url.endsWith("artifacts")?f.artifacts:f.page);
+ try{await waitFor(window,()=>!!window.document.querySelector('[data-artifact-pins]'));
+ const doc=window.document;assert.ok(text(window).includes("d".repeat(64)));
+ const selector=doc.querySelector('#catalog-artifact');selector.value="1";selector.dispatchEvent(new window.Event("change"));
+ const pins=doc.querySelector('[data-artifact-pins]').textContent;
+ assert.match(pins,/linux\/amd64/);assert.ok(pins.includes(container.resolved_image_identity.platforms[0].manifest_digest));assert.ok(pins.includes(container.resolved_image_identity.platforms[0].config_digest));assert.ok(pins.includes(container.resolved_image_identity.platforms[0].execution_reference));assert.ok(pins.includes(container.source.execution_projection_digest));
+ }finally{await window.happyDOM.close();}
+});
+test("Phase133A historical A/B pins remain exact after live artifact source removal",async()=>{
+ const f=catalogFixture(),a=f.artifacts.items[0],b=containerSnapshot(),one=structuredClone(f.record),two=structuredClone(f.record);
+ two.revision=2;two.artifact_snapshot_id=`sha256:${"9".repeat(64)}`;two.definition.artifact=b.source;two.definition.runtime_kind="container";
+ f.page.items=[two];f.artifacts.items=[];const requests=[];
+ const window=boot("/catalog",1024,url=>{requests.push(url);if(url.endsWith("artifacts"))return f.artifacts;if(url.includes("/artifacts/"))return url.includes(encodeURIComponent(one.artifact_snapshot_id))?a:b;if(url.endsWith("/revisions/1"))return one;return f.page;});
+ try{await waitFor(window,()=>!!window.document.querySelector('form'));
+ const doc=window.document;
+ [...doc.querySelectorAll('button')].find(b=>b.textContent==="Inspect pinned artifact").click();
+ await waitFor(window,()=>text(window).includes(b.resolved_image_identity.platforms[0].manifest_digest));
+ assert.equal(doc.querySelector('#catalog-artifact'),null);assert.ok(doc.querySelector('fieldset:disabled'));
+ doc.querySelector('input[aria-label="Historical revision for p4-sniffer"]').value="1";
+ [...doc.querySelectorAll('button')].find(b=>b.textContent==="Inspect historical revision").click();
+ await waitFor(window,()=>text(window).includes("d".repeat(64)));
+ const pins=doc.querySelector('[data-artifact-pins]').textContent;assert.ok(pins.includes(one.artifact_snapshot_id));assert.ok(!pins.includes(b.resolved_image_identity.platforms[0].manifest_digest));assert.ok(requests.includes(`/api/v1/catalog/artifacts/${encodeURIComponent(one.artifact_snapshot_id)}`));assert.equal(doc.querySelector('#catalog-artifact'),null);
+ }finally{await window.happyDOM.close();}
+});
+test("Phase133A composite editor declares discovery and external capabilities without execution",async()=>{
+ const f=catalogFixture();let saved;
+ const window=boot("/catalog",1024,(url,init)=>{if(url.endsWith("artifacts"))return f.artifacts;if(init.method==="POST"){saved=JSON.parse(init.body);return {...f.record,definition:saved.definition,artifact_snapshot_id:null};}return f.page;});
+ try{await waitFor(window,()=>!!window.document.querySelector('form'));const doc=window.document,form=doc.querySelector('form'),value=(n,v)=>form.elements.namedItem(n).value=v;
+ value("id","magistrala");value("name","Magistrala");value("shape","composite");form.elements.namedItem("shape").dispatchEvent(new window.Event("change"));value("composition-mode","discovered");form.elements.namedItem("composition-mode").dispatchEvent(new window.Event("change"));
+ value("repository","https://github.com/absmach/magistrala.git");value("commit","a".repeat(40));value("requires","database.postgresql messaging.mqtt");value("provides","api.magistrala");value("tenancy","shared_tenant_aware");form.elements.namedItem("tenancy").dispatchEvent(new window.Event("change"));value("tenant-unit","domain");
+ [...form.querySelectorAll('button')].find(b=>b.textContent==="Review definition").click();assert.match(text(window),/composite discovered/);assert.match(text(window),/database.postgresql/);assert.equal(form.elements.namedItem("artifact").required,false);assert.equal(form.elements.namedItem("dependencies"),null);
+ form.dispatchEvent(new window.Event("submit",{bubbles:true,cancelable:true}));await waitFor(window,()=>!!saved);assert.equal(saved.definition.artifact,null);assert.deepEqual(saved.definition.provisioning.command,["make","run_latest"]);assert.equal(saved.definition.composition.discovery.kind,"docker_compose");assert.equal(saved.definition.requires.length,2);
+ }finally{await window.happyDOM.close();}
+});
+test("Phase133A static component and dependency editor preserve exact identities on new revision",async()=>{
+ const f=compositeFixture();f.record.definition.provisioning=null;f.record.definition.composition={mode:"static",components:[{key:"db",definition:{definition_id:"postgresql",revision:7}}]};f.record.definition.exact_dependencies=[{definition_id:"mqtt",revision:4}];
+ const window=boot("/catalog",768,url=>url.endsWith("artifacts")?f.artifacts:f.page);
+ try{await waitFor(window,()=>!!window.document.querySelector('form'));const doc=window.document;
+ [...doc.querySelectorAll('button')].find(b=>b.textContent==="Create new revision").click();assert.equal(doc.querySelector('#catalog-shape').value,"composite");assert.equal(doc.querySelector('#catalog-component-id').value,"postgresql");assert.equal(doc.querySelector('#catalog-component-revision').value,"7");assert.equal(doc.querySelector('#catalog-dependency-revision').value,"4");
+ [...doc.querySelectorAll('button')].find(b=>b.textContent==="Inspect composite definition").click();assert.ok(doc.querySelector('fieldset:disabled'));assert.equal(doc.querySelector('#catalog-component-revision').value,"7");assert.doesNotMatch(text(window),/Dependency definition IDs \(comma-separated\)/);
+ }finally{await window.happyDOM.close();}
+});
 
 async function graphCheck(data, assertion, width = 1440) {
   const start = calls.length;
