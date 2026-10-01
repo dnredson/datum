@@ -5,7 +5,7 @@ use std::{
 };
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
@@ -102,6 +102,34 @@ pub fn configured_control_state_db_path() -> Option<PathBuf> {
 pub fn default_control_state_db_path() -> PathBuf {
     configured_control_state_db_path()
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CONTROL_STATE_DB_PATH))
+}
+
+/// Read-only acquisition for Console projections. No directory/schema creation,
+/// migration or empty-state fallback. One transaction supplies coherent domain
+/// blobs; individual JSON errors are retained separately by the caller.
+pub fn read_domains_only(
+    db_path: &Path,
+    domains: &[&str],
+) -> Result<std::collections::BTreeMap<String, Option<String>>, rusqlite::Error> {
+    let mut connection = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let transaction = connection.transaction()?;
+    let mut result = std::collections::BTreeMap::new();
+    for domain in domains {
+        let payload = transaction
+            .query_row(
+                "SELECT payload_json FROM control_state_current WHERE domain = ?1",
+                params![domain],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        result.insert((*domain).to_string(), payload);
+    }
+    transaction.commit()?;
+    Ok(result)
 }
 pub fn load_domain_json<T: DeserializeOwned>(
     db_path: &Path,

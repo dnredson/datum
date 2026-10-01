@@ -1,0 +1,659 @@
+PHASE 119F EVIDENCE BUNDLE — SOURCE EXCERPTS
+Source commit (all excerpts pinned to this exact commit): 97646f3da316137532622752f1bdfa51503c9b17
+Audit document: documentation/reference/phase119f-governed-source-cleanup-authority-audit.md
+Collection method: read-only `git show <commit>:<path>` and `git grep <commit> -- <path>` against
+the pinned commit only. No working-tree files were read for this evidence, so a later change to
+the working tree cannot invalidate this file. No production or test code was modified to produce
+this evidence.
+
+============================================================
+E01
+============================================================
+Claim: OperationalDGraph node membership derives only from an application's current
+`active_dmap.placements`; a node with zero current placements gets no entry in the resulting
+graph (this is the structural basis of the "nodes disappear from OperationalDGraph on migration"
+finding in Phase 119F).
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/ddeploy.rs
+Function/type: union_project_operational_graph (line 1967)
+Command: git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '1967,2045p'
+Output:
+    pub fn union_project_operational_graph(
+        project_id: &str,
+        active_by_application: &BTreeMap<String, ActiveApplicationDeployment>,
+        operational_revision: u64,
+    ) -> Result<OperationalDGraph, Vec<CanonicalValidationFinding>> {
+        ...
+        let mut merged_by_node: BTreeMap<String, Vec<OperationalDesiredService>> = BTreeMap::new();
+        let mut application_provenance = Vec::new();
+        let mut findings = Vec::new();
+        for app in &apps {
+            // The ONE and ONLY source of service->node assignment: the
+            // accepted D-Map's own placements. `operational_services` is
+            // consulted ONLY to fetch the runtime/desired_state payload for a
+            // service this loop already knows (from the D-Map) is placed here.
+            for placement in &app.active_dmap.placements {
+                match app.operational_services.get(&placement.service_id) {
+                    Some(service) => {
+                        let mut service = service.clone();
+                        service.dmap_ref = Some(crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+                            id: app.active_dmap.dmap_id.clone(),
+                            revision: app.active_dmap.revision,
+                            digest: app.dmap_digest.clone(),
+                        });
+                        merged_by_node.entry(placement.node_id.clone()).or_default().push(service);
+                    }
+                    None => { /* fail-closed finding, omitted here */ }
+                }
+            }
+            ...
+        }
+        if !findings.is_empty() {
+            return Err(findings);
+        }
+
+        let mut nodes: Vec<OperationalNodeDesiredState> = merged_by_node
+            .into_iter()
+            .map(|(node_id, mut desired_services)| {
+                desired_services.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+                OperationalNodeDesiredState { node_id, desired_services }
+            })
+            .collect();
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
+        Ok(OperationalDGraph { ... nodes, ... })
+    }
+Interpretation: `merged_by_node` (a BTreeMap keyed by node_id) is populated exclusively inside the
+inner loop `for placement in &app.active_dmap.placements`, using `placement.node_id` as the map
+key; the final `nodes` vector returned by the function is built exclusively from
+`merged_by_node.into_iter()`. Therefore a node that appears in no application's
+`active_dmap.placements` never becomes a key in `merged_by_node` and never appears in the returned
+`OperationalDGraph.nodes`. This shows the graph-construction mechanism precisely; it does not by
+itself prove anything about what happens to a node's local runtime state once it disappears from
+the graph — that is a separate question addressed by E02/E05/E06.
+
+============================================================
+E02
+============================================================
+Claim: A node absent from the current OperationalDGraph cannot currently receive an empty
+operational slice automatically — the lookup fails closed with a hard error instead.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/operational_dgraph.rs
+Function/type: build_operational_slice (line 342)
+Command: git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '342,356p'
+Output:
+    pub fn build_operational_slice(
+        graph: &OperationalDGraph,
+        node_id: &str,
+        authorization: Option<&OperationalReconciliationAuthorization>,
+    ) -> Result<OperationalDGraphSlice, String> {
+        validate_operational_dgraph(graph)?;
+        let node_id = node_id.trim();
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.node_id.trim() == node_id)
+            .ok_or_else(|| format!("node '{}' is not present in operational D-Graph", node_id))?;
+Interpretation: `graph.nodes.iter().find(...)` returns `None` when no node in the graph matches
+`node_id`, and `.ok_or_else(...)` immediately converts that `None` into an `Err(String)` that
+propagates out of the function via `?`. This proves that, as the function is written today, a
+missing node produces a hard error rather than an empty/zero-service slice. It does not prove
+that no other code path could ever synthesize an empty slice for a missing node (that is a
+distinct design question for Phase 119G, not something this function's current body can settle
+either way).
+
+============================================================
+E03
+============================================================
+Claim: A present node having zero desired services (`desired_services: []`) is structurally legal
+under the current OperationalDGraph schema and validator — nothing rejects it.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/operational_dgraph.rs
+Function/type: OperationalNodeDesiredState (line 48), validate_operational_dgraph (line 298)
+Command: git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '47,52p;298,339p'
+Output:
+    pub struct OperationalNodeDesiredState {
+        pub node_id: String,
+        #[serde(default)]
+        pub desired_services: Vec<OperationalDesiredService>,
+    }
+    ...
+    pub fn validate_operational_dgraph(graph: &OperationalDGraph) -> Result<(), String> {
+        ...
+        if graph.nodes.is_empty() && !empty_bootstrap {
+            return Err("operational D-Graph must contain at least one node".to_string());
+        }
+        ...
+        let mut seen_nodes = HashSet::new();
+        for node in &graph.nodes {
+            required("node_id", &node.node_id)?;
+            if !seen_nodes.insert(node.node_id.trim().to_string()) {
+                return Err(format!("duplicate operational D-Graph node_id: {}", node.node_id));
+            }
+            let mut seen_services = HashSet::new();
+            for service in &node.desired_services {
+                validate_desired_service(service)?;
+                if !seen_services.insert(service.service_id.trim().to_string()) {
+                    return Err(format!("duplicate desired service '{}' for node '{}'", service.service_id, node.node_id));
+                }
+            }
+        }
+        Ok(())
+    }
+Interpretation: `desired_services` carries `#[serde(default)]` (so a missing field deserializes to
+an empty `Vec`), and `validate_operational_dgraph` only rejects an empty graph-level `nodes` list
+(`graph.nodes.is_empty()`) — it never checks `node.desired_services.is_empty()` for a node that is
+present. The per-service loop (`for service in &node.desired_services`) simply does not execute
+when the vector is empty, which is not an error condition anywhere in this function. This proves
+the schema and validator both permit a present node with zero desired services; it does not prove
+any specific code path currently produces such a node in practice.
+
+============================================================
+E04
+============================================================
+Claim: The `desired_state` contract, on both the server and the agent side, currently allows only
+the literal values "running" or "completed" — there is no "absent"/"stopped"/"removed" value.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/operational_dgraph.rs (function validate_desired_service, line 529);
+DATUM/src/agent/operational_reconciliation.rs (validate_context, desired_state check at line 2739)
+Function/type: validate_desired_service; validate_context (inline match arm)
+Command: git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '529,551p'
+          git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '2721,2746p'
+Output (server side):
+    fn validate_desired_service(service: &OperationalDesiredService) -> Result<(), String> {
+        required("service_id", &service.service_id)?;
+        if crate::core::runtime_kind::RuntimeKind::parse(&service.runtime).is_err() {
+            return Err(format!("operational service '{}' uses unsupported runtime '{}'; expected 'container' or 'native_process'", service.service_id, service.runtime));
+        }
+        if !matches!(
+            service.desired_state.trim().to_ascii_lowercase().as_str(),
+            "running" | "completed"
+        ) {
+            return Err(format!("operational service '{}' uses unsupported desired_state '{}'; expected running or completed", service.service_id, service.desired_state));
+        }
+        Ok(())
+    }
+Output (agent side):
+    for service in &context.desired_services {
+        if service.service_id.trim().is_empty() {
+            bail!("operational desired service_id must not be empty");
+        }
+        if !seen_services.insert(service.service_id.trim().to_ascii_lowercase()) {
+            bail!("operational context contains duplicate desired service '{}'", service.service_id);
+        }
+        if RuntimeKind::parse(&service.runtime).is_err() {
+            bail!("unsupported operational runtime '{}': expected container or native_process", service.runtime);
+        }
+        if !matches!(
+            service.desired_state.trim().to_ascii_lowercase().as_str(),
+            "running" | "completed"
+        ) {
+            bail!("unsupported operational desired_state '{}': expected running or completed", service.desired_state);
+        }
+    }
+Interpretation: Both the server's `validate_desired_service` and the agent's `validate_context`
+independently use the identical `matches!(..., "running" | "completed")` gate and reject every
+other string. This proves the currently-modeled vocabulary for `desired_state` has exactly two
+values on both sides of the wire contract; it does not prove that a third value could never be
+added in a future schema revision, only that none exists in this commit.
+
+============================================================
+E05
+============================================================
+Claim: The agent acts on desired state only by iterating `context.desired_services`; an empty or
+missing `desired_services` list therefore enters zero per-service branches and cannot, by itself,
+trigger removal of a running service.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/operational_reconciliation.rs
+Function/type: main dispatch loop (line 1361); validate_context loop (line 2722)
+Command: git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1360,1362p;2721,2723p'
+Output:
+    1360: let mut services = Vec::with_capacity(context.desired_services.len());
+    1361: for service in &context.desired_services {
+    1362:     let assignment = context.artifacts.iter().find(|artifact| {
+    ...
+    2721: let mut seen_services = HashSet::new();
+    2722: for service in &context.desired_services {
+    2723:     if service.service_id.trim().is_empty() {
+Interpretation: Both occurrences of iteration over `desired_services` in this file are `for
+service in &context.desired_services` loops — one is the main per-service dispatch/mutation loop
+(line 1361), the other is a validation-only pass inside `validate_context` (line 2722). Neither
+loop body executes at all when the collection is empty. This directly supports the claim that
+handing the agent an empty `desired_services` list (Fact B / F2 in the audit) causes it to skip
+every service-specific branch, including any rollback/removal branch — it says nothing about
+what the agent does with services it already knows about from OTHER sources (e.g. persisted
+native-process state), which is exactly why E06/E08 are evaluated separately.
+
+============================================================
+E06
+============================================================
+Claim: The existing rollback mechanism (M8 / native-process equivalent) is per-service, invoked
+only for a service explicitly named in the request, and gated by a Stage107A finite-lease
+boundary check immediately before any destructive mutation.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/operational_reconciliation.rs (AUTHORIZATION_OPERATION_ROLLBACK line 39,
+control_plane_authorized line ~1300, check_boundary line 1159, rollback_trusted_container_intent
+line 4022); DATUM/src/agent/native_process_runtime.rs (Rollback branch line 1179);
+DATUM/src/agent/stage107a_enforcement.rs (check_generation_and_projection line 219)
+Function/type: see above
+Command: git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '36,40p'
+          git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1299,1310p'
+          git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1159,1176p'
+          git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '4021,4045p'
+          git show 97646f3:DATUM/src/agent/native_process_runtime.rs | sed -n '1179,1200p'
+Output:
+    const AUTHORIZATION_OPERATION_ROLLBACK: &str = "rollback";
+    ...
+    let control_plane_authorized = context.authorization.as_ref().is_some_and(|authorization| {
+        authorization.allow_host_mutation
+            && authorization.operation == expected_authorization_operation
+            && authorization.project_id == context.project_id
+            && authorization.dgraph_id == context.dgraph_id
+            && authorization.dgraph_revision == Some(context.dgraph_revision)
+            && authorization.node_id == context.node_id
+    });
+    ...
+    pub(crate) fn check_boundary(
+        lease: &LeaseGuard,
+        boundary_context: &MutationBoundaryContext,
+        boundary: &str,
+        records: &mut Vec<MutationBoundaryRecord>,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let result = lease.check_before_mutation_at(boundary, now);
+        records.push(MutationBoundaryRecord { ... });
+        result.map_err(|error| anyhow::anyhow!(error))
+    }
+    ...
+    fn rollback_trusted_container_intent(...) -> Result<(String, String, bool)> {
+        ...
+        match observed_before {
+            ContainerState::Missing => Ok(("rollback_already_absent".to_string(), ..., false)),
+            ContainerState::Running | ContainerState::Stopped => {
+                check_boundary(lease, boundary_context, "M8", records)?;
+                let output = Command::new("docker").args(["rm", "-f", container_name]).output()...;
+                ...
+            }
+        }
+    }
+    // native_process_runtime.rs
+    NativeReconciliationAction::Rollback => {
+        let Some(state) = persisted_state else { return NativeActionOutcome { ...no-op... }; };
+        let stop_result = governed_stop(state, lease, boundary_context, records);
+        if !stop_result.confirmed_stopped {
+            return NativeActionOutcome { host_mutation_performed: stop_result.signaled, ... };
+        }
+        // state removed only past this point
+    }
+Interpretation: `check_boundary(..., "M8", ...)` is called immediately before the only `docker rm
+-f` invocation for rollback, and its result is propagated with `?` — a lease/boundary failure
+aborts the removal. The native-process branch only removes persisted state when
+`stop_result.confirmed_stopped` is true. Both paths are reached only through the per-service
+dispatch loop (E05), i.e. only for a service the agent was explicitly told about, gated by
+`control_plane_authorized` requiring `operation == "rollback"` plus an exact
+project/dgraph/revision/node match. This proves today's rollback is service-scoped and
+lease-gated; it does not by itself characterize every possible future extension of this code.
+
+============================================================
+E07
+============================================================
+Claim: Container runtime identity evidence sufficient to distinguish a DATUM-managed container
+from any other already exists, via `datum.*` Docker labels written at creation and checked at
+convergence time.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/operational_reconciliation.rs
+Function/type: DATUM_LABEL_* constants, ExecutionIdentityLabels, inspected_container_labels_match
+(lines 1094-1147)
+Command: git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1094,1147p'
+Output:
+    const DATUM_LABEL_ARTIFACT_ID: &str = "datum.artifact_id";
+    const DATUM_LABEL_EXECUTION_GENERATION: &str = "datum.execution_generation";
+    const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projection_digest";
+
+    struct ExecutionIdentityLabels<'a> {
+        artifact_id: &'a str,
+        execution_generation: u64,
+        execution_projection_digest: &'a str,
+    }
+    impl ExecutionIdentityLabels<'_> {
+        fn as_docker_run_args(&self) -> Vec<String> {
+            vec![
+                "--label".to_string(), format!("{DATUM_LABEL_ARTIFACT_ID}={}", self.artifact_id),
+                "--label".to_string(), format!("{DATUM_LABEL_EXECUTION_GENERATION}={}", self.execution_generation),
+                "--label".to_string(), format!("{DATUM_LABEL_EXECUTION_PROJECTION_DIGEST}={}", self.execution_projection_digest),
+            ]
+        }
+    }
+    fn inspected_container_labels_match(inspected: &serde_json::Value, expected: &ExecutionIdentityLabels) -> bool {
+        let labels = inspected.get("Config").and_then(|config| config.get("Labels"));
+        let label = |key: &str| labels.and_then(|labels| labels.get(key)).and_then(serde_json::Value::as_str);
+        label(DATUM_LABEL_ARTIFACT_ID) == Some(expected.artifact_id)
+            && label(DATUM_LABEL_EXECUTION_GENERATION) == Some(expected.execution_generation.to_string().as_str())
+            && label(DATUM_LABEL_EXECUTION_PROJECTION_DIGEST) == Some(expected.execution_projection_digest)
+    }
+Interpretation: `as_docker_run_args()` is used at M1 (container creation) to attach three
+`datum.*` labels carrying artifact/generation/digest identity; `inspected_container_labels_match`
+reads those same labels back via `docker inspect`'s `Config.Labels` and requires an exact match.
+The accompanying doc comment (visible in the full file, not reproduced here) states a container
+with no `datum.*` labels never matches and is therefore never considered Stage107A-converged.
+This proves DATUM-created containers carry self-identifying, independently inspectable labels
+today; it does not by itself prove every code path that creates a container attaches them (this
+excerpt covers the label-comparison mechanism, not an exhaustive audit of every container-creation
+call site).
+
+============================================================
+E08
+============================================================
+Claim: Native-process managed identity already persists strong, restart-surviving evidence keyed
+by a stable per-(project,node,service) key, sufficient to distinguish a DATUM-managed process from
+any other process that might reuse its PID.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/native_process_state.rs (ManagedProcessRuntimeStateV1, lines 30-79);
+DATUM/src/agent/native_process_acquisition.rs (stable_service_key, line 220)
+Function/type: see above
+Command: git show 97646f3:DATUM/src/agent/native_process_state.rs | sed -n '30,79p'
+          git show 97646f3:DATUM/src/agent/native_process_acquisition.rs | sed -n '220,230p'
+Output:
+    pub struct ManagedProcessRuntimeStateV1 {
+        pub schema: String,
+        pub service_id: String,
+        pub artifact_id: String,
+        pub execution_generation: u64,
+        pub execution_projection_digest: String,
+        #[serde(default)]
+        pub application_id: String,
+        #[serde(default)]
+        pub dmap_ref: Option<CanonicalContractReferenceV1>,
+        pub content_sha256: String,
+        pub pid: u32,
+        pub proc_start_time_ticks: u64,
+        pub observed_executable: String,
+        pub cmdline_digest: String,
+        pub started_at_utc: String,
+        pub state: String,
+    }
+    ...
+    pub fn stable_service_key(project_id: &str, node_id: &str, service_id: &str) -> String {
+        fn sanitize(value: &str) -> String {
+            value.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect()
+        }
+        let joined = format!("{project_id}\u{0}{node_id}\u{0}{service_id}");
+        let suffix = &sha256_hex_of_bytes(joined.as_bytes())[..16];
+        format!("{}-{}-{}-{}", sanitize(project_id), sanitize(node_id), sanitize(service_id), suffix)
+    }
+Interpretation: `ManagedProcessRuntimeStateV1` carries every field the audit's F5 design relies on,
+including `dmap_ref` (which D-Map placed this process) and `cmdline_digest` (a hash of the full
+observed `/proc/<pid>/cmdline`, per its doc comment, specifically to defend against PID reuse).
+`stable_service_key` derives a collision-resistant, sanitized, filesystem-safe key from the exact
+`(project_id, node_id, service_id)` triple via a NUL-separated SHA-256 digest. This proves the
+persisted record shape and its key derivation exist and are keyed as claimed; it does not prove
+anything about how/when this state is written or read outside the two functions shown here.
+
+============================================================
+E09
+============================================================
+Claim: Server-side operational-reconciliation authorization records prove that an authorization
+was issued, not that the corresponding host mutation on the agent succeeded — there is no
+report-back/outcome channel or field anywhere in this domain.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/api/operational_dgraph.rs (authorize_operational_reconciliation, line 499);
+dserver/src/core/operational_dgraph.rs (OperationalReconciliationAuthorization, line 103);
+dserver/src/core/operational_dgraph_persistence.rs (OperationalDGraphPersistedState, line 25);
+dserver/src/main.rs (route table)
+Function/type: see above
+Command: git show 97646f3:dserver/src/api/operational_dgraph.rs | sed -n '499,510p'
+          git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | sed -n '24,32p'
+          git show 97646f3:dserver/src/main.rs | grep -n -i "operational.*reconcil\|reconcil.*operational"
+          git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '103,169p' | grep -i "outcome\|succeeded\|result\|completed_at\|host_mutation_performed"
+Output:
+    async fn authorize_operational_reconciliation(
+        state: AppState,
+        node_id: String,
+        headers: HeaderMap,
+        request: OperationalReconciliationAuthorizationRequest,
+    ) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
+        ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
+        ...
+    }
+    ---
+    pub struct OperationalDGraphPersistedState {
+        pub persistence_version: String,
+        #[serde(default)]
+        pub graphs: BTreeMap<String, OperationalDGraph>,
+        #[serde(default)]
+        pub authorizations: BTreeMap<String, OperationalReconciliationAuthorization>,
+    }
+    ---
+    253:            "/api/v1/nodes/:node_id/operational-reconciliation-context",
+    254:            get(get_operational_reconciliation_context),
+    303:            "/api/v1/nodes/:node_id/operational-reconciliation/authorize",
+    304:            post(post_operational_reconciliation_authorization),
+    307:            "/api/v1/nodes/:node_id/operational-reconciliation/rollback-authorize",
+    308:            post(post_operational_reconciliation_rollback_authorization),
+    ---
+    (grep for outcome/succeeded/result/completed_at/host_mutation_performed within the
+    OperationalReconciliationAuthorization struct body: zero matches)
+Interpretation: `authorize_operational_reconciliation` is a request/response handler that returns
+a freshly-constructed `OperationalReconciliationAuthorization` before any agent has acted on it;
+the persisted state only stores this same authorization object, keyed in `authorizations`. The
+route table contains exactly three endpoints for this whole domain — context-fetch, authorize,
+rollback-authorize — and a full-struct grep for outcome-shaped field names returns nothing. This
+positive evidence (issuance-time construction, only three routes) is paired with negative evidence
+(no outcome field found): together they support "DServer's persisted authorization records prove
+issuance, not mutation success," but the negative half rests on the absence of a match in one
+struct definition and one route-table grep, not on an exhaustive proof that no other channel could
+ever exist.
+
+============================================================
+E10
+============================================================
+Claim: `execution_generation`/`execution_projection_digest` on a ServiceArtifact are live/mutable
+values with a monotonic per-(project,artifact) high-water mark, not values frozen at any single
+historical point — so cleanup logic must not substitute "current artifact identity" for
+"historical runtime identity."
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/service_artifact_registry.rs
+Function/type: execution_generation_high_water field (line 466); generation-bump logic (lines
+955-975, inside the artifact-update path)
+Command: git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '463,467p'
+          git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '955,975p'
+Output:
+    pub execution_generation_high_water: BTreeMap<String, BTreeMap<String, u64>>,
+    ...
+    if new_digest == current_digest && current_generation > 0 {
+        updated.control_plane.execution_generation = current_generation;
+        updated.control_plane.execution_projection_digest = current_digest;
+    } else {
+        let project_high_water = state.execution_generation_high_water.entry(project_id.to_string()).or_default();
+        let baseline = project_high_water.get(artifact_id).copied().unwrap_or(current_generation);
+        let generation = checked_next_generation(baseline.max(current_generation))?;
+        updated.control_plane.execution_generation = generation;
+        updated.control_plane.execution_projection_digest = new_digest;
+        project_high_water.insert(artifact_id.to_string(), generation);
+    }
+Interpretation: This branch only leaves `execution_generation`/`execution_projection_digest`
+unchanged when the newly-computed projection digest is byte-identical to the current one;
+otherwise it advances the generation to `checked_next_generation(baseline.max(current_generation))`
+and records the new high-water mark. This proves the CURRENT ServiceArtifact's identity fields are
+mutable over time and monotonically advance on content change; it does not describe how many times
+or how recently any given artifact has actually been updated in a real deployment — that is
+deployment-specific data this static code excerpt cannot speak to.
+
+============================================================
+E11
+============================================================
+Claim: No generic "missing-context delete everything" or unattended sweep/prune path exists in the
+agent or server reconciliation code for cleaning up services whose node/context has disappeared.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/** and dserver/src/** (whole-tree search, not a single file)
+Function/type: N/A — this is a negative (absence) search, paired with the positive evidence in
+E05/E06 showing what the agent's actual per-service dispatch loop and rollback path do instead.
+Command: git grep -n -i -E "orphan|sweep|prune|remove_all|delete_all" 97646f3 -- 'DATUM/src/**' 'dserver/src/**'
+Output:
+    dserver/src/core/ddeploy.rs:2732:        // A broader sweep: any two DIFFERENT pairs drawn from this set
+    dserver/src/core/dmonitor_freshness.rs:23://! freshness sweep, say) can evaluate many records against one consistent
+Context of ddeploy.rs:2732 (git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '2728,2733p'):
+    #[test]
+    fn identifier_composition_is_collision_free_across_many_adversarial_pairs() {
+        // A broader sweep: any two DIFFERENT pairs drawn from this set
+        // (deliberately including empty-ish, colon-heavy, and
+        // length-prefix-lookalike strings) must never produce the same
+        // `canonical_dmap_id` or `application_key`.
+Context of dmonitor_freshness.rs:23 (git show 97646f3:dserver/src/core/dmonitor_freshness.rs | sed -n '18,26p'):
+    //!   authority): out of scope for Phase 114B1/114C's job, not this module's.
+    //! [`evaluate_freshness`] is a pure function: it takes the evaluation time
+    //! as an explicit parameter rather than calling `Utc::now()` itself, so it
+    //! is deterministically unit-testable and so a caller (a future batch
+    //! freshness sweep, say) can evaluate many records against one consistent
+    //! "now" rather than a slightly different one per record.
+Interpretation: This search covered exactly the case-insensitive literal strings "orphan",
+"sweep", "prune", "remove_all", "delete_all" across the entire DATUM/src and dserver/src trees at
+this commit, and found exactly two matches: one inside a test-function comment about combinatorial
+test-case coverage (unrelated to runtime cleanup), and one inside a doc comment about batching
+D-Monitor staleness evaluations (unrelated to deletion). Neither hit names or implements a
+generic/unattended delete-everything mechanism. This is a negative result from one keyword search
+over one commit's tree, not proof that no such mechanism could exist under a different name or
+that none will ever be added; it should be read together with E05 (empty `desired_services` drives
+zero per-service branches) and E06 (the only existing removal paths are per-service, authorized,
+and lease-gated), which independently support the same conclusion from the positive side.
+
+============================================================
+E12
+============================================================
+Claim: D-Engine node membership remains a pure projection of the current accepted
+`PlacementAuthorityView`; nothing about a future cleanup-directive mechanism can implicitly change
+which nodes D-Engine reports, because D-Engine never reads any cleanup-related state.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/ddeploy.rs
+Function/type: derive_active_dengine_nodes (line 835)
+Command: git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '835,843p'
+Output:
+    pub fn derive_active_dengine_nodes(
+        view: &crate::core::ddeploy_v2::PlacementAuthorityView,
+    ) -> Vec<String> {
+        let mut nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for placement in &view.placements {
+            nodes.insert(placement.node_id.clone());
+        }
+        nodes.into_iter().collect()
+    }
+Interpretation: The function's entire input is one `&PlacementAuthorityView` and its entire output
+is derived from `view.placements[*].node_id`; it takes no OperationalDGraph, no cleanup-directive
+list, and no runtime-state parameter of any kind. This proves that, as written, D-Engine's output
+cannot be affected by anything computed by a future cleanup mechanism unless that mechanism were
+to also change `PlacementAuthorityView` itself (i.e. change actual accepted placements) — it does
+not prove that a future patch could not add such a parameter; it only describes this commit's
+signature.
+
+============================================================
+E13
+============================================================
+Claim: Current DDeploy acceptance/proposal persistence retains enough historical structure
+(accepted proposal + acceptance + materialized D-Map reference, keyed and never pruned in
+production code) to let a future cleanup design derive "previous vs current" placement
+differences; the retention this supports is exactly what these structures hold, no more.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/ddeploy.rs
+Function/type: DDeployAcceptanceV1 (line 405), DDeployStateV1 (line 454)
+Command: git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '405,416p;454,463p'
+          git grep -n "acceptances.remove\|acceptances\.retain\|\.proposals\.remove\|proposals\.retain" 97646f3 -- dserver/src/core/ddeploy.rs dserver/src/api/ddeploy.rs
+          git show 97646f3:dserver/src/core/ddeploy.rs | grep -n "^#\[cfg(test)\]\|^mod tests\|^}" | tail -3
+Output:
+    pub struct DDeployAcceptanceV1 {
+        pub schema: String,
+        pub acceptance_id: String,
+        pub proposal_id: String,
+        pub proposal_digest: String,
+        pub project_id: String,
+        pub application_id: String,
+        pub accepted_at_utc: String,
+        pub accepted_by: String,
+        pub materialized_dmap_ref: CanonicalContractReferenceV1,
+        pub operational_projection_ref: OperationalProjectionRefV1,
+    }
+    pub struct DDeployStateV1 {
+        pub state_version: String,
+        #[serde(default)]
+        pub proposals: BTreeMap<String, ProposalRecord>,
+        #[serde(default)]
+        pub acceptances: BTreeMap<String, DDeployAcceptanceV1>,
+        #[serde(default)]
+        pub active_by_application: BTreeMap<String, ActiveApplicationDeployment>,
+        ...
+    }
+    ---
+    6 hits: dserver/src/core/ddeploy.rs lines 4477, 4724, 4888, 4904, 8625, 8648
+    (all six are `state.acceptances.remove(...)` / `state.proposals.remove(...)` /
+    `state.phase113_v2.proposals.remove(...)` calls)
+    ---
+    2569:#[cfg(test)]
+    2570:mod tests {
+    9339:}
+Interpretation: `DDeployStateV1.acceptances` and `.proposals` are BTreeMaps keyed by
+acceptance_id/proposal_id respectively, and each `DDeployAcceptanceV1` retains its own
+`proposal_id` (linking back to the proposal) and `materialized_dmap_ref` (the exact D-Map produced
+by that acceptance) — this is the structural basis for deriving a previous-vs-current relationship.
+The only six `.remove()` calls against these two maps in this commit are all located between line
+2570 (`mod tests {`) and line 9339 (the file's final closing brace, which closes that same test
+module — no other `#[cfg(test)]`/`mod tests` boundary exists later in the file), i.e. all six are
+inside test fixtures constructing corruption/edge-case scenarios, not in any production code path.
+This supports "no production code path in this file prunes `acceptances` or `proposals`," but it
+is a claim about this one file only, as found by one grep pattern; it does not prove no other file
+anywhere in the workspace ever removes entries from a differently-named copy of this state, and it
+does not claim these structures retain unlimited history — only exactly what is written into them
+and never observed to be removed outside tests.
+
+============================================================
+E14
+============================================================
+Claim: The v1 and v2 canonical placement/acceptance surfaces the audit relies on use
+field-identical `{id, revision, digest}` reference shapes, but parity between
+`CanonicalContractReferenceV1` (v1) and `ContractRefV2` (v2) is achieved by manual field-by-field
+normalization at each use site, not by one shared Rust type.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/canonical_dmap.rs (CanonicalContractReferenceV1, line 56);
+dserver/src/core/canonical_dmap_v2.rs (ContractRefV2, line 27);
+dserver/src/core/ddeploy_migration.rs (locate_acceptance, line 231)
+Function/type: see above
+Command: git show 97646f3:dserver/src/core/canonical_dmap.rs | sed -n '55,60p'
+          git show 97646f3:dserver/src/core/canonical_dmap_v2.rs | sed -n '25,31p'
+          git show 97646f3:dserver/src/core/ddeploy_migration.rs | sed -n '231,259p'
+Output:
+    pub struct CanonicalContractReferenceV1 {
+        pub id: String,
+        pub revision: u64,
+        pub digest: String,
+    }
+    ---
+    #[serde(deny_unknown_fields)]
+    pub struct ContractRefV2 {
+        pub id: String,
+        pub revision: u64,
+        pub digest: String,
+    }
+    ---
+    fn locate_acceptance(state: &DDeployStateV1, acceptance_id: &str) -> Result<Option<NormalizedAcceptance>, ()> {
+        let v1 = state.acceptances.get(acceptance_id);
+        let v2 = state.phase113_v2.acceptances.get(acceptance_id);
+        match (v1, v2) {
+            (Some(_), Some(_)) => Err(()),
+            (Some(a), None) => Ok(Some(NormalizedAcceptance { ..., materialized_dmap_ref: a.materialized_dmap_ref.clone() })),
+            (None, Some(a)) => Ok(Some(NormalizedAcceptance { ...,
+                materialized_dmap_ref: CanonicalContractReferenceV1 {
+                    id: a.materialized_dmap_ref.id.clone(),
+                    revision: a.materialized_dmap_ref.revision,
+                    digest: a.materialized_dmap_ref.digest.clone(),
+                },
+            })),
+            (None, None) => Ok(None),
+        }
+    }
+Interpretation: `CanonicalContractReferenceV1` and `ContractRefV2` declare the identical field set
+(`id: String, revision: u64, digest: String`) but are two distinct Rust types with no `From`/`Into`
+impl found between them (checked via `git grep "CanonicalContractReferenceV1" -- canonical_dmap_v2.rs
+ddeploy_migration.rs`, which shows only field-literal construction, never a trait impl). The v2
+branch of `locate_acceptance` manually copies each of the three fields from the v2 acceptance's
+`materialized_dmap_ref` (a `ContractRefV2`) into a freshly-constructed `CanonicalContractReferenceV1`
+literal. This proves parity here is achieved by hand-written, per-call-site field copying rather
+than a shared type or conversion trait; it is limited to the one normalization site shown
+(`locate_acceptance`), and does not characterize every other v1/v2 boundary in the codebase.

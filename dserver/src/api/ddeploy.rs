@@ -31,7 +31,7 @@ use crate::core::canonical_dmap_v2::{
 };
 use crate::core::ddeploy::{
     accept_proposal, active_operational_projection, active_placement_authority,
-    check_artifact_list_project_scope, compute_project_node_commitments, create_proposal,
+    check_artifact_list_project_scope, compute_project_node_commitments_versioned, create_proposal,
     derive_placement_eligibility_view, is_canonical_authority_active, load_state,
     operational_dgraph_id_for_project, persist_state, resolve_diot_artifact_authority,
     validate_full, validate_proposal_context, AcceptError, AcceptOutcome, CreateProposalInput,
@@ -170,6 +170,15 @@ pub struct ProposalInputPayload {
     pub dcontinuum: CanonicalDContinuumV1,
     #[serde(default)]
     pub placements: Vec<CanonicalDServPlacementV1>,
+    /// Phase 117G Section 36: the caller must name the EXACT registered
+    /// D-Code descriptor revision (by `descriptor_digest`) it intends each
+    /// bound service to execute -- never inferred from the registry's
+    /// "latest"/"only" revision, an in-memory D-Compile result, or
+    /// `artifact_id`/`version`. Optional and may be a strict subset of this
+    /// proposal's own D-Graph services (Section 18: partial D-Code coverage
+    /// is legal); omitted keys are simply not authorizable as D-Code.
+    #[serde(default)]
+    pub dcode_artifact_authority: std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
 }
 
 fn default_source() -> ProposalSource {
@@ -332,6 +341,7 @@ pub async fn post_validate_proposal(
         dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: payload.dgraph.dgraph_id.clone(), revision: payload.dgraph.revision, digest: dgraph_digest },
         dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: authoritative_dcontinuum.dcontinuum_id.clone(), revision: authoritative_dcontinuum.revision, digest: dcontinuum_digest },
         placements: payload.placements.clone(),
+        dcode_artifact_authority: payload.dcode_artifact_authority.clone(),
     };
 
     let artifacts = fetch_project_artifacts(&state, &project_id)?;
@@ -362,8 +372,24 @@ pub async fn post_create_proposal(
     let authoritative_dcontinuum = authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
 
     let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    // Phase 117G Section 19/60: `DCODE_TRANSACTION` acquired as the
+    // innermost lock (same fixed order as `post_accept_proposal`) so this
+    // creation-time D-Code binding validation reads registry state that
+    // cannot change out from under it before the proposal is persisted.
+    let _dcode_transaction = crate::api::dcode::dcode_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+
+    if !payload.dcode_artifact_authority.is_empty() {
+        let dcode_registry_state = crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
+        crate::core::ddeploy::validate_dcode_artifact_authority_bindings(
+            &payload.dgraph,
+            &payload.application_id,
+            &dcode_registry_state,
+            &payload.dcode_artifact_authority,
+        )
+        .map_err(|finding| unprocessable(&[finding]))?;
+    }
 
     let proposal_id = format!("ddeploy-proposal:{}", Uuid::new_v4());
     let record = create_proposal(
@@ -376,6 +402,7 @@ pub async fn post_create_proposal(
             dcontinuum: authoritative_dcontinuum,
             placements: payload.placements,
             planner_provenance: None,
+            dcode_artifact_authority: payload.dcode_artifact_authority,
         },
         proposal_id,
         Utc::now().to_rfc3339(),
@@ -437,7 +464,13 @@ pub async fn post_plan_proposal(
     // REPLACES it rather than adding a second, simultaneously-authoritative
     // one (transient dual-running migration headroom is a future phase-119
     // concern; this model is POST-ACCEPTANCE steady state only).
-    let commitments = compute_project_node_commitments(&project_id, &ddeploy_state.active_by_application, &ddeploy_state.proposals, Some(&payload.application_id))
+    // Phase 120B fix: use the versioned aggregator so an active DMap/2
+    // application's structural commitment is visible to the planner exactly
+    // like a DMap/1 application's would be -- the non-versioned function
+    // used here previously was structurally blind to any active v2
+    // application, letting the planner recommend a node that a v2
+    // application had already fully consumed.
+    let commitments = compute_project_node_commitments_versioned(&project_id, &ddeploy_state, Some(&payload.application_id))
         .map_err(internal_error)?;
 
     let (plan, record) = state
@@ -492,7 +525,7 @@ pub async fn post_plan_proposal(
                         committed_by_node: commitments.clone(),
                         eligibility: eligibility.clone(),
                         decisions: plan.provenance.decisions.clone(),
-                    }),
+                    }), dcode_artifact_authority: std::collections::BTreeMap::new(),
                 },
                 proposal_id,
                 Utc::now().to_rfc3339(),
@@ -556,15 +589,23 @@ pub async fn post_accept_proposal(
     // Foundation closure v2 (ADR-0019, R1 TOCTOU requirement): acquire the
     // D-Node registry's own transaction lock too, NESTED inside
     // `DDEPLOY_TRANSACTION` (fixed order, documented on `dnode_transaction`
-    // itself) and held for the ENTIRE remainder of this call -- through the
+    // itself) and held through the authority commit -- through the
     // authority revalidation below, the `ServiceArtifact` stable view, the
     // acceptance mutation, and the final SQLite persist. A concurrent
     // `PUT`/`DELETE` on a D-Node cannot commit anywhere in that window, so
     // the structural facts this call validates against cannot change out
     // from under it between the check and the persist.
     let _dnode_transaction = crate::api::dnode_registry::dnode_transaction().lock().map_err(lock_error)?;
+    // Phase 117G Section 60: `DCODE_TRANSACTION` is acquired here as the
+    // innermost lock, preserving the established
+    // `DDEPLOY_TRANSACTION -> DNODE_TRANSACTION -> DCODE_TRANSACTION` order
+    // (`api::dcode`'s own doc comment) -- this handler never acquires
+    // `DCODE_TRANSACTION` before `DDEPLOY_TRANSACTION`/`DNODE_TRANSACTION`,
+    // so no reverse-order acquisition path is introduced anywhere.
+    let _dcode_transaction = crate::api::dcode::dcode_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    let dcode_registry_state = crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
 
     let existing = ddeploy_state
         .proposals
@@ -614,13 +655,14 @@ pub async fn post_accept_proposal(
                 .cloned()
                 .unwrap_or_default();
 
-            let outcome = accept_proposal(
+            let outcome = crate::core::ddeploy::accept_proposal_with_dcode_binding_revalidation(
                 &mut ddeploy_state,
                 &proposal_id,
                 payload.accepted_by.trim(),
                 payload.expected_proposal_digest.as_deref(),
                 &artifacts,
                 current_authoritative_dcontinuum.as_ref(),
+                &dcode_registry_state,
                 &now,
                 acceptance_id,
             )
@@ -637,6 +679,22 @@ pub async fn post_accept_proposal(
             Ok(outcome)
         })
         .map_err(internal_error)??;
+
+    // Phase 126: the authority SQLite commit above already succeeded. This
+    // separate observability write cannot roll back or fail that acceptance.
+    drop(_dcode_transaction);
+    drop(_dnode_transaction);
+    drop(_transaction);
+    crate::core::event_producers::report_after_authority_commit(
+        crate::core::event_producers::PostAuthorityEventContext::new(
+            &outcome.acceptance.project_id,
+            &outcome.acceptance.application_id,
+            &outcome.acceptance.acceptance_id,
+            "ddeploy_acceptance_v1",
+        ),
+        crate::core::event_producers::acceptance_event_v1(&outcome.acceptance),
+    )
+    .await;
 
     Ok(JsonResponse(AcceptResponse {
         acceptance: outcome.acceptance,
@@ -663,6 +721,9 @@ fn accept_error_to_api(error: AcceptError) -> ApiError {
             StatusCode::CONFLICT,
             JsonResponse(json!({"error": crate::core::ddeploy::F_STALE_AUTHORITATIVE_DCONTINUUM, "findings": findings_json(&findings)})),
         ),
+        // Phase 117G: the exact D-Code revision this proposal bound no
+        // longer resolves against current registry state.
+        AcceptError::DCodeBindingInvalid(findings) => unprocessable(&findings),
     }
 }
 
@@ -756,6 +817,11 @@ pub struct DeployV2CandidatePayload {
     pub dcall_realizations: Vec<DCallRealizationV2>,
     #[serde(default)]
     pub external_port_bindings: Vec<ExternalPortBindingV2>,
+    /// Phase 117G Section 14/36: the v2 counterpart of `ProposalInputPayload`'s
+    /// own `dcode_artifact_authority` field -- same shared binding type,
+    /// same "caller names the exact registered descriptor_digest" contract.
+    #[serde(default)]
+    pub dcode_artifact_authority: std::collections::BTreeMap<String, crate::core::dcode_registry::DCodeArtifactAuthorityBindingV1>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1013,9 +1079,23 @@ pub async fn post_create_proposal_v2(
         authoritative_dcontinuum_for_project(&project_id, &payload.dcontinuum)?;
 
     let _transaction = ddeploy_transaction().lock().map_err(lock_error)?;
+    // Phase 117G Section 19/60: see the identical comment on v1's
+    // `post_create_proposal`.
+    let _dcode_transaction = crate::api::dcode::dcode_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
     let artifacts = fetch_project_artifacts(&state, &project_id)?;
+
+    if !payload.dcode_artifact_authority.is_empty() {
+        let dcode_registry_state = crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
+        crate::core::ddeploy::validate_dcode_artifact_authority_bindings(
+            &payload.dgraph,
+            &payload.application_id,
+            &dcode_registry_state,
+            &payload.dcode_artifact_authority,
+        )
+        .map_err(|finding| unprocessable(&[finding]))?;
+    }
 
     let (dgraph_ref, dcontinuum_ref, dforward_ref) = derive_v2_refs(
         &project_id,
@@ -1063,6 +1143,7 @@ pub async fn post_create_proposal_v2(
         external_port_bindings: payload.external_port_bindings,
         expected_active_dmap_revision,
         diot_artifact_authority,
+        dcode_artifact_authority: payload.dcode_artifact_authority,
     };
 
     ddeploy_state
@@ -1129,8 +1210,12 @@ pub async fn post_accept_proposal_v2(
     let _dnode_transaction = crate::api::dnode_registry::dnode_transaction()
         .lock()
         .map_err(lock_error)?;
+    // Phase 117G Section 60: `DCODE_TRANSACTION` innermost, mirroring v1's
+    // `post_accept_proposal`.
+    let _dcode_transaction = crate::api::dcode::dcode_transaction().lock().map_err(lock_error)?;
     let db_path = ddeploy_db_path();
     let mut ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    let dcode_registry_state = crate::core::dcode_registry::load_state_v2(&db_path).map_err(internal_error)?;
 
     let existing = ddeploy_state
         .phase113_v2
@@ -1166,13 +1251,14 @@ pub async fn post_accept_proposal_v2(
                     .cloned()
                     .unwrap_or_default();
                 let acceptance = ddeploy_state
-                    .accept_v2_proposal(
+                    .accept_v2_proposal_with_dcode_binding_revalidation(
                         &proposal_id,
                         acceptance_id,
                         payload.accepted_by.trim().to_string(),
                         now,
                         &current_authoritative_dcontinuum,
                         &artifacts,
+                        &dcode_registry_state,
                         payload.expected_proposal_digest.as_deref(),
                     )
                     .map_err(accept_v2_error_to_api)?;
@@ -1190,6 +1276,22 @@ pub async fn post_accept_proposal_v2(
     })?;
     let currently_active = active.acceptance_id == acceptance.acceptance_id;
     let materialized_dmap = active.map.clone();
+
+    // Record this acceptance's OWN immutable reference, never a later active
+    // DMap returned by a historical replay. Same post-commit rule as v1.
+    drop(_dcode_transaction);
+    drop(_dnode_transaction);
+    drop(_transaction);
+    crate::core::event_producers::report_after_authority_commit(
+        crate::core::event_producers::PostAuthorityEventContext::new(
+            &acceptance.project_id,
+            &acceptance.application_id,
+            &acceptance.acceptance_id,
+            "ddeploy_acceptance_v2",
+        ),
+        crate::core::event_producers::acceptance_event_v2(&acceptance),
+    )
+    .await;
 
     Ok(JsonResponse(AcceptV2Response {
         acceptance,
@@ -1245,6 +1347,16 @@ fn accept_v2_error_to_api(error: String) -> ApiError {
                 message: error,
             }],
         );
+    }
+    // Phase 117G: `accept_v2_proposal_with_dcode_binding_revalidation`
+    // formats a failed binding revalidation as "<finding_code>: <message>" --
+    // every such code carries the `dcode_binding_` prefix (see `ddeploy.rs`'s
+    // `F_DCODE_BINDING_*` constants). The original specific code is preserved
+    // verbatim in the response `message` (it is not `'static`, so it cannot
+    // populate `code` without leaking memory per request); a single stable
+    // umbrella code identifies the class of failure for machine callers.
+    if error.starts_with("dcode_binding_") {
+        return unprocessable(&[crate::core::canonical_dgraph::CanonicalValidationFinding { code: "dcode_binding_invalid", message: error }]);
     }
     internal_error(error)
 }
@@ -1504,7 +1616,7 @@ mod tests {
             dgraph_id: format!("dgraph:{app}"),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: service_id.to_string(),
+                service_definition: None, service_id: service_id.to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -1709,7 +1821,8 @@ mod tests {
             external_port_bindings: vec![],
             expected_active_dmap_revision,
             diot_artifact_authority,
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         state.create_v2_proposal(proposal, dgraph, dcontinuum, dforward)?;
         Ok(proposal_id)
     }
@@ -2495,7 +2608,7 @@ mod tests {
                     service_id: "svc-1".to_string(),
                     node_id: "node-1".to_string(),
                 }],
-                planner_provenance: None,
+                planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             proposal_id.clone(),
             "2026-01-01T00:00:00Z".to_string(),

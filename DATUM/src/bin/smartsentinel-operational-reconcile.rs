@@ -33,6 +33,15 @@ struct Args {
     #[arg(long, default_value_t = false)]
     rollback: bool,
 
+    /// Phase 119G: process ONLY this node's governed source-cleanup
+    /// directives (a service historically placed here under some PAST
+    /// accepted D-Map, but no longer desired here under CURRENT authority).
+    /// Mutually exclusive with --rollback: cleanup never uses
+    /// `desired_services` as removal targets, and rollback never touches
+    /// `cleanup_directives`.
+    #[arg(long, default_value_t = false)]
+    cleanup: bool,
+
     #[arg(long, default_value = "smartsentinel-operational-reconcile.json")]
     out: String,
 }
@@ -41,6 +50,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.dserver_url.trim().is_empty() {
         bail!("SmartSentinel operational reconciliation requires non-empty --dserver-url");
+    }
+    if args.cleanup && args.rollback {
+        bail!("--cleanup and --rollback are mutually exclusive");
     }
 
     let configured_node_id = read_configured_node_id(&args.config)?;
@@ -73,6 +85,7 @@ fn main() -> Result<()> {
         args.timeout_s,
         args.execute,
         args.rollback,
+        args.cleanup,
     )?;
 
     let json = serde_json::to_string_pretty(&report)
@@ -91,8 +104,10 @@ fn main() -> Result<()> {
         .filter(|service| service.observed_after_running)
         .count();
 
+    let cleanup_mutated = report.cleanup.iter().filter(|entry| entry.host_mutation_performed).count();
+
     println!(
-        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} rollback_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} snapshot_published={} out={}",
+        "mode=smartsentinel-operational-reconcile status=ok bootstrap_state={:?} resource_id={} node_id={} dgraph_id={} services={} wasm_executed={} execute_requested={} rollback_requested={} cleanup_requested={} control_plane_authorized={} local_container_execution_allowed={} converged_after={} host_mutation={} cleanup_directives={} cleanup_mutated={} snapshot_published={} out={}",
         report.bootstrap_state,
         report.resource_id,
         report.node_id,
@@ -101,10 +116,13 @@ fn main() -> Result<()> {
         wasm_executed,
         report.execute_requested,
         args.rollback,
+        args.cleanup,
         report.control_plane_authorized,
         report.local_container_execution_allowed,
         converged_after,
         report.side_effects_performed,
+        report.cleanup.len(),
+        cleanup_mutated,
         report.snapshot_published,
         args.out,
     );

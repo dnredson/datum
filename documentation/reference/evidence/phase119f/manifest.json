@@ -1,0 +1,166 @@
+{
+  "phase": "119F",
+  "source_commit": "97646f3da316137532622752f1bdfa51503c9b17",
+  "audit_document": "documentation/reference/phase119f-governed-source-cleanup-authority-audit.md",
+  "evidence": [
+    {
+      "id": "E01",
+      "claim": "OperationalDGraph node membership derives only from an application's current active_dmap.placements; a node with zero current placements gets no entry.",
+      "sources": [
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "union_project_operational_graph" }
+      ]
+    },
+    {
+      "id": "E02",
+      "claim": "A node absent from the current OperationalDGraph cannot currently receive an empty operational slice automatically; the lookup fails closed with a hard error.",
+      "sources": [
+        { "path": "dserver/src/core/operational_dgraph.rs", "symbol": "build_operational_slice" }
+      ]
+    },
+    {
+      "id": "E03",
+      "claim": "A present node having zero desired_services is structurally legal under the current schema and validator.",
+      "sources": [
+        { "path": "dserver/src/core/operational_dgraph.rs", "symbol": "OperationalNodeDesiredState" },
+        { "path": "dserver/src/core/operational_dgraph.rs", "symbol": "validate_operational_dgraph" }
+      ]
+    },
+    {
+      "id": "E04",
+      "claim": "The desired_state contract, on both server and agent sides, currently allows only 'running' or 'completed'.",
+      "sources": [
+        { "path": "dserver/src/core/operational_dgraph.rs", "symbol": "validate_desired_service" },
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "validate_context" }
+      ]
+    },
+    {
+      "id": "E05",
+      "claim": "The agent acts on desired state only by iterating context.desired_services; an empty list enters zero per-service branches.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "main dispatch loop (line 1361)" },
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "validate_context loop (line 2722)" }
+      ]
+    },
+    {
+      "id": "E06",
+      "claim": "Existing rollback (M8 / native-process equivalent) is per-service, explicitly requested, and gated by a Stage107A finite-lease boundary check immediately before mutation.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "AUTHORIZATION_OPERATION_ROLLBACK" },
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "control_plane_authorized" },
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "check_boundary" },
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "rollback_trusted_container_intent" },
+        { "path": "DATUM/src/agent/native_process_runtime.rs", "symbol": "NativeReconciliationAction::Rollback" },
+        { "path": "DATUM/src/agent/stage107a_enforcement.rs", "symbol": "check_generation_and_projection" }
+      ]
+    },
+    {
+      "id": "E07",
+      "claim": "Container runtime identity evidence already exists via datum.* Docker labels written at creation and checked at convergence.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "ExecutionIdentityLabels / inspected_container_labels_match" }
+      ]
+    },
+    {
+      "id": "E08",
+      "claim": "Native-process managed identity already persists strong, restart-surviving evidence keyed by a stable per-(project,node,service) key.",
+      "sources": [
+        { "path": "DATUM/src/agent/native_process_state.rs", "symbol": "ManagedProcessRuntimeStateV1" },
+        { "path": "DATUM/src/agent/native_process_acquisition.rs", "symbol": "stable_service_key" }
+      ]
+    },
+    {
+      "id": "E09",
+      "claim": "Server-side authorization records prove an authorization was issued, not that the corresponding host mutation succeeded; no outcome/report-back channel exists.",
+      "sources": [
+        { "path": "dserver/src/api/operational_dgraph.rs", "symbol": "authorize_operational_reconciliation" },
+        { "path": "dserver/src/core/operational_dgraph.rs", "symbol": "OperationalReconciliationAuthorization" },
+        { "path": "dserver/src/core/operational_dgraph_persistence.rs", "symbol": "OperationalDGraphPersistedState" },
+        { "path": "dserver/src/main.rs", "symbol": "route table (operational-reconciliation domain)" }
+      ]
+    },
+    {
+      "id": "E10",
+      "claim": "ServiceArtifact execution_generation/execution_projection_digest are live/mutable with a monotonic high-water mark, so current artifact identity must not be substituted for historical runtime identity.",
+      "sources": [
+        { "path": "dserver/src/core/service_artifact_registry.rs", "symbol": "execution_generation_high_water" }
+      ]
+    },
+    {
+      "id": "E11",
+      "claim": "No generic missing-context delete-all/sweep/prune path exists in the agent or server reconciliation code.",
+      "sources": [
+        { "path": "DATUM/src/**", "symbol": "grep: orphan|sweep|prune|remove_all|delete_all" },
+        { "path": "dserver/src/**", "symbol": "grep: orphan|sweep|prune|remove_all|delete_all" }
+      ]
+    },
+    {
+      "id": "E12",
+      "claim": "D-Engine node membership remains a pure projection of the current accepted PlacementAuthorityView; a future cleanup mechanism cannot implicitly change it.",
+      "sources": [
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "derive_active_dengine_nodes" }
+      ]
+    },
+    {
+      "id": "E13",
+      "claim": "Current DDeploy acceptance/proposal persistence retains accepted-proposal and acceptance history (keyed, not pruned in production code) sufficient to derive previous-vs-current placement relationships.",
+      "sources": [
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "DDeployAcceptanceV1" },
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "DDeployStateV1" }
+      ]
+    },
+    {
+      "id": "E14",
+      "claim": "v1/v2 canonical reference parity (CanonicalContractReferenceV1 vs ContractRefV2) is field-identical but achieved via manual normalization, not a shared type.",
+      "sources": [
+        { "path": "dserver/src/core/canonical_dmap.rs", "symbol": "CanonicalContractReferenceV1" },
+        { "path": "dserver/src/core/canonical_dmap_v2.rs", "symbol": "ContractRefV2" },
+        { "path": "dserver/src/core/ddeploy_migration.rs", "symbol": "locate_acceptance" }
+      ]
+    },
+    {
+      "id": "E15",
+      "claim": "Operational authorization persistence is keyed by (project_id, node_id) only; a newer durable authorization overwrites the prior one for that key, so no durable history of old authorization snapshots is retained.",
+      "sources": [
+        { "path": "dserver/src/core/operational_dgraph_persistence.rs", "symbol": "authorization_key" },
+        { "path": "dserver/src/api/operational_dgraph.rs", "symbol": "candidate.authorizations.insert (authorize-request handler)" }
+      ]
+    },
+    {
+      "id": "E16",
+      "claim": "The ServiceArtifact registry retains only the current artifact content plus a generation high-water counter, not complete historical artifact snapshots.",
+      "sources": [
+        { "path": "dserver/src/core/service_artifact_registry.rs", "symbol": "ServiceArtifactRegistryState / artifact update path" }
+      ]
+    },
+    {
+      "id": "E17",
+      "claim": "DDeploy v2 (DDeployStateV2) mirrors v1's proposals/acceptances/active structure, and a v1-to-v2 transition preserves old v1 acceptance records (only the active pointer is retargeted).",
+      "sources": [
+        { "path": "dserver/src/core/ddeploy_v2.rs", "symbol": "DDeployAcceptanceV2 / DDeployStateV2 / ActiveDMapV2" },
+        { "path": "dserver/src/core/ddeploy.rs", "symbol": "v1-to-v2 acceptance transition (active_by_application.remove)" }
+      ]
+    },
+    {
+      "id": "E18",
+      "claim": "Container datum.* labels and the static DispatchContainerMapping config carry no project_id/application_id/service_id/dmap_ref identity.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "DATUM_LABEL_* constants" },
+        { "path": "DATUM/src/config.rs", "symbol": "DispatchContainerMapping" }
+      ]
+    },
+    {
+      "id": "E19",
+      "claim": "No server code path binds a fresh artifact assignment to historical (as-originally-placed) identity; every join resolves against the current registry, and a single unmatched service fails the whole node's context.",
+      "sources": [
+        { "path": "dserver/src/core/artifact_reconciliation_context.rs", "symbol": "resolve_assignments_from_registry_with_authority" }
+      ]
+    },
+    {
+      "id": "E20",
+      "claim": "M8 rollback already excludes image/target-identity verification from blocking removal and never checks physical container labels before docker rm -f; its safety rests on trusted container_name plus authorization/lease freshness, not per-instance identity proof.",
+      "sources": [
+        { "path": "DATUM/src/agent/operational_reconciliation.rs", "symbol": "rollback_service_block_from" }
+      ]
+    }
+  ]
+}

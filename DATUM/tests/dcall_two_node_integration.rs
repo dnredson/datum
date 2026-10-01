@@ -499,18 +499,16 @@ fn run_real_source_invocation(
     _worker_binary: &std::path::Path,
     node_id: &str,
 ) -> (datum::dcode::invoke::GovernedDCodeInvocationResult, usize) {
-    let authorization: DCodeInvocationAuthorizationV1 =
-        datum::dcode::client::fetch_dcode_authorization(
-            dserver_url,
-            PROJECT,
-            APP,
-            SOURCE_SVC,
-            node_id,
-        )
-        .expect("fetch source D-Code authorization");
-    let artifact: CanonicalDServArtifactV1 =
-        datum::dcode::client::fetch_dserv_artifact(dserver_url, APP, SOURCE_SVC)
-            .expect("fetch source D-Serv artifact");
+    // Phase 117H: mirror the real governed CLI/DCall-dispatch sequence
+    // exactly -- exact-authorized-revision preflight, never the old logical
+    // fetch, so this integration test keeps accurately modeling production
+    // behavior.
+    let preflight = datum::dcode::client::fetch_governed_dcode_execution_material(
+        dserver_url, PROJECT, APP, SOURCE_SVC, node_id,
+    )
+    .expect("governed D-Code preflight (authorization + exact descriptor revision)");
+    let authorization: DCodeInvocationAuthorizationV1 = preflight.authorization;
+    let artifact: CanonicalDServArtifactV1 = preflight.artifact;
     let module_store = DCodeModuleStore::new(node_root);
     // Independent review fix v5 (K1): this is now a `GovernedDCodeInvocationResult`
     // -- still produced through the exact same real isolated-worker call as
@@ -1665,18 +1663,17 @@ fn source_message_limit_preflight_check_rejects_oversized_payload_before_grant_i
     DCodeModuleStore::new(&node_root)
         .install(&source_module, &sha256_hex(&source_module))
         .unwrap();
-    let authorization: DCodeInvocationAuthorizationV1 =
-        datum::dcode::client::fetch_dcode_authorization(
-            &dserver_url,
-            PROJECT,
-            LIMIT_APP,
-            SOURCE_SVC,
-            SOURCE_NODE,
-        )
-        .expect("fetch source authorization");
-    let real_artifact: CanonicalDServArtifactV1 =
-        datum::dcode::client::fetch_dserv_artifact(&dserver_url, LIMIT_APP, SOURCE_SVC)
-            .expect("fetch source artifact");
+    // Phase 117H: exact-authorized-revision governed preflight.
+    let preflight = datum::dcode::client::fetch_governed_dcode_execution_material(
+        &dserver_url,
+        PROJECT,
+        LIMIT_APP,
+        SOURCE_SVC,
+        SOURCE_NODE,
+    )
+    .expect("governed D-Code preflight (authorization + exact descriptor revision)");
+    let authorization: DCodeInvocationAuthorizationV1 = preflight.authorization;
+    let real_artifact: CanonicalDServArtifactV1 = preflight.artifact;
     let module_store = DCodeModuleStore::new(&node_root);
     let source_result = invoke_dcode_governed_capturing_emits(
         &module_store,

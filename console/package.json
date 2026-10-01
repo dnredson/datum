@@ -1,0 +1,24 @@
+{
+  "name": "datum-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "bootstrap": "5.3.8",
+    "bootstrap-icons": "1.13.1",
+    "cytoscape": "3.34.3"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.3.1"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

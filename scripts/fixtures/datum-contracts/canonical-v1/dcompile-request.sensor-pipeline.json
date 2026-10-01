@@ -1,0 +1,23 @@
+{
+  "schema": "datum.dcompile-request/1",
+  "application_id": "app:smart-sentinel-lab",
+  "dscript_ref": {
+    "id": "dscript:sensor-pipeline",
+    "revision": 1,
+    "digest": "sha256:3f01cf0ee34e8e368d5f0241617588b04e894564f82aa553565e69c723ed38ae"
+  },
+  "output_dgraph_id": "dgraph:sensor-pipeline",
+  "output_dgraph_revision": 1,
+  "services": [
+    {
+      "service_id": "decode",
+      "function_ids": ["decode_uplink"],
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 134217728 }
+    },
+    {
+      "service_id": "alert",
+      "function_ids": ["threshold_alert"],
+      "resource_requirement": { "cpu_cores": 1, "memory_bytes": 67108864 }
+    }
+  ]
+}

@@ -171,12 +171,20 @@ notice. Closing this required a genuine full mirror of
 the IDENTICAL canonical digest algorithm — proven by a literal cross-crate
 digest-parity test over the real checked-in fixture, not merely "should
 match" reasoning — since the real execution path could not previously even
-compute the descriptor digest it needed to check. The governed CLI now
-fetches this authoritative artifact from
-`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` (v2, R2C) rather
-than trusting an arbitrary local artifact file, and `invoke_dcode`
-cross-checks application_id/dserv_id/artifact_id/ABI/module-digest/
-descriptor-digest all independently before executing.
+compute the descriptor digest it needed to check. The governed CLI fetches
+this authoritative artifact from DServer rather than trusting an arbitrary
+local artifact file (v2, R2C), and `invoke_dcode` cross-checks
+application_id/dserv_id/artifact_id/ABI/module-digest/descriptor-digest all
+independently before executing. **Updated by Phase 117H:** once the D-Code
+registry became versioned (Phase 117G), the governed fetch is
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest`
+(the EXACT revision a fresh authorization's own
+`dserv_artifact_descriptor_digest` names) — the original logical
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` route this
+paragraph originally described the governed CLI as using is now a
+compatibility/debug-only route that cannot resolve once a service has more
+than one registered revision (see
+`documentation/reference/phase117h-governed-exact-dcode-client-closure.md`).
 
 ### Active-D-Serv -> D-Code authorization chain
 
@@ -214,10 +222,12 @@ targets this node, the artifact's identity/module-digest/descriptor-digest/
 ABI all match the authorization exactly, the module's real byte length
 matches its declared `size_bytes`). What changed in v2 is which caller
 supplies those inputs: the GOVERNED `smartsentinel-dcode-invoke invoke`
-subcommand (`dcode::client::fetch_dcode_authorization`/
-`fetch_dserv_artifact`) now calls `POST /api/v1/dcode/authorize` and
-`GET /api/v1/dcode/artifacts/:application_id/:dserv_id` directly,
-IMMEDIATELY before invocation — since `/authorize` always freshly derives
+subcommand (Phase 117H: `dcode::client::fetch_governed_dcode_execution_material`,
+which itself calls `fetch_dcode_authorization`/`fetch_dserv_artifact_revision`)
+now calls `POST /api/v1/dcode/authorize` and (the exact-revision route,
+Phase 117G/117H)
+`GET /api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest`
+directly, IMMEDIATELY before invocation — since `/authorize` always freshly derives
 the chain server-side and never caches, this call itself IS the
 re-verification step; no separate `/verify` endpoint was needed. A
 `smartsentinel-dcode-invoke offline-test-only` subcommand still exists,
@@ -600,3 +610,48 @@ D-Call will become ONE producer of the byte-string input `invoke_dcode`
 currently receives directly from a CLI/test/file — it does not change the
 authorization chain, the module store, or the fresh-instance execution
 engine this ADR establishes.
+
+## Phase 117G addendum: versioned registry and governed active-binding
+
+Phase 117D/117F identified, and Phase 117G closed, a real lifecycle gap
+this ADR's original v0.1 registry left open: `dcode_registry`'s one-slot
+`(application_id, dserv_id) -> single descriptor` model conflated
+"a D-Code descriptor exists" with "a D-Code descriptor is currently
+executing", so registering a new descriptor for an already-active service
+could silently change what an already-accepted deployment executes. Full
+detail, the corrected security invariant, and the complete design lives in
+`documentation/reference/phase117g-versioned-dcode-governed-binding.md`;
+this addendum records only the two authority-model decisions load-bearing
+enough to belong in this ADR itself:
+
+1. **The registry is now versioned and immutable-per-revision**, keyed by
+   `(application_id, dserv_id, descriptor_digest)`
+   (`core::dcode_registry::DCodeArtifactRegistryStateV2`). Declaring a new
+   descriptor for an already-known logical `(application_id, dserv_id)`
+   never replaces or removes a prior revision — it adds a new, independently
+   addressable one. There is no "latest"/"current" concept anywhere in the
+   registry; **registry existence is not active executable authority**.
+   Which revision is currently EXECUTING is exclusively a `DDeploy`
+   relation: `DDeployProposalV1`/`DDeployProposalV2` both gained a public,
+   digest-covered `dcode_artifact_authority` field naming the exact
+   `descriptor_digest` each bound service must execute, revalidated fresh at
+   acceptance time, and made active only by that acceptance — mirroring the
+   established `diot_artifact_authority` (DIoT) precedent exactly, per
+   Section 3 of this phase's task and this ADR's own layering (D-Code
+   authorization already lived downstream of D-Deploy's active D-Map, never
+   the reverse).
+2. **`project_id` is deliberately NOT part of the registry key.** Both
+   `CanonicalDServArtifactV1` and `CanonicalDGraphV1` are project-less by
+   design, and ADR-0009 explicitly intends one `application_id` to be
+   reused across multiple projects/installations. Content-addressing via
+   `descriptor_digest` already prevents any cross-project collision: two
+   projects deploying identical content safely share one registry entry;
+   two projects deploying genuinely different content under the "same"
+   logical service get two different, non-colliding digest-keyed entries.
+   Project scoping continues to live entirely in D-Deploy's own
+   already-project-scoped proposal/acceptance layer, never in this
+   canonical, project-less content registry.
+
+This addendum changes no other part of this ADR: the module store, the
+fresh-instance execution engine, the WASM ABI, and the D-Node/D-Call
+authorization chain this ADR establishes are all unchanged by Phase 117G.

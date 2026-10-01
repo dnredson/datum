@@ -165,6 +165,16 @@ pub struct ArtifactReconciliationContext {
     pub node_id: String,
     pub desired_services: Vec<OperationalDesiredService>,
     pub artifacts: Vec<ArtifactReconciliationAssignment>,
+    /// Phase 119G: governed source-cleanup directives, carried verbatim from
+    /// `OperationalDGraphSlice.cleanup_directives` -- see that field's own
+    /// doc comment. Deliberately NEVER routed through
+    /// `resolve_assignments_from_registry_with_authority`/`artifacts` above
+    /// (Phase 119F-R1 section 6.2): a since-deleted or renamed historical
+    /// artifact for one cleanup candidate must never be able to fail the
+    /// WHOLE context build for every other, currently-desired service on
+    /// this node. Additive (`#[serde(default)]`) for backward compatibility.
+    #[serde(default)]
+    pub cleanup_directives: Vec<crate::core::operational_dgraph::OperationalCleanupDirective>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<OperationalReconciliationAuthorization>,
     pub reconciler: OperationalReconcilerDescriptor,
@@ -610,6 +620,7 @@ pub fn build_context_from_assignments(
         node_id: slice.node_id.clone(),
         desired_services: slice.desired_services.clone(),
         artifacts: assignments,
+        cleanup_directives: slice.cleanup_directives.clone(),
         authorization: slice.authorization.clone(),
         reconciler: slice.reconciler.clone(),
         execution_policy: ArtifactReconciliationExecutionPolicy {
@@ -1157,6 +1168,7 @@ mod tests {
                 application_id: String::new(),
                 dmap_ref: None,
             }],
+            cleanup_directives: Vec::new(),
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
                 module_id: "smartsentinel-reconciler-v1".to_string(),
@@ -1832,7 +1844,7 @@ mod tests {
             dgraph_id: "dgraph:p01".to_string(),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: "svc-a".to_string(),
+                service_definition: None, service_id: "svc-a".to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                 resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 134_217_728 },
             }],
@@ -1865,7 +1877,7 @@ mod tests {
         let mut state = DDeployStateV1::empty();
         create_proposal(
             &mut state,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph: dgraph.clone(), dcontinuum: dcontinuum.clone(), placements: placements.clone() },
             "p1".to_string(), "2026-01-01T00:00:00Z".to_string(), &[artifact_svc_a.clone()],
         ).expect("initial proposal must be valid");
         let outcome = accept_proposal(&mut state, "p1", "operator:alice", None, &[artifact_svc_a.clone()], Some(&dcontinuum), "2026-01-01T00:00:00Z", "a1".to_string())
@@ -1914,7 +1926,7 @@ mod tests {
         let mut state2 = state;
         let rejected = create_proposal(
             &mut state2,
-            CreateProposalInput { planner_provenance: None, project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
+            CreateProposalInput { planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(), project_id: "proj-p01".to_string(), application_id: "app:p01".to_string(), source: ProposalSource::Operator, dgraph, dcontinuum, placements },
             "p2".to_string(), "2026-01-01T01:00:00Z".to_string(), &[mutated_artifact_svc_a],
         );
         assert!(rejected.is_err_and(|findings| findings.iter().any(|f| f.code == "node_not_eligible")), "a NEW proposal must be rejected against the CURRENT (narrowed) target_nodes eligibility");

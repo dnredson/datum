@@ -1,0 +1,296 @@
+PHASE 119F-R1 SUPPLEMENTAL EVIDENCE — SOURCE EXCERPTS
+Source commit (all excerpts pinned to this exact commit): 97646f3da316137532622752f1bdfa51503c9b17
+Correction document: documentation/reference/phase119f-r1-governed-source-cleanup-design-correction.md
+Collection method: read-only `git show <commit>:<path>` and `git grep <commit> -- <path>` against
+the pinned commit only, identical method to source-evidence.txt (E01-E14). No working-tree files
+were read for this evidence, and no production or test code was modified to produce it. This file
+extends, and must be read alongside, source-evidence.txt.
+
+============================================================
+E15
+============================================================
+Claim: Operational-reconciliation authorization persistence is keyed by exactly `(project_id,
+node_id)` — no revision, service, or operation component — and issuing a new durable authorization
+for that key structurally replaces (overwrites) whatever authorization previously occupied it.
+DServer does not retain a durable history of prior immutable authorization snapshots for a node.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/operational_dgraph_persistence.rs (authorization_key, line 300);
+dserver/src/api/operational_dgraph.rs (insertion call site, lines 679-685)
+Function/type: authorization_key; the authorize-request handler's persistence step
+Command: git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | sed -n '298,303p'
+          git show 97646f3:dserver/src/api/operational_dgraph.rs | sed -n '670,691p'
+Output:
+    pub fn authorization_key(project_id: &str, node_id: &str) -> String {
+        format!("{}|{}", project_id.trim(), node_id.trim())
+    }
+    ---
+    let key = authorization_key(&project_id, node_id);
+    let existing_durable = authorization_store().read().map_err(lock_error)?.get(&key)
+        .is_some_and(|current| current.persistence_scope == AUTHORIZATION_SCOPE_DURABLE);
+    if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE || existing_durable {
+        let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
+        if authorization.persistence_scope == AUTHORIZATION_SCOPE_DURABLE {
+            candidate.authorizations.insert(key.clone(), authorization.clone());
+        } else {
+            candidate.authorizations.remove(&key);
+        }
+        persist_candidate(&candidate).map_err(internal_error)?;
+    }
+    authorization_store().write().map_err(lock_error)?.insert(key, authorization.clone());
+Interpretation: `authorization_key` concatenates only `project_id` and `node_id` — it does not
+include `dgraph_revision`, `operation`, or any service identifier. `candidate.authorizations` is a
+`BTreeMap<String, OperationalReconciliationAuthorization>` (confirmed in source-evidence.txt, E09);
+`BTreeMap::insert` on an already-present key discards the previous value and returns it, and here
+the return value is not captured or persisted anywhere — the prior authorization for that
+`(project_id, node_id)` is simply gone from both the in-memory `authorization_store()` and the
+persisted candidate the moment a new durable authorization is issued for the same node. This
+directly confirms the R1-B premise: a design that assumed "the server retains history of every
+old authorization snapshot" would be wrong — only the single, latest authorization per node
+survives. It does not prove anything about `graphs` (the other field of the same persisted state)
+or about any authorization issued under a different scope than durable.
+
+============================================================
+E16
+============================================================
+Claim: The ServiceArtifact registry retains only the CURRENT artifact content per
+`(project_id, artifact_id)`, plus a monotonic generation counter (`execution_generation_high_water`)
+— it does not retain complete historical ServiceArtifact snapshots for prior generations.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/service_artifact_registry.rs
+Function/type: ServiceArtifactRegistryState (line 451); artifact update path (lines 905-925)
+Command: git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '451,461p'
+          git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '905,925p'
+Output:
+    pub struct ServiceArtifactRegistryState {
+        ...
+        pub artifacts_by_project: BTreeMap<String, Vec<ServiceArtifact>>,
+        ...
+    }
+    ---
+    self.mutate(|state| {
+        let items = state.artifacts_by_project.get_mut(project_id).ok_or_else(|| { ... })?;
+        let index = items.iter().position(|item| item.artifact_id == artifact_id).ok_or_else(|| { ... })?;
+        let mut updated = items[index].clone();
+        ...
+        items[index] = updated.clone();
+        Ok(updated)
+    })
+Interpretation: `artifacts_by_project` maps a project to a flat `Vec<ServiceArtifact>`, and every
+mutation path shown resolves the artifact's position via `.position(|item| item.artifact_id ==
+artifact_id)` — exactly one live entry per `(project_id, artifact_id)` — then overwrites it in
+place (`items[index] = updated.clone()`). There is no second collection, no per-generation
+snapshot list, and no historical copy retained anywhere in this state shape. Combined with the
+already-established generation-bump logic (source-evidence.txt E10), this proves that once a
+`ServiceArtifact`'s `execution_generation`/`execution_projection_digest` advance, the PRIOR
+generation's exact content is not recoverable from this registry — only the current value and a
+bare `u64` high-water mark survive. A high-water counter alone cannot reconstruct an old
+`ArtifactReconciliationAssignment`; no code path claims otherwise.
+
+============================================================
+E17
+============================================================
+Claim: DDeploy v2 (`DDeployStateV2`) retains a proposals/acceptances/active structure directly
+parallel to v1, sufficient in principle for the same kind of history analysis, and a forward
+v1-to-v2 transition for one application preserves the old v1 acceptance records (only the
+"current" active pointer is retargeted) rather than deleting them.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/ddeploy_v2.rs (DDeployAcceptanceV2 line 103, ActiveDMapV2 line 133,
+DDeployStateV2 line 140); dserver/src/core/ddeploy.rs (v1-to-v2 transition, line 677)
+Function/type: see above
+Command: git show 97646f3:dserver/src/core/ddeploy_v2.rs | sed -n '101,144p'
+          git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '660,678p'
+Output:
+    pub struct DDeployAcceptanceV2 {
+        pub schema: String,
+        pub acceptance_id: String,
+        pub proposal_id: String,
+        pub proposal_digest: String,
+        pub project_id: String,
+        pub application_id: String,
+        pub accepted_at_utc: String,
+        pub accepted_by: String,
+        pub materialized_dmap_ref: ContractRefV2,
+        #[serde(default)]
+        pub projection_ref: Option<String>,
+    }
+    pub struct ActiveDMapV2 {
+        pub map: CanonicalDMapV2,
+        pub digest: String,
+        pub proposal_id: String,
+        pub acceptance_id: String,
+    }
+    pub struct DDeployStateV2 {
+        pub proposals: BTreeMap<String, DDeployProposalV2Record>,
+        pub acceptances: BTreeMap<String, DDeployAcceptanceV2>,
+        pub active: BTreeMap<String, ActiveDMapV2>,
+    }
+    ---
+    let acceptance = self.phase113_v2.accept_with_previous(
+        proposal_id, acceptance_id, accepted_by, accepted_at_utc, previous,
+    )?;
+    // The transition is one in-memory state mutation; persistence is
+    // performed by the existing persist_state() transaction by the API.
+    self.active_by_application.remove(&key);
+    Ok(acceptance)
+Interpretation: `DDeployStateV2` mirrors v1's shape field-for-field
+(`proposals`/`acceptances`/`active`, keyed BTreeMaps), and each `DDeployAcceptanceV2` carries its
+own `application_id` and `materialized_dmap_ref` (a `ContractRefV2`, whose `revision` field, per
+E14, is field-identical to v1's), giving the same ordering/filtering capability v1 acceptances
+give. The transition function shown removes only `self.active_by_application`'s entry for this
+application's key (the v1 "current pointer" map) after installing the v2 acceptance/active record
+— it does not touch `self.acceptances` (the v1 acceptance HISTORY map) at all. This proves a
+v1-to-v2 transition for one application leaves that application's old v1 acceptance records intact
+in `state.acceptances`, reachable by scanning for matching `application_id`, even after the
+"current" pointer has moved to `phase113_v2.active`. It does not prove the reverse direction
+(a v2-active application later accepting a v1 proposal) is supported or guarded the same way — no
+symmetric `self.phase113_v2.active.remove(&key)` call was found near `accept_proposal`'s definition
+in the ~250 lines following it, and this bundle did not trace further to determine whether an
+earlier validation step forbids that direction outright. That question is orthogonal to the
+forward-history-reconstruction claim above, which only requires that PAST acceptances remain
+readable, and does not depend on which direction any single transition runs.
+
+============================================================
+E18
+============================================================
+Claim: Container `datum.*` labels carry only `artifact_id`/`execution_generation`/
+`execution_projection_digest` — no `project_id`, `application_id`, `service_id`, or `dmap_ref` is
+attached to a container as a label. The static local `DispatchContainerMapping` config supplies
+`service_name`/`container_name`/`artifact`, but it likewise carries no `application_id` or
+`dmap_ref` field.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/operational_reconciliation.rs (DATUM_LABEL_* constants, lines 1094-1096);
+DATUM/src/config.rs (DispatchContainerMapping, line 192)
+Function/type: see above
+Command: git grep -n "DATUM_LABEL_" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+          git show 97646f3:DATUM/src/config.rs | sed -n '191,199p'
+Output:
+    const DATUM_LABEL_ARTIFACT_ID: &str = "datum.artifact_id";
+    const DATUM_LABEL_EXECUTION_GENERATION: &str = "datum.execution_generation";
+    const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projection_digest";
+    (grep over the whole file finds no other DATUM_LABEL_* constant)
+    ---
+    pub struct DispatchContainerMapping {
+        pub module_id: Option<String>,
+        pub service_name: Option<String>,
+        pub container_name: String,
+        pub artifact: Option<String>,
+        #[serde(default)]
+        pub ports: Vec<DispatchContainerPortMapping>,
+    }
+Interpretation: Exactly three `DATUM_LABEL_*` constants exist in this file (confirmed exhaustive by
+whole-file grep), and none of them is `project_id`/`application_id`/`service_id`/`dmap_ref`.
+`DispatchContainerMapping` (the node-local, static, deployment-time config Phase 119F's §8 relies
+on for service-to-container association) likewise has no `application_id` or `dmap_ref` field —
+only `module_id`, `service_name`, `container_name`, `artifact`, `ports`. This proves neither
+mechanism today lets an agent independently verify, from purely local evidence, WHICH historical
+D-Map placement a given running container was created under — that is available today only for
+the native-process runtime kind (`ManagedProcessRuntimeStateV1.dmap_ref`, source-evidence.txt E08).
+It does not prove such a check is impossible to add — only that it does not exist in this commit.
+
+============================================================
+E19
+============================================================
+Claim: No current server code path can construct a fresh artifact/generation/digest binding for a
+service that reflects that service's HISTORICAL (as-originally-placed) identity rather than its
+CURRENT registry identity — every artifact-to-service join in this codebase resolves against the
+CURRENT, live `ServiceArtifact` list, by the resolving function's own documented design.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: dserver/src/core/artifact_reconciliation_context.rs
+Function/type: resolve_assignments_from_registry_with_authority (line 260), and its doc comment
+Command: git show 97646f3:dserver/src/core/artifact_reconciliation_context.rs | sed -n '236,260p'
+Output:
+    /// The resolution half of `build_artifact_reconciliation_context`: join
+    /// `slice.desired_services` against the CURRENT, mutable `artifacts` list,
+    /// using LEGACY `target_nodes` placement-authority semantics. See
+    /// `resolve_assignments_from_registry_with_authority` for the
+    /// authority-aware entry point.
+    pub fn resolve_assignments_from_registry(...)
+    ...
+    pub fn resolve_assignments_from_registry_with_authority(
+        slice: &OperationalDGraphSlice,
+        artifacts: &[ServiceArtifact],
+        authority: PlacementAuthority,
+    ) -> Result<Vec<ArtifactReconciliationAssignment>, String> {
+        let mut assignments = Vec::with_capacity(slice.desired_services.len());
+        for service in &slice.desired_services {
+            let matches = artifacts.iter().filter(|artifact| {
+                let direct_match = artifact.artifact_id == service.service_id
+                    || artifact.service_id == service.service_id;
+                ...
+            }).collect::<Vec<_>>();
+            let artifact = match matches.as_slice() {
+                [artifact] => *artifact,
+                [] => { return Err(format!("no service artifact for desired service '{}' on node '{}'", service.service_id, slice.node_id)); }
+                ...
+            };
+            ...
+        }
+        ...
+    }
+Interpretation: This function's own doc comment states it joins against "the CURRENT, mutable
+`artifacts` list" — the same list resolved from live `ServiceArtifactRegistryState` at request
+time (E16: single current entry per artifact_id, no historical copies). It also shows that a
+single service with zero matching current artifacts causes the WHOLE function to `return Err(...)`
+immediately, which (via the `?` in `build_artifact_reconciliation_context_with_authority`) fails
+the ENTIRE context build for every service on that node, not only the one unmatched service. This
+directly confirms R1-B: no code path exists today to bind a fresh assignment to a HISTORICAL
+artifact identity, only ever to whatever the registry currently holds; and it surfaces an
+additional, previously undocumented risk for any future design that tried to resolve a cleanup
+directive's service through this SAME shared function — a since-deleted or renamed historical
+artifact would fail the entire node's context, not just the cleanup candidate. It does not prove
+this sharing is what Phase 119G would actually do (the original §24 conceptual struct does not, in
+fact, carry an artifact/generation field on `OperationalCleanupDirective` at all) — it proves only
+that IF such sharing were attempted naively, this is the exact failure mode it would hit.
+
+============================================================
+E20
+============================================================
+Claim: M8 rollback already deliberately excludes image/target-identity verification from blocking
+removal ("a container whose target image is mismatching/unverifiable is precisely a container that
+may need removing") while still requiring the SAME generation/projection/completeness pre-image
+gate ordinary reconcile uses; this shows today's rollback safety already rests on the trusted
+static `container_name` mapping plus authorization/lease freshness, not on per-instance label
+verification against the physical container.
+Commit: 97646f3da316137532622752f1bdfa51503c9b17
+Source: DATUM/src/agent/operational_reconciliation.rs
+Function/type: rollback_service_block_from (line 994) and its call site (lines 1934-1945)
+Command: git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '985,999p'
+          git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1930,1946p'
+Output:
+    /// ...it is impossible by construction for a runtime image-verification
+    /// outcome to prevent M8. Retains every OTHER pre-existing Stage-107A
+    /// rollback prerequisite: generation/projection/completeness
+    /// (`stage107a_service_block_before_image`) and local attachment/secret
+    /// substitution policy (`attachment_policy_block`).
+    fn rollback_service_block_from(
+        stage107a_service_block_before_image: Option<&str>,
+        attachment_policy_block: Option<&str>,
+    ) -> Option<String> {
+        stage107a_service_block_before_image.or(attachment_policy_block).map(str::to_string)
+    }
+    ---
+    // v11 review P0-1: remove-only rollback (M8) must NEVER be blocked
+    // by a Stage-107B-B runtime image-verification outcome -- a
+    // container whose target image is mismatching/unverifiable/
+    // unselectable is PRECISELY a container that may need removing.
+    let rollback_service_block: Option<String> = rollback_service_block_from(
+        stage107a_service_block_before_image.as_deref(),
+        attachment_policy_block.as_deref(),
+    );
+Interpretation: `rollback_service_block_from` deliberately never receives
+`image_identity_final_block` (the target-image mismatch/unverified outcome) as an input — the
+surrounding comment states this is intentional, since a mismatching image is exactly the case
+rollback exists to remove. It DOES still receive `stage107a_service_block_before_image`
+(generation/projection/completeness), which — per E19 — is computed by comparing the fresh
+authorization's bound identity against the CURRENT registry-resolved delivered identity, not
+against the physical container's actual `docker inspect` labels; `rollback_trusted_container_intent`
+(source-evidence.txt E06) itself takes only a `ContainerState` (Missing/Running/Stopped), never
+label content, before issuing `docker rm -f <container_name>`. This proves today's M8 rollback for
+an ordinary (currently-desired, being rolled back) service already does not verify the running
+container's actual labels before removal — its safety rests on the trusted `container_name`
+identity plus the unchanged authorization/lease/revision-freshness gates. It does not prove this is
+sufficient for a cleanup directive covering a service absent from `desired_services` entirely,
+since such a service has no current artifact assignment to run `stage107a_service_block_before_image`
+against in the first place (E19) — it shows only that the existing rollback path's actual removal
+step has never depended on per-instance label verification, which materially narrows how much new
+identity-binding work a cleanup design actually needs to add.

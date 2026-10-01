@@ -42,7 +42,7 @@ use crate::core::dcall_endpoint::{
 };
 use crate::core::dcall_mqtt_topic::request_topic as compute_mqtt_request_topic;
 use crate::core::dcode_authorization::authorize_dcode_invocation;
-use crate::core::dcode_registry::DCodeArtifactRegistryStateV1;
+use crate::core::dcode_registry::DCodeArtifactRegistryStateV2;
 use crate::core::ddeploy::DDeployStateV1;
 use crate::core::diot_runtime_binding::{
     verify_runtime_binding_still_current, DIoTRuntimeBindingRegistryStateV1,
@@ -307,7 +307,7 @@ pub fn check_source_execution_binding(
 pub fn derive_dcall_route(
     ddeploy_state: &DDeployStateV1,
     dnode_registry_state: &DNodeRegistryStateV1,
-    dcode_registry_state: &DCodeArtifactRegistryStateV1,
+    dcode_registry_state: &DCodeArtifactRegistryStateV2,
     project_id: &str,
     application_id: &str,
     call_id: &str,
@@ -429,8 +429,16 @@ pub fn derive_dcall_route(
 
     // Port resolution (see module doc): source output port -> matching
     // payload_schema -> unique destination input port.
+    //
+    // Phase 117G: looked up by the EXACT descriptor digest `source_auth`
+    // already authorized above -- never a fresh, potentially-ambiguous
+    // logical (application_id, service_id) lookup. This keeps D-Call port
+    // resolution bound to the same immutable revision the authority chain
+    // just proved is currently active, rather than re-resolving identity a
+    // second time against registry state that may have gained additional
+    // revisions since.
     let source_artifact = dcode_registry_state
-        .get(application_id, source_service_id)
+        .get_exact(application_id, source_service_id, &source_auth.dserv_artifact_descriptor_digest)
         .ok_or_else(|| {
             finding(
                 "dcall_source_port_invalid",
@@ -449,8 +457,10 @@ pub fn derive_dcall_route(
             )
         })?;
 
+    // Phase 117G: same exact-digest lookup, using `dest_auth`'s own
+    // just-authorized descriptor digest for the destination service.
     let destination_artifact = dcode_registry_state
-        .get(application_id, &destination_service_id)
+        .get_exact(application_id, &destination_service_id, &dest_auth.dserv_artifact_descriptor_digest)
         .ok_or_else(|| {
             finding(
                 "dcall_destination_port_invalid",
@@ -825,7 +835,7 @@ pub fn redeem_grant(
     grant_state: &mut DCallGrantStateV1,
     ddeploy_state: &DDeployStateV1,
     dnode_registry_state: &DNodeRegistryStateV1,
-    dcode_registry_state: &DCodeArtifactRegistryStateV1,
+    dcode_registry_state: &DCodeArtifactRegistryStateV2,
     dcall_endpoint_state: &DCallEndpointRegistryStateV1,
     diot_runtime_binding_state: &DIoTRuntimeBindingRegistryStateV1,
     grant_id: &str,

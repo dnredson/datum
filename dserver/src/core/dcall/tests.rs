@@ -10,7 +10,7 @@ use crate::core::canonical_dgraph::{
 use crate::core::canonical_dmap::{
     recompute_dmap_digest, CanonicalDMapV1, CanonicalDServPlacementV1, CANONICAL_DMAP_SCHEMA,
 };
-use crate::core::dcode_registry::{declare_dserv_artifact, DCodeArtifactRegistryStateV1};
+use crate::core::dcode_registry::{declare_dserv_artifact_revision, DCodeArtifactRegistryStateV2};
 use crate::core::ddeploy::{
     application_key, canonical_dmap_id, ActiveApplicationDeployment, DDeployProposalV1,
     ProposalLifecycleState, ProposalRecord, ProposalSource, DDEPLOY_PROPOSAL_SCHEMA,
@@ -43,7 +43,7 @@ fn dgraph() -> CanonicalDGraphV1 {
         revision: 1,
         services: vec![
             CanonicalDServV1 {
-                service_id: SOURCE_SVC.to_string(),
+                service_definition: None, service_id: SOURCE_SVC.to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -53,7 +53,7 @@ fn dgraph() -> CanonicalDGraphV1 {
                 },
             },
             CanonicalDServV1 {
-                service_id: DEST_SVC.to_string(),
+                service_definition: None, service_id: DEST_SVC.to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -163,7 +163,7 @@ fn dest_artifact() -> CanonicalDServArtifactV1 {
 struct Fixture {
     ddeploy: DDeployStateV1,
     dnode: DNodeRegistryStateV1,
-    dcode: DCodeArtifactRegistryStateV1,
+    dcode: DCodeArtifactRegistryStateV2,
 }
 
 fn build_fixture(source_node: &str, dest_node: &str) -> Fixture {
@@ -203,7 +203,9 @@ fn build_fixture(source_node: &str, dest_node: &str) -> Fixture {
                         node_id: dest_node.to_string(),
                     },
                 ],
-            },
+
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
+        },
             planner_provenance: None,
             proposal_digest: String::new(),
             dgraph_snapshot: dg.clone(),
@@ -282,9 +284,9 @@ fn build_fixture(source_node: &str, dest_node: &str) -> Fixture {
         declare_dnode(&mut dnode, node(dest_node)).unwrap();
     }
 
-    let mut dcode = DCodeArtifactRegistryStateV1::empty();
-    declare_dserv_artifact(&mut dcode, source_artifact()).unwrap();
-    declare_dserv_artifact(&mut dcode, dest_artifact()).unwrap();
+    let mut dcode = DCodeArtifactRegistryStateV2::empty();
+    declare_dserv_artifact_revision(&mut dcode, source_artifact()).unwrap();
+    declare_dserv_artifact_revision(&mut dcode, dest_artifact()).unwrap();
 
     Fixture {
         ddeploy,
@@ -406,8 +408,8 @@ fn destination_with_no_matching_input_port_is_rejected() {
     // no input port matches the source's output port anymore. The registry
     // is immutable-per-key, so build a fresh state with the mismatched
     // artifact from scratch instead of trying to mutate in place.
-    let mut dcode = DCodeArtifactRegistryStateV1::empty();
-    declare_dserv_artifact(&mut dcode, source_artifact()).unwrap();
+    let mut dcode = DCodeArtifactRegistryStateV2::empty();
+    declare_dserv_artifact_revision(&mut dcode, source_artifact()).unwrap();
     let mismatched = artifact(
         DEST_SVC,
         DServArtifactPortsV1 {
@@ -419,7 +421,7 @@ fn destination_with_no_matching_input_port_is_rejected() {
             outputs: Vec::new(),
         },
     );
-    declare_dserv_artifact(&mut dcode, mismatched).unwrap();
+    declare_dserv_artifact_revision(&mut dcode, mismatched).unwrap();
     fixture.dcode = dcode;
     let error = derive(&fixture, "fog-01").unwrap_err();
     assert_eq!(error.code, "dcall_destination_port_invalid");
@@ -428,8 +430,8 @@ fn destination_with_no_matching_input_port_is_rejected() {
 #[test]
 fn destination_with_ambiguous_matching_input_ports_is_rejected() {
     let mut fixture = build_fixture("fog-01", "fog-01");
-    let mut dcode = DCodeArtifactRegistryStateV1::empty();
-    declare_dserv_artifact(&mut dcode, source_artifact()).unwrap();
+    let mut dcode = DCodeArtifactRegistryStateV2::empty();
+    declare_dserv_artifact_revision(&mut dcode, source_artifact()).unwrap();
     let ambiguous = artifact(
         DEST_SVC,
         DServArtifactPortsV1 {
@@ -448,7 +450,7 @@ fn destination_with_ambiguous_matching_input_ports_is_rejected() {
             outputs: Vec::new(),
         },
     );
-    declare_dserv_artifact(&mut dcode, ambiguous).unwrap();
+    declare_dserv_artifact_revision(&mut dcode, ambiguous).unwrap();
     fixture.dcode = dcode;
     let error = derive(&fixture, "fog-01").unwrap_err();
     assert_eq!(error.code, "dcall_destination_port_invalid");
@@ -839,14 +841,26 @@ fn source_artifact_descriptor_change_after_grant_issuance_fails_redemption() {
     let fixture = build_fixture("fog-01", "fog-01");
     let (mut grants, issued) = issue_local(&fixture);
     // Simulate post-issuance drift by directly replacing the registry entry
-    // (the dcode_registry's own immutable-conflict-only `declare_dserv_artifact`
+    // (the dcode_registry's own immutable-conflict-only `declare_dserv_artifact_revision`
     // gate is Phase-111 machinery already tested elsewhere; this test isolates
     // the redemption-time RECHECK, not the declaration-time immutability rule).
     let mut dcode = fixture.dcode.clone();
     let key = crate::core::dcode_registry::dserv_artifact_key(APP, SOURCE_SVC);
-    let mut changed_source = source_artifact();
-    changed_source.limits.timeout_ms += 1; // descriptor digest changes, module digest unchanged
-    dcode.artifacts.insert(key, changed_source);
+    // Phase 117G: the registry is now a nested `(logical key) -> (digest ->
+    // artifact)` map -- mutate the single already-registered revision's
+    // content IN PLACE (bypassing `declare_dserv_artifact_revision`
+    // entirely) so its stored digest key becomes stale relative to its own
+    // content, exactly reproducing the pre-117G "content silently drifted
+    // out from under a stored digest" scenario this test targets.
+    let revisions = dcode
+        .artifacts
+        .get_mut(&key)
+        .expect("source artifact revision must already be registered in the fixture");
+    let existing = revisions
+        .values_mut()
+        .next()
+        .expect("fixture must register exactly one source artifact revision");
+    existing.limits.timeout_ms += 1; // descriptor digest changes, module digest unchanged
     let endpoints = DCallEndpointRegistryStateV1::empty();
     let diot_bindings = DIoTRuntimeBindingRegistryStateV1::empty();
     let error = redeem_grant(&mut grants, &fixture.ddeploy, &fixture.dnode, &dcode, &endpoints, &diot_bindings, &issued.grant.grant_id, &issued.token, "fog-01", "deadbeef", 4, None, now())
@@ -1710,7 +1724,8 @@ fn build_v2_fixture(source_node: &str, dest_node: &str) -> Fixture {
             );
             m
         },
-    };
+        dcode_artifact_authority: std::collections::BTreeMap::new(),
+};
 
     // A minimal real ServiceArtifact matching the binding embedded in the
     // proposal above -- `accept_v2_proposal` re-resolves against this exact
@@ -1743,9 +1758,9 @@ fn build_v2_fixture(source_node: &str, dest_node: &str) -> Fixture {
     if dest_node != source_node {
         declare_dnode(&mut dnode, node(dest_node)).unwrap();
     }
-    let mut dcode = DCodeArtifactRegistryStateV1::empty();
-    declare_dserv_artifact(&mut dcode, source_artifact()).unwrap();
-    declare_dserv_artifact(&mut dcode, dest_artifact()).unwrap();
+    let mut dcode = DCodeArtifactRegistryStateV2::empty();
+    declare_dserv_artifact_revision(&mut dcode, source_artifact()).unwrap();
+    declare_dserv_artifact_revision(&mut dcode, dest_artifact()).unwrap();
 
     Fixture {
         ddeploy,
@@ -1893,7 +1908,8 @@ fn accept_v2_governance_mutation(
             );
             m
         },
-    };
+        dcode_artifact_authority: std::collections::BTreeMap::new(),
+};
 
     let broker_artifact = crate::core::dcall::tests::minimal_service_artifact_for_diot(
         PROJECT,
@@ -3349,7 +3365,9 @@ fn v2_redemption_fails_closed_when_a_v1_authority_is_also_registered_for_the_app
                         node_id: "fog-01".to_string(),
                     },
                 ],
-            },
+
+            dcode_artifact_authority: std::collections::BTreeMap::new(),
+        },
             planner_provenance: None,
             proposal_digest: String::new(),
             dgraph_snapshot: dg.clone(),

@@ -1,0 +1,109 @@
+PHASE 119F EVIDENCE BUNDLE — COMMANDS USED
+All commands are read-only (git show / git grep against a pinned commit, or sed for line-range
+display of that already-retrieved text). None mutate the repository, the working tree, or any
+remote. None require or reveal credentials. Run from the repository root on commit
+97646f3da316137532622752f1bdfa51503c9b17.
+
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '1960,2060p'
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '835,845p'
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '400,465p'
+git show 97646f3:dserver/src/core/ddeploy.rs | grep -n "^pub fn union_project_operational_graph\|^pub fn derive_active_dengine_nodes\|^pub struct DDeployAcceptanceV1\|^pub struct DDeployStateV1"
+git show 97646f3:dserver/src/core/ddeploy.rs | grep -n "^mod tests\|^#\[cfg(test)\]\|^}"
+git grep -n "acceptances.remove\|acceptances\.retain\|\.proposals\.remove\|proposals\.retain" 97646f3 -- dserver/src/core/ddeploy.rs dserver/src/api/ddeploy.rs
+
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '40,60p'
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '86,169p'
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '298,365p'
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '529,551p'
+git show 97646f3:dserver/src/core/operational_dgraph.rs | grep -n "^pub fn build_operational_slice\|^pub struct OperationalNodeDesiredState\|^pub fn validate_operational_dgraph\|^fn validate_desired_service\|^pub struct OperationalReconciliationAuthorization"
+
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '36,42p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1094,1150p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1159,1177p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1296,1312p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1355,1375p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '2715,2748p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '4015,4045p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | grep -n '"running"\|"completed"'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | grep -n "^const AUTHORIZATION_OPERATION_ROLLBACK\|^const DATUM_LABEL_ARTIFACT_ID\|^fn inspected_container_labels_match\|^pub(crate) fn check_boundary\|^fn rollback_trusted_container_intent"
+
+git show 97646f3:DATUM/src/agent/native_process_runtime.rs | sed -n '1170,1200p'
+git show 97646f3:DATUM/src/agent/native_process_runtime.rs | grep -n "NativeReconciliationAction::Rollback =>"
+
+git show 97646f3:DATUM/src/agent/native_process_state.rs | sed -n '30,79p'
+git show 97646f3:DATUM/src/agent/native_process_state.rs | grep -n "^pub struct ManagedProcessRuntimeStateV1"
+
+git show 97646f3:DATUM/src/agent/native_process_acquisition.rs | sed -n '215,232p'
+git show 97646f3:DATUM/src/agent/native_process_acquisition.rs | grep -n "^pub fn stable_service_key"
+
+git show 97646f3:DATUM/src/agent/stage107a_enforcement.rs | sed -n '210,245p'
+git show 97646f3:DATUM/src/agent/stage107a_enforcement.rs | grep -n "^pub fn check_generation_and_projection"
+
+git show 97646f3:dserver/src/api/operational_dgraph.rs | sed -n '499,535p'
+git show 97646f3:dserver/src/api/operational_dgraph.rs | grep -n "^async fn authorize_operational_reconciliation"
+
+git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | sed -n '20,42p'
+git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | grep -n "^pub struct OperationalDGraphPersistedState"
+
+git show 97646f3:dserver/src/main.rs | grep -n -i "operational.*reconcil\|reconcil.*operational"
+
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '463,468p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '950,978p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | grep -n "execution_generation_high_water:"
+
+git grep -n -i -E "orphan|sweep|prune|remove_all|delete_all" 97646f3 -- 'DATUM/src/**' 'dserver/src/**'
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '2728,2736p'
+git show 97646f3:dserver/src/core/dmonitor_freshness.rs | sed -n '18,28p'
+
+git show 97646f3:dserver/src/core/canonical_dmap.rs | sed -n '50,65p'
+git show 97646f3:dserver/src/core/canonical_dmap.rs | grep -n "^pub struct CanonicalContractReferenceV1"
+git show 97646f3:dserver/src/core/canonical_dmap_v2.rs | sed -n '20,35p'
+git show 97646f3:dserver/src/core/canonical_dmap_v2.rs | grep -n "^pub struct ContractRefV2"
+git grep -n "CanonicalContractReferenceV1" 97646f3 -- dserver/src/core/canonical_dmap_v2.rs dserver/src/core/ddeploy_migration.rs
+git show 97646f3:dserver/src/core/ddeploy_migration.rs | sed -n '231,300p'
+git show 97646f3:dserver/src/core/ddeploy_migration.rs | grep -n "fn locate_acceptance"
+
+=== Phase 119F-R1 supplemental commands (E15-E20) ===
+
+git grep -n "authorization_key\|authorizations.insert\|authorizations\.get\|fn.*authorization_key" 97646f3 -- dserver/src/api/operational_dgraph.rs dserver/src/core/operational_dgraph_persistence.rs dserver/src/core/operational_dgraph.rs
+git show 97646f3:dserver/src/core/operational_dgraph_persistence.rs | sed -n '298,305p'
+git show 97646f3:dserver/src/api/operational_dgraph.rs | sed -n '660,695p'
+
+git grep -n "struct ServiceArtifactRegistryState\|artifacts_by_project\|struct ServiceArtifact\b" 97646f3 -- dserver/src/core/service_artifact_registry.rs
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '451,467p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '905,925p'
+git show 97646f3:dserver/src/core/service_artifact_registry.rs | sed -n '92,140p'
+
+git grep -n "phase113_v2:" 97646f3 -- dserver/src/core/ddeploy.rs
+git grep -n "struct DDeployStateV2\|struct DDeployAcceptanceV2\|struct DDeployProposalV2Record\|struct.*ProposalV2\|pub proposals\|pub acceptances\|pub active" 97646f3 -- dserver/src/core/ddeploy_v2.rs
+git show 97646f3:dserver/src/core/ddeploy_v2.rs | sed -n '100,145p'
+git grep -n "active_by_application.remove\|active_by_application\.insert\|phase113_v2.active.remove\|phase113_v2\.active\.insert" 97646f3 -- dserver/src/core/ddeploy.rs dserver/src/core/ddeploy_v2.rs
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '660,690p'
+git show 97646f3:dserver/src/core/ddeploy.rs | awk 'NR==2236,NR==2236+250' | grep -n "phase113_v2\|active_placement_authority\|dual active\|v2\."
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '/fn active_placement_authority/,/^}/p'
+
+git grep -n "struct DispatchContainerMapping" 97646f3 -- DATUM/src/ dserver/src/
+git show 97646f3:DATUM/src/config.rs | sed -n '185,210p'
+
+git grep -n "DATUM_LABEL_" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+
+git show 97646f3:dserver/src/core/operational_dgraph.rs | sed -n '54,90p'
+git grep -n "fn derive_application_operational_services" 97646f3 -- dserver/src/core/ddeploy.rs
+git show 97646f3:dserver/src/core/ddeploy.rs | sed -n '/fn derive_application_operational_services/,+40p'
+git grep -n "struct ArtifactReconciliationAssignment\|fn build_artifact_reconciliation" 97646f3 -- dserver/src/core/artifact_reconciliation_context.rs
+git show 97646f3:dserver/src/core/artifact_reconciliation_context.rs | sed -n '217,290p'
+
+git grep -n "check_generation_and_projection\|stage107a_service_check" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1730,1770p'
+git grep -n "rollback_trusted_container_intent(" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '2000,2050p'
+git grep -n "rollback_service_block" 97646f3 -- DATUM/src/agent/operational_reconciliation.rs
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '985,1010p'
+git show 97646f3:DATUM/src/agent/operational_reconciliation.rs | sed -n '1925,1950p'
+
+Validation commands (run after writing the bundle, not evidence-gathering):
+git status --short
+git diff --stat
+git diff
+git diff --check
+python -m json.tool documentation/reference/evidence/phase119f/manifest.json

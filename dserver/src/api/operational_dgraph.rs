@@ -27,11 +27,11 @@ use crate::{
             build_reconciliation_authorization, required_mode_persistence_eligible,
             validate_operational_dgraph, ArtifactBindingV1, OperationalDGraph,
             OperationalDGraphSlice, OperationalReconciliationAuthorization,
-            OperationalReconciliationAuthorizationRequest, AUTHORIZATION_OPERATION_RECONCILE,
-            AUTHORIZATION_OPERATION_ROLLBACK, AUTHORIZATION_SCOPE_DURABLE,
-            AUTHORIZATION_SCOPE_PROCESS, BLOCKED_REQUIRED_PERSISTENCE,
+            OperationalReconciliationAuthorizationRequest, AUTHORIZATION_OPERATION_CLEANUP,
+            AUTHORIZATION_OPERATION_RECONCILE, AUTHORIZATION_OPERATION_ROLLBACK,
+            AUTHORIZATION_SCOPE_DURABLE, AUTHORIZATION_SCOPE_PROCESS, BLOCKED_REQUIRED_PERSISTENCE,
         },
-        service_artifact_registry::{pinning_mode_from_state, EXECUTION_PINNING_MODE_REQUIRED},
+        service_artifact_registry::{pinning_mode_from_state, EXECUTION_PINNING_MODE_LEGACY_PARTIAL, EXECUTION_PINNING_MODE_REQUIRED},
         operational_dgraph_persistence::{
             authorization_key, persist_operational_dgraph_state, OperationalDGraphPersistedState,
             OPERATIONAL_DGRAPH_PERSISTENCE_VERSION,
@@ -58,6 +58,23 @@ static PERSISTENCE_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn graph_store() -> &'static RwLock<BTreeMap<String, OperationalDGraph>> {
     OPERATIONAL_DGRAPHS.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Phase 128 read acquisition: never initialize persistence from a GET.
+/// Startup owns initialization; this clones the already-restored graph source.
+pub(crate) fn operations_graph_snapshot(
+) -> Result<Option<BTreeMap<String, OperationalDGraph>>, String> {
+    match PERSISTENCE_INITIALIZED.get() {
+        None => Ok(None),
+        Some(Err(error)) => Err(error.clone()),
+        Some(Ok(())) => {
+            let _transaction = state_transaction().lock().map_err(string_lock_error)?;
+            let graphs = OPERATIONAL_DGRAPHS
+                .get()
+                .ok_or("initialized graph source missing")?;
+            Ok(Some(graphs.read().map_err(string_lock_error)?.clone()))
+        }
+    }
 }
 fn authorization_store() -> &'static RwLock<AuthorizationMap> {
     OPERATIONAL_AUTHORIZATIONS.get_or_init(|| RwLock::new(BTreeMap::new()))
@@ -457,13 +474,60 @@ pub fn operational_dgraph_slice_snapshot(
 ) -> Result<Option<OperationalDGraphSlice>, String> {
     let Some((graph, authorizations)) = graph_and_authorizations_snapshot(project_id)? else { return Ok(None); };
     let node_id = node_id.trim();
-    if !graph.nodes.iter().any(|node| node.node_id.trim() == node_id) { return Ok(None); }
+    let node_present = graph.nodes.iter().any(|node| node.node_id.trim() == node_id);
+
+    if !node_present {
+        // Phase 119G (cleanup-only context, Phase 119F-R1 section 11 point 3):
+        // a source node can have zero CURRENT placements (absent from
+        // OperationalDGraph) yet still carry authoritative historical
+        // cleanup obligations. Only construct a context here when the node
+        // is a genuine, structurally-bound resource for this project (the
+        // SAME gate `authorize_operational_reconciliation` already requires)
+        // AND has a genuine, non-empty derived cleanup obligation -- an
+        // unknown/unrelated node, or a structurally-bound node with NO
+        // cleanup obligation, must both still fail closed exactly as before
+        // (M16/M17): cleanup is never synthesized from mere graph absence.
+        let Some(binding) = active_resource_binding_for_node(&graph.project_id, node_id)? else {
+            return Ok(None);
+        };
+        let cleanup_directives = crate::core::ddeploy::cleanup_directives_for_node(&graph.project_id, node_id)?;
+        if cleanup_directives.is_empty() {
+            return Ok(None);
+        }
+        let authorization = authorizations
+            .get(&authorization_key(&graph.project_id, node_id))
+            .filter(|authorization| authorization_is_valid_for_context(authorization, &graph, node_id, &binding.binding_id, Utc::now()))
+            .cloned();
+        return Ok(Some(OperationalDGraphSlice {
+            schema_version: graph.schema_version.clone(),
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: graph.revision,
+            project_id: graph.project_id.clone(),
+            node_id: node_id.to_string(),
+            desired_services: Vec::new(),
+            cleanup_directives,
+            authorization,
+            reconciler: crate::core::operational_dgraph::OperationalReconcilerDescriptor {
+                module_id: crate::core::operational_dgraph::OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
+                function_name: crate::core::operational_dgraph::OPERATIONAL_RECONCILER_FUNCTION.to_string(),
+                abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
+                host_imports_allowed: false,
+            },
+        }));
+    }
+
     let binding = active_resource_binding_for_node(&graph.project_id, node_id)?;
     let authorization = authorizations.get(&authorization_key(&graph.project_id, node_id))
         .filter(|authorization| binding.as_ref().is_some_and(|binding| {
             authorization_is_valid_for_context(authorization, &graph, node_id, &binding.binding_id, Utc::now())
         }));
-    build_operational_slice(&graph, node_id, authorization).map(Some)
+    let mut slice = build_operational_slice(&graph, node_id, authorization)?;
+    // Phase 119G: a node with CURRENT desired services may ALSO carry
+    // historical cleanup obligations for a DIFFERENT application (task
+    // section 14's required mixed scenario) -- always derive fresh here too,
+    // never only in the cleanup-only branch above.
+    slice.cleanup_directives = crate::core::ddeploy::cleanup_directives_for_node(&graph.project_id, node_id)?;
+    Ok(Some(slice))
 }
 
 pub async fn post_operational_reconciliation_authorization(
@@ -494,6 +558,26 @@ pub async fn post_operational_reconciliation_rollback_authorization(
         )));
     }
     authorize_operational_reconciliation(state, node_id, headers, request).await
+}
+
+/// Phase 119G (Phase 119F-R1 section 6.4, task section 11): a DISTINCT
+/// authorization route for governed source cleanup -- never reuses
+/// `operation = "rollback"`. See `AUTHORIZATION_OPERATION_CLEANUP`'s own doc
+/// comment for why reusing rollback was found unsafe for multi-application
+/// nodes.
+pub async fn post_operational_reconciliation_cleanup_authorization(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<OperationalReconciliationAuthorizationRequest>,
+) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
+    if request.operation.trim() != AUTHORIZATION_OPERATION_CLEANUP {
+        return Err(bad_request(format!(
+            "cleanup authorization operation must be '{}'",
+            AUTHORIZATION_OPERATION_CLEANUP
+        )));
+    }
+    authorize_operational_cleanup(state, node_id, headers, request).await
 }
 
 async fn authorize_operational_reconciliation(
@@ -695,6 +779,91 @@ async fn authorize_operational_reconciliation(
     Ok(JsonResponse(authorization))
 }
 
+/// Phase 119G (Phase 119F-R1 section 6.4): issues a `"cleanup"`-operation
+/// authorization. Deliberately does NOT resolve or bind any artifact
+/// snapshot/`artifact_bindings` -- see `AUTHORIZATION_OPERATION_CLEANUP`'s
+/// own doc comment and the Phase 119G implementation document's explicit
+/// generation/projection carve-out (no current server mechanism can
+/// reconstruct the HISTORICAL artifact identity a vacated service actually
+/// ran under, so this deliberately never pretends to bind one). Reuses
+/// every OTHER applicable Stage107A issuance gate the ordinary
+/// reconcile/rollback path already enforces: active Resource Registry
+/// binding, exact project/dgraph/revision match (via
+/// `build_reconciliation_authorization`), finite lease, `allow_host_mutation`,
+/// durable-scope-only issuance (same P1-4 restriction as ordinary
+/// reconcile/rollback -- a cleanup mutation is exactly as real a host
+/// mutation and needs exactly the same finite-lease guarantee). Unlike
+/// ordinary reconcile/rollback, the target node MAY be entirely absent from
+/// `graph.nodes` -- a cleanup-only source node with zero current placements
+/// is exactly the case governed cleanup exists to authorize (Phase 119F-R1
+/// section 11 point 3); `build_reconciliation_authorization` itself
+/// tolerates this only for `operation == "cleanup"`.
+async fn authorize_operational_cleanup(
+    _state: AppState,
+    node_id: String,
+    headers: HeaderMap,
+    request: OperationalReconciliationAuthorizationRequest,
+) -> Result<JsonResponse<OperationalReconciliationAuthorization>, ApiError> {
+    ensure_operational_dgraph_persistence_initialized().map_err(internal_error)?;
+    let project_id = extract_project_id(&headers)?;
+    let node_id = node_id.trim();
+
+    let requested_persistence_scope_for_shape_check = request
+        .persistence_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(AUTHORIZATION_SCOPE_PROCESS);
+    if !reconciliation_authorization_scope_is_acceptable(requested_persistence_scope_for_shape_check) {
+        return Err(bad_request(format!(
+            "operational cleanup authorization requires persistence_scope='{AUTHORIZATION_SCOPE_DURABLE}' with a valid_for_seconds lease; '{requested_persistence_scope_for_shape_check}' can never satisfy a governed host mutation's finite-lease requirement (it would only be discovered later, at mutation time)"
+        )));
+    }
+
+    let binding = active_resource_binding_for_node(&project_id, node_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| conflict(format!("cannot authorize cleanup for node '{}': no active Resource Registry binding exists", node_id)))?;
+
+    // Same graph-selection rule as ordinary reconcile/rollback authorization
+    // (Stage 111, ADR-0018): canonical-derived graph when canonical
+    // authority is active for this project, else the legacy graph.
+    let canonical_graph = crate::api::ddeploy::effective_canonical_operational_graph(&project_id).map_err(internal_error)?;
+    let _transaction = state_transaction().lock().map_err(lock_error)?;
+    let graph = match canonical_graph {
+        Some(graph) => graph,
+        None => graph_store().read().map_err(lock_error)?.get(&project_id).cloned()
+            .ok_or_else(|| missing_graph(&project_id))?,
+    };
+
+    // No artifact snapshot, no artifact_bindings: a cleanup authorization
+    // certifies CURRENT ABSENCE plus the same lease/resource/revision gates
+    // every other operation already gets -- never a historical artifact
+    // identity (Phase 119F-R1 section 6.1/6.2).
+    let authorization = build_reconciliation_authorization(
+        &graph,
+        node_id,
+        &binding.binding_id,
+        &binding.resource_id,
+        &request,
+        Utc::now(),
+        Vec::new(),
+        EXECUTION_PINNING_MODE_LEGACY_PARTIAL,
+        Vec::new(),
+    )
+        .map_err(bad_request)?;
+
+    // `reconciliation_authorization_scope_is_acceptable` above already
+    // refused anything but durable scope, so `authorization.persistence_scope`
+    // is always durable here -- no "existing_durable"/downgrade branch is
+    // reachable, unlike `authorize_operational_reconciliation`.
+    let key = authorization_key(&project_id, node_id);
+    let mut candidate = persisted_candidate_from_memory().map_err(internal_error)?;
+    candidate.authorizations.insert(key.clone(), authorization.clone());
+    persist_candidate(&candidate).map_err(internal_error)?;
+    authorization_store().write().map_err(lock_error)?.insert(key, authorization.clone());
+    Ok(JsonResponse(authorization))
+}
+
 /// P1-4 (v4 review): true when `requested_persistence_scope` is acceptable
 /// for `authorize_operational_reconciliation` (issuing `reconcile` /
 /// `rollback` authorizations). Only `durable` is -- `process`-scope never
@@ -777,6 +946,29 @@ mod tests {
             metadata: Some(json!({"relations":[{"from":"fog-01","to":"cloud-01","rel":"connected_to","latency_ms":12.5}]})),
         }
     }
+
+    // Phase 119G: `operational_dgraph_slice_snapshot`'s new cleanup-only
+    // branch (task C1-C8) is deliberately NOT integration-tested here.
+    // Unlike every other function in this module's test suite (which
+    // operates purely on the in-memory `graph_store()`/`authorization_store()`
+    // statics), the new branch also calls
+    // `core::ddeploy::cleanup_directives_for_node`, which reads the REAL,
+    // process-shared SQLite control-state database via `resolved_db_path()`
+    // -- confirmed experimentally in this phase to intermittently fail with
+    // "database is locked" under this test binary's default parallel
+    // execution (no existing test in this codebase touches that shared
+    // database directly for exactly this reason; every `ddeploy` test,
+    // including this phase's own new `cleanup_directive_derivation` suite,
+    // operates on an in-memory `DDeployStateV1` instead). The underlying
+    // LOGIC this branch composes is independently, thoroughly tested:
+    // `derive_cleanup_directives_for_node` (10 tests,
+    // `core::ddeploy::tests::cleanup_directive_derivation`) and
+    // `active_resource_binding_for_node`/`authorization_is_valid_for_context`/
+    // `build_operational_slice` (pre-existing coverage elsewhere in this
+    // file). See `phase119g-governed-source-cleanup-implementation.md` for
+    // this disclosed testing gap and its recommended follow-up (either a
+    // dedicated per-test SQLite path with real test isolation, or
+    // refactoring this function to accept injectable state).
 
     #[test]
     fn c68_captured_revision_produces_complete_compatible_slices() {

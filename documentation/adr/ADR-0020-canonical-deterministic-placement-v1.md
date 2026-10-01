@@ -1,6 +1,6 @@
 # ADR-0020 — Canonical deterministic placement v1
 
-- Status: **Accepted and implemented, v3 (independent review fix).**
+- Status: **Accepted and implemented, v4 (Phase 120B cross-version commitment closure).**
 - Decision refs: ADR-0002 (single placement authority), ADR-0006 (canonical
   digest), ADR-0017 (canonical `datum.dgraph/1`/`datum.dcontinuum/1`),
   ADR-0018 (D-Deploy proposal/acceptance/projection), ADR-0019 (D-Node
@@ -607,3 +607,101 @@ All pre-existing Stage 111/foundation/v1/v2-placement tests remain green and
 unmodified in substance (`dnode_registry`: 27/27 unaffected;
 `artifact_reconciliation_context`: 37/37 unaffected; `cargo check --locked`
 and `cargo check --locked --tests` both clean).
+
+## Phase 120B / v4 — cross-version (DMap/1 vs DMap/2) commitment closure
+
+An independent current-state audit (Phase 120A,
+`documentation/reference/phase120a-independent-deterministic-placement-current-state-closure-audit.md`)
+found that this ADR's text — v1, v2, and v3 alike — never once mentions
+DMap/2 (the later, parallel Phase 113A acceptance path). That silence
+reflected a real gap, not merely a documentation omission: two
+per-node structural commitment aggregators exist in `core::ddeploy` --
+`compute_project_node_commitments` (DMap/1-only; its `active_set`
+parameter is a type that structurally cannot hold a DMap/2 entry) and
+`compute_project_node_commitments_versioned` (the correct aggregator,
+adding `phase113_v2.active` commitments on top). The DMap/2 acceptance
+path already used the versioned aggregator correctly, but **two** call
+sites still used the DMap/1-only one: `post_plan_proposal`'s own
+residual-capacity baseline, and DMap/1 `accept_proposal`'s own R3C
+capacity gate. Concretely: an application active under DMap/2 could
+consume a D-Node's entire declared capacity while remaining structurally
+invisible to both the deterministic planner and to a DIFFERENT
+application's DMap/1 acceptance on the same node — an aggregate
+structural-capacity violation, not merely a stale comment.
+
+**Fix.** Both call sites now use `compute_project_node_commitments_versioned`:
+
+- `post_plan_proposal` (`api/ddeploy.rs`) computes its planning baseline
+  as `compute_project_node_commitments_versioned(&project_id,
+  &ddeploy_state, Some(&payload.application_id))` — every OTHER active
+  application's commitment across BOTH D-Map versions, this application
+  excluded.
+- DMap/1 `accept_proposal`'s R3C gate (`core/ddeploy.rs`) is **not** a
+  literal function swap. The prior code derived its baseline from
+  `updated_active` (`state.active_by_application` with this candidate's
+  own new entry already inserted) precisely so the candidate's own
+  commitment was counted exactly once alongside every other DMap/1
+  application. `compute_project_node_commitments_versioned(...,
+  state, None)` cannot be substituted directly: `state` at this point is
+  still the PRE-acceptance state, so it does not yet contain this
+  candidate's own new commitment, and using it with `None` excluded would
+  omit the candidate entirely. The corrected gate instead computes the
+  baseline as `compute_project_node_commitments_versioned(project_id,
+  state, Some(&record.proposal.application_id))` — every OTHER active
+  application across both D-Map versions, THIS application excluded --
+  then adds the candidate's own placements (from
+  `record.proposal.placements`, resolved against `record.dgraph_snapshot`)
+  on top exactly once, via `checked_add`, failing closed on a missing
+  service or arithmetic overflow. This mirrors the pattern the DMap/2
+  acceptance path (`accept_with_previous`) already used correctly.
+- `PlannerProvenanceV1.committed_by_node`'s own doc comment, which
+  previously named the non-versioned function as its source (itself
+  evidence the gap was an intended-but-wrong design, not an oversight in
+  wiring alone), now correctly describes the versioned, cross-version
+  baseline.
+
+**Same-application redeployment is unaffected.** `exclude_application_id`
+remains load-bearing in both corrected call sites: a redeployment of the
+SAME application still excludes that application's own prior commitment
+(from whichever D-Map version it was previously active under) before
+adding its new candidate commitment once, so a same-application
+redeploy is never evaluated as old-plus-new.
+
+**DMap/2-active self-downgrade is unchanged and remains fail-closed.**
+Phase 119G's `F_DDEPLOY_V1_DOWNGRADE_FROM_V2_UNSUPPORTED` guard, inside
+`create_proposal` itself, is inherited unconditionally by
+`post_plan_proposal` — planning or accepting a DMap/1 proposal for an
+application currently active under DMap/2 remains rejected. This is an
+intentional, unchanged Phase 120 scope boundary (Phase 120A §13), not
+something Phase 120B relaxes or needed to relax: it concerns an
+application's relationship to its OWN prior authority, entirely separate
+from the cross-*application* commitment-visibility gap this closure
+fixes.
+
+**Tests (Phase 120B, `core::ddeploy`):** five new regressions —
+`v2_active_app_plus_v1_candidate_exceeding_cpu_capacity_is_rejected`,
+`v2_active_app_plus_v1_candidate_exceeding_memory_capacity_is_rejected`,
+`v2_active_app_plus_v1_candidate_within_capacity_is_accepted` (positive
+control), `planner_sees_active_v2_commitment_and_persists_it_in_provenance`
+(exercises the same `compute_project_node_commitments_versioned` ->
+`plan_canonical_placements` -> `create_proposal` sequence
+`post_plan_proposal` itself performs, and proves the PERSISTED
+`ProposalRecord.planner_provenance.committed_by_node` carries the exact
+DMap/2 commitment used), and
+`planner_fails_closed_and_creates_no_proposal_when_v2_commitment_exhausts_node`.
+All four cross-version acceptance combinations (v1-active+v1-candidate,
+v2-active+v1-candidate, v1-active+v2-candidate, v2-active+v2-candidate)
+now have direct regression coverage; the pre-existing
+`redeploying_the_same_application_does_not_double_count_its_own_prior_active_allocation`
+and `v1_create_proposal_fails_closed_when_application_is_currently_v2_active`
+tests remain green, unmodified, proving no regression to same-application
+or self-downgrade semantics.
+
+**Result:** `core::ddeploy` focused suite 291/291 (286 + 5 new);
+`core::canonical_placement` 23/23 (unchanged -- the pure planner itself
+required no change); `api::ddeploy` 24/24 (unchanged); full `dserver`
+suite 1926/1926 (1921 + 5 new), 0 failed; `--release` build succeeds;
+`git diff --check` clean. No new type, no new planner, no new policy, no
+migration-specific input, and no DIoT placement were introduced --
+this closure is exactly the small, well-bounded wiring fix Phase 120A's
+VERDICT B anticipated.

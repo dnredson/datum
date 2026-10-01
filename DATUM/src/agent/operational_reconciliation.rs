@@ -37,6 +37,15 @@ pub const OPERATIONAL_RECONCILER_MODULE_ID: &str = "smartsentinel-reconciler-v1"
 pub const OPERATIONAL_RECONCILER_FUNCTION: &str = "reconcile_service";
 const AUTHORIZATION_OPERATION_RECONCILE: &str = "reconcile";
 const AUTHORIZATION_OPERATION_ROLLBACK: &str = "rollback";
+/// Phase 119G (Phase 119F-R1 section 6.4, task section 11). Mirrors
+/// `dserver::core::operational_dgraph::AUTHORIZATION_OPERATION_CLEANUP`
+/// exactly -- a DISTINCT operation, never `"rollback"`. An authorization
+/// carrying this operation may drive ONLY `process_cleanup_directives`
+/// (below); it can never satisfy `control_plane_authorized`'s exact-match
+/// check for the ordinary `desired_services` dispatch loop, since that
+/// check's `expected_authorization_operation` is only ever `"reconcile"` or
+/// `"rollback"`.
+const AUTHORIZATION_OPERATION_CLEANUP: &str = "cleanup";
 
 fn default_authorization_operation() -> String {
     AUTHORIZATION_OPERATION_RECONCILE.to_string()
@@ -65,6 +74,29 @@ pub struct OperationalDesiredService {
     /// came from, never independently recomputed on this side either.
     #[serde(default)]
     pub dmap_ref: Option<CanonicalContractReferenceV1>,
+}
+
+/// Phase 119G. Mirrors `dserver::core::operational_dgraph::OperationalCleanupDirective`
+/// exactly -- server-derived, never persisted, never a placement authority.
+/// Structurally separate from `desired_services`: a directive here can never
+/// be confused with, merged into, or mistaken for current desired state. See
+/// `documentation/reference/phase119g-governed-source-cleanup-implementation.md`
+/// for the full design; carries no `desired_state` and no artifact/
+/// generation/digest field (Phase 119F-R1 section 6.2 -- no current server
+/// mechanism can reconstruct the historical artifact identity a vacated
+/// service actually ran under, so this deliberately never pretends to carry
+/// one).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalCleanupDirective {
+    pub service_id: String,
+    pub application_id: String,
+    /// The exact accepted D-Map `{id, revision, digest}` this service was
+    /// placed under the LAST time it was historically desired on this node.
+    /// A node may see MULTIPLE directives for the same `service_id` with
+    /// DIFFERENT `previous_dmap_ref` values (Phase 119F-R1 section 5.3) --
+    /// local runtime identity evidence, checked against EACH directive
+    /// independently, is what determines which (if any) matches.
+    pub previous_dmap_ref: CanonicalContractReferenceV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -402,6 +434,12 @@ pub struct OperationalReconciliationContext {
     pub node_id: String,
     pub desired_services: Vec<OperationalDesiredService>,
     pub artifacts: Vec<OperationalArtifactAssignment>,
+    /// Phase 119G. Additive (`#[serde(default)]`) for backward compatibility
+    /// with a DServer that predates this field. Deliberately never joined
+    /// against `artifacts` above -- see `OperationalCleanupDirective`'s own
+    /// doc comment.
+    #[serde(default)]
+    pub cleanup_directives: Vec<OperationalCleanupDirective>,
     #[serde(default)]
     pub authorization: Option<OperationalReconciliationAuthorization>,
     pub reconciler: OperationalReconcilerDescriptor,
@@ -671,6 +709,10 @@ pub struct OperationalReconciliationReport {
     pub control_plane_authorized: bool,
     pub local_container_execution_allowed: bool,
     pub services: Vec<OperationalServiceReconciliationReport>,
+    /// Phase 119G. Empty whenever `--cleanup` was not requested -- never
+    /// populated as a side effect of ordinary reconcile/rollback cycles.
+    #[serde(default)]
+    pub cleanup: Vec<CleanupDirectiveReport>,
     pub side_effects_performed: bool,
     pub snapshot_published: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -698,6 +740,7 @@ fn completed_container_converged(
         && exit_code == Some(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_operational_reconciliation(
     cfg: &Config,
     requested_node_id: Option<&str>,
@@ -707,6 +750,7 @@ pub fn run_operational_reconciliation(
     timeout_s: u64,
     execute_requested: bool,
     rollback_requested: bool,
+    cleanup_requested: bool,
 ) -> Result<OperationalReconciliationReport> {
     let bootstrap = run_bootstrap(
         cfg,
@@ -725,10 +769,12 @@ pub fn run_operational_reconciliation(
         timeout_s,
         execute_requested,
         rollback_requested,
+        cleanup_requested,
         true,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_operational_reconciliation_with_resource_discovery(
     cfg: &Config,
     resource_discovery: SmartSentinelResourceDiscovery,
@@ -739,6 +785,7 @@ pub fn run_operational_reconciliation_with_resource_discovery(
     timeout_s: u64,
     execute_requested: bool,
     rollback_requested: bool,
+    cleanup_requested: bool,
     publish_snapshot: bool,
 ) -> Result<OperationalReconciliationReport> {
     let bootstrap = run_bootstrap_with_resource_discovery(
@@ -757,6 +804,7 @@ pub fn run_operational_reconciliation_with_resource_discovery(
         timeout_s,
         execute_requested,
         rollback_requested,
+        cleanup_requested,
         publish_snapshot,
     )
 }
@@ -765,7 +813,7 @@ pub fn run_operational_reconciliation_with_resource_discovery(
 /// effective pinning mode every governed mutation this cycle is checked
 /// against. Computed once; `lease.check_before_mutation` is still evaluated
 /// individually before each M1-M8 boundary (point 9), not just here.
-struct Stage107ACycleGate {
+pub(crate) struct Stage107ACycleGate {
     lease: LeaseGuard,
     effective_mode: &'static str,
     /// Review finding P1-1/P1-2 (v4): the clock-skew seconds actually
@@ -1094,6 +1142,19 @@ pub(crate) struct MutationBoundaryContext<'a> {
 const DATUM_LABEL_ARTIFACT_ID: &str = "datum.artifact_id";
 const DATUM_LABEL_EXECUTION_GENERATION: &str = "datum.execution_generation";
 const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projection_digest";
+/// Phase 119G (Phase 119F-R1 section 6.4 point 3): additive local-ownership
+/// labels giving containers the same "which exact historical D-Map placed
+/// this" proof native-process identity already has via
+/// `ManagedProcessRuntimeStateV1.dmap_ref`. Written ONLY at M1 creation
+/// time, from the exact `ArtifactReconciliationAssignment.dmap_ref` that
+/// governed that creation -- NEVER recomputed from hostname/container/image,
+/// and NEVER backfilled onto an already-running container. A container
+/// created before this change simply lacks these labels (see
+/// `inspected_container_dmap_ref_matches`'s own doc comment) -- this is a
+/// disclosed, honest compatibility limitation, not silently patched over.
+const DATUM_LABEL_DMAP_ID: &str = "datum.dmap_id";
+const DATUM_LABEL_DMAP_REVISION: &str = "datum.dmap_revision";
+const DATUM_LABEL_DMAP_DIGEST: &str = "datum.dmap_digest";
 
 /// The exact `{artifact_id, execution_generation, execution_projection_digest}`
 /// identity M1 labels a newly-created container with, and that convergence
@@ -1102,10 +1163,21 @@ const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projectio
 /// delivered one) -- by the time M1 can run, `stage107a_service_check` has
 /// already proven the two equal, so this is defense-in-depth, not a
 /// different value.
+///
+/// `dmap_id`/`dmap_revision`/`dmap_digest` (Phase 119G) are a SEPARATE,
+/// independent identity axis -- which historical D-Map placed this service
+/// here, never consulted by `inspected_container_labels_match` (ordinary
+/// M1/M3 convergence, unchanged) and used ONLY by the cleanup path's own
+/// `inspected_container_dmap_ref_matches`. Kept as a distinct `Option` set
+/// on this same struct purely to reuse `as_docker_run_args()` at the single
+/// M1 call site, not because the two identity axes are related.
 struct ExecutionIdentityLabels<'a> {
     artifact_id: &'a str,
     execution_generation: u64,
     execution_projection_digest: &'a str,
+    dmap_id: Option<&'a str>,
+    dmap_revision: Option<u64>,
+    dmap_digest: Option<&'a str>,
 }
 
 impl ExecutionIdentityLabels<'_> {
@@ -1113,16 +1185,97 @@ impl ExecutionIdentityLabels<'_> {
     /// (M1). `Command::args` passes each element as a separate exec
     /// argument -- no shell is involved, so no quoting/injection concern
     /// regardless of what characters `artifact_id` or the digest contain.
+    /// The three `datum.dmap_*` labels are appended only when all three
+    /// `dmap_id`/`dmap_revision`/`dmap_digest` are `Some` -- a partial
+    /// historical D-Map reference is never written (Phase 119F-R1 section
+    /// 6.4: `dmap_ref` is `None` for a legacy/pre-canonical-authority
+    /// placement, and this deliberately leaves such a container exactly as
+    /// unlabeled on this axis as it already is on the existing three).
     fn as_docker_run_args(&self) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "--label".to_string(),
             format!("{DATUM_LABEL_ARTIFACT_ID}={}", self.artifact_id),
             "--label".to_string(),
             format!("{DATUM_LABEL_EXECUTION_GENERATION}={}", self.execution_generation),
             "--label".to_string(),
             format!("{DATUM_LABEL_EXECUTION_PROJECTION_DIGEST}={}", self.execution_projection_digest),
-        ]
+        ];
+        if let (Some(dmap_id), Some(dmap_revision), Some(dmap_digest)) = (self.dmap_id, self.dmap_revision, self.dmap_digest) {
+            args.push("--label".to_string());
+            args.push(format!("{DATUM_LABEL_DMAP_ID}={dmap_id}"));
+            args.push("--label".to_string());
+            args.push(format!("{DATUM_LABEL_DMAP_REVISION}={dmap_revision}"));
+            args.push("--label".to_string());
+            args.push(format!("{DATUM_LABEL_DMAP_DIGEST}={dmap_digest}"));
+        }
+        args
     }
+}
+
+/// Phase 119G cleanup-only local-ownership check (Phase 119F-R1 section 6.4
+/// point 3, sibling to `inspected_container_labels_match`): does the
+/// ALREADY-RUNNING container's `docker inspect` `Config.Labels` carry the
+/// EXACT `datum.dmap_id`/`datum.dmap_revision`/`datum.dmap_digest` triple a
+/// cleanup directive's `previous_dmap_ref` names? Used ONLY by cleanup-mode
+/// processing, never by ordinary M1/M3 convergence (`inspected_container_labels_match`
+/// is intentionally left untouched by this function's existence, so
+/// existing, already-converged containers are never retroactively flagged
+/// as non-converged merely for predating this label set).
+///
+/// A container with no `datum.dmap_*` labels at all -- every container
+/// created before this change shipped -- NEVER matches here, by
+/// construction (`label(..)` returns `None`, which can never equal
+/// `Some(expected)`). This is a disclosed, honest compatibility limitation
+/// (task section 19): such a container is not automatically
+/// cleanup-matched, and cleanup for it fails closed/safe-no-op rather than
+/// falling back to trusting `container_name` alone. Ordinary governed
+/// reconciliation may later recreate such a container (through the
+/// EXISTING, unmodified M1/M3 convergence path) with the new labels, once
+/// which point a LATER cleanup cycle can match it correctly.
+fn inspected_container_dmap_ref_matches(
+    inspected: &serde_json::Value,
+    expected_dmap_id: &str,
+    expected_dmap_revision: u64,
+    expected_dmap_digest: &str,
+) -> bool {
+    let labels = inspected.get("Config").and_then(|config| config.get("Labels"));
+    let label = |key: &str| labels.and_then(|labels| labels.get(key)).and_then(serde_json::Value::as_str);
+    label(DATUM_LABEL_DMAP_ID) == Some(expected_dmap_id)
+        && label(DATUM_LABEL_DMAP_REVISION) == Some(expected_dmap_revision.to_string().as_str())
+        && label(DATUM_LABEL_DMAP_DIGEST) == Some(expected_dmap_digest)
+}
+
+/// Phase 119G (task section 18): cleanup has no historical
+/// artifact_id/execution_generation/execution_projection_digest to compare
+/// against (R1-B -- no current server mechanism can reconstruct it), so
+/// unlike `inspected_container_labels_match` this deliberately checks only
+/// PRESENCE, not a specific expected value: does this container carry all
+/// three `datum.*` execution-identity labels at all (i.e., is it a
+/// DATUM-owned container of SOME generation, as opposed to a pre-Stage-107A
+/// or externally-created one)? Combined with an exact
+/// `inspected_container_dmap_ref_matches` match, this is the full "DATUM
+/// owned this exact historical placement" proof cleanup requires.
+fn inspected_container_has_execution_identity_labels(inspected: &serde_json::Value) -> bool {
+    let labels = inspected.get("Config").and_then(|config| config.get("Labels"));
+    let label = |key: &str| labels.and_then(|labels| labels.get(key)).and_then(serde_json::Value::as_str);
+    label(DATUM_LABEL_ARTIFACT_ID).is_some_and(|v| !v.is_empty())
+        && label(DATUM_LABEL_EXECUTION_GENERATION).is_some_and(|v| !v.is_empty())
+        && label(DATUM_LABEL_EXECUTION_PROJECTION_DIGEST).is_some_and(|v| !v.is_empty())
+}
+
+/// Phase 119G: does this ALREADY-RUNNING (or stopped) container satisfy
+/// EVERY condition task section 18 requires before cleanup may remove it?
+/// Pure, no I/O -- takes an already-fetched `docker inspect` JSON value, so
+/// it is directly unit-testable exactly like its sibling comparison
+/// functions above.
+fn container_cleanup_local_ownership_confirmed(
+    inspected: &serde_json::Value,
+    expected_dmap_id: &str,
+    expected_dmap_revision: u64,
+    expected_dmap_digest: &str,
+) -> bool {
+    inspected_container_has_execution_identity_labels(inspected)
+        && inspected_container_dmap_ref_matches(inspected, expected_dmap_id, expected_dmap_revision, expected_dmap_digest)
 }
 
 /// Convergence-side check (P1-3, v4 review): does the ALREADY-RUNNING
@@ -1247,6 +1400,7 @@ fn verify_declared_configuration_mount_content(
     Ok(verified)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_operational_reconciliation_from_bootstrap(
     cfg: &Config,
     bootstrap: SmartSentinelBootstrapReport,
@@ -1256,8 +1410,16 @@ fn run_operational_reconciliation_from_bootstrap(
     timeout_s: u64,
     execute_requested: bool,
     rollback_requested: bool,
+    cleanup_requested: bool,
     publish_snapshot: bool,
 ) -> Result<OperationalReconciliationReport> {
+    // Task section 15: `--cleanup` and `--rollback` are mutually exclusive
+    // MODES, never combinable -- cleanup processes ONLY `cleanup_directives`
+    // and must never be confused with (or silently fall back to) ordinary
+    // per-service rollback semantics. Checked before any network I/O.
+    if cleanup_requested && rollback_requested {
+        bail!("--cleanup and --rollback are mutually exclusive; cleanup mode never uses desired_services as removal targets");
+    }
     if bootstrap.bootstrap_state != BootstrapState::KnownBoundNode {
         bail!(
             "operational reconciliation requires known_bound_node, received {:?}",
@@ -1301,9 +1463,32 @@ fn run_operational_reconciliation_from_bootstrap(
     } else {
         AUTHORIZATION_OPERATION_RECONCILE
     };
-    let control_plane_authorized = context.authorization.as_ref().is_some_and(|authorization| {
+    // Task section 14/15: whenever cleanup mode is requested, the ordinary
+    // per-service `desired_services` loop must NEVER be able to mutate --
+    // regardless of what authorization happens to be attached to the
+    // context. This is an explicit, unconditional `!cleanup_requested`
+    // gate, not merely an incidental consequence of `expected_authorization_operation`
+    // never equaling `"cleanup"` -- a served authorization whose operation
+    // legitimately IS "reconcile"/"rollback" (e.g. attached by mistake, or
+    // by a DServer that does not yet distinguish the two requests) must
+    // still never authorize a desired_services mutation while `--cleanup`
+    // was the mode actually requested.
+    let control_plane_authorized = !cleanup_requested && context.authorization.as_ref().is_some_and(|authorization| {
         authorization.allow_host_mutation
             && authorization.operation == expected_authorization_operation
+            && authorization.project_id == context.project_id
+            && authorization.dgraph_id == context.dgraph_id
+            && authorization.dgraph_revision == Some(context.dgraph_revision)
+            && authorization.node_id == context.node_id
+    });
+    // Phase 119G (task section 16): symmetric to `control_plane_authorized`
+    // above, but for the DISTINCT `"cleanup"` operation -- a rollback/reconcile
+    // authorization must never satisfy this, and this must never satisfy
+    // `control_plane_authorized`'s own check (enforced structurally: the two
+    // gates check for different, mutually exclusive `operation` values).
+    let cleanup_control_plane_authorized = cleanup_requested && context.authorization.as_ref().is_some_and(|authorization| {
+        authorization.allow_host_mutation
+            && authorization.operation == AUTHORIZATION_OPERATION_CLEANUP
             && authorization.project_id == context.project_id
             && authorization.dgraph_id == context.dgraph_id
             && authorization.dgraph_revision == Some(context.dgraph_revision)
@@ -1326,6 +1511,16 @@ fn run_operational_reconciliation_from_bootstrap(
             context.authorization.as_ref(),
             &bootstrap.control_plane.resource_id,
         ))
+    } else {
+        None
+    };
+    // Phase 119G: the cleanup counterpart of `stage107a_cycle_gate` above.
+    // `resolve_stage107a_cycle_gate` is operation-agnostic (it checks
+    // resource identity, pinning mode, clock skew, and lease expiry -- never
+    // `authorization.operation`), so it is safe and correct to reuse
+    // verbatim for a `"cleanup"`-operation authorization.
+    let cleanup_stage107a_cycle_gate = if execute_requested && cleanup_control_plane_authorized {
+        resolve_stage107a_cycle_gate(cfg, context.authorization.as_ref(), &bootstrap.control_plane.resource_id).ok()
     } else {
         None
     };
@@ -1666,6 +1861,12 @@ fn run_operational_reconciliation_from_bootstrap(
                     artifact_id: &artifact.artifact_id,
                     execution_generation: artifact.execution_generation,
                     execution_projection_digest: &artifact.execution_projection_digest,
+                    // This comparison (`container_attachments_match`, below)
+                    // never consults the dmap_* axis -- only ordinary M1
+                    // creation (the other construction site) writes it.
+                    dmap_id: None,
+                    dmap_revision: None,
+                    dmap_digest: None,
                 };
                 let base_mismatch = !container_attachments_match(
                     &mapping.container_name,
@@ -2256,6 +2457,17 @@ fn run_operational_reconciliation_from_bootstrap(
                                 execution_projection_digest: recomputed_execution_projection_digest
                                     .as_deref()
                                     .expect("recomputed digest is Some whenever the cycle gate resolved"),
+                                // Phase 119G: the exact accepted D-Map this
+                                // service is placed under right now, carried
+                                // verbatim from the delivered assignment --
+                                // never recomputed. `None` for a legacy/
+                                // pre-canonical-authority placement, in which
+                                // case `as_docker_run_args()` simply omits
+                                // the three `datum.dmap_*` labels (its own
+                                // doc comment).
+                                dmap_id: artifact_for_identity.dmap_ref.as_ref().map(|r| r.id.as_str()),
+                                dmap_revision: artifact_for_identity.dmap_ref.as_ref().map(|r| r.revision),
+                                dmap_digest: artifact_for_identity.dmap_ref.as_ref().map(|r| r.digest.as_str()),
                             };
                             match execute_trusted_container_intent(
                                 mapping,
@@ -2387,6 +2599,24 @@ fn run_operational_reconciliation_from_bootstrap(
         });
     }
 
+    // Phase 119G: processed ONLY when `--cleanup` mode was requested --
+    // `process_cleanup_directives` itself iterates `context.cleanup_directives`,
+    // but this call is gated here so a non-cleanup cycle never even attempts
+    // local container/native-process lookups for entries it will never act
+    // on (task section 15: cleanup mode is a distinct, explicitly-requested
+    // mode, not an always-on side channel).
+    let cleanup = if cleanup_requested {
+        process_cleanup_directives(
+            cfg,
+            &context,
+            cleanup_control_plane_authorized,
+            execute_requested,
+            cleanup_stage107a_cycle_gate.as_ref(),
+        )
+    } else {
+        Vec::new()
+    };
+
     let (snapshot_published, snapshot_publish_error) = if publish_snapshot {
         match publish_operational_role_snapshot(
             cfg,
@@ -2413,6 +2643,7 @@ fn run_operational_reconciliation_from_bootstrap(
         control_plane_authorized,
         local_container_execution_allowed,
         services,
+        cleanup,
         side_effects_performed,
         snapshot_published,
         snapshot_publish_error,
@@ -2842,6 +3073,45 @@ fn validate_context(
     }
 
     Ok(())
+}
+
+/// Phase 119G: the cleanup path has no delivered artifact assignment (§17
+/// of the Phase 119G task -- cleanup directives are never routed through
+/// `resolve_assignments_from_registry_with_authority`/`context.artifacts`),
+/// so unlike `trusted_container_mapping_for_artifact` this resolves the
+/// trusted local mapping by `service_id` ALONE -- the mapping's own
+/// `container_name` is exactly what tells the cleanup path which container
+/// to inspect; there is no delivered `container_name`/`image` to
+/// additionally cross-check against, and none is needed: the real ownership
+/// proof for cleanup is the `datum.dmap_*` label match
+/// (`container_cleanup_local_ownership_confirmed`), not this static config
+/// lookup, which only answers "which container_name does this service_id
+/// mean, locally."
+fn trusted_container_mapping_for_service<'a>(cfg: &'a Config, service_id: &str) -> Option<&'a DispatchContainerMapping> {
+    cfg.dispatch.as_ref()?.container_mappings.iter().find(|mapping| {
+        mapping.service_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(service_id))
+    })
+}
+
+/// Phase 119G: a minimal, real `docker inspect <name>` fetch returning the
+/// raw JSON object cleanup's pure comparison functions
+/// (`container_cleanup_local_ownership_confirmed`) consume. `Ok(None)` means
+/// the container does not exist (or Docker reports it missing) -- never an
+/// error, since "absent" is an ordinary, expected outcome for cleanup
+/// (nothing to remove). Mirrors `container_attachments_match`'s own fetch
+/// pattern exactly, factored out here so the comparison logic above stays
+/// unit-testable without a real Docker daemon.
+fn inspect_container_full(container_name: &str) -> Result<Option<serde_json::Value>> {
+    let output = Command::new("docker")
+        .args(["inspect", container_name])
+        .output()
+        .with_context(|| format!("inspect trusted container '{container_name}' for cleanup"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let parsed: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decode docker inspect for '{container_name}'"))?;
+    Ok(parsed.into_iter().next())
 }
 
 fn trusted_container_mapping_for_artifact<'a>(
@@ -4055,6 +4325,167 @@ fn rollback_trusted_container_intent(
     }
 }
 
+/// Phase 119G: one entry of the JSON report's new `cleanup` array -- the
+/// per-directive outcome of `process_cleanup_directives`. `local_runtime_kind`
+/// is "container" or "native_process" purely for readability; it reflects
+/// WHICH local mechanism was consulted, never a claim from the directive
+/// itself (which carries no runtime-kind field).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CleanupDirectiveReport {
+    pub service_id: String,
+    pub application_id: String,
+    pub previous_dmap_ref: CanonicalContractReferenceV1,
+    pub local_runtime_kind: String,
+    pub status: String,
+    pub message: String,
+    pub host_mutation_performed: bool,
+    #[serde(default)]
+    pub mutation_boundaries_crossed: Vec<MutationBoundaryRecord>,
+}
+
+/// Phase 119G: one `docker inspect`-derived `ContainerState`, computed from
+/// an already-fetched full inspect JSON value rather than a second,
+/// separate `docker inspect -f {{.State.Running}}` process launch --
+/// `inspect_container_full` already has everything this needs. `None`
+/// (inspect failed/absent) and a malformed/missing `State.Running` field
+/// are both conservatively `ContainerState::Missing`: never a reason to
+/// proceed toward removal, only ever a reason to treat as "nothing there."
+fn container_state_from_inspected(inspected: Option<&serde_json::Value>) -> ContainerState {
+    match inspected.and_then(|value| value.get("State")).and_then(|state| state.get("Running")).and_then(serde_json::Value::as_bool) {
+        Some(true) => ContainerState::Running,
+        Some(false) => ContainerState::Stopped,
+        None => ContainerState::Missing,
+    }
+}
+
+/// Phase 119G (Phase 119F-R1 section 6.4, task sections 15-22): the
+/// governed source-cleanup counterpart to the ordinary per-service
+/// `desired_services` dispatch loop, but structurally independent of it --
+/// this function is the ONLY thing `--cleanup` mode invokes, and the
+/// ordinary loop is never told about `cleanup_directives` at all. Processes
+/// EVERY `context.cleanup_directives` entry exactly once, in order.
+///
+/// `cleanup_control_plane_authorized` must already encode every check
+/// `control_plane_authorized` does for ordinary operations PLUS
+/// `operation == AUTHORIZATION_OPERATION_CLEANUP` specifically -- computed
+/// once by the caller (mirrors `control_plane_authorized`'s own
+/// once-per-cycle computation) so this function never has to re-derive it
+/// per directive.
+///
+/// For each directive: tries the trusted local container mapping first
+/// (`trusted_container_mapping_for_service`), then (only if no container
+/// mapping exists for this `service_id`) the persisted native-process
+/// state. If NEITHER local mechanism has anything for this `service_id`,
+/// the directive is an honest, reported no-op -- there is nothing
+/// DATUM-owned here to remove, which is an entirely expected outcome (e.g.
+/// cleanup already succeeded on a previous cycle, task section 25).
+pub(crate) fn process_cleanup_directives(
+    cfg: &Config,
+    context: &OperationalReconciliationContext,
+    cleanup_control_plane_authorized: bool,
+    execute_requested: bool,
+    cleanup_cycle_gate: Option<&Stage107ACycleGate>,
+) -> Vec<CleanupDirectiveReport> {
+    let mut reports = Vec::with_capacity(context.cleanup_directives.len());
+    for directive in &context.cleanup_directives {
+        let mut mutation_boundaries: Vec<MutationBoundaryRecord> = Vec::new();
+        let authorization = context.authorization.as_ref();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: authorization.map(|a| a.authorization_id.as_str()),
+            expires_at_utc: authorization.and_then(|a| a.expires_at_utc.as_deref()),
+            configured_clock_skew_seconds: cleanup_cycle_gate.map(|gate| gate.skew_seconds),
+        };
+        let lease = cleanup_cycle_gate.map(|gate| &gate.lease);
+
+        let attempt_mutation = execute_requested && cleanup_control_plane_authorized;
+
+        let (status, message, host_mutation_performed, local_runtime_kind) =
+            if let Some(mapping) = trusted_container_mapping_for_service(cfg, &directive.service_id) {
+                let container_name = mapping.container_name.trim();
+                match inspect_container_full(container_name) {
+                    Ok(inspected) => {
+                        let observed_before = container_state_from_inspected(inspected.as_ref());
+                        let owned = match (&inspected, observed_before) {
+                            (Some(inspected), ContainerState::Running | ContainerState::Stopped) => container_cleanup_local_ownership_confirmed(
+                                inspected,
+                                &directive.previous_dmap_ref.id,
+                                directive.previous_dmap_ref.revision,
+                                &directive.previous_dmap_ref.digest,
+                            ),
+                            _ => false,
+                        };
+                        if observed_before == ContainerState::Missing {
+                            ("cleanup_already_absent".to_string(), format!("trusted container '{container_name}' is already absent; no cleanup mutation was needed"), false, "container")
+                        } else if !owned {
+                            (
+                                "cleanup_dmap_ref_mismatch".to_string(),
+                                format!(
+                                    "container '{container_name}' does not carry the exact datum.dmap_* labels this directive names (or lacks datum.* execution-identity labels entirely); refusing to remove it"
+                                ),
+                                false,
+                                "container",
+                            )
+                        } else if !attempt_mutation {
+                            ("cleanup_observed_match_not_executed".to_string(), format!("container '{container_name}' matches this cleanup directive; not removed (execution not requested/authorized)"), false, "container")
+                        } else {
+                            match (lease, cleanup_cycle_gate) {
+                                (Some(lease), Some(_)) => match rollback_trusted_container_intent(mapping, observed_before, lease, &boundary_context, &mut mutation_boundaries) {
+                                    Ok((status, message, mutated)) => (status, message, mutated, "container"),
+                                    Err(error) => ("cleanup_execution_failed".to_string(), format!("governed trusted container cleanup failed: {error}"), false, "container"),
+                                },
+                                _ => ("blocked_authorization_not_leased".to_string(), "no valid Stage 107A lease available for cleanup mutation".to_string(), false, "container"),
+                            }
+                        }
+                    }
+                    Err(error) => ("docker_unavailable".to_string(), format!("cleanup could not inspect trusted container '{container_name}': {error}"), false, "container"),
+                }
+            } else {
+                let (status, message, mutated) = if attempt_mutation {
+                    native_process_runtime::process_native_cleanup_directive(
+                        cfg,
+                        &context.project_id,
+                        &context.node_id,
+                        directive,
+                        lease,
+                        &boundary_context,
+                        &mut mutation_boundaries,
+                    )
+                } else {
+                    match native_process_runtime::observe_current_native_state(cfg, &context.project_id, &context.node_id, &directive.service_id) {
+                        Some((state, _)) if state.application_id == directive.application_id && state.dmap_ref.as_ref() == Some(&directive.previous_dmap_ref) => (
+                            "cleanup_observed_match_not_executed".to_string(),
+                            format!("persisted native-process state for service '{}' matches this cleanup directive; not removed (execution not requested/authorized)", directive.service_id),
+                            false,
+                        ),
+                        Some(_) => (
+                            "cleanup_dmap_ref_mismatch".to_string(),
+                            format!("persisted native-process state for service '{}' does not match this directive's historical application_id/dmap_ref", directive.service_id),
+                            false,
+                        ),
+                        None => (
+                            "cleanup_no_local_state".to_string(),
+                            format!("no local container mapping or persisted native-process state for service '{}'; nothing to clean up", directive.service_id),
+                            false,
+                        ),
+                    }
+                };
+                (status, message, mutated, "native_process")
+            };
+
+        reports.push(CleanupDirectiveReport {
+            service_id: directive.service_id.clone(),
+            application_id: directive.application_id.clone(),
+            previous_dmap_ref: directive.previous_dmap_ref.clone(),
+            local_runtime_kind: local_runtime_kind.to_string(),
+            status,
+            message,
+            host_mutation_performed,
+            mutation_boundaries_crossed: mutation_boundaries,
+        });
+    }
+    reports
+}
+
 pub fn publish_operational_role_snapshot(
     cfg: &Config,
     node_id: &str,
@@ -4286,6 +4717,7 @@ mod tests {
             node_id: "fog-01".to_string(),
             desired_services: vec![desired_service("native_process")],
             artifacts: vec![native_process_assignment()],
+            cleanup_directives: Vec::new(),
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
                 module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
@@ -4317,6 +4749,7 @@ mod tests {
             node_id: "fog-01".to_string(),
             desired_services: vec![desired_service("native_process")],
             artifacts: vec![assignment],
+            cleanup_directives: Vec::new(),
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
                 module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
@@ -4423,6 +4856,7 @@ mod tests {
             node_id: "fog-01".to_string(),
             desired_services: vec![desired_service("native_process")],
             artifacts: vec![assignment],
+            cleanup_directives: Vec::new(),
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
                 module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
@@ -4456,6 +4890,7 @@ mod tests {
             node_id: "fog-01".to_string(),
             desired_services: vec![desired_service("native_process")],
             artifacts: vec![assignment],
+            cleanup_directives: Vec::new(),
             authorization: None,
             reconciler: OperationalReconcilerDescriptor {
                 module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
@@ -4592,7 +5027,88 @@ mod tests {
             artifact_id: "mqtt-broker",
             execution_generation: 3,
             execution_projection_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            dmap_id: None,
+            dmap_revision: None,
+            dmap_digest: None,
         }
+    }
+
+    // ---- Phase 119G: cleanup local-ownership pure comparison functions --- //
+
+    fn inspect_with_dmap_labels(dmap_id: &str, dmap_revision: u64, dmap_digest: &str) -> serde_json::Value {
+        let mut inspected = baseline_inspect();
+        inspected["Config"]["Labels"]["datum.dmap_id"] = serde_json::Value::String(dmap_id.to_string());
+        inspected["Config"]["Labels"]["datum.dmap_revision"] = serde_json::Value::String(dmap_revision.to_string());
+        inspected["Config"]["Labels"]["datum.dmap_digest"] = serde_json::Value::String(dmap_digest.to_string());
+        inspected
+    }
+
+    #[test]
+    fn container_cleanup_ownership_confirmed_when_both_label_sets_match_exactly() {
+        let inspected = inspect_with_dmap_labels("dmap:proj-x/app-a", 3, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        assert!(container_cleanup_local_ownership_confirmed(
+            &inspected, "dmap:proj-x/app-a", 3, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ));
+    }
+
+    #[test]
+    fn container_cleanup_ownership_refused_without_any_dmap_labels() {
+        // baseline_inspect() carries the three EXISTING datum.* execution
+        // labels but never the new dmap_* ones -- exactly a container
+        // created before Phase 119G shipped (task section 19).
+        assert!(!container_cleanup_local_ownership_confirmed(
+            &baseline_inspect(), "dmap:proj-x/app-a", 3, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ));
+    }
+
+    #[test]
+    fn container_cleanup_ownership_refused_on_dmap_revision_mismatch() {
+        let inspected = inspect_with_dmap_labels("dmap:proj-x/app-a", 3, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        assert!(!container_cleanup_local_ownership_confirmed(
+            &inspected, "dmap:proj-x/app-a", 4, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ));
+    }
+
+    #[test]
+    fn container_cleanup_ownership_refused_when_execution_identity_labels_absent_even_with_matching_dmap_labels() {
+        // Task section 18: cleanup requires an EXISTING DATUM-owned
+        // container (execution-identity labels present) AND an exact dmap
+        // match -- a matching dmap triple alone, on a container with no
+        // datum.artifact_id/execution_generation/execution_projection_digest
+        // labels at all, must never be enough.
+        let mut inspected = serde_json::json!({ "Config": { "Labels": {} } });
+        inspected["Config"]["Labels"]["datum.dmap_id"] = serde_json::Value::String("dmap:proj-x/app-a".to_string());
+        inspected["Config"]["Labels"]["datum.dmap_revision"] = serde_json::Value::String("3".to_string());
+        inspected["Config"]["Labels"]["datum.dmap_digest"] = serde_json::Value::String("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
+        assert!(!container_cleanup_local_ownership_confirmed(
+            &inspected, "dmap:proj-x/app-a", 3, "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        ));
+    }
+
+    #[test]
+    fn container_state_from_inspected_reads_running_flag() {
+        assert_eq!(container_state_from_inspected(Some(&serde_json::json!({"State": {"Running": true}}))), ContainerState::Running);
+        assert_eq!(container_state_from_inspected(Some(&serde_json::json!({"State": {"Running": false}}))), ContainerState::Stopped);
+        assert_eq!(container_state_from_inspected(None), ContainerState::Missing);
+        assert_eq!(container_state_from_inspected(Some(&serde_json::json!({}))), ContainerState::Missing);
+    }
+
+    #[test]
+    fn trusted_container_mapping_for_service_finds_by_service_id_alone() {
+        let cfg = boundary_test_config(crate::config::DispatchConfig {
+            enabled: true,
+            container_mappings: vec![DispatchContainerMapping {
+                module_id: None,
+                service_name: Some("probe".to_string()),
+                container_name: "probe-container".to_string(),
+                artifact: Some("probe-image:1".to_string()),
+                ports: vec![],
+            }],
+            ..Default::default()
+        });
+        let found = trusted_container_mapping_for_service(&cfg, "probe").expect("mapping must be found by service_id alone");
+        assert_eq!(found.container_name, "probe-container");
+        assert!(trusted_container_mapping_for_service(&cfg, "unrelated-service").is_none());
     }
 
     #[test]
@@ -5248,6 +5764,7 @@ mod tests {
         assert!(crate::agent::jcs::is_canonical_digest_format(&digest));
         let identity = ExecutionIdentityLabels {
             artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: &digest,
+            dmap_id: None, dmap_revision: None, dmap_digest: None,
         };
         assert!(identity.as_docker_run_args().contains(&format!("datum.execution_projection_digest={digest}")));
     }
@@ -6124,7 +6641,7 @@ mod tests {
     // without a live Docker daemon.
     #[test]
     fn build_governed_docker_run_args_uses_the_immutable_reference_and_pull_never_when_pinned() {
-        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa" };
+        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa", dmap_id: None, dmap_revision: None, dmap_digest: None };
         let execution_reference = "docker.io/library/eclipse-mosquitto@sha256:1111111111111111111111111111111111111111111111111111111111111111";
         let args = build_governed_docker_run_args(
             "mqtt", execution_reference, true, None, &[], &[], &[], &[], None, &[], &identity, &[],
@@ -6136,7 +6653,7 @@ mod tests {
 
     #[test]
     fn build_governed_docker_run_args_unpinned_uses_the_declared_tag_with_no_pull_policy_flag() {
-        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa" };
+        let identity = ExecutionIdentityLabels { artifact_id: "mqtt", execution_generation: 1, execution_projection_digest: "sha256:aa", dmap_id: None, dmap_revision: None, dmap_digest: None };
         let args = build_governed_docker_run_args(
             "mqtt", "eclipse-mosquitto:2", false, None, &[], &[], &[], &[], None, &[], &identity, &[],
         );

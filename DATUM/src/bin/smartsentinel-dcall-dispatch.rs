@@ -74,20 +74,19 @@ fn main() -> Result<()> {
         .map_err(|error| anyhow::anyhow!(error))
         .context("resolve local D-Node identity (run `smartsentinel-dcode-init` first)")?
         .node_id;
-    let authorization = datum::dcode::client::fetch_dcode_authorization(
+    // Phase 117H: governed preflight resolves the exact authorized D-Code
+    // descriptor revision -- never the old logical fetch, which cannot
+    // execute the valid governed scenario where multiple revisions coexist.
+    let preflight = datum::dcode::client::fetch_governed_dcode_execution_material(
         &cli.dserver_url,
         &cli.project_id,
         &cli.application_id,
         &cli.service_id,
         &local_node_id,
     )
-    .context("fetch D-Code authorization from DServer (governed path)")?;
-    let artifact = datum::dcode::client::fetch_dserv_artifact(
-        &cli.dserver_url,
-        &cli.application_id,
-        &cli.service_id,
-    )
-    .context("fetch canonical D-Serv artifact from DServer (governed path)")?;
+    .context("governed D-Code preflight (authorization + exact descriptor revision) from DServer")?;
+    let authorization = preflight.authorization;
+    let artifact = preflight.artifact;
 
     let input = read_input(&cli.input_path)?;
     let module_store = DCodeModuleStore::new(Path::new(&cli.dnode_root));

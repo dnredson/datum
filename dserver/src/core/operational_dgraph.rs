@@ -19,6 +19,26 @@ pub const AUTHORIZATION_SCOPE_DURABLE: &str = "durable";
 pub const MAX_DURABLE_AUTHORIZATION_SECONDS: u64 = 86_400;
 pub const AUTHORIZATION_OPERATION_RECONCILE: &str = "reconcile";
 pub const AUTHORIZATION_OPERATION_ROLLBACK: &str = "rollback";
+/// Phase 119G (Phase 119F-R1 section 6.4, correcting Phase 119F's original
+/// "reuse `operation = rollback`" recommendation): a DISTINCT authorization
+/// operation for governed source cleanup, never reusing `"rollback"`.
+/// Independent review found reusing rollback unsafe for multi-application
+/// nodes -- ordinary rollback applies to the agent's ENTIRE per-service
+/// dispatch loop over `desired_services`, so an authorization whose
+/// `operation` merely said `"rollback"` would carry no way to scope it to
+/// ONLY the vacated service's cleanup, risking a currently-legitimate
+/// co-located service on the same node entering rollback semantics it was
+/// never meant to. A `"cleanup"` authorization instead scopes the agent to
+/// processing ONLY `cleanup_directives`, never `desired_services`, by
+/// construction of the agent-side dispatch itself (see
+/// `phase119g-governed-source-cleanup-implementation.md`). This new
+/// operation value does NOT imply new authority -- it still requires every
+/// applicable Stage107A issuance gate `build_reconciliation_authorization`
+/// already enforces (active Resource Registry binding, exact project/
+/// dgraph/revision match, finite lease, `allow_host_mutation`, resource
+/// identity) -- it only scopes WHICH agent-side dispatch path the resulting
+/// authorization may drive.
+pub const AUTHORIZATION_OPERATION_CLEANUP: &str = "cleanup";
 
 fn default_dgraph_revision() -> u64 {
     1
@@ -80,6 +100,38 @@ pub struct OperationalDesiredService {
     /// reference).
     #[serde(default)]
     pub dmap_ref: Option<CanonicalContractReferenceV1>,
+}
+
+/// Phase 119G (implementing the Phase 119F/119F-R1 governed source-cleanup
+/// design). Server-derived, NEVER PERSISTED as workflow state, and NEVER a
+/// placement authority in its own right: this is the answer to "service S
+/// was desired HERE under some PAST accepted D-Map, but current accepted
+/// authority no longer places it here" -- structurally separate from
+/// `desired_services` (which answers "what IS desired here right now") so a
+/// directive here can never be confused with, merged into, or mistaken for
+/// current desired state. It carries no `desired_state` field (it is not a
+/// placement claim of any kind) and no artifact/generation/digest field
+/// (Phase 119F-R1 section 6.2: no current server mechanism can reconstruct
+/// the HISTORICAL artifact identity a vacated service actually ran under, so
+/// this type deliberately does not pretend to carry one -- see
+/// `derive_cleanup_directives_for_node` in `core::ddeploy` for the exact,
+/// full-history derivation, and the Phase 119G implementation document for
+/// the corresponding agent-side identity/authorization carve-out).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalCleanupDirective {
+    pub service_id: String,
+    pub application_id: String,
+    /// The exact accepted D-Map `{id, revision, digest}` this service was
+    /// placed under the LAST time it was historically desired on this node
+    /// -- copied verbatim from the historical acceptance record via its
+    /// linked proposal's immutable placements, never independently
+    /// recomputed from current state. A node may see MULTIPLE directives for
+    /// the same `service_id` with DIFFERENT `previous_dmap_ref` values if it
+    /// was placed, displaced, and re-placed more than once historically
+    /// (Phase 119F-R1 section 5.3) -- local runtime identity evidence, not
+    /// server-side guessing, is what determines which (if any) still
+    /// corresponds to something actually running.
+    pub previous_dmap_ref: CanonicalContractReferenceV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -281,6 +333,16 @@ pub struct OperationalDGraphSlice {
     pub project_id: String,
     pub node_id: String,
     pub desired_services: Vec<OperationalDesiredService>,
+    /// Phase 119G: server-derived governed source-cleanup signal, structurally
+    /// separate from `desired_services` (never merged into it, never a
+    /// placement claim). Additive (`#[serde(default)]`) for backward
+    /// compatibility with any already-serialized slice. Populated by the
+    /// caller (`operational_dgraph_slice_snapshot`) from
+    /// `core::ddeploy::derive_cleanup_directives_for_node` -- this module
+    /// cannot populate it itself without a circular dependency on `ddeploy`,
+    /// which already depends on this one.
+    #[serde(default)]
+    pub cleanup_directives: Vec<OperationalCleanupDirective>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<OperationalReconciliationAuthorization>,
     pub reconciler: OperationalReconcilerDescriptor,
@@ -368,6 +430,9 @@ pub fn build_operational_slice(
         project_id: graph.project_id.clone(),
         node_id: node.node_id.clone(),
         desired_services: node.desired_services.clone(),
+        // Populated by the caller, not here -- see the field's own doc
+        // comment on `OperationalDGraphSlice`.
+        cleanup_directives: Vec::new(),
         authorization,
         reconciler: OperationalReconcilerDescriptor {
             module_id: OPERATIONAL_RECONCILER_MODULE_ID.to_string(),
@@ -408,7 +473,20 @@ pub fn build_reconciliation_authorization(
     validate_operational_dgraph(graph)?;
     let node_id = node_id.trim();
     let binding_id = binding_id.trim();
-    if !graph.nodes.iter().any(|node| node.node_id.trim() == node_id) {
+    let operation = request.operation.trim();
+    if !matches!(operation, AUTHORIZATION_OPERATION_RECONCILE | AUTHORIZATION_OPERATION_ROLLBACK | AUTHORIZATION_OPERATION_CLEANUP) {
+        return Err(format!(
+            "unsupported operational authorization operation '{}'; expected '{}', '{}', or '{}'",
+            operation, AUTHORIZATION_OPERATION_RECONCILE, AUTHORIZATION_OPERATION_ROLLBACK, AUTHORIZATION_OPERATION_CLEANUP
+        ));
+    }
+    // Phase 119G: `"cleanup"` is the ONE authorization operation that may
+    // target a node CURRENTLY ABSENT from `graph.nodes` -- a source node
+    // with zero current placements is exactly the case governed cleanup
+    // exists to authorize (Phase 119F-R1 section 11 point 3). Every other
+    // operation still requires the node to be structurally present, exactly
+    // as before.
+    if operation != AUTHORIZATION_OPERATION_CLEANUP && !graph.nodes.iter().any(|node| node.node_id.trim() == node_id) {
         return Err(format!("node '{}' is not present in operational D-Graph", node_id));
     }
     required("binding_id", binding_id)?;
@@ -432,14 +510,6 @@ pub fn build_reconciliation_authorization(
             "operational reconciliation authorization must explicitly set allow_host_mutation=true"
                 .to_string(),
         );
-    }
-
-    let operation = request.operation.trim();
-    if !matches!(operation, AUTHORIZATION_OPERATION_RECONCILE | AUTHORIZATION_OPERATION_ROLLBACK) {
-        return Err(format!(
-            "unsupported operational authorization operation '{}'; expected '{}' or '{}'",
-            operation, AUTHORIZATION_OPERATION_RECONCILE, AUTHORIZATION_OPERATION_ROLLBACK
-        ));
     }
 
     let persistence_scope = request
@@ -670,6 +740,129 @@ mod tests {
             "binding:other",
             now
         ));
+    }
+
+    // ---- Phase 119G: AUTHORIZATION_OPERATION_CLEANUP ---------------------
+
+    #[test]
+    fn cleanup_authorization_tolerates_a_node_absent_from_the_graph() {
+        // The one thing that structurally distinguishes "cleanup" from every
+        // other operation: a cleanup-only source node has zero current
+        // placements and is therefore absent from `graph.nodes` entirely
+        // (Phase 119F-R1 section 11 point 3) -- ordinary reconcile/rollback
+        // authorization must still refuse this (tested below).
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: true,
+            operation: AUTHORIZATION_OPERATION_CLEANUP.to_string(),
+            persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
+            valid_for_seconds: Some(60),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
+        let auth = build_reconciliation_authorization(
+            &graph,
+            "node-absent-from-graph",
+            "binding:test",
+            "resource:test",
+            &request,
+            now,
+            Vec::new(),
+            EXECUTION_PINNING_MODE_LEGACY_PARTIAL,
+            Vec::new(),
+        )
+        .expect("a cleanup authorization must be issuable for a node absent from graph.nodes");
+        assert_eq!(auth.operation, AUTHORIZATION_OPERATION_CLEANUP);
+        assert_eq!(auth.node_id, "node-absent-from-graph");
+        assert!(auth.expires_at_utc.is_some(), "cleanup authorization must still carry a finite lease");
+    }
+
+    #[test]
+    fn reconcile_authorization_still_refuses_a_node_absent_from_the_graph() {
+        // The cleanup-only carve-out must be exact -- it must never
+        // accidentally loosen the node-presence requirement for ordinary
+        // reconcile/rollback.
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: true,
+            operation: "reconcile".to_string(),
+            persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
+            valid_for_seconds: Some(60),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
+        let result = build_reconciliation_authorization(
+            &graph, "node-absent-from-graph", "binding:test", "resource:test",
+            &request, now, Vec::new(), EXECUTION_PINNING_MODE_REQUIRED, Vec::new(),
+        );
+        assert!(result.is_err(), "reconcile must still require the node to be present in graph.nodes: {result:?}");
+    }
+
+    #[test]
+    fn cleanup_authorization_still_enforces_dgraph_revision_freshness() {
+        // Task section 23 / Phase 119F-R1 section 7: a stale cleanup
+        // authorization must be rejected exactly like ordinary
+        // reconcile/rollback -- the revision-exact-match gate is unchanged.
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision + 1),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: true,
+            operation: AUTHORIZATION_OPERATION_CLEANUP.to_string(),
+            persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
+            valid_for_seconds: Some(60),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
+        let result = build_reconciliation_authorization(
+            &graph, "node-absent-from-graph", "binding:test", "resource:test",
+            &request, now, Vec::new(), EXECUTION_PINNING_MODE_LEGACY_PARTIAL, Vec::new(),
+        );
+        assert!(result.is_err(), "a cleanup authorization requesting a stale dgraph_revision must still be rejected: {result:?}");
+    }
+
+    #[test]
+    fn cleanup_authorization_still_requires_allow_host_mutation() {
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: false,
+            operation: AUTHORIZATION_OPERATION_CLEANUP.to_string(),
+            persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
+            valid_for_seconds: Some(60),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
+        let result = build_reconciliation_authorization(
+            &graph, "node-absent-from-graph", "binding:test", "resource:test",
+            &request, now, Vec::new(), EXECUTION_PINNING_MODE_LEGACY_PARTIAL, Vec::new(),
+        );
+        assert!(result.is_err(), "cleanup must still require allow_host_mutation=true exactly like every other operation: {result:?}");
+    }
+
+    #[test]
+    fn unsupported_operation_value_is_still_rejected() {
+        let graph = graph();
+        let request = OperationalReconciliationAuthorizationRequest {
+            dgraph_id: graph.dgraph_id.clone(),
+            dgraph_revision: Some(graph.revision),
+            authorized_by: "operator:test".to_string(),
+            allow_host_mutation: true,
+            operation: "migrate".to_string(),
+            persistence_scope: Some(AUTHORIZATION_SCOPE_DURABLE.to_string()),
+            valid_for_seconds: Some(60),
+        };
+        let now = Utc.with_ymd_and_hms(2026, 9, 4, 18, 45, 0).unwrap();
+        let result = build_reconciliation_authorization(
+            &graph, "fog-01", "binding:test", "resource:test",
+            &request, now, Vec::new(), EXECUTION_PINNING_MODE_LEGACY_PARTIAL, Vec::new(),
+        );
+        assert!(result.is_err(), "an unrecognised operation value must still be rejected -- reconcile/rollback/cleanup are the only three");
     }
 
     #[test]

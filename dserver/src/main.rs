@@ -31,8 +31,10 @@ use api::dcall::{
     put_dcall_endpoint,
 };
 use api::dcode::{
-    get_dserv_artifact, post_authorize_dcode_invocation, post_declare_dserv_artifact,
+    get_dserv_artifact, get_dserv_artifact_revision, post_authorize_dcode_invocation,
+    post_declare_dserv_artifact,
 };
+use api::dcompile::post_compile;
 use api::ddeploy::{
     get_active, get_active_authority_v2, get_proposal, get_proposal_v2, post_accept_proposal,
     post_accept_proposal_v2, post_create_proposal, post_create_proposal_v2, post_plan_proposal,
@@ -105,6 +107,7 @@ use api::operational_analysis_context::{
 use api::operational_dgraph::{
     get_operational_dgraph, get_operational_dgraph_slice, get_operational_projects,
     post_operational_project, post_operational_reconciliation_authorization,
+    post_operational_reconciliation_cleanup_authorization,
     post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
@@ -197,6 +200,9 @@ fn load_server_config() -> anyhow::Result<AppConfig> {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
+    // Freeze only the Event/Alert path once; do not start a scheduler or open
+    // SQLite here. Post-commit observability failures never gate authority.
+    let _event_producer_runtime = core::event_producers::process_runtime();
 
     // Restore the accepted control-plane state before opening any listener or
     // initializing external clients. A failed recovery is a startup failure,
@@ -230,6 +236,12 @@ async fn main() {
         .clone()
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
+    let catalog = api::service_catalog::CatalogApi::from_process(state.service_artifacts.as_ref().clone());
+    let provider = tokio::task::spawn_blocking(core::service_modeling_openai::configured_provider)
+        .await.expect("modeling provider initialization failed")
+        .expect("invalid service modeling provider configuration");
+    let modeling = catalog.modeling_api().with_provider(provider);
+    let editor = catalog.editor_api();
     let mut app = Router::new()
         .route("/graphql", post(graphql_post))
         .route("/graphiql", get(graphiql))
@@ -304,6 +316,10 @@ async fn main() {
         .route(
             "/api/v1/nodes/:node_id/operational-reconciliation/rollback-authorize",
             post(post_operational_reconciliation_rollback_authorization),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/operational-reconciliation/cleanup-authorize",
+            post(post_operational_reconciliation_cleanup_authorization),
         )
         .route(
             "/api/v1/operational-evidence",
@@ -447,7 +463,12 @@ async fn main() {
         .route("/api/v1/dnodes/:node_id", delete(delete_dnode))
         .route("/api/v1/dcode/artifacts", post(post_declare_dserv_artifact))
         .route("/api/v1/dcode/artifacts/:application_id/:dserv_id", get(get_dserv_artifact))
+        .route(
+            "/api/v1/dcode/artifacts/:application_id/:dserv_id/:descriptor_digest",
+            get(get_dserv_artifact_revision),
+        )
         .route("/api/v1/dcode/authorize", post(post_authorize_dcode_invocation))
+        .route("/api/v1/dcompile/compile", post(post_compile))
         .route("/api/v1/dcall/endpoints/:node_id/:transport", put(put_dcall_endpoint))
         .route("/api/v1/dcall/endpoints/:node_id/:transport", get(get_dcall_endpoint))
         .route("/api/v1/dcall/calls/:project_id/:application_id/:source_service_id", get(get_dcalls_for_source_service))
@@ -684,7 +705,13 @@ async fn main() {
             "/api/v1/events/materialized",
             get(get_materialized_global_events),
         )
-        .with_state(state);
+        .with_state(state)
+        .merge(api::operations::router(
+            api::operations::OperationsApiRuntime::from_process(),
+        ))
+        .merge(api::service_catalog::router(catalog))
+        .merge(api::service_modeling::router(modeling))
+        .merge(api::dgraph_editor::router(editor));
 
     if let Some(cors_layer) = build_cors_layer(config.as_ref()) {
         app = app.layer(cors_layer);

@@ -40,3 +40,7 @@ datum-control-plane.db-shm
 # Python bytecode / interpreter caches
 __pycache__/
 *.py[cod]
+
+# Phase 128 Console build/dependencies (Rust and frontend builds stay separate).
+/console/node_modules/
+/console/dist/

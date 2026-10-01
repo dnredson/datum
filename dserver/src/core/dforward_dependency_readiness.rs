@@ -534,8 +534,8 @@ mod tests {
             dgraph_id: "dgraph:d2-1".to_string(),
             revision: 1,
             services: vec![
-                CanonicalDServV1 { service_id: SVC_A.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
-                CanonicalDServV1 { service_id: SVC_B.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
+                CanonicalDServV1 { service_definition: None, service_id: SVC_A.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
+                CanonicalDServV1 { service_definition: None, service_id: SVC_B.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
             ],
             calls: Vec::new(),
         };
@@ -633,7 +633,8 @@ mod tests {
                 }
                 m
             },
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
 
         let mut seen_artifact_ids = std::collections::BTreeSet::new();
         let artifacts: Vec<ServiceArtifact> = diots_for_authority

@@ -228,6 +228,7 @@ mod tests {
                 OperationalDesiredService { service_id: "db".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None },
                 OperationalDesiredService { service_id: "api".to_string(), runtime: "container".to_string(), desired_state: "running".to_string(), application_id: String::new(), dmap_ref: None },
             ],
+            cleanup_directives: Vec::new(),
             artifacts: vec![
                 ArtifactReconciliationAssignment {
                     artifact_id: "db".to_string(), service_id: "db".to_string(), artifact_service_id: "db".to_string(), version: "1".to_string(),

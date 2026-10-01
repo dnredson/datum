@@ -15,6 +15,88 @@ use serde_json::Value;
 use crate::agent::jcs;
 
 pub const CANONICAL_DGRAPH_SCHEMA: &str = "datum.dgraph/1";
+#[cfg(test)]
+mod catalog_reference_tests {
+    use super::*;
+    const FIXTURE: &str = include_str!("../../../scripts/fixtures/datum-contracts/canonical-v2/dgraph.catalog-reference.json");
+    #[test]
+    fn catalog_v2_cross_crate_fixture_roundtrips_without_loss() {
+        let graph: CanonicalDGraphV1 = serde_json::from_str(FIXTURE).unwrap();
+        assert!(graph.validate().is_empty());
+        let wire = serde_json::to_value(&graph).unwrap();
+        assert_eq!(wire, serde_json::from_str::<Value>(FIXTURE).unwrap());
+        let reference = graph.services[0].service_definition.as_ref().unwrap();
+        assert_eq!(reference.definition_id, "smart-coffee-api");
+        assert_eq!(reference.revision, 3);
+        let base = recompute_dgraph_digest(&graph).unwrap();
+        assert_eq!(base, "sha256:95093c7937972c38bc55c9eef21283bc40f6139065af952d5012a579ccf996ee");
+        for field in ["id", "revision", "digest"] {
+            let mut changed = graph.clone();
+            let r = changed.services[0].service_definition.as_mut().unwrap();
+            match field { "id" => r.definition_id = "other".into(), "revision" => r.revision = 4, _ => r.digest = format!("sha256:{}", "b".repeat(64)) };
+            assert_ne!(base, recompute_dgraph_digest(&changed).unwrap());
+        }
+    }
+    #[test]
+    fn legacy_digest_and_schema_gate_are_preserved() {
+        let mut graph: CanonicalDGraphV1 = serde_json::from_str(FIXTURE).unwrap();
+        graph.schema = CANONICAL_DGRAPH_SCHEMA.into();
+        assert!(graph.validate().iter().any(|f| f.code == "catalog_reference_requires_v2"));
+        graph.services[0].service_definition = None;
+        assert!(graph.validate().is_empty());
+        assert!(serde_json::to_value(&graph).unwrap()["services"][0].get("service_definition").is_none());
+        let clone: CanonicalDGraphV1 = serde_json::from_value(serde_json::to_value(&graph).unwrap()).unwrap();
+        assert_eq!(recompute_dgraph_digest(&graph), recompute_dgraph_digest(&clone));
+    }
+    #[test]
+    fn unknown_reference_fields_and_malformed_refs_never_drop() {
+        let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+        value["services"][0]["service_definition"]["latest"] = Value::Bool(true);
+        assert!(serde_json::from_value::<CanonicalDGraphV1>(value).is_err());
+        let mut graph: CanonicalDGraphV1 = serde_json::from_str(FIXTURE).unwrap();
+        graph.services[0].service_definition.as_mut().unwrap().revision = 0;
+        assert!(graph.validate().iter().any(|f| f.code == "invalid_service_definition_reference"));
+    }
+    #[test]
+    fn v2_nested_unknown_fields_reject_while_v1_annotations_remain_compatible() {
+        for target in ["service", "execution", "resources", "call"] {
+            let mut value: Value = serde_json::from_str(FIXTURE).unwrap();
+            value["calls"] = serde_json::json!([{"call_id":"self","source_service_id":value["services"][0]["service_id"],"target_service_id":value["services"][0]["service_id"]}]);
+            let extra = match target {
+                "service" => &mut value["services"][0],
+                "execution" => &mut value["services"][0]["execution_requirement"],
+                "resources" => &mut value["services"][0]["resource_requirement"],
+                _ => &mut value["calls"][0],
+            };
+            extra["future_semantics"] = Value::Bool(true);
+            assert!(serde_json::from_value::<CanonicalDGraphV1>(value.clone()).is_err(), "{target}");
+            value["schema"] = Value::String(CANONICAL_DGRAPH_SCHEMA.into());
+            value["services"][0].as_object_mut().unwrap().remove("service_definition");
+            let graph: CanonicalDGraphV1 = serde_json::from_value(value).unwrap();
+            assert!(graph.validate().is_empty(), "{target}");
+        }
+    }
+    #[test]
+    fn duplicate_known_nested_fields_are_not_normalized_away() {
+        for schema in [CANONICAL_DGRAPH_SCHEMA, CATALOG_DGRAPH_SCHEMA] {
+            let raw = format!(r#"{{"schema":"{schema}","application_id":"a","dgraph_id":"g","revision":1,"services":[{{"service_id":"first","service_id":"second","execution_requirement":{{"dnode_abi":"datum-dnode/0"}},"resource_requirement":{{"cpu_cores":1,"memory_bytes":1}}}}],"calls":[]}}"#);
+            assert!(serde_json::from_str::<CanonicalDGraphV1>(&raw).is_err());
+            let raw = raw.replace(r#""service_id":"first","service_id":"second""#, r#""service_id":"one""#)
+                .replace(r#""memory_bytes":1"#, r#""memory_bytes":1,"memory_bytes":2"#);
+            assert!(serde_json::from_str::<CanonicalDGraphV1>(&raw).is_err());
+        }
+    }
+}
+pub const CATALOG_DGRAPH_SCHEMA: &str = "datum.dgraph/2";
+
+/// Exact modeling provenance only. Never execution/placement authorization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDefinitionReference {
+    pub definition_id: String,
+    pub revision: u64,
+    pub digest: String,
+}
 
 /// Stage 110 P0 fix (independent review v4, D-Serv host invariance). See
 /// `dserver::core::canonical_dgraph::DNODE_ABI_V0` for the full rationale --
@@ -36,7 +118,7 @@ fn finding(code: &'static str, message: impl Into<String>) -> CanonicalValidatio
     CanonicalValidationFinding { code, message: message.into() }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CanonicalDGraphV1 {
     pub schema: String,
     /// ADR-0009: distinct from `project_id`. The D-Graph itself never
@@ -53,6 +135,8 @@ pub struct CanonicalDGraphV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CanonicalDServV1 {
     pub service_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_definition: Option<ServiceDefinitionReference>,
     pub execution_requirement: CanonicalDServExecutionRequirementV1,
     /// Stage 110 P0 fix (independent review v3, Stage 112 resource
     /// readiness): the SMALLEST static resource surface Stage 112's
@@ -92,7 +176,7 @@ impl CanonicalDGraphV1 {
     pub fn validate(&self) -> Vec<CanonicalValidationFinding> {
         let mut findings = Vec::new();
 
-        if self.schema != CANONICAL_DGRAPH_SCHEMA {
+        if self.schema != CANONICAL_DGRAPH_SCHEMA && self.schema != CATALOG_DGRAPH_SCHEMA {
             findings.push(finding("schema_invalid", format!("schema must be '{CANONICAL_DGRAPH_SCHEMA}', got '{}'", self.schema)));
         }
         if self.application_id.trim().is_empty() {
@@ -108,6 +192,14 @@ impl CanonicalDGraphV1 {
         let mut seen_service_ids = std::collections::HashSet::new();
         let mut known_services = std::collections::HashSet::new();
         for service in &self.services {
+            if let Some(reference) = &service.service_definition {
+                if self.schema != CATALOG_DGRAPH_SCHEMA {
+                    findings.push(finding("catalog_reference_requires_v2", "Catalog references require datum.dgraph/2."));
+                }
+                if !valid_definition_reference(reference) {
+                    findings.push(finding("invalid_service_definition_reference", "Expected exact definition ID, revision and sha256 digest."));
+                }
+            }
             if service.service_id.trim().is_empty() {
                 findings.push(finding("missing_field", "service_id must be a non-empty string"));
             } else if !seen_service_ids.insert(service.service_id.as_str()) {
@@ -162,6 +254,76 @@ impl CanonicalDGraphV1 {
     }
 }
 
+// Keep frozen v1 annotation handling; v2 rejects unknown semantics at every level.
+impl<'de> Deserialize<'de> for CanonicalDGraphV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct ExecutionWire {
+            dnode_abi: String,
+            #[serde(flatten)] extra: std::collections::BTreeMap<String, Value>,
+        }
+        #[derive(Deserialize)]
+        struct ResourceWire {
+            cpu_cores: u32, memory_bytes: u64,
+            #[serde(flatten)] extra: std::collections::BTreeMap<String, Value>,
+        }
+        #[derive(Deserialize)]
+        struct ServiceWire {
+            service_id: String,
+            #[serde(default)] service_definition: Option<ServiceDefinitionReference>,
+            execution_requirement: ExecutionWire,
+            resource_requirement: ResourceWire,
+            #[serde(flatten)] extra: std::collections::BTreeMap<String, Value>,
+        }
+        #[derive(Deserialize)]
+        struct CallWire {
+            call_id: String, source_service_id: String, target_service_id: String,
+            #[serde(flatten)] extra: std::collections::BTreeMap<String, Value>,
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            schema: String, application_id: String, dgraph_id: String, revision: u64,
+            #[serde(default)] services: Vec<ServiceWire>,
+            #[serde(default)] calls: Vec<CallWire>,
+            #[serde(flatten)] extra: std::collections::BTreeMap<String, Value>,
+        }
+        let w = Wire::deserialize(deserializer)?;
+        if w.schema == CATALOG_DGRAPH_SCHEMA && !w.extra.is_empty() {
+            return Err(serde::de::Error::custom("Unknown v2 DGraph field."));
+        }
+        let strict = w.schema == CATALOG_DGRAPH_SCHEMA;
+        let decode = |service: ServiceWire| -> Result<CanonicalDServV1, D::Error> {
+            if strict && (!service.extra.is_empty() || !service.execution_requirement.extra.is_empty()
+                || !service.resource_requirement.extra.is_empty()) {
+                return Err(serde::de::Error::custom("Unknown v2 DServ field."));
+            }
+            Ok(CanonicalDServV1 {
+                service_id: service.service_id, service_definition: service.service_definition,
+                execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: service.execution_requirement.dnode_abi },
+                resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: service.resource_requirement.cpu_cores, memory_bytes: service.resource_requirement.memory_bytes },
+            })
+        };
+        let services = w.services.into_iter().map(decode).collect::<Result<Vec<_>, _>>()?;
+        let calls = w.calls.into_iter().map(|call| {
+            if strict && !call.extra.is_empty() {
+                return Err(serde::de::Error::custom("Unknown v2 DCall field."));
+            }
+            Ok(CanonicalDCallV1 { call_id: call.call_id, source_service_id: call.source_service_id, target_service_id: call.target_service_id })
+        }).collect::<Result<Vec<_>, D::Error>>()?;
+        Ok(Self { schema: w.schema, application_id: w.application_id, dgraph_id: w.dgraph_id,
+            revision: w.revision, services, calls })
+    }
+}
+
+fn valid_definition_reference(r: &ServiceDefinitionReference) -> bool {
+    !r.definition_id.is_empty() && r.definition_id.len() <= 128
+        && r.definition_id != "." && r.definition_id != ".."
+        && r.definition_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && (1..=1_000_000).contains(&r.revision)
+        && r.digest.len() == 71 && r.digest.starts_with("sha256:")
+        && r.digest[7..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Canonical JCS+SHA-256 digest (ADR-0006), never self-referential.
 /// `services`/`calls` are canonically UNORDERED SETS keyed by
 /// `service_id`/`call_id` (ADR-0017): a deterministic deep-sorted copy is
@@ -191,17 +353,17 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "chirpstack-gateway-bridge".to_string(),
+                    service_definition: None, service_id: "chirpstack-gateway-bridge".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 536_870_912),
                 },
                 CanonicalDServV1 {
-                    service_id: "smart-adapter".to_string(),
+                    service_definition: None, service_id: "smart-adapter".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 268_435_456),
                 },
                 CanonicalDServV1 {
-                    service_id: "atom-controller".to_string(),
+                    service_definition: None, service_id: "atom-controller".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(2, 1_073_741_824),
                 },
@@ -234,7 +396,7 @@ mod tests {
             dgraph_id: "dgraph:x".to_string(),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: "solo".to_string(),
+                service_definition: None, service_id: "solo".to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                 resource_requirement: res(1, 134_217_728),
             }],
@@ -257,12 +419,12 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "estimator".to_string(),
+                    service_definition: None, service_id: "estimator".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 134_217_728),
                 },
                 CanonicalDServV1 {
-                    service_id: "controller".to_string(),
+                    service_definition: None, service_id: "controller".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 134_217_728),
                 },
@@ -291,7 +453,7 @@ mod tests {
             dgraph_id: "dgraph:self-loop".to_string(),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: "recursive".to_string(),
+                service_definition: None, service_id: "recursive".to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                 resource_requirement: res(1, 134_217_728),
             }],
@@ -307,7 +469,7 @@ mod tests {
     #[test]
     fn wrong_schema_rejected() {
         let mut dgraph = sample_dgraph();
-        dgraph.schema = "datum.dgraph/2".to_string();
+        dgraph.schema = "datum.dgraph/999".to_string();
         assert!(dgraph.validate().iter().any(|f| f.code == "schema_invalid"));
     }
 
@@ -329,7 +491,7 @@ mod tests {
     fn duplicate_service_id_hidden_by_ordering_is_still_caught() {
         let mut dgraph = sample_dgraph();
         dgraph.services.push(CanonicalDServV1 {
-            service_id: dgraph.services[0].service_id.clone(),
+            service_definition: None, service_id: dgraph.services[0].service_id.clone(),
             execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
             resource_requirement: res(1, 134_217_728),
         });

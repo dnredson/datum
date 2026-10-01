@@ -41,7 +41,8 @@ use crate::agent::native_process_state::{
 };
 use crate::agent::operational_reconciliation::{
     no_wasm_decision, MutationBoundaryContext, MutationBoundaryRecord, OperationalArtifactAssignment,
-    OperationalDesiredService, OperationalReconciliationAuthorization, OperationalServiceReconciliationReport,
+    OperationalCleanupDirective, OperationalDesiredService, OperationalReconciliationAuthorization,
+    OperationalServiceReconciliationReport,
 };
 use crate::agent::stage107a_enforcement::{
     check_generation_and_projection, LeaseGuard, BLOCKED_REQUIRED_INCOMPLETE,
@@ -1589,6 +1590,116 @@ fn governed_stop(
     }
 }
 
+/// Phase 119G (Phase 119F-R1 section 6.4 point 3): the native-process half
+/// of governed source cleanup. Deliberately independent of
+/// `reconcile_native_service`/`decide_native_reconciliation_action` -- it
+/// never receives (and must never require) an `OperationalArtifactAssignment`,
+/// since a cleanup directive has none (task section 22's explicit
+/// generation/projection carve-out: no current server mechanism can
+/// reconstruct the historical artifact identity a vacated service actually
+/// ran under, so this path never pretends to check one). Local ownership is
+/// established purely by comparing `directive.application_id`/
+/// `directive.previous_dmap_ref` against the already-persisted
+/// `ManagedProcessRuntimeStateV1` this exact process was spawned with --
+/// already-existing evidence, no new field. Reuses the SAME governed
+/// stop/remove primitives (`governed_stop`, `governed_remove_state`) the
+/// ordinary `NativeReconciliationAction::Rollback` arm uses, so every
+/// existing identity defense (PID+start-time reuse detection, executable/
+/// cmdline-digest mismatch detection) applies unchanged -- this function
+/// adds an ADDITIONAL, earlier gate (the dmap_ref match) before either
+/// primitive is ever reached, it does not relax anything either already
+/// does.
+///
+/// Returns `(status_code, message, host_mutation_performed)`, mirroring
+/// `operational_reconciliation::rollback_trusted_container_intent`'s own
+/// tuple-return convention exactly. `Ok(None)` is never returned --
+/// "nothing to do" is itself a status (`cleanup_no_local_state`/
+/// `cleanup_dmap_ref_mismatch`), never a silent absence, so callers always
+/// have something to report.
+pub(crate) fn process_native_cleanup_directive(
+    cfg: &Config,
+    project_id: &str,
+    node_id: &str,
+    directive: &OperationalCleanupDirective,
+    lease: Option<&LeaseGuard>,
+    boundary_context: &MutationBoundaryContext,
+    records: &mut Vec<MutationBoundaryRecord>,
+) -> (String, String, bool) {
+    let Some(root) = configured_native_process_root(cfg) else {
+        return (
+            "cleanup_no_local_native_root".to_string(),
+            "no native_process_root is configured on this node; nothing local to clean up".to_string(),
+            false,
+        );
+    };
+    let stable_key = native_process_acquisition::stable_service_key(project_id, node_id, &directive.service_id);
+    let layout = ManagedLayout::new(root);
+    let Ok(path) = layout.state_path(&stable_key) else {
+        return (
+            "cleanup_state_path_unresolvable".to_string(),
+            "persisted native-process state path could not be safely resolved; nothing removed".to_string(),
+            false,
+        );
+    };
+    let Ok(Some(state)) = native_process_state::load_state(&path) else {
+        return (
+            "cleanup_no_local_state".to_string(),
+            format!("no persisted native-process state for service '{}'; nothing to clean up locally", directive.service_id),
+            false,
+        );
+    };
+    if native_process_state::validate_loaded_state(&state).is_err() {
+        // Corrupt/unparseable-but-present state must never be trusted
+        // enough to signal a PID derived from it (mirrors
+        // `observe_current_native_state`'s own precedent exactly).
+        return (
+            "cleanup_local_state_invalid".to_string(),
+            "persisted native-process state failed validation; refusing to act on it".to_string(),
+            false,
+        );
+    }
+    // The actual local-ownership proof (task section 20): application_id
+    // AND the exact historical dmap_ref this process was spawned under must
+    // both match the directive. Never partial -- a matching dmap_ref for a
+    // DIFFERENT application_id (or vice versa) is not a match.
+    let dmap_ref_matches = state.application_id == directive.application_id
+        && state.dmap_ref.as_ref() == Some(&directive.previous_dmap_ref);
+    if !dmap_ref_matches {
+        return (
+            "cleanup_dmap_ref_mismatch".to_string(),
+            format!(
+                "persisted native-process state for service '{}' does not match this directive's historical application_id/dmap_ref; refusing to remove it",
+                directive.service_id
+            ),
+            false,
+        );
+    }
+    // From here on, exactly the existing `NativeReconciliationAction::Rollback`
+    // arm's own logic: stop must be POSITIVELY confirmed before state is
+    // ever removed (Section AP fault matrix).
+    let stop_result = governed_stop(&state, lease, boundary_context, records);
+    if !stop_result.confirmed_stopped {
+        return (
+            NATIVE_PROCESS_STOP_INCOMPLETE.to_string(),
+            format!("cleanup stop incomplete, state preserved: {}", stop_result.message),
+            stop_result.signaled,
+        );
+    }
+    let remove_result = governed_remove_state(Some(&layout), Some(&stable_key), lease, boundary_context, records);
+    if let Some(reason) = remove_result.blocked_reason {
+        return (
+            NATIVE_PROCESS_STOP_INCOMPLETE.to_string(),
+            format!("cleanup process stopped ({}), but state removal blocked: {reason}; pending next cycle", stop_result.message),
+            true,
+        );
+    }
+    (
+        NATIVE_PROCESS_ROLLED_BACK.to_string(),
+        stop_result.message,
+        true,
+    )
+}
+
 struct SpawnOutcome {
     host_mutation_performed: bool,
     execution_status: String,
@@ -2831,6 +2942,100 @@ mod tests {
             started_at_utc: "2026-01-01T00:00:00Z".to_string(),
             state: crate::agent::native_process_state::PROCESS_STATE_RUNNING.to_string(),
         }
+    }
+
+    // ---- Phase 119G: process_native_cleanup_directive -------------------- //
+
+    fn sample_cleanup_directive(service_id: &str, application_id: &str) -> OperationalCleanupDirective {
+        OperationalCleanupDirective {
+            service_id: service_id.to_string(),
+            application_id: application_id.to_string(),
+            previous_dmap_ref: crate::dcode::authorization::CanonicalContractReferenceV1 {
+                id: "dmap:proj-x/app-a".to_string(),
+                revision: 3,
+                digest: "sha256:".to_string() + &"d".repeat(64),
+            },
+        }
+    }
+
+    #[test]
+    fn cleanup_directive_is_a_safe_no_op_with_no_native_process_root_configured() {
+        let cfg = dispatch_cfg(true, Some(true), None);
+        let directive = sample_cleanup_directive("svc", "app-a");
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
+        assert_eq!(status, "cleanup_no_local_native_root");
+        assert!(!mutated);
+    }
+
+    #[test]
+    fn cleanup_directive_is_a_safe_no_op_with_no_persisted_state_for_the_service() {
+        let root = temp_root("cleanup-no-state");
+        let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
+        let directive = sample_cleanup_directive("svc-never-placed-here", "app-a");
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let (status, message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
+        assert_eq!(status, "cleanup_no_local_state");
+        assert!(!mutated);
+        assert!(message.contains("svc-never-placed-here"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_directive_refuses_to_act_on_persisted_state_with_a_different_dmap_ref() {
+        let root = temp_root("cleanup-dmap-mismatch");
+        let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
+        let layout = ManagedLayout::new(&root);
+        let stable_key = native_process_acquisition::stable_service_key("proj-x", "node-a", "svc");
+        let state_path = layout.state_path(&stable_key).unwrap();
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let mut state = sample_persisted_state();
+        state.application_id = "app-a".to_string();
+        // A DIFFERENT historical dmap_ref than the directive names below --
+        // e.g. this process was actually spawned under an earlier or later
+        // placement of the same service on this node.
+        state.dmap_ref = Some(crate::dcode::authorization::CanonicalContractReferenceV1 {
+            id: "dmap:proj-x/app-a".to_string(),
+            revision: 1,
+            digest: "sha256:".to_string() + &"e".repeat(64),
+        });
+        native_process_state::persist_state(&state_path, &state).unwrap();
+
+        let directive = sample_cleanup_directive("svc", "app-a");
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
+        assert_eq!(status, "cleanup_dmap_ref_mismatch");
+        assert!(!mutated);
+        assert!(state_path.exists(), "mismatched state must never be removed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_directive_refuses_to_act_on_persisted_state_with_a_different_application_id() {
+        let root = temp_root("cleanup-app-mismatch");
+        let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
+        let layout = ManagedLayout::new(&root);
+        let stable_key = native_process_acquisition::stable_service_key("proj-x", "node-a", "svc");
+        let state_path = layout.state_path(&stable_key).unwrap();
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let mut state = sample_persisted_state();
+        // Same dmap_ref as the directive, but a DIFFERENT application_id --
+        // a matching dmap_ref alone must never be enough.
+        state.application_id = "app-b".to_string();
+        let directive = sample_cleanup_directive("svc", "app-a");
+        state.dmap_ref = Some(directive.previous_dmap_ref.clone());
+        native_process_state::persist_state(&state_path, &state).unwrap();
+
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let mut records = Vec::new();
+        let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
+        assert_eq!(status, "cleanup_dmap_ref_mismatch");
+        assert!(!mutated);
+        assert!(state_path.exists(), "mismatched state must never be removed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(not(target_os = "linux"))]

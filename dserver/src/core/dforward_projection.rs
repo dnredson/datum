@@ -390,7 +390,7 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "svc-a".into(),
+                    service_definition: None, service_id: "svc-a".into(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: "datum-dnode/0".into(),
                     },
@@ -400,7 +400,7 @@ mod tests {
                     },
                 },
                 CanonicalDServV1 {
-                    service_id: "svc-b".into(),
+                    service_definition: None, service_id: "svc-b".into(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: "datum-dnode/0".into(),
                     },
@@ -671,7 +671,8 @@ mod tests {
             external_port_bindings: map.external_port_bindings.clone(),
             expected_active_dmap_revision: None,
             diot_artifact_authority: authority,
-        };
+                dcode_artifact_authority: std::collections::BTreeMap::new(),
+    };
         let mut state = crate::core::ddeploy::DDeployStateV1::empty();
         state
             .create_v2_proposal(proposal, dg, dc.clone(), forward)
@@ -811,7 +812,7 @@ mod tests {
                         node_id: "node-a".into(),
                     },
                 ],
-                planner_provenance: None,
+                planner_provenance: None, dcode_artifact_authority: std::collections::BTreeMap::new(),
             },
             "p-v1".into(),
             chrono::Utc::now().to_rfc3339(),
