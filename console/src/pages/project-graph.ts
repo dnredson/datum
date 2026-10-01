@@ -50,6 +50,9 @@ export function projectGraphView(
     el("span", "", "/ Graph"),
   );
   const header = el("header", "page-intro");
+  const edit = el("a","btn btn-outline-secondary","Open local DGraph editor");
+  edit.href=`${projectPath(data.project_id)}/graph/edit`;edit.dataset.route="";
+  header.append(edit);
   header.append(
     badge("PROJECT GRAPH · READ ONLY", "info"),
     el("h1", "", "Logical graph overview"),

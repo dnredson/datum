@@ -856,8 +856,8 @@ mod tests {
             dgraph_id: "dgraph:prop-readiness-1".to_string(),
             revision: 1,
             services: vec![
-                CanonicalDServV1 { service_id: SVC_A.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
-                CanonicalDServV1 { service_id: SVC_B.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
+                CanonicalDServV1 { service_definition: None, service_id: SVC_A.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
+                CanonicalDServV1 { service_definition: None, service_id: SVC_B.to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 } },
             ],
             calls: vec![CanonicalDCallV1 { call_id: "sensor-to-decoder".to_string(), source_service_id: SVC_A.to_string(), target_service_id: SVC_B.to_string() }],
         };

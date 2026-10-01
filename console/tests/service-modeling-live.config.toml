@@ -1,0 +1,7 @@
+# Loopback-only manual AI authoring smoke. No monitoring/deployment starts here.
+[server]
+bind = "127.0.0.1:8080"
+debug = false
+[firebase]
+project_id = "service-modeling-local-smoke"
+credentials_path = "unused-for-local-catalog-modeling"

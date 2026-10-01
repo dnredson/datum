@@ -556,7 +556,7 @@ mod tests {
             dgraph_id: format!("dgraph:{application_id}"),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: "svc".to_string(),
+                service_definition: None, service_id: "svc".to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },

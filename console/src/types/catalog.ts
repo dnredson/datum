@@ -15,3 +15,4 @@ export interface ServiceDefinition {
 }
 export interface DefinitionRevision { definition: ServiceDefinition; revision: number; digest: string; created_at_utc: string; artifact_snapshot_id: string | null; scope: "global_catalog" }
 export interface CatalogPage { items: DefinitionRevision[]; has_more: boolean; limit: number }
+export interface CatalogDiscoveryPage extends CatalogPage { schema:"datum.catalog-discovery/1";offset:number;total:number;search:string }

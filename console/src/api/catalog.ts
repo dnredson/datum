@@ -1,4 +1,4 @@
-import type { ArtifactSnapshot, CatalogPage, DefinitionRevision, ServiceDefinition } from "../types/catalog.ts";
+import type { ArtifactSnapshot, CatalogPage, CatalogDiscoveryPage, DefinitionRevision, ServiceDefinition } from "../types/catalog.ts";
 export class CatalogError extends Error { code: string; constructor(code: string, message: string) { super(message); this.code = code; } }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const text = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 256 && v.trim() === v && !/[\u0000-\u001f\u007f]/u.test(v);
@@ -83,6 +83,15 @@ export class CatalogClient {
     const body = await this.request("services");
     if (!object(body) || !Array.isArray(body.items) || body.items.length > 100 || !body.items.every(validCatalogRevision) || typeof body.has_more !== "boolean" || body.limit !== 100) throw new CatalogError("invalid_response", "Catalog response could not be displayed.");
     return body as unknown as CatalogPage;
+  }
+  async discover(search="", offset=0, limit=25): Promise<CatalogDiscoveryPage> {
+    if(new TextEncoder().encode(search).length>256||/[\u0000-\u001f\u007f-\u009f]/u.test(search)||!Number.isSafeInteger(offset)||offset<0||offset>1000000||!Number.isSafeInteger(limit)||limit<1||limit>100)throw new CatalogError("invalid_query","Catalog search parameters are invalid.");
+    const query=new URLSearchParams({search,offset:String(offset),limit:String(limit)});
+    const body=await this.request(`services?${query}`);
+    if(!object(body)||body.schema!=="datum.catalog-discovery/1"||body.limit!==limit||body.offset!==offset||body.search!==search||typeof body.total!=="number"||!Number.isSafeInteger(body.total)||body.total<0||typeof body.has_more!=="boolean"||body.has_more!==(offset+limit<body.total)||!Array.isArray(body.items)||body.items.length!==Math.min(limit,Math.max(0,body.total-offset))||!body.items.every(validCatalogRevision))throw new CatalogError("invalid_response","Catalog discovery response could not be displayed.");
+    const ids=body.items.map(r=>r.definition.service_definition_id);
+    if(ids.some((id,i)=>i>0&&id<=ids[i-1]!))throw new CatalogError("invalid_response","Catalog discovery order could not be verified.");
+    return body as unknown as CatalogDiscoveryPage;
   }
   async artifacts(): Promise<{ items: ArtifactSnapshot[]; has_more: boolean }> {
     const body = await this.request("artifacts");

@@ -390,7 +390,7 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "svc-a".into(),
+                    service_definition: None, service_id: "svc-a".into(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: "datum-dnode/0".into(),
                     },
@@ -400,7 +400,7 @@ mod tests {
                     },
                 },
                 CanonicalDServV1 {
-                    service_id: "svc-b".into(),
+                    service_definition: None, service_id: "svc-b".into(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: "datum-dnode/0".into(),
                     },

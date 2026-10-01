@@ -1,5 +1,23 @@
 # ADR-0017 — Canonical DATUM contracts v1: `datum.dgraph/1`, `datum.dcontinuum/1`, `datum.dmap/1`
 
+## Phase 134B approved versioned extension: `datum.dgraph/2`
+
+V1 remains supported and its unlinked serialization/digests are unchanged.
+V2 adds optional DServ `service_definition: {definition_id, revision, digest}`,
+an exact immutable global catalog MODELING reference. It participates in the
+graph JCS digest, but is not execution authority or a host-ABI assertion.
+`service_id` remains graph-local. No latest/name matching, component expansion,
+resource conversion or runtime binding is implied. Existing resource and ABI
+semantics remain unchanged. References under the v1 schema fail validation.
+Server and agent update together; both preserve v2 references and reject unknown
+reference fields. Old binaries must not be used to round-trip v2 graphs: their
+v1-only schema validation rejects this version; bypassing that gate is unsafe.
+Historical Rust type names are retained to avoid duplicating canonical consumers.
+Cross-crate v2 fixture and golden digest tests prove parity. Catalog existence
+and exact revision/digest verification occurs read-only in DServer editor
+validation, separately from pure structural canonical validation. No acceptance
+workflow is added; see `phase134-visual-dgraph-editor.md` for the authoring contract.
+
 - Status: Accepted and implemented (Stage 110).
 - Decision refs: ADR-0001 (canonical vocabulary), ADR-0002 (D-Map single
   placement carrier), ADR-0003 (`datum-dnode/0` D-Node ABI), ADR-0004

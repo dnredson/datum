@@ -320,12 +320,12 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "chirpstack-gateway-bridge".to_string(),
+                    service_definition: None, service_id: "chirpstack-gateway-bridge".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 536_870_912),
                 },
                 CanonicalDServV1 {
-                    service_id: "smart-adapter".to_string(),
+                    service_definition: None, service_id: "smart-adapter".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: res(1, 268_435_456),
                 },

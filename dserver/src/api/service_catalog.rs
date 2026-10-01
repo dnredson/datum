@@ -1,7 +1,7 @@
 //! Catalog-only mutations. No execution/placement/monitoring producers.
 use crate::core::{service_artifact_registry::ServiceArtifactRegistry, service_catalog::*};
 use axum::{
-    extract::{rejection::JsonRejection, Path, State},
+    extract::{rejection::{JsonRejection,QueryRejection}, Path, State, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -19,6 +19,12 @@ pub struct CatalogApi {
     capacity: Arc<Semaphore>,
 }
 impl CatalogApi {
+    pub fn editor_api(&self) -> super::dgraph_editor::EditorApi {
+        super::dgraph_editor::EditorApi::from_process().with_catalog(self.store.clone())
+    }
+    pub fn modeling_api(&self) -> super::service_modeling::ModelingApi {
+        super::service_modeling::ModelingApi::new(self.store.clone(), self.artifacts.clone())
+    }
     pub fn from_process(artifacts: ServiceArtifactRegistry) -> Self {
         let store = std::env::var(CATALOG_PATH_ENV)
             .ok()
@@ -124,8 +130,15 @@ pub fn router(api: CatalogApi) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .with_state(api)
 }
-async fn list(State(api): State<CatalogApi>) -> Response {
-    api.run(|s, _| s.list()).await
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscoveryQuery { limit: Option<usize>, offset: Option<usize>, search: Option<String> }
+async fn list(State(api): State<CatalogApi>, query: std::result::Result<Query<DiscoveryQuery>, QueryRejection>) -> Response {
+    let Ok(Query(query)) = query else { return error(CatalogError::Invalid); };
+    if query.limit.is_none() && query.offset.is_none() && query.search.is_none() {
+        return api.run(|s, _| s.list()).await;
+    }
+    api.run(move |s, _| s.discover(query.search.as_deref().unwrap_or(""),query.offset.unwrap_or(0),query.limit.unwrap_or(25))).await
 }
 async fn latest(State(api): State<CatalogApi>, Path(id): Path<String>) -> Response {
     api.run(move |s, _| s.get(&id, None)).await
@@ -241,6 +254,22 @@ mod tests {
         service_artifact_registry::{ServiceArtifact, ServiceArtifactRegistryState},
         service_catalog::tests::{database_path, draft, snapshot, store},
     };
+    #[tokio::test]
+    async fn discovery_api_paging_query_bounds_and_legacy_contract_are_read_only() {
+        let server=serve(true).await;
+        let path=server.catalog_path.as_ref().unwrap();let s=CatalogStore::initialize(path).unwrap();
+        for i in 0..100 {let mut d=draft();d.service_definition_id=format!("definition-{i:03}");d.name=format!("Discovery Service {i:03}");d.provides=vec![format!("example.provider-{i:03}")];s.save(d,snapshot(),0).unwrap();}
+        let before=std::fs::read(path).unwrap();let client=reqwest::Client::new();let url=format!("{}/api/v1/catalog/services",server.base);
+        let first:serde_json::Value=client.get(format!("{url}?offset=0")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(first["schema"],"datum.catalog-discovery/1");assert_eq!(first["limit"],25);assert_eq!(first["total"],100);assert_eq!(first["items"].as_array().unwrap().len(),25);
+        let last:serde_json::Value=client.get(format!("{url}?offset=75&limit=25")).send().await.unwrap().json().await.unwrap();assert_eq!(last["has_more"],false);
+        let found:serde_json::Value=client.get(&url).query(&[("search","EXAMPLE.PROVIDER-099")]).send().await.unwrap().json().await.unwrap();assert_eq!(found["total"],1);assert_eq!(found["items"][0]["definition"]["service_definition_id"],"definition-099");
+        let legacy:serde_json::Value=client.get(&url).send().await.unwrap().json().await.unwrap();assert_eq!(legacy["limit"],100);assert!(legacy.get("schema").is_none());
+        for query in ["offset=-1","limit=-1","limit=0","limit=101","offset=1000001","offset=18446744073709551616","search=%0A","page=-1","limit=25&limit=30"]{
+            let r=client.get(format!("{url}?{query}")).send().await.unwrap();assert_eq!(r.status(),reqwest::StatusCode::BAD_REQUEST);let body=r.text().await.unwrap();assert!(!body.contains(query));assert!(!body.contains("rusqlite"));
+        }
+        assert_eq!(std::fs::read(path).unwrap(),before);
+    }
     struct Server {
         base: String,
         task: tokio::task::JoinHandle<()>,

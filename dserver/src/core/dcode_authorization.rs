@@ -393,7 +393,7 @@ mod tests {
             dgraph_id: "dgraph:sensor-pipeline".to_string(),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: SVC.to_string(),
+                service_definition: None, service_id: SVC.to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },

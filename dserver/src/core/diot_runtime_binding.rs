@@ -680,7 +680,7 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: SOURCE_SVC.to_string(),
+                    service_definition: None, service_id: SOURCE_SVC.to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: DNODE_ABI_V0.to_string(),
                     },
@@ -690,7 +690,7 @@ mod tests {
                     },
                 },
                 CanonicalDServV1 {
-                    service_id: DEST_SVC.to_string(),
+                    service_definition: None, service_id: DEST_SVC.to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 {
                         dnode_abi: DNODE_ABI_V0.to_string(),
                     },

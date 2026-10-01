@@ -4,6 +4,7 @@ export type Route =
   | { kind: "catalog" }
   | { kind: "project"; projectId: string }
   | { kind: "project_graph"; projectId: string }
+  | { kind: "project_graph_editor"; projectId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -18,12 +19,12 @@ export function parseRoute(pathname: string): Route {
   if (pathname === "/catalog" || pathname === "/catalog/") return { kind: "catalog" };
   if (pathname === "/projects" || pathname === "/projects/")
     return { kind: "projects" };
-  const match = /^\/projects\/([^/]+)(\/graph)?\/?$/u.exec(pathname);
+  const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
       const projectId = decodeURIComponent(match[1]);
       if (validProjectId(projectId))
-        return { kind: match[2] ? "project_graph" : "project", projectId };
+        return { kind: match[2] === "/graph/edit" ? "project_graph_editor" : match[2] ? "project_graph" : "project", projectId };
     } catch {
       /* malformed encoding is Not Found, never a crash */
     }
@@ -34,8 +35,13 @@ export function projectPath(id: string): string {
   if (!validProjectId(id)) throw new Error("Invalid project identifier");
   return `/projects/${encodeURIComponent(id)}`;
 }
-export function startRouter(render: (route: Route) => void): () => void {
-  const update = () => render(parseRoute(window.location.pathname));
+export function startRouter(render: (route: Route) => void, canNavigate: () => boolean = () => true): () => void {
+  let lastPath = window.location.pathname;
+  const update = () => {
+    if(window.location.pathname !== lastPath && !canNavigate()) { window.history.pushState(null,"",lastPath); return; }
+    lastPath=window.location.pathname;
+    render(parseRoute(lastPath));
+  };
   const click = (event: MouseEvent) => {
     const link = (event.target as Element | null)?.closest<HTMLAnchorElement>(
       "a[data-route]",
@@ -54,7 +60,9 @@ export function startRouter(render: (route: Route) => void): () => void {
     const url = new URL(link.href);
     if (url.origin !== window.location.origin) return;
     event.preventDefault();
+    if(!canNavigate())return;
     window.history.pushState(null, "", url.pathname);
+    lastPath=url.pathname;
     update();
   };
   window.addEventListener("popstate", update);

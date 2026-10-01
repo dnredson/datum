@@ -1,0 +1,5 @@
+export function editorFixture(count=3,memory="9007199254740991"){
+ const graph={schema:"datum.dgraph/1",application_id:"app:editor",dgraph_id:"dgraph:editor",revision:"7",services:Array.from({length:count},(_,i)=>({service_id:`service-${i}`,execution_requirement:{dnode_abi:"datum-dnode/0"},resource_requirement:{cpu_cores:1,memory_bytes:i===0?memory:"268435456"}})),calls:Array.from({length:count>1?count-1:0},(_,i)=>({call_id:`call-${i}`,source_service_id:`service-${i}`,target_service_id:`service-${i+1}`}))};
+ const json=`{"schema":"datum.dgraph/1","application_id":"app:editor","dgraph_id":"dgraph:editor","revision":7,"services":[${graph.services.map(s=>`{"service_id":"${s.service_id}","execution_requirement":{"dnode_abi":"datum-dnode/0"},"resource_requirement":{"cpu_cores":1,"memory_bytes":${s.resource_requirement.memory_bytes}}}`).join(",")}],"calls":${JSON.stringify(graph.calls)}}`;
+ return {graph,base:{schema:"datum.dgraph-editor-base/1",project_id:"foundation-demo",graphs:[{application_id:graph.application_id,dgraph_id:graph.dgraph_id,revision:"7",digest:`sha256:${"a".repeat(64)}`,graph_json:json}]}};
+}

@@ -2455,12 +2455,12 @@ mod tests {
             revision: 1,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: SVC_A.to_string(),
+                    service_definition: None, service_id: SVC_A.to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
                 },
                 CanonicalDServV1 {
-                    service_id: SVC_B.to_string(),
+                    service_definition: None, service_id: SVC_B.to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
                 },

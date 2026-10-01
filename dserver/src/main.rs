@@ -237,6 +237,11 @@ async fn main() {
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
     let catalog = api::service_catalog::CatalogApi::from_process(state.service_artifacts.as_ref().clone());
+    let provider = tokio::task::spawn_blocking(core::service_modeling_openai::configured_provider)
+        .await.expect("modeling provider initialization failed")
+        .expect("invalid service modeling provider configuration");
+    let modeling = catalog.modeling_api().with_provider(provider);
+    let editor = catalog.editor_api();
     let mut app = Router::new()
         .route("/graphql", post(graphql_post))
         .route("/graphiql", get(graphiql))
@@ -704,7 +709,9 @@ async fn main() {
         .merge(api::operations::router(
             api::operations::OperationsApiRuntime::from_process(),
         ))
-        .merge(api::service_catalog::router(catalog));
+        .merge(api::service_catalog::router(catalog))
+        .merge(api::service_modeling::router(modeling))
+        .merge(api::dgraph_editor::router(editor));
 
     if let Some(cors_layer) = build_cors_layer(config.as_ref()) {
         app = app.layer(cors_layer);

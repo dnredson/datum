@@ -477,7 +477,7 @@ mod tests {
 
     fn dserv(service_id: &str, cpu_cores: u32, memory_bytes: u64) -> CanonicalDServV1 {
         CanonicalDServV1 {
-            service_id: service_id.to_string(),
+            service_definition: None, service_id: service_id.to_string(),
             execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
             resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores, memory_bytes },
         }

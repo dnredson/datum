@@ -175,6 +175,16 @@ pub struct CatalogPage {
     pub has_more: bool,
     pub limit: usize,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogDiscoveryPage {
+    pub schema: String,
+    pub items: Vec<DefinitionRevision>,
+    pub limit: usize,
+    pub offset: usize,
+    pub total: usize,
+    pub has_more: bool,
+    pub search: String,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogError {
     Invalid,
@@ -701,11 +711,59 @@ impl CatalogStore {
             limit: 100,
         })
     }
+    /// Bounded, read-only discovery over latest immutable revisions. No schema writes.
+    pub fn discover(&self, search: &str, offset: usize, limit: usize) -> Result<CatalogDiscoveryPage> {
+        if !(1..=100).contains(&limit) || offset > 1_000_000 || search.len() > 256
+            || search.chars().any(char::is_control) { return Err(CatalogError::Invalid); }
+        let mut c = self.connection()?;
+        let tx = c.transaction().map_err(|_| CatalogError::Unavailable)?;
+        // Literal substring matching (not LIKE patterns), ASCII case insensitive.
+        // Aggregate and paged selection share one SQLite read snapshot. Exact row
+        // reads below remain immutable even if a concurrent writer appends revisions.
+        const FROM: &str = "FROM catalog_definitions d JOIN (SELECT id, MAX(revision) revision FROM catalog_definitions GROUP BY id) latest ON d.id=latest.id AND d.revision=latest.revision WHERE ?1='' OR instr(lower(d.id),lower(?1))>0 OR instr(lower(json_extract(d.body,'$.definition.name')),lower(?1))>0 OR EXISTS (SELECT 1 FROM json_each(d.body,'$.definition.provides') capability WHERE instr(lower(capability.value),lower(?1))>0)";
+        let count: i64 = tx.query_row(&format!("SELECT COUNT(*) {FROM}"), params![search], |r| r.get(0)).map_err(|_| CatalogError::Corrupt)?;
+        let total = usize::try_from(count).map_err(|_| CatalogError::Corrupt)?;
+        if total as u128 > 9_007_199_254_740_991u128 { return Err(CatalogError::Unavailable); }
+        let mut stmt = tx.prepare(&format!("SELECT d.id,d.revision {FROM} ORDER BY d.id COLLATE BINARY LIMIT ?2 OFFSET ?3")).map_err(|_| CatalogError::Corrupt)?;
+        let rows: Vec<(String,i64)> = stmt.query_map(params![search,limit as i64,offset as i64], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| CatalogError::Corrupt)?
+            .collect::<std::result::Result<_,_>>().map_err(|_| CatalogError::Corrupt)?;
+        let items = rows.into_iter().map(|(id,revision)| self.get(&id,Some(u64::try_from(revision).map_err(|_| CatalogError::Corrupt)?))).collect::<Result<Vec<_>>>()?;
+        let page = CatalogDiscoveryPage { schema:"datum.catalog-discovery/1".into(), items, limit, offset, total, has_more:offset.saturating_add(limit)<total, search:search.into() };
+        if serde_json::to_vec(&page).map_err(|_| CatalogError::Corrupt)?.len() > 2_000_000 { return Err(CatalogError::Unavailable); }
+        Ok(page)
+    }
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    #[test]
+    fn discovery_paginates_latest_revisions_and_searches_all_entries_read_only() {
+        let s = store();
+        for i in 0..100 {
+            let mut d = draft();d.service_definition_id=format!("definition-{i:03}");d.name=format!("Discovery Service {i:03}");d.provides=vec![format!("example.provider-{i:03}")];
+            s.save(d,snapshot(),0).unwrap();
+        }
+        let mut latest=s.get("definition-099",Some(1)).unwrap().definition;
+        latest.provides=vec!["database.postgresql".into()];s.save(latest,snapshot(),1).unwrap();
+        let before=std::fs::read(database_path(&s)).unwrap();
+        let first=s.discover("",0,25).unwrap();assert_eq!((first.total,first.items.len(),first.has_more),(100,25,true));
+        assert_eq!(first.items[0].definition.service_definition_id,"definition-000");
+        let second=s.discover("",25,25).unwrap();assert_eq!(second.items[0].definition.service_definition_id,"definition-025");
+        assert_eq!(s.discover("",0,25).unwrap().items[0].digest,first.items[0].digest);
+        let last=s.discover("",75,25).unwrap();assert!(!last.has_more);assert_eq!(last.items.last().unwrap().revision,2);
+        assert_eq!(s.discover("SERVICE 099",0,25).unwrap().items[0].definition.service_definition_id,"definition-099");
+        assert_eq!(s.discover("DATABASE.POSTGRESQL",0,25).unwrap().items[0].revision,2);
+        assert_eq!(s.discover("definition-099",0,25).unwrap().total,1);
+        assert_eq!(s.discover("example.provider-099",0,25).unwrap().total,0);
+        assert_eq!(s.discover("%",0,25).unwrap().total,0);
+        assert_eq!(s.discover("no-results",0,25).unwrap().items.len(),0);
+        assert_eq!(s.discover("",200,25).unwrap().items.len(),0);
+        assert_eq!(s.discover("",0,100).unwrap().items.len(),100);
+        for (q,offset,limit) in [("",0,0),("",0,101),("",1000001,25),("\n",0,25)] {assert!(matches!(s.discover(q,offset,limit),Err(CatalogError::Invalid)));}
+        assert!(matches!(s.discover(&"x".repeat(257),0,25),Err(CatalogError::Invalid)));
+        assert_eq!(std::fs::read(database_path(&s)).unwrap(),before);
+    }
     pub fn snapshot() -> ArtifactSnapshot {
         ArtifactSnapshot {
             source: ArtifactReference {

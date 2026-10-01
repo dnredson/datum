@@ -12,6 +12,10 @@ import { projectFixture, sharedEvidence } from "./project-fixture.mjs";
 import { graphFixture, unevenGraphFixture } from "./graph-fixture.mjs";
 import { runtimeFixture } from "./runtime-graph-fixture.mjs";
 import { catalogFixture, containerSnapshot, compositeFixture } from "./catalog-fixture.mjs";
+import { modelingFixture } from "./service-modeling-fixture.mjs";
+import { editorFixture } from "./dgraph-editor-fixture.mjs";
+import { editorCatalogFixture,largeEditorCatalogFixture,discoveryFixturePage } from "./dgraph-editor-catalog-fixture.mjs";
+
 
 const modulePath = process.env.DATUM_DOM_GATE_MODULE;
 if (!modulePath)
@@ -31,18 +35,47 @@ const css = await readFile(
   new URL("../src/styles/console.css", import.meta.url),
   "utf8",
 );
+const gateApiBase=process.env.DATUM_DOM_GATE_API_BASE??"http://127.0.0.1:5173";
 const live = await (
-  await fetch("http://127.0.0.1:5173/api/v1/operations/overview")
+  await fetch(`${gateApiBase}/api/v1/operations/overview`)
 ).json();
 const liveProject = await (
   await fetch(
-    "http://127.0.0.1:5173/api/v1/operations/projects/foundation-demo",
+    `${gateApiBase}/api/v1/operations/projects/foundation-demo`,
     { headers: { "X-Datum-Project": "foundation-demo" } },
   )
 ).json();
 const known = structuredClone(live);
 known.known_projects.page.items = ["foundation-demo"];
 const calls = [];
+
+function assistantWindow(candidate=modelingFixture("p4"), options={}) {
+ const f=catalogFixture();let saves=0,generations=0;
+ const window=boot("/catalog",768,async(url,init)=>{
+  if(url.endsWith("modeling-assistant"))return {schema_version:"datum.service-modeling-status/1",state:options.notConfigured?"not_configured":"available",provider:options.provider??"test_only",model_ref:options.model??"deterministic_fixture",repository_analysis:"not_included"};
+  if(url.endsWith("/draft")){generations++;if(options.rejection)return new Response(JSON.stringify(options.rejection),{status:502,headers:{"Content-Type":"application/json"}});return options.generate?options.generate(url,init):candidate;}
+  if(url.endsWith("artifacts"))return f.artifacts;
+  if(url.includes("/artifacts/"))return f.artifacts.items[0];
+  if(init.method==="POST"){saves++;const b=JSON.parse(init.body);return {...f.record,definition:b.definition,revision:b.expected_revision+1};}
+  return options.base?{...f.page,items:[options.base]}:f.page;
+ });return {window,counts:()=>({saves,generations})};
+}
+async function generateAssistant(window){await waitFor(window,()=>!!window.document.querySelector('#modeling-intent'));const panel=window.document.querySelector('[data-modeling-assistant]');panel.querySelector('textarea').value="model P4 only";panel.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));return panel;}
+test("Phase133B NotConfigured leaves manual creation accessible and never simulates AI",async()=>{const {window,counts}=assistantWindow(undefined,{notConfigured:true});try{await waitFor(window,()=>text(window).includes("Assistant not configured"));assert.ok(window.document.querySelector('[data-catalog-form]'));assert.ok([...window.document.querySelectorAll('button')].find(b=>b.textContent==="Generate modeling draft").disabled);assert.deepEqual(counts(),{saves:0,generations:0});}finally{await window.happyDOM.close();}});
+test("Phase133B generate/apply do not save; explicit Save remains separate",async()=>{const {window,counts}=assistantWindow();try{const panel=await generateAssistant(window);await waitFor(window,()=>panel.textContent.includes("AI-generated draft"));assert.equal(window.document.activeElement,panel.querySelector('.modeling-candidate'));assert.equal(counts().saves,0);[...panel.querySelectorAll('button')].find(b=>b.textContent.startsWith("Apply draft")).click();assert.equal(counts().saves,0);assert.equal(window.document.activeElement.id,"catalog-name");assert.match(text(window),/AI-generated draft — not saved/);const form=window.document.querySelector('[data-catalog-form]');form.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await waitFor(window,()=>counts().saves===1);}finally{await window.happyDOM.close();}});
+test("Phase133B incomplete composite exposes questions and cannot save missing commit",async()=>{const {window,counts}=assistantWindow(modelingFixture());try{const panel=await generateAssistant(window);await waitFor(window,()=>!!panel.querySelector('.modeling-candidate button'));assert.ok(panel.querySelector('input[data-question-field="provisioning.commit"]'));[...panel.querySelectorAll('button')].find(b=>b.textContent.startsWith("Apply draft")).click();assert.equal(window.document.querySelector('#catalog-commit').value,"");assert.equal(window.document.querySelector('#catalog-shape').value,"composite");assert.equal(window.document.querySelector('#catalog-artifact').disabled,true);window.document.querySelector('[data-catalog-form]').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));assert.equal(counts().saves,0);}finally{await window.happyDOM.close();}});
+test("Phase133B manual edits are not overwritten by regenerated/applied candidates",async()=>{const {window}=assistantWindow();try{await waitFor(window,()=>!!window.document.querySelector('#catalog-name'));const name=window.document.querySelector('#catalog-name');name.value="My manual edit";name.dispatchEvent(new window.Event('input',{bubbles:true}));const panel=await generateAssistant(window);await waitFor(window,()=>!!panel.querySelector('.modeling-candidate button'));[...panel.querySelectorAll('button')].find(b=>b.textContent.startsWith("Apply draft")).click();assert.equal(window.document.querySelector('#catalog-name').value,"My manual edit");const confirm=[...window.document.querySelectorAll('button')].find(b=>b.textContent.startsWith("Replace unsaved editor"));assert.equal(window.document.activeElement,confirm);confirm.click();assert.equal(window.document.querySelector('#catalog-name').value,"P4 Sniffer");}finally{await window.happyDOM.close();}});
+test("Phase133B Cancel ignores a late response without applying or saving",async()=>{let complete;const {window,counts}=assistantWindow(undefined,{generate:()=>new Promise(resolve=>complete=resolve)});try{const panel=await generateAssistant(window);await waitFor(window,()=>!!complete);const cancel=[...panel.querySelectorAll('button')].find(b=>b.textContent==="Cancel generation");cancel.click();complete(modelingFixture());await window.happyDOM.whenAsyncComplete();assert.match(panel.textContent,/Generation cancelled/);assert.equal(panel.querySelector('.modeling-candidate button'),null);assert.equal(counts().saves,0);}finally{await window.happyDOM.close();}});
+test("Phase133B malformed provider candidate is not rendered/applied",async()=>{const invalid=modelingFixture();invalid.side_effects_performed=true;const {window,counts}=assistantWindow(invalid);try{const panel=await generateAssistant(window);await waitFor(window,()=>panel.textContent.includes("could not be verified"));assert.equal(panel.querySelector('.modeling-candidate button'),null);assert.equal(counts().saves,0);}finally{await window.happyDOM.close();}});
+test("Phase133B revision draft keeps immutable base and deterministic section diff",async()=>{const base=catalogFixture().record,r=modelingFixture("p4");r.base=base;r.candidate.partial_definition.monitoring.cadence_seconds=60;const {window,counts}=assistantWindow(r,{base});try{await waitFor(window,()=>!!window.document.querySelector('#catalog-name'));[...window.document.querySelectorAll('button')].find(b=>b.textContent==="Create new revision").click();const panel=await generateAssistant(window);await waitFor(window,()=>!!panel.querySelector('.modeling-candidate button'));[...panel.querySelectorAll('button')].find(b=>b.textContent.startsWith("Apply draft")).click();assert.match(text(window),/New revision after 1/);const form=window.document.querySelector('[data-catalog-form]');[...form.querySelectorAll('button')].find(b=>b.textContent==="Review definition").click();assert.match(text(window),/changed sections: monitoring/);assert.equal(counts().saves,0);}finally{await window.happyDOM.close();}});
+test("Phase133B labels, async status, structured preview and tablet layout are accessible",async()=>{const {window}=assistantWindow();try{const panel=await generateAssistant(window);await waitFor(window,()=>!!panel.querySelector('.modeling-candidate button'));assert.ok(panel.querySelector('label[for="modeling-intent"]'));assert.ok(panel.querySelector('[aria-live="polite"]'));assert.ok(panel.querySelector('pre[aria-label]'));assert.equal(window.getComputedStyle(window.document.querySelector('.catalog-grid')).gridTemplateColumns,"minmax(0, 1fr)");assert.doesNotMatch(text(window),/Deploy now|Run recipe/);}finally{await window.happyDOM.close();}});
+test("Phase133B regeneration invalidates old pending replacement without erasing manual edits",async()=>{let n=0;const {window}=assistantWindow(undefined,{generate:()=>{const r=modelingFixture("p4");r.candidate.partial_definition.name=`Candidate ${++n}`;return r;}});try{await waitFor(window,()=>!!window.document.querySelector('#catalog-name'));const name=window.document.querySelector('#catalog-name');name.value="manual";name.dispatchEvent(new window.Event('input',{bubbles:true}));const panel=await generateAssistant(window);await waitFor(window,()=>panel.textContent.includes("Candidate 1"));[...panel.querySelectorAll('button')].find(b=>b.textContent.startsWith("Apply draft")).click();assert.ok([...window.document.querySelectorAll('button')].find(b=>b.textContent.startsWith("Replace unsaved")));await generateAssistant(window);await waitFor(window,()=>panel.textContent.includes("Candidate 2"));assert.equal(window.document.querySelector('#catalog-name').value,"manual");assert.equal([...window.document.querySelectorAll('button')].find(b=>b.textContent.startsWith("Replace unsaved")),undefined);}finally{await window.happyDOM.close();}});
+
+test("Phase133B deterministic identity and exact scenario presets are unmistakable",async()=>{const {window}=assistantWindow();try{await waitFor(window,()=>text(window).includes("TEST PROVIDER"));const panel=window.document.querySelector('[data-modeling-assistant]');const preset=[...panel.querySelectorAll('button')].find(b=>b.textContent==="smart-coffee");assert.ok(preset);preset.click();assert.equal(panel.querySelector('textarea').value,"smart-coffee");assert.match(panel.textContent,/no real AI request was made/);await generateAssistant(window);await waitFor(window,()=>panel.querySelector('[data-test-provider]'));assert.match(panel.querySelector('.modeling-candidate').textContent,/No real AI request was made/);}finally{await window.happyDOM.close();}});
+test("Phase133B reordered questions retain exact field association and submit answer paths",async()=>{const r=modelingFixture("incomplete");r.candidate.unresolved_questions.reverse();let sent;const {window}=assistantWindow(r,{generate:(url,init)=>{sent=JSON.parse(init.body);return r;}});try{const panel=await generateAssistant(window);await waitFor(window,()=>!!panel.querySelector('input[data-question-field="name"]'));for(const field of ["name","service_definition_id","artifact"]){const input=panel.querySelector(`input[data-question-field="${field}"]`);const label=[...panel.querySelectorAll('label')].find(l=>l.htmlFor===input.id);assert.ok(label);assert.doesNotMatch(label.textContent,/commit/);input.value=`answer-${field}`;input.dispatchEvent(new window.Event('input',{bubbles:true}));}await generateAssistant(window);await waitFor(window,()=>sent.answers.length===3);assert.deepEqual(Object.fromEntries(sent.answers.map(a=>[a.field,a.value])),{artifact:"answer-artifact",name:"answer-name",service_definition_id:"answer-service_definition_id"});}finally{await window.happyDOM.close();}});
+test("Phase133B OpenAI status shows configured model rather than fixture identity",async()=>{const {window}=assistantWindow(undefined,{provider:"openai",model:"configured-model"});try{await waitFor(window,()=>text(window).includes("openai · configured-model"));assert.equal(window.document.querySelector('[aria-label="Deterministic test scenarios"]'),null);}finally{await window.happyDOM.close();}});
+
+test("Phase133B safe rejection findings render paths and prevent Apply",async()=>{const {window,counts}=assistantWindow(undefined,{rejection:{error:{code:"provider_invalid_candidate",message:"RAW_PROVIDER_SECRET_PROMPT",findings:[{path:"provisioning.commit",code:"invalid_git_commit",message:"Expected null or full 40-hex commit."}]}}});try{const panel=await generateAssistant(window);await waitFor(window,()=>panel.textContent.includes("invalid_git_commit"));assert.match(panel.textContent,/provisioning.commit — Expected null or full 40-hex commit/);assert.match(panel.textContent,/No draft was applied/);assert.doesNotMatch(panel.textContent,/RAW_PROVIDER_SECRET_PROMPT/);assert.equal(panel.querySelector('.modeling-candidate button'),null);assert.equal(window.document.activeElement,panel.querySelector('.modeling-candidate'));assert.equal(counts().saves,0);}finally{await window.happyDOM.close();}});
 
 test("Phase133A catalog form saves modeling only, preserves tenancy and references", async () => {
   const f=catalogFixture(); let saved;
@@ -1732,7 +1765,7 @@ test("canonical DATUM assets remain byte-identical and compact navigation stays 
 
 test("actual bundled app boots with real runtime projection and scoped project response", async () => {
   const window = boot("/", 1440, async (url, init) =>
-    (await fetch(`http://127.0.0.1:5173${url}`, init)).json(),
+    (await fetch(`${gateApiBase}${url}`, init)).json(),
   );
   try {
     await ready(window);
@@ -2133,4 +2166,124 @@ test("network error, manual retry, Connecting and obsolete unknown-route request
   } finally {
     await pending.happyDOM.close();
   }
+});
+
+function editorWindow(options={}) {
+ const f=editorFixture();const requests=[];
+ const window=boot("/projects/foundation-demo/graph/edit",768,async(url,init)=>{
+  requests.push({url,init});
+  if(url.includes('/catalog/services')){const page=options.catalog??{items:[],has_more:false,limit:100};const exact=url.match(/\/services\/([^/]+)\/revisions\/(\d+)$/u);if(exact)return page.items.find(r=>r.definition.service_definition_id===decodeURIComponent(exact[1])&&r.revision===Number(exact[2]));const parsed=new URL(url,"http://127.0.0.1");if(parsed.search){if(options.discovery)return options.discovery(parsed);return discoveryFixturePage(page.items,parsed.searchParams.get("search")??"",Number(parsed.searchParams.get("offset")??0),Number(parsed.searchParams.get("limit")??25));}return page;}
+  if(url.endsWith("/validate"))return options.conflict?new Response(JSON.stringify({error:{code:"base_revision_conflict"}}),{status:409}):options.invalid?{schema:"datum.dgraph-editor-validation/1",valid:false,findings:[{path:"calls.target_service_id",code:"dangling_call_target",message:"Target must name a declared service."}],digest:null}:{schema:"datum.dgraph-editor-validation/1",valid:true,findings:[],digest:`sha256:${"b".repeat(64)}`};
+  return f.base;
+ });
+ window.confirm=()=>options.confirm??true;
+ window.structuredClone=globalThis.structuredClone;
+ return {window,requests};
+}
+const editorButton=(w,label)=>[...w.document.querySelectorAll(".dgraph-editor button")].find(b=>b.textContent===label);
+test("Phase134C obsolete page response cannot overwrite newer search or draft",async()=>{
+ const catalog=largeEditorCatalogFixture(100);let resolveOld;
+ const {window:w}=editorWindow({catalog:catalog.page,discovery:u=>{
+  const q=u.searchParams.get("search")??"",offset=Number(u.searchParams.get("offset")??0);
+  const page=discoveryFixturePage(catalog.page.items,q,offset,25);
+  return offset===25?new Promise(resolve=>{resolveOld=()=>resolve(page);}):page;
+ }});
+ try{
+  await loadEditor(w);const before=w.document.querySelector(".editor-json").textContent;
+  editorButton(w,"Add DServ").click();await waitFor(w,()=>text(w).includes("Page 1 / 4"));
+  editorButton(w,"Next catalog page").click();await waitFor(w,()=>!!resolveOld);
+  editorInput(w,"Search catalog services","EXAMPLE.DISCOVERY-090");await waitFor(w,()=>text(w).includes("1 matches"));
+  resolveOld();await new Promise(resolve=>setTimeout(resolve,20));
+  assert.match(text(w),/Page 1 \/ 1/);assert.equal(w.document.querySelectorAll("[data-catalog-definition]").length,1);
+  assert.ok(w.document.querySelector('[data-catalog-definition="service-090"]'));
+  assert.equal(w.document.querySelector(".editor-json").textContent,before);
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134C 100-entry picker navigates bounded pages and searches beyond page one",async()=>{
+ const catalog=largeEditorCatalogFixture(100),{window:w,requests}=editorWindow({catalog:catalog.page});
+ try{
+  await loadEditor(w);const unchanged=w.document.querySelector(".editor-json").textContent;editorButton(w,"Add DServ").click();
+  await waitFor(w,()=>text(w).includes("Page 1 / 4"));assert.equal(w.document.querySelectorAll("[data-catalog-definition]").length,25);
+  assert.equal(editorButton(w,"Previous catalog page").disabled,true);assert.ok(!w.document.querySelector('[data-catalog-definition="service-090"]'));
+  editorButton(w,"Next catalog page").click();await waitFor(w,()=>text(w).includes("Page 2 / 4"));
+  editorButton(w,"Previous catalog page").click();await waitFor(w,()=>text(w).includes("Page 1 / 4"));
+  for(const page of [2,3,4]){editorButton(w,"Next catalog page").click();await waitFor(w,()=>text(w).includes(`Page ${page} / 4`));}
+  assert.equal(editorButton(w,"Next catalog page").disabled,true);assert.equal(w.document.querySelector(".editor-json").textContent,unchanged);
+  editorInput(w,"Search catalog services","EXAMPLE.DISCOVERY-090");await waitFor(w,()=>text(w).includes("Page 1 / 1")&&text(w).includes("1 matches"));
+  assert.equal(editorButton(w,"Previous catalog page").disabled,true);
+  w.document.querySelector('[data-catalog-definition="service-090"]').click();await waitFor(w,()=>text(w).includes("Exact definition service-090@3"));
+  editorInput(w,"Service ID","discovery-logical");editorInput(w,"Required CPU (whole cores)","2");editorInput(w,"Required memory (exact bytes)","42");
+  w.document.querySelector(".editor-inspector form").dispatchEvent(new w.Event("submit",{bubbles:true,cancelable:true}));
+  const payload=JSON.parse(w.document.querySelector(".editor-json").textContent);
+  assert.deepEqual(payload.services.find(s=>s.service_id==="discovery-logical").service_definition,{definition_id:"service-090",revision:3,digest:catalog.get("service-090",3).digest});
+  assert.equal(requests.filter(r=>r.init.method==="POST").length,0);assert.ok(requests.some(r=>r.url.endsWith("/service-090/revisions/3")));
+  assert.ok(requests.filter(r=>r.url.includes("services?")).every(r=>new URL(r.url,"http://fixture").searchParams.get("limit")==="25"));
+  editorButton(w,"Validate Draft").click();await waitFor(w,()=>text(w).includes("NOT accepted"));
+  assert.ok(requests.filter(r=>r.init.method==="POST").every(r=>r.url.endsWith("/dgraph-editor/validate")));
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134C no-results and page failures retain graph; retry is explicit",async()=>{
+ const catalog=largeEditorCatalogFixture(100);let fail=false;
+ const {window:w,requests}=editorWindow({catalog:catalog.page,discovery:u=>fail?new Response(JSON.stringify({error:{code:"catalog_unavailable",message:"RAW SQL SECRET"}}),{status:503}):discoveryFixturePage(catalog.page.items,u.searchParams.get("search")??"",Number(u.searchParams.get("offset")??0),25)});
+ try{
+  await loadEditor(w);const before=w.document.querySelector(".editor-json").textContent;editorButton(w,"Add DServ").click();await waitFor(w,()=>text(w).includes("Page 1 / 4"));
+  editorInput(w,"Search catalog services","no-such-software");await waitFor(w,()=>text(w).includes("No matching cataloged services."));
+  assert.equal(editorButton(w,"Next catalog page").disabled,true);assert.match(text(w),/0 matches/);
+  fail=true;editorInput(w,"Search catalog services","");await waitFor(w,()=>text(w).includes("Catalog page unavailable."));
+  assert.equal(w.document.querySelector(".editor-json").textContent,before);assert.doesNotMatch(text(w),/RAW SQL SECRET/);
+  fail=false;editorButton(w,"Retry catalog page").click();await waitFor(w,()=>text(w).includes("Page 1 / 4"));
+  assert.equal(requests.filter(r=>r.init.method==="POST").length,0);
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134B catalog picker pins exact definition independently and never saves",async()=>{
+ const catalog=editorCatalogFixture(),{window:w,requests}=editorWindow({catalog:catalog.page});try{
+ await loadEditor(w);assert.match(text(w),/Unlinked \/ legacy DServ/);editorButton(w,"Add DServ").click();
+ await waitFor(w,()=>!!w.document.querySelector('[data-catalog-definition="smart-coffee-api"]'));
+ assert.match(text(w),/presentation group/);const register=w.document.querySelector('.editor-inspector a');assert.equal(register.getAttribute("target"),"_blank");assert.equal(register.getAttribute("href"),"/catalog");
+ const search=editorInput(w,"Search catalog services","api.smart-coffee");await waitFor(w,()=>text(w).includes("1 matches"));assert.equal(w.document.querySelectorAll('[data-catalog-definition]').length,1);
+ w.document.querySelector('[data-catalog-definition="smart-coffee-api"]').click();
+ await waitFor(w,()=>text(w).includes("Exact definition smart-coffee-api@3"));
+ assert.equal(editorInput(w,"Required CPU (whole cores)","").value,"");assert.equal(editorInput(w,"Required memory (exact bytes)","").value,"");
+ editorInput(w,"Service ID","coffee-api-primary");w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event("submit",{bubbles:true,cancelable:true}));
+ assert.doesNotMatch(w.document.querySelector('.editor-json').textContent,/coffee-api-primary/);
+ editorInput(w,"Required CPU (whole cores)","2");editorInput(w,"Required memory (exact bytes)","536870912");
+ w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event("submit",{bubbles:true,cancelable:true}));
+ const payload=JSON.parse(w.document.querySelector('.editor-json').textContent),node=payload.services.find(s=>s.service_id==="coffee-api-primary");
+ assert.equal(payload.schema,"datum.dgraph/2");assert.deepEqual(node.service_definition,{definition_id:"smart-coffee-api",revision:3,digest:catalog.get("smart-coffee-api",3).digest});
+ assert.equal(requests.filter(r=>r.init.method==="POST").length,0);assert.ok(requests.some(r=>r.url.endsWith("/smart-coffee-api/revisions/3")));
+ assert.match(text(w),/does not save or accept a new DGraph revision/);
+ editorButton(w,"Validate Draft").click();await waitFor(w,()=>text(w).includes("NOT accepted"));
+ assert.equal(requests.filter(r=>r.init.method==="POST").length,1);assert.ok(requests.filter(r=>r.init.method==="POST").every(r=>r.url.endsWith("/dgraph-editor/validate")));
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134B empty catalog does not silently open arbitrary DServ form",async()=>{
+ const {window:w}=editorWindow();try{await loadEditor(w);editorButton(w,"Add DServ").click();await waitFor(w,()=>text(w).includes("No cataloged services are available."));
+ assert.ok(w.document.querySelector('.editor-inspector a'));assert.equal(w.document.querySelector('.editor-inspector form'),null);assert.ok(editorButton(w,"Advanced / Manual DServ"));
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134B Composite selection records one modeling ref without components or runtime",async()=>{
+ const catalog=editorCatalogFixture(),{window:w}=editorWindow({catalog:catalog.page});try{
+ await loadEditor(w);editorButton(w,"Add DServ").click();await waitFor(w,()=>!!w.document.querySelector('[data-catalog-definition="magistrala"]'));
+ w.document.querySelector('[data-catalog-definition="magistrala"]').click();await waitFor(w,()=>text(w).includes("Exact definition magistrala@1"));
+ editorInput(w,"Service ID","magistrala-logical");editorInput(w,"Required CPU (whole cores)","1");editorInput(w,"Required memory (exact bytes)","1");
+ w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event("submit",{bubbles:true,cancelable:true}));
+ const payload=JSON.parse(w.document.querySelector('.editor-json').textContent);assert.equal(payload.services.length,4);
+ assert.equal(payload.services.find(s=>s.service_id==="magistrala-logical").service_definition.definition_id,"magistrala");assert.doesNotMatch(JSON.stringify(payload),/runtime_kind|composition|provisioning|tenant_unit/);
+ }finally{await w.happyDOM.close();}
+});
+function editorInput(w,label,value){const lab=[...w.document.querySelectorAll(".dgraph-editor label")].find(l=>l.textContent===label);const input=w.document.getElementById(lab.htmlFor);input.value=value;input.dispatchEvent(new w.Event("input",{bubbles:true}));return input;}
+async function loadEditor(w){await waitFor(w,()=>text(w).includes("Accepted bases available"));const choice=w.document.querySelector('[aria-label="Accepted application base"]');choice.value="app:editor";editorButton(w,"Load selected accepted base").click();editorButton(w,"Advanced / Manual DServ").click();}
+test("Phase134 built editor CRUD, incident edges, diff and explicit validation are draft only",async()=>{
+ const {window:w,requests}=editorWindow();try{await loadEditor(w);assert.match(text(w),/Accepted base dgraph:editor@7/);assert.match(w.document.querySelector('.editor-json').textContent,/"revision":8/);assert.match(w.document.querySelector('.editor-json').textContent,/9007199254740991/);
+ editorInput(w,"Service ID","new-service");editorInput(w,"Required CPU (whole cores)","2");editorInput(w,"Required memory (exact bytes)","42");w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));assert.match(text(w),/Nodes: 1 added/);
+ editorButton(w,"Connect DServs").click();editorInput(w,"Call ID","new-call");w.document.querySelector('[aria-label="Source DServ"]').value="new-service";w.document.querySelector('[aria-label="Target DServ"]').value="service-0";w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));assert.match(text(w),/Edges: 1 added/);
+ const select=[...w.document.querySelectorAll('[data-editor-service]')].find(b=>b.dataset.editorService==="new-service");select.click();assert.equal(w.document.activeElement,w.document.querySelector('.editor-inspector'));editorInput(w,"Required CPU (whole cores)","3");w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));editorButton(w,"Remove DServ from draft").click();assert.doesNotMatch(w.document.querySelector('.editor-json').textContent,/new-service|new-call/);
+ assert.equal(requests.filter(r=>r.init.method==='POST').length,0);editorButton(w,"Validate Draft").click();await waitFor(w,()=>text(w).includes("NOT accepted"));assert.equal(requests.filter(r=>r.init.method==='POST').length,1);assert.ok(requests.filter(r=>r.init.method==='POST').every(r=>r.url.endsWith('/dgraph-editor/validate')));
+ }finally{await w.happyDOM.close();}
+});
+test("Phase134 dirty navigation/form state is protected; rejection and stale base retain draft",async()=>{
+ for(const options of [{invalid:true,confirm:false},{conflict:true,confirm:false}]){const {window:w,requests}=editorWindow(options);try{await loadEditor(w);editorInput(w,"Service ID","retained");assert.equal(editorButton(w,"New empty local draft").click(),undefined);assert.equal(w.document.querySelector('.editor-inspector input').value,"retained");
+ const nav=w.document.querySelector('a[data-nav="projects"]');nav.click();assert.match(w.location.pathname,/graph\/edit/);assert.equal(w.document.querySelector('.editor-inspector input').value,"retained");
+ w.document.querySelector('.editor-inspector form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));const before=w.document.querySelector('.editor-json').textContent;editorButton(w,"Validate Draft").click();await waitFor(w,()=>text(w).includes(options.conflict?"base_revision_conflict":"dangling_call_target"));assert.equal(w.document.querySelector('.editor-json').textContent,before);assert.equal(w.document.activeElement,w.document.querySelector('.editor-findings'));assert.equal(requests.filter(r=>r.init.method==='POST').length,1);
+ }finally{await w.happyDOM.close();}}
 });

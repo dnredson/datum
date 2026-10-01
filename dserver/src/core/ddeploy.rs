@@ -2924,12 +2924,12 @@ mod tests {
             revision,
             services: vec![
                 CanonicalDServV1 {
-                    service_id: "svc-a".to_string(),
+                    service_definition: None, service_id: "svc-a".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 134_217_728 },
                 },
                 CanonicalDServV1 {
-                    service_id: "svc-b".to_string(),
+                    service_definition: None, service_id: "svc-b".to_string(),
                     execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                     resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 134_217_728 },
                 },
@@ -6509,8 +6509,8 @@ mod tests {
             dgraph_id: "dgraph:ddeploy-lab".to_string(),
             revision: 1,
             services: vec![
-                CanonicalDServV1 { service_id: "svc-ingest".to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 268435456 } },
-                CanonicalDServV1 { service_id: "svc-process".to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 268435456 } },
+                CanonicalDServV1 { service_definition: None, service_id: "svc-ingest".to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 268435456 } },
+                CanonicalDServV1 { service_definition: None, service_id: "svc-process".to_string(), execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() }, resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 268435456 } },
             ],
             calls: vec![CanonicalDCallV1 { call_id: "ingest-to-process".to_string(), source_service_id: "svc-ingest".to_string(), target_service_id: "svc-process".to_string() }],
         };
@@ -6727,7 +6727,7 @@ mod tests {
             dgraph_id: format!("dgraph:{app}"),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: service_id.to_string(),
+                service_definition: None, service_id: service_id.to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                 resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores, memory_bytes },
             }],

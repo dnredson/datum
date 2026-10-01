@@ -223,7 +223,7 @@ pub fn lower_calls_empty_dgraph_candidate(
         .services
         .iter()
         .map(|mapping| CanonicalDServV1 {
-            service_id: mapping.service_id.clone(),
+            service_definition: None, service_id: mapping.service_id.clone(),
             execution_requirement: CanonicalDServExecutionRequirementV1 {
                 dnode_abi: DNODE_ABI_V0.to_string(),
             },

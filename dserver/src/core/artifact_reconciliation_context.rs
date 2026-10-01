@@ -1844,7 +1844,7 @@ mod tests {
             dgraph_id: "dgraph:p01".to_string(),
             revision: 1,
             services: vec![CanonicalDServV1 {
-                service_id: "svc-a".to_string(),
+                service_definition: None, service_id: "svc-a".to_string(),
                 execution_requirement: CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
                 resource_requirement: CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 134_217_728 },
             }],

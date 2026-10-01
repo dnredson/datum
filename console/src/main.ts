@@ -10,6 +10,9 @@ import type { GlobalOverview, ProjectOverview } from "./types/operations.ts";
 import { projectGraphView } from "./pages/project-graph.ts";
 import { catalogView } from "./pages/catalog.ts";
 import { CatalogClient } from "./api/catalog.ts";
+import { ModelingClient } from "./api/service-modeling.ts";
+import {DGraphEditorClient} from "./api/dgraph-editor.ts";
+import {dgraphEditorView} from "./pages/dgraph-editor.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -33,6 +36,7 @@ const refresh = document.querySelector<HTMLButtonElement>("#refresh")!;
 const connection = document.querySelector<HTMLDivElement>("#connection")!;
 const client = new OperationsClient();
 let disposeGraph: (() => void) | undefined;
+let editor: ReturnType<typeof dgraphEditorView> | undefined;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const menuToggle = document.querySelector<HTMLButtonElement>("#menu-toggle")!;
 const workspace = document.querySelector<HTMLElement>("#workspace")!;
@@ -114,6 +118,8 @@ function stateView(title: string, message: string, error = false): HTMLElement {
   return box;
 }
 async function render(route: Route): Promise<void> {
+  if(editor && JSON.stringify(currentRoute)===JSON.stringify(route) && !editor.confirmLeave())return;
+  editor?.dispose();editor=undefined;
   disposeGraph?.();
   disposeGraph = undefined;
   const navigationChanged =
@@ -127,7 +133,7 @@ async function render(route: Route): Promise<void> {
   if (navigationChanged) workspace.focus();
   page.removeAttribute("aria-busy");
   const title =
-    route.kind === "catalog" ? "Catalog" : route.kind === "project_graph"
+    route.kind === "project_graph_editor" ? "DGraph editor" : route.kind === "catalog" ? "Catalog" : route.kind === "project_graph"
       ? "Graph"
       : route.kind === "project"
         ? "Project"
@@ -139,11 +145,11 @@ async function render(route: Route): Promise<void> {
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" || route.kind === "project_graph"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"
       ? route.projectId
       : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" || route.kind === "project_graph"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"
       ? route.projectId
       : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
@@ -152,11 +158,18 @@ async function render(route: Route): Promise<void> {
     const active =
       nav.dataset.nav === route.kind ||
       (nav.dataset.nav === "projects" &&
-        (route.kind === "project" || route.kind === "project_graph"));
+        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
   refresh.disabled = route.kind === "not_found";
+  if(route.kind === "project_graph_editor") {
+    document.querySelector(".workspace-toolbar .eyebrow")!.textContent="PROJECT · LOCAL DGRAPH DRAFT";
+    document.querySelector(".sidebar-footer span")!.textContent="Draft modeling only · no acceptance or execution";
+    setConnection("Connecting");
+    editor=dgraphEditorView(route.projectId,new DGraphEditorClient(route.projectId,signal),ready=>{if(!signal.aborted)setConnection(ready?"Connected":"Degraded");});
+    page.replaceChildren(editor.element);editor.mount();return;
+  }
   if (route.kind === "not_found") {
     if (connectionState === "Connecting") setConnection("Disconnected");
     page.replaceChildren(
@@ -172,7 +185,7 @@ async function render(route: Route): Promise<void> {
     setConnection("Connecting");
     page.replaceChildren(catalogView(new CatalogClient(signal), ready => {
       if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
-    }));
+    }, new ModelingClient(signal)));
     document.querySelector(".sidebar-footer span")!.textContent = "Catalog modeling only · operational actions remain read-only";
     return;
   }
@@ -266,13 +279,15 @@ function closeNavigation(event: KeyboardEvent): void {
 }
 document.addEventListener("keydown", closeNavigation);
 window.addEventListener("pagehide", () => {
+  editor?.dispose();
   disposeGraph?.();
   controller?.abort();
 });
 setConnection("Disconnected");
-const stopRouter = startRouter((route) => void render(route));
+const stopRouter = startRouter((route) => void render(route),()=>editor?.confirmLeave()??true);
 if (import.meta.hot)
   import.meta.hot.dispose(() => {
+    editor?.dispose();
     disposeGraph?.();
     controller?.abort();
     stopRouter();
