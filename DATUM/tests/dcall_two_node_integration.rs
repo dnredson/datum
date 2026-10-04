@@ -360,6 +360,7 @@ fn dgraph() -> CanonicalDGraphV1 {
         services: vec![
             CanonicalDServV1 {
                 service_id: SOURCE_SVC.to_string(),
+                service_definition: None,
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -370,6 +371,7 @@ fn dgraph() -> CanonicalDGraphV1 {
             },
             CanonicalDServV1 {
                 service_id: DEST_SVC.to_string(),
+                service_definition: None,
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -1582,6 +1584,7 @@ fn source_message_limit_preflight_check_rejects_oversized_payload_before_grant_i
         services: vec![
             CanonicalDServV1 {
                 service_id: SOURCE_SVC.to_string(),
+                service_definition: None,
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },
@@ -1592,6 +1595,7 @@ fn source_message_limit_preflight_check_rejects_oversized_payload_before_grant_i
             },
             CanonicalDServV1 {
                 service_id: DEST_SVC.to_string(),
+                service_definition: None,
                 execution_requirement: CanonicalDServExecutionRequirementV1 {
                     dnode_abi: DNODE_ABI_V0.to_string(),
                 },

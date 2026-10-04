@@ -191,6 +191,7 @@ fn dgraph() -> CanonicalDGraphV1 {
         revision: 1,
         services: vec![datum::agent::canonical_dgraph::CanonicalDServV1 {
             service_id: UNRELATED_SVC.to_string(),
+            service_definition: None,
             execution_requirement: datum::agent::canonical_dgraph::CanonicalDServExecutionRequirementV1 { dnode_abi: DNODE_ABI_V0.to_string() },
             resource_requirement: datum::agent::canonical_dgraph::CanonicalDServResourceRequirementV1 { cpu_cores: 1, memory_bytes: 1 },
         }],
