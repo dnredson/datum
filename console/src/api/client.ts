@@ -4,6 +4,8 @@ import type { ProjectGraph } from "../types/graph.ts";
 import { validProjectGraph } from "../pages/graph-model.ts";
 import type { ProjectRuntimeGraph } from "../types/runtime-graph.ts";
 import { validRuntimeGraph } from "../pages/runtime-graph-model.ts";
+import type { ContinuumView } from "../types/continuum.ts";
+import { validContinuumView } from "../pages/continuum-model.ts";
 
 export class ApiError extends Error {
   readonly code: string;
@@ -594,6 +596,45 @@ export class OperationsClient {
           throw new ApiError(
             "invalid_response",
             "DServer returned an invalid logical graph projection.",
+            null,
+          );
+      },
+    );
+  }
+  // Global Continuum View -- the real, full physical D-Node set. No
+  // project scope implied; `X-Datum-Project` is never sent for this route.
+  continuum(signal: AbortSignal): Promise<ContinuumView> {
+    return this.request(
+      "/api/v1/operations/continuum",
+      signal,
+      undefined,
+      (body) => {
+        if (!validContinuumView(body))
+          throw new ApiError(
+            "invalid_response",
+            "DServer returned an invalid continuum projection.",
+            null,
+          );
+      },
+    );
+  }
+  // SAME physical node set as `continuum()`, plus a `project_overlay` for
+  // `id` -- never a filtered/re-scoped node list. See
+  // `documentation/reference/phase135-continuum-view.md`.
+  projectContinuum(id: string, signal: AbortSignal): Promise<ContinuumView> {
+    if (!validProjectId(id))
+      return Promise.reject(
+        new ApiError("invalid_scope", "Invalid project identifier.", null),
+      );
+    return this.request(
+      `/api/v1/operations/projects/${encodeURIComponent(id)}/continuum`,
+      signal,
+      undefined,
+      (body) => {
+        if (!validContinuumView(body, id))
+          throw new ApiError(
+            "invalid_response",
+            "DServer returned an invalid continuum projection.",
             null,
           );
       },

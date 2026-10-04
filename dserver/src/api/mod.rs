@@ -3,6 +3,7 @@ pub mod alternative_paths;
 pub mod analysis;
 pub mod artifact_reconciliation;
 pub mod capabilities;
+pub mod continuum_view;
 pub mod controlled_wasm_deployment;
 pub mod dashboard;
 pub mod dcall;

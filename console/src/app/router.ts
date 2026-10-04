@@ -2,9 +2,11 @@ export type Route =
   | { kind: "overview" }
   | { kind: "projects" }
   | { kind: "catalog" }
+  | { kind: "continuum" }
   | { kind: "project"; projectId: string }
   | { kind: "project_graph"; projectId: string }
   | { kind: "project_graph_editor"; projectId: string }
+  | { kind: "project_continuum"; projectId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -17,14 +19,25 @@ export function validProjectId(id: string): boolean {
 export function parseRoute(pathname: string): Route {
   if (pathname === "/") return { kind: "overview" };
   if (pathname === "/catalog" || pathname === "/catalog/") return { kind: "catalog" };
+  if (pathname === "/continuum" || pathname === "/continuum/") return { kind: "continuum" };
   if (pathname === "/projects" || pathname === "/projects/")
     return { kind: "projects" };
-  const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?)?\/?$/u.exec(pathname);
+  const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?|\/continuum)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
       const projectId = decodeURIComponent(match[1]);
       if (validProjectId(projectId))
-        return { kind: match[2] === "/graph/edit" ? "project_graph_editor" : match[2] ? "project_graph" : "project", projectId };
+        return {
+          kind:
+            match[2] === "/graph/edit"
+              ? "project_graph_editor"
+              : match[2] === "/graph"
+                ? "project_graph"
+                : match[2] === "/continuum"
+                  ? "project_continuum"
+                  : "project",
+          projectId,
+        };
     } catch {
       /* malformed encoding is Not Found, never a crash */
     }

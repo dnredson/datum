@@ -774,3 +774,146 @@ summary:focus-visible,
 .modeling-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; font-size: .8rem; }
 .catalog-error:not(:empty) { border-left: 3px solid var(--bs-danger); padding: .75rem; margin-bottom: 1rem; }
 @media (max-width: 900px) { .catalog-grid { grid-template-columns: minmax(0, 1fr); } }
+/* Phase 135A: dashboard summary, visual canvas and inspector are additive;
+   the accessible node list below remains the complete, independent fallback. */
+.continuum-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+.continuum-metric-card {
+  background: #fff;
+  border: 1px solid var(--datum-border);
+  border-left: 3px solid var(--datum-border);
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.continuum-metric-card.tone-success { border-left-color: #357e58; }
+.continuum-metric-card.tone-warning { border-left-color: #c5a52b; }
+.continuum-metric-card.tone-danger { border-left-color: #b33d48; }
+.continuum-metric-value {
+  font-size: 1.4rem;
+  font-weight: 650;
+  line-height: 1.1;
+}
+.continuum-metric-label {
+  font-size: 0.78rem;
+  color: var(--datum-muted);
+}
+.continuum-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.continuum-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.continuum-canvas-area,
+.continuum-inspector {
+  min-width: 0;
+}
+.continuum-canvas {
+  height: 28rem;
+  min-height: 20rem;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.4rem;
+  background: #f8fafb;
+}
+.continuum-renderer-notice {
+  margin: 0.5rem 0 0;
+}
+.continuum-inspector {
+  background: #f4f7f9;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.4rem;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+.continuum-node-card {
+  cursor: pointer;
+}
+.continuum-node-card:focus-visible {
+  outline: 2px solid #244f70;
+  outline-offset: 2px;
+}
+.continuum-node-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.continuum-category-swatch {
+  display: inline-block;
+  flex: 0 0 1.3rem;
+  width: 1.3rem;
+  height: 0.9rem;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.25rem;
+}
+.continuum-structure-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0.25rem 0 0;
+}
+.continuum-structure-grid dt {
+  grid-column: 1;
+}
+.continuum-structure-grid dd {
+  grid-column: 2;
+  margin: 0;
+}
+.continuum-placement-list,
+.continuum-evidence-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+}
+.continuum-placement-list li {
+  padding: 0.15rem 0;
+}
+.continuum-evidence-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--datum-border);
+}
+.continuum-observation {
+  margin: 0.4rem 0;
+}
+.continuum-observation-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.continuum-node-list {
+  display: grid;
+  gap: 0.75rem;
+}
+.continuum-links ul {
+  padding-left: 1.2rem;
+}
+@media (max-width: 900px) {
+  .continuum-dashboard {
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  }
+  .continuum-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .continuum-canvas {
+    height: 22rem;
+  }
+}

@@ -103,6 +103,7 @@ test("future workspace sections remain informational with exact phase ownership"
       "Overview",
       "Services",
       "Graph",
+      "Continuum",
       "Placement",
       "Deploy",
       "Runtime",

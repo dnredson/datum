@@ -13,6 +13,7 @@ import { CatalogClient } from "./api/catalog.ts";
 import { ModelingClient } from "./api/service-modeling.ts";
 import {DGraphEditorClient} from "./api/dgraph-editor.ts";
 import {dgraphEditorView} from "./pages/dgraph-editor.ts";
+import { continuumView } from "./pages/continuum.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -20,7 +21,7 @@ root.innerHTML = `<a class="skip-link" href="#workspace">Skip to workspace</a>
   <aside class="sidebar" id="sidebar" aria-label="Main navigation">
     <a href="/" data-route class="brand" aria-label="DATUM Console — Overview"><img class="datum-mark" src="/brand/datum-monochrome.png" alt="" width="48" height="48" /><span class="brand-label">DATUM<small>CONSOLE</small></span></a>
     <div class="nav-label">OPERATIONS</div>
-    <nav><a href="/" data-route data-nav="overview" aria-label="Overview"><i class="bi bi-grid-1x2" aria-hidden="true"></i><span class="nav-text">Overview</span></a><a href="/projects" data-route data-nav="projects" aria-label="Projects"><i class="bi bi-collection" aria-hidden="true"></i><span class="nav-text">Projects</span></a></nav>
+    <nav><a href="/" data-route data-nav="overview" aria-label="Overview"><i class="bi bi-grid-1x2" aria-hidden="true"></i><span class="nav-text">Overview</span></a><a href="/projects" data-route data-nav="projects" aria-label="Projects"><i class="bi bi-collection" aria-hidden="true"></i><span class="nav-text">Projects</span></a><a href="/continuum" data-route data-nav="continuum" aria-label="Continuum"><i class="bi bi-diagram-3" aria-hidden="true"></i><span class="nav-text">Continuum</span></a></nav>
     <div class="sidebar-footer"><i class="bi bi-shield-check" aria-hidden="true"></i><span>Read-only foundation<small>No operational write actions</small></span></div>
   </aside>
   <div class="console-layout"><header class="topbar"><div class="topbar-left"><button id="menu-toggle" class="menu-toggle btn btn-sm" aria-controls="sidebar" aria-expanded="true" aria-label="Collapse navigation"><i class="bi bi-list" aria-hidden="true"></i></button><a class="topbar-product" href="/" data-route aria-label="DATUM Console — Overview"><img src="/brand/datum-logo-horizontal.png" alt="" width="108" height="36" /></a><span class="topbar-divider" aria-hidden="true">/</span><span id="page-title">Overview</span><span id="project-context" class="project-context"></span></div><div id="connection" class="connection" aria-live="polite" aria-label="DServer connection / projection quality"></div></header>
@@ -36,6 +37,7 @@ const refresh = document.querySelector<HTMLButtonElement>("#refresh")!;
 const connection = document.querySelector<HTMLDivElement>("#connection")!;
 const client = new OperationsClient();
 let disposeGraph: (() => void) | undefined;
+let disposeContinuum: (() => void) | undefined;
 let editor: ReturnType<typeof dgraphEditorView> | undefined;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const menuToggle = document.querySelector<HTMLButtonElement>("#menu-toggle")!;
@@ -122,6 +124,8 @@ async function render(route: Route): Promise<void> {
   editor?.dispose();editor=undefined;
   disposeGraph?.();
   disposeGraph = undefined;
+  disposeContinuum?.();
+  disposeContinuum = undefined;
   const navigationChanged =
     JSON.stringify(currentRoute) !== JSON.stringify(route);
   currentRoute = route;
@@ -135,21 +139,23 @@ async function render(route: Route): Promise<void> {
   const title =
     route.kind === "project_graph_editor" ? "DGraph editor" : route.kind === "catalog" ? "Catalog" : route.kind === "project_graph"
       ? "Graph"
-      : route.kind === "project"
-        ? "Project"
-        : route.kind === "projects"
-          ? "Projects"
-          : route.kind === "not_found"
-            ? "Not found"
-            : "Overview";
+      : route.kind === "continuum" || route.kind === "project_continuum"
+        ? "Continuum"
+        : route.kind === "project"
+          ? "Project"
+          : route.kind === "projects"
+            ? "Projects"
+            : route.kind === "not_found"
+              ? "Not found"
+              : "Overview";
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"
       ? route.projectId
       : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"
       ? route.projectId
       : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
@@ -158,7 +164,7 @@ async function render(route: Route): Promise<void> {
     const active =
       nav.dataset.nav === route.kind ||
       (nav.dataset.nav === "projects" &&
-        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor"));
+        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
@@ -228,6 +234,17 @@ async function render(route: Route): Promise<void> {
       if (signal.aborted) return;
       page.replaceChildren(projectView(data));
       setConnection(degraded(data) ? "Degraded" : "Connected");
+    } else if (route.kind === "continuum" || route.kind === "project_continuum") {
+      const projectId = route.kind === "project_continuum" ? route.projectId : undefined;
+      const data = projectId
+        ? await client.projectContinuum(projectId, signal)
+        : await client.continuum(signal);
+      if (signal.aborted) return;
+      const continuumPage = continuumView(data, projectId);
+      page.replaceChildren(continuumPage.element);
+      disposeContinuum = continuumPage.dispose;
+      continuumPage.mount();
+      setConnection(data.truncated ? "Degraded" : "Connected");
     } else {
       const data = await client.overview(signal);
       if (signal.aborted) return;
@@ -281,6 +298,7 @@ document.addEventListener("keydown", closeNavigation);
 window.addEventListener("pagehide", () => {
   editor?.dispose();
   disposeGraph?.();
+  disposeContinuum?.();
   controller?.abort();
 });
 setConnection("Disconnected");
@@ -289,6 +307,7 @@ if (import.meta.hot)
   import.meta.hot.dispose(() => {
     editor?.dispose();
     disposeGraph?.();
+    disposeContinuum?.();
     controller?.abort();
     stopRouter();
     tabletNavigation.removeEventListener("change", syncNavigation);

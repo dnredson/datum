@@ -18,6 +18,7 @@ pub mod capabilities;
 pub mod controlled_dgraph_deployment;
 pub mod controlled_wasm_deployment;
 pub mod controlled_wasm_persistence;
+pub mod continuum_view;
 pub mod datum_alert;
 pub mod datum_event;
 pub mod dcall;

@@ -67,6 +67,7 @@ use api::dmonitor::{
     get_dmonitor_observation_by_id, get_dmonitor_stream_head, list_dmonitor_stream_heads,
     post_dmonitor_observation,
 };
+use api::continuum_view::{get_continuum_view, get_project_continuum_view};
 use api::dmonitor_convergence::post_evaluate_dmonitor_convergence;
 use api::dmonitor_readiness::get_dmonitor_readiness;
 use api::dnode_registry::{
@@ -484,6 +485,8 @@ async fn main() {
         .route("/api/v1/dmonitor/observations/:project_id/:node_id/:monitor_instance_id/head", get(get_dmonitor_stream_head))
         .route("/api/v1/dmonitor/convergence/:project_id/:application_id/evaluate", post(post_evaluate_dmonitor_convergence))
         .route("/api/v1/dmonitor/readiness/:project_id/:application_id", get(get_dmonitor_readiness))
+        .route("/api/v1/operations/continuum", get(get_continuum_view))
+        .route("/api/v1/operations/projects/:project_id/continuum", get(get_project_continuum_view))
         .route("/api/v1/dforward/dependency-readiness/:project_id/:application_id/:node_id", get(get_dforward_dependency_readiness))
         .route("/api/v1/action-plan/latest", get(build_latest_action_plan))
         .route(
