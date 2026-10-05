@@ -19,7 +19,7 @@ use crate::{
     core::{
         reconciliation_attempt::ReconciliationAttemptRecordV1,
         reconciliation_request::{
-            default_claim_expires_at, default_expires_at, derive_batch_status, validate_mode,
+            default_claim_expires_at, default_expires_at, derive_batch_status, validate_mode, with_effective_status,
             ReconciliationRequestV1, ReconciliationRequestStatus, MAX_NODES_PER_BATCH,
             MAX_PENDING_REQUESTS_PER_NODE, RECONCILIATION_REQUEST_SCHEMA_VERSION,
         },
@@ -57,7 +57,7 @@ pub async fn post_reconciliation_request(
     Json(payload): Json<CreateReconciliationRequestPayload>,
 ) -> Result<JsonResponse<ReconciliationRequestV1>, ApiError> {
     let project_id = extract_project_id(&headers)?;
-    let request = build_and_validate_request(&project_id, &payload, None).map_err(bad_request)?;
+    let request = build_and_validate_request(&project_id, &payload, None).map_err(validation_error_response)?;
 
     let db_path = control_state_db_path()?;
     let (outcome, stored) = create_request(&db_path, &request).map_err(internal_error)?;
@@ -65,10 +65,13 @@ pub async fn post_reconciliation_request(
         // Independent review (Audit 43): fail explicitly rather than
         // silently dropping or ever accepting unbounded pending work for
         // one node.
-        return Err(conflict(format!(
-            "node '{}' already has the maximum of {MAX_PENDING_REQUESTS_PER_NODE} pending/claimed reconciliation requests; wait for one to resolve before creating another",
-            payload.node_id
-        )));
+        return Err(conflict(
+            "reconciliation_queue_full",
+            format!(
+                "node '{}' already has the maximum of {MAX_PENDING_REQUESTS_PER_NODE} pending/claimed reconciliation requests; wait for one to resolve before creating another",
+                payload.node_id
+            ),
+        ));
     }
     if outcome == CreateRequestOutcome::AlreadyExists
         && (stored.node_id != request.node_id
@@ -76,19 +79,45 @@ pub async fn post_reconciliation_request(
             || stored.target_dgraph_revision != request.target_dgraph_revision
             || stored.mode != request.mode)
     {
-        return Err(conflict(format!(
-            "client_request_id '{}' was already used for a different node/target/mode -- reuse requires an identical request",
-            payload.client_request_id
-        )));
+        return Err(conflict(
+            "incompatible_request_reuse",
+            format!(
+                "client_request_id '{}' was already used for a different node/target/mode -- reuse requires an identical request",
+                payload.client_request_id
+            ),
+        ));
     }
     Ok(JsonResponse(stored))
+}
+
+/// Independent review (Phase 138 Part AG): the code half of this error is
+/// as important as the message -- a caller (Console) must be able to tell
+/// "your input shape was invalid" (`invalid_request`) apart from "the node
+/// is not known" (`unknown_node`, more honestly a 404 than a 400) apart
+/// from "your target already moved" (`reconciliation_request_target_stale`,
+/// more honestly a 409 than a 400) WITHOUT parsing English prose.
+struct RequestValidationError {
+    code: &'static str,
+    message: String,
+}
+impl From<String> for RequestValidationError {
+    fn from(message: String) -> Self {
+        Self { code: "invalid_request", message }
+    }
+}
+fn validation_error_response(error: RequestValidationError) -> ApiError {
+    match error.code {
+        "unknown_node" => not_found(error.code, error.message),
+        "reconciliation_request_target_stale" => conflict(error.code, error.message),
+        _ => bad_request(error.code, error.message),
+    }
 }
 
 fn build_and_validate_request(
     project_id: &str,
     payload: &CreateReconciliationRequestPayload,
     reconciliation_batch_id: Option<String>,
-) -> Result<ReconciliationRequestV1, String> {
+) -> Result<ReconciliationRequestV1, RequestValidationError> {
     validate_mode(&payload.mode)?;
     required_bounded("node_id", &payload.node_id)?;
     required_bounded("requested_by", &payload.requested_by)?;
@@ -97,12 +126,18 @@ fn build_and_validate_request(
 
     let slice = operational_dgraph_slice_snapshot(project_id, &payload.node_id)
         .map_err(|error| format!("read live operational authority: {error}"))?
-        .ok_or_else(|| format!("node '{}' is not a known resource for this project", payload.node_id))?;
+        .ok_or_else(|| RequestValidationError {
+            code: "unknown_node",
+            message: format!("node '{}' is not a known resource for this project", payload.node_id),
+        })?;
     if slice.dgraph_id != payload.target_dgraph_id || slice.dgraph_revision != payload.target_dgraph_revision {
-        return Err(format!(
-            "target {}@{} is already stale -- live authority is {}@{}; refusing to create a request pinned to a superseded target",
-            payload.target_dgraph_id, payload.target_dgraph_revision, slice.dgraph_id, slice.dgraph_revision
-        ));
+        return Err(RequestValidationError {
+            code: "reconciliation_request_target_stale",
+            message: format!(
+                "target {}@{} is already stale -- live authority is {}@{}; refusing to create a request pinned to a superseded target",
+                payload.target_dgraph_id, payload.target_dgraph_revision, slice.dgraph_id, slice.dgraph_revision
+            ),
+        });
     }
 
     let now = Utc::now();
@@ -172,14 +207,14 @@ pub async fn post_reconciliation_batch(
     Json(payload): Json<CreateReconciliationBatchPayload>,
 ) -> Result<JsonResponse<Value>, ApiError> {
     let project_id = extract_project_id(&headers)?;
-    validate_mode(&payload.mode).map_err(bad_request)?;
-    required_bounded("application_id", &payload.application_id).map_err(bad_request)?;
-    required_bounded("requested_by", &payload.requested_by).map_err(bad_request)?;
-    required_bounded("client_request_id", &payload.client_request_id).map_err(bad_request)?;
+    validate_mode(&payload.mode).map_err(|message| bad_request("invalid_request", message))?;
+    required_bounded("application_id", &payload.application_id).map_err(|message| bad_request("invalid_request", message))?;
+    required_bounded("requested_by", &payload.requested_by).map_err(|message| bad_request("invalid_request", message))?;
+    required_bounded("client_request_id", &payload.client_request_id).map_err(|message| bad_request("invalid_request", message))?;
 
     let graph = crate::api::operational_dgraph::operational_dgraph_snapshot(&project_id)
         .map_err(internal_error)?
-        .ok_or_else(|| not_found("no operational authority exists yet for this project".to_string()))?;
+        .ok_or_else(|| not_found("unknown_project", "no operational authority exists yet for this project".to_string()))?;
 
     let mut node_ids: Vec<String> = graph
         .nodes
@@ -190,17 +225,23 @@ pub async fn post_reconciliation_batch(
     node_ids.sort();
 
     if node_ids.is_empty() {
-        return Err(not_found(format!(
-            "application '{}' has no accepted placements on any node in this project's current operational authority",
-            payload.application_id
-        )));
+        return Err(not_found(
+            "unknown_application",
+            format!(
+                "application '{}' has no accepted placements on any node in this project's current operational authority",
+                payload.application_id
+            ),
+        ));
     }
     if node_ids.len() > MAX_NODES_PER_BATCH {
-        return Err(bad_request(format!(
-            "application '{}' spans {} nodes, exceeding the maximum of {MAX_NODES_PER_BATCH} nodes per batch",
-            payload.application_id,
-            node_ids.len()
-        )));
+        return Err(bad_request(
+            "batch_too_large",
+            format!(
+                "application '{}' spans {} nodes, exceeding the maximum of {MAX_NODES_PER_BATCH} nodes per batch",
+                payload.application_id,
+                node_ids.len()
+            ),
+        ));
     }
 
     let reconciliation_batch_id = format!("reconciliation-batch:{}", uuid::Uuid::new_v4());
@@ -216,7 +257,7 @@ pub async fn post_reconciliation_batch(
             client_request_id: format!("{}:{}", payload.client_request_id, node_id),
             reconciliation_batch_id: None,
         };
-        let request = build_and_validate_request(&project_id, &member_payload, Some(reconciliation_batch_id.clone())).map_err(bad_request)?;
+        let request = build_and_validate_request(&project_id, &member_payload, Some(reconciliation_batch_id.clone())).map_err(validation_error_response)?;
         let (member_outcome, stored) = create_request(&db_path, &request).map_err(internal_error)?;
         if member_outcome == CreateRequestOutcome::NodeQueueFull {
             // Independent review (Audit 37/43): never silently include a
@@ -226,9 +267,12 @@ pub async fn post_reconciliation_batch(
             // persisted (Audit 37's own documented, accepted non-atomicity:
             // each member's idempotent `client_request_id` makes a retry of
             // the identical batch POST safe and resumes cleanly).
-            return Err(conflict(format!(
-                "node '{node_id}' already has the maximum of {MAX_PENDING_REQUESTS_PER_NODE} pending/claimed reconciliation requests; batch creation stopped"
-            )));
+            return Err(conflict(
+                "reconciliation_queue_full",
+                format!(
+                    "node '{node_id}' already has the maximum of {MAX_PENDING_REQUESTS_PER_NODE} pending/claimed reconciliation requests; batch creation stopped"
+                ),
+            ));
         }
         created.push(stored);
     }
@@ -257,12 +301,12 @@ pub async fn post_claim_reconciliation_request(
 
     let existing = get_request(&db_path, &project_id, &reconciliation_request_id)
         .map_err(internal_error)?
-        .ok_or_else(|| not_found(format!("reconciliation_request_id '{reconciliation_request_id}' not found")))?;
+        .ok_or_else(|| not_found("not_found", format!("reconciliation_request_id '{reconciliation_request_id}' not found")))?;
     if existing.node_id != node_id {
         // Part Q: a request for node-a must never be claimable via node-b's
         // own route -- masked identically to "not found" rather than
         // leaking that the request exists for a different node.
-        return Err(not_found(format!("reconciliation_request_id '{reconciliation_request_id}' not found")));
+        return Err(not_found("not_found", format!("reconciliation_request_id '{reconciliation_request_id}' not found")));
     }
 
     let now = Utc::now();
@@ -273,9 +317,10 @@ pub async fn post_claim_reconciliation_request(
     });
     if !still_current {
         mark_stale(&db_path, &project_id, &reconciliation_request_id, &now_utc).map_err(internal_error)?;
-        return Err(conflict(format!(
-            "reconciliation_request_id '{reconciliation_request_id}' target is no longer current authority; refusing claim"
-        )));
+        return Err(conflict(
+            "reconciliation_request_stale",
+            format!("reconciliation_request_id '{reconciliation_request_id}' target is no longer current authority; refusing claim"),
+        ));
     }
 
     let claim_token = format!("claim:{}", uuid::Uuid::new_v4());
@@ -289,9 +334,10 @@ pub async fn post_claim_reconciliation_request(
                 .ok_or_else(|| internal_error("claimed request vanished immediately after claim".to_string()))?;
             Ok(JsonResponse(claimed))
         }
-        ClaimOutcome::Conflict => Err(conflict(format!(
-            "reconciliation_request_id '{reconciliation_request_id}' could not be claimed (already claimed, terminal, or expired)"
-        ))),
+        ClaimOutcome::Conflict => Err(conflict(
+            "reconciliation_request_not_claimable",
+            format!("reconciliation_request_id '{reconciliation_request_id}' could not be claimed (already claimed, terminal, or expired)"),
+        )),
     }
 }
 
@@ -303,8 +349,8 @@ pub async fn get_reconciliation_request(
     let db_path = control_state_db_path()?;
     get_request(&db_path, &project_id, &reconciliation_request_id)
         .map_err(internal_error)?
-        .map(JsonResponse)
-        .ok_or_else(|| not_found(format!("reconciliation_request_id '{reconciliation_request_id}' not found")))
+        .map(|request| JsonResponse(with_effective_status(request, Utc::now())))
+        .ok_or_else(|| not_found("not_found", format!("reconciliation_request_id '{reconciliation_request_id}' not found")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,7 +365,12 @@ pub async fn list_recent_reconciliation_requests(
 ) -> Result<JsonResponse<Value>, ApiError> {
     let project_id = extract_project_id(&headers)?;
     let db_path = control_state_db_path()?;
-    let requests = list_recent_for_project(&db_path, &project_id, query.limit.unwrap_or(25)).map_err(internal_error)?;
+    let now = Utc::now();
+    let requests: Vec<ReconciliationRequestV1> = list_recent_for_project(&db_path, &project_id, query.limit.unwrap_or(25))
+        .map_err(internal_error)?
+        .into_iter()
+        .map(|request| with_effective_status(request, now))
+        .collect();
     Ok(JsonResponse(json!({"project_id": project_id, "count": requests.len(), "requests": requests})))
 }
 
@@ -335,7 +386,7 @@ pub async fn get_reconciliation_batch(
     let db_path = control_state_db_path()?;
     let members = list_for_batch(&db_path, &project_id, &reconciliation_batch_id).map_err(internal_error)?;
     if members.is_empty() {
-        return Err(not_found(format!("reconciliation_batch_id '{reconciliation_batch_id}' not found")));
+        return Err(not_found("not_found", format!("reconciliation_batch_id '{reconciliation_batch_id}' not found")));
     }
 
     let mut attempt_statuses = std::collections::BTreeMap::new();
@@ -349,7 +400,9 @@ pub async fn get_reconciliation_batch(
             }
         }
     }
-    let status = derive_batch_status(&members, &attempt_statuses, Utc::now());
+    let now = Utc::now();
+    let status = derive_batch_status(&members, &attempt_statuses, now);
+    let members: Vec<ReconciliationRequestV1> = members.into_iter().map(|member| with_effective_status(member, now)).collect();
 
     Ok(JsonResponse(json!({
         "reconciliation_batch_id": reconciliation_batch_id,
@@ -401,20 +454,26 @@ fn extract_project_id(headers: &HeaderMap) -> Result<String, ApiError> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .ok_or_else(|| bad_request("missing or invalid X-Datum-Project header".to_string()))
+        .ok_or_else(|| bad_request("missing_project_header", "missing or invalid X-Datum-Project header".to_string()))
 }
 
-fn bad_request(message: String) -> ApiError {
-    (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message})))
+// Independent review (Audit 48/Phase 138 Part AG): every error response
+// now carries an additive, stable, machine-readable `code` alongside the
+// existing free-text `error` message -- so a UI can branch safely (e.g.
+// distinguish "queue full" from "already claimed" from "stale", all of
+// which share HTTP 409) without parsing English prose. `error` is kept
+// verbatim as the human-readable message; nothing existing is removed.
+fn bad_request(code: &str, message: String) -> ApiError {
+    (StatusCode::BAD_REQUEST, JsonResponse(json!({"error": message, "code": code})))
 }
-fn not_found(message: String) -> ApiError {
-    (StatusCode::NOT_FOUND, JsonResponse(json!({"error": message})))
+fn not_found(code: &str, message: String) -> ApiError {
+    (StatusCode::NOT_FOUND, JsonResponse(json!({"error": message, "code": code})))
 }
-fn conflict(message: String) -> ApiError {
-    (StatusCode::CONFLICT, JsonResponse(json!({"error": message})))
+fn conflict(code: &str, message: String) -> ApiError {
+    (StatusCode::CONFLICT, JsonResponse(json!({"error": message, "code": code})))
 }
 fn internal_error(message: String) -> ApiError {
-    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message})))
+    (StatusCode::INTERNAL_SERVER_ERROR, JsonResponse(json!({"error": message, "code": "internal_error"})))
 }
 
 #[cfg(test)]

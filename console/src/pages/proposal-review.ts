@@ -12,7 +12,7 @@ import { PlacementClient, PlacementError } from "../api/placement.ts";
 import { placementDiff } from "./placement-model.ts";
 import type { PlacementDiffEntry } from "./placement-model.ts";
 import { CHANGE_LABEL, CHANGE_TONE } from "./placement.ts";
-import { projectPath } from "../app/router.ts";
+import { projectPath, applicationDeployPath } from "../app/router.ts";
 import type { ProposalResponse, ActiveDeploymentSummary, AcceptResponse, PlacementRef } from "../types/placement.ts";
 
 export interface ProposalReviewPageView {
@@ -289,6 +289,15 @@ export function proposalReviewView(
     another.setAttribute("href", `${projectPath(projectId)}/placement`);
     another.dataset.route = "";
     nav.append(back, another);
+    // Phase 138 entry point -- only once this proposal is actually
+    // Accepted authority (never from a still-Pending proposal, which has
+    // nothing yet for reconciliation to target).
+    if (proposal?.state === "accepted") {
+      const deploy = el("a", "btn btn-primary btn-sm", "Go to Deploy / Reconciliation");
+      deploy.setAttribute("href", applicationDeployPath(projectId, proposal.proposal.application_id));
+      deploy.dataset.route = "";
+      nav.append(deploy);
+    }
     return nav;
   }
 

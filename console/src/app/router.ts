@@ -9,6 +9,7 @@ export type Route =
   | { kind: "project_continuum"; projectId: string }
   | { kind: "project_placement"; projectId: string }
   | { kind: "project_proposal_review"; projectId: string; proposalId: string }
+  | { kind: "project_application_deploy"; projectId: string; applicationId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -23,6 +24,11 @@ export function validProjectId(id: string): boolean {
 // check that guards a project_id is the right generic guard for any
 // opaque identifier placed into a URL path segment.
 export const validProposalId = validProjectId;
+// Application ids are operator-chosen opaque strings (unlike proposal ids),
+// but the same bounded/control-character-free shape check is still the
+// right generic guard for any opaque identifier placed into a URL path
+// segment.
+export const validApplicationId = validProjectId;
 export function parseRoute(pathname: string): Route {
   if (pathname === "/") return { kind: "overview" };
   if (pathname === "/catalog" || pathname === "/catalog/") return { kind: "catalog" };
@@ -36,6 +42,25 @@ export function parseRoute(pathname: string): Route {
       const proposalId = decodeURIComponent(proposalMatch[2]);
       if (validProjectId(projectId) && validProposalId(proposalId))
         return { kind: "project_proposal_review", projectId, proposalId };
+    } catch {
+      /* malformed encoding is Not Found, never a crash */
+    }
+    return { kind: "not_found" };
+  }
+  // Phase 138 -- the underlying execution this workspace triggers is
+  // node + operational-D-Graph scoped (never a true per-application
+  // isolation boundary, see `documentation/reference/phase138-deploy-reconciliation-console.md`),
+  // but the entry route is still named by application because that is the
+  // operator's own unit of intent ("reconcile application X"). The route
+  // itself never fakes application-scoped execution -- only the UI entry
+  // point is application-named.
+  const deployMatch = /^\/projects\/([^/]+)\/applications\/([^/]+)\/deploy\/?$/u.exec(pathname);
+  if (deployMatch?.[1] && deployMatch?.[2]) {
+    try {
+      const projectId = decodeURIComponent(deployMatch[1]);
+      const applicationId = decodeURIComponent(deployMatch[2]);
+      if (validProjectId(projectId) && validApplicationId(applicationId))
+        return { kind: "project_application_deploy", projectId, applicationId };
     } catch {
       /* malformed encoding is Not Found, never a crash */
     }
@@ -73,6 +98,11 @@ export function proposalReviewPath(projectId: string, proposalId: string): strin
   if (!validProjectId(projectId)) throw new Error("Invalid project identifier");
   if (!validProposalId(proposalId)) throw new Error("Invalid proposal identifier");
   return `/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}`;
+}
+export function applicationDeployPath(projectId: string, applicationId: string): string {
+  if (!validProjectId(projectId)) throw new Error("Invalid project identifier");
+  if (!validApplicationId(applicationId)) throw new Error("Invalid application identifier");
+  return `/projects/${encodeURIComponent(projectId)}/applications/${encodeURIComponent(applicationId)}/deploy`;
 }
 export function startRouter(render: (route: Route) => void, canNavigate: () => boolean = () => true): () => void {
   let lastPath = window.location.pathname;

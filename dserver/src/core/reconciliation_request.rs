@@ -189,6 +189,19 @@ pub fn effective_status(request: &ReconciliationRequestV1, now: DateTime<Utc>) -
     }
 }
 
+/// Phase 138 Console review: every READ endpoint that serves a
+/// `ReconciliationRequestV1` directly to a caller (never the claim/create
+/// write paths, which already produce a freshly-correct row) must serve
+/// `effective_status`, not the possibly-stale persisted `status` column --
+/// otherwise a caller (Console) could truthfully report "Pending" for a
+/// request that has actually already lapsed, purely because nothing has
+/// written to that row since. This is a pure, read-time-only projection;
+/// it never mutates storage.
+pub fn with_effective_status(mut request: ReconciliationRequestV1, now: DateTime<Utc>) -> ReconciliationRequestV1 {
+    request.status = effective_status(&request, now);
+    request
+}
+
 fn parse_rfc3339(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value.trim()).ok().map(|parsed| parsed.with_timezone(&Utc))
 }
@@ -371,6 +384,23 @@ mod tests {
             let r = request(status);
             assert_eq!(effective_status(&r, at("2099-01-01T00:00:00Z")), status);
         }
+    }
+
+    // Phase 138 Console review: `with_effective_status` must correct a
+    // read-serving row's `status` field, never leave a stale persisted
+    // value for a caller to render as truth.
+    #[test]
+    fn with_effective_status_corrects_a_lapsed_pending_row_for_display() {
+        let r = request(ReconciliationRequestStatus::Pending);
+        let projected = with_effective_status(r, at("2026-10-05T13:00:00Z"));
+        assert_eq!(projected.status, ReconciliationRequestStatus::Expired);
+    }
+
+    #[test]
+    fn with_effective_status_leaves_a_still_valid_row_unchanged() {
+        let r = request(ReconciliationRequestStatus::Pending);
+        let projected = with_effective_status(r.clone(), at("2026-10-05T12:10:00Z"));
+        assert_eq!(projected, r);
     }
 
     #[test]
