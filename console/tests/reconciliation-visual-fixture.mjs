@@ -21,6 +21,7 @@ import {
   reconciliationRequestFixture,
   reconciliationAttemptRecordFixture,
 } from "./reconciliation-fixture.mjs";
+import { evidenceFixture, servicePlacementFixture, applicationConvergenceFixture, evaluateConvergenceResponseFixture } from "./dmonitor-convergence-fixture.mjs";
 
 const send = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -126,6 +127,22 @@ const SCENARIOS = {
     nodeIds: ["node-a"],
     mode: "preview",
     steps: [{ perNode: { "node-a": { status: "attempted", attemptStatus: "succeeded", noMutation: true } } }],
+  },
+  // K. Command-side Succeeded, but the independent runtime observation has
+  // since Diverged (e.g. authority moved on, or the runtime was observed
+  // elsewhere) -- Phase 139B independent review Audit 47: command result
+  // and observation must never be collapsed into one combined status, so
+  // this exact "Succeeded command + Diverged observation" pairing must
+  // render without contradiction. Own node id so its authorization state is
+  // unambiguous.
+  "app-succeeded-but-diverged": {
+    nodeIds: ["node-auth-k"],
+    mode: "execute",
+    authorized: true,
+    steps: [
+      { perNode: { "node-auth-k": { status: "pending" } } },
+      { perNode: { "node-auth-k": { status: "attempted", attemptStatus: "succeeded" } } },
+    ],
   },
   // J. Unknown attempt result. Own node id so its authorization state is
   // unambiguous.
@@ -307,17 +324,196 @@ export function createFixtureServer() {
       return;
     }
 
+    const convergenceMatch = path.match(/^\/api\/v1\/dmonitor\/convergence\/([^/]+)\/([^/]+)\/evaluate$/u);
+    if (req.method === "POST" && convergenceMatch) {
+      const applicationId = decodeURIComponent(convergenceMatch[2]);
+      send(res, 200, convergenceResponseFor(applicationId));
+      return;
+    }
+
     send(res, 404, { error: "fixture_not_found" });
   });
+}
+
+// Phase 139B (Part Y): deterministic convergence scenarios, selected by the
+// SAME `application_id` the Phase 138 batch/active fixtures above already
+// use where a natural pairing exists (so the deploy->observe handoff is
+// visible on one application), plus a few convergence-only scenario ids for
+// cases with no Phase 138 counterpart. Any application_id not explicitly
+// listed gets the honest default: zero evidence yet (scenario A, "waiting
+// for observation").
+function convergenceResponseFor(applicationId) {
+  switch (applicationId) {
+    // B. Native Converged (reuses Phase 138's own authorized-succeeded node).
+    case "app-authorized-succeeded":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        services: [servicePlacementFixture("service-a", { desired_node_id: "node-auth-c" })],
+      });
+    // C. Container Converged.
+    case "app-converged-container":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        services: [servicePlacementFixture("container-service", { desired_node_id: "fog-01" })],
+      });
+    // D. Diverged / wrong authority ref -- admitted evidence exists but its
+    // own dmap_ref does not match current authority.
+    case "app-diverged-container":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "diverged",
+        findings: [{ code: "authority_mismatch", message: "container-service observed with a dmap_ref that does not match current active authority" }],
+        services: [
+          servicePlacementFixture("container-service", {
+            desired_node_id: "fog-01",
+            convergence: "diverged",
+            findings: [{ code: "authority_mismatch", message: "observed dmap_ref does not match current active authority" }],
+            admitted_evidence: [evidenceFixture({ authority_correlation: "mismatch" })],
+          }),
+        ],
+      });
+    // E. Stopped/unhealthy observation -- still CONVERGED (the placement
+    // identity is exactly right), health is Unhealthy. Deliberately proves
+    // "Converged != Healthy" for containers exactly as it already holds for
+    // native (Phase 139A's own confirmed, unchanged semantics).
+    case "app-unhealthy-observed":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        services: [
+          servicePlacementFixture("container-service", {
+            desired_node_id: "fog-01",
+            convergence: "converged",
+            admitted_evidence: [evidenceFixture({ health: "unhealthy" })],
+            observed_health_claims: [{ monitor_instance_id: "dmonitor-instance:fog-01:fixed", health: "unhealthy" }],
+          }),
+        ],
+      });
+    // F. Stale observation -- evidence exists but aged out; cannot prove
+    // CURRENT convergence (never silently Diverged either).
+    case "app-stale-observation":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "unknown",
+        findings: [{ code: "stale_evidence", message: "the only relevant evidence for service-a is stale" }],
+        services: [
+          servicePlacementFixture("service-a", {
+            convergence: "unknown",
+            findings: [{ code: "stale_evidence", message: "evidence is older than the configured freshness policy allows" }],
+            admitted_evidence: [],
+            excluded_evidence: [evidenceFixture({ freshness: "stale", admitted: false, exclusion_reason: "stale_evidence" })],
+          }),
+        ],
+      });
+    // G. ClockSkew -- the node's own reported observed_at_utc is ahead of
+    // when dserver received it by more than the policy allows.
+    case "app-clock-skew":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "unknown",
+        findings: [{ code: "clock_skew", message: "service-a evidence observed_at_utc is ahead of received_at_utc beyond tolerance" }],
+        services: [
+          servicePlacementFixture("service-a", {
+            convergence: "unknown",
+            findings: [{ code: "clock_skew", message: "clock skew exceeds policy tolerance" }],
+            admitted_evidence: [],
+            excluded_evidence: [evidenceFixture({ freshness: "clock_skew", admitted: false, exclusion_reason: "clock_skew" })],
+          }),
+        ],
+      });
+    // H. Unknown / no trustworthy evidence at all (reuses Phase 138's own
+    // unknown-attempt-result application).
+    case "app-unknown-result":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "unknown",
+        findings: [{ code: "no_evidence", message: "no DMonitor evidence has been received for service-a yet" }],
+        services: [servicePlacementFixture("service-a", { convergence: "unknown", findings: [{ code: "no_evidence", message: "no evidence" }], admitted_evidence: [], excluded_evidence: [] })],
+      });
+    // I. Command Partial (one node Failed command-side) but that SAME
+    // node's runtime remains independently OBSERVED Converged+Healthy --
+    // proves command-side and observation are genuinely independent
+    // (Part T). Reuses Phase 138's own 3-node partial-convergence batch.
+    case "app-partial-3node":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        services: [
+          servicePlacementFixture("service-a", { desired_node_id: "fog-01" }),
+          servicePlacementFixture("service-a", { desired_node_id: "cloud-01" }),
+          servicePlacementFixture("service-a", { desired_node_id: "rpi-01" }),
+        ],
+      });
+    // J. Superseded authority -- observation still carries the OLD
+    // (rev 10) dmap_ref while current active authority has since moved to
+    // rev 11; AuthorityCorrelationV1 must prevent false convergence.
+    case "app-superseded-authority":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        dmap_ref: { dmap_id: "dmap:app-superseded-authority", revision: 11, digest: `sha256:${"c".repeat(64)}` },
+        convergence: "diverged",
+        findings: [{ code: "authority_mismatch", message: "service-a evidence references dmap revision 10; current active authority is revision 11" }],
+        services: [
+          servicePlacementFixture("service-a", {
+            convergence: "diverged",
+            findings: [{ code: "authority_mismatch", message: "evidence dmap_ref revision 10 does not match current active authority revision 11" }],
+            admitted_evidence: [evidenceFixture({ authority_correlation: "mismatch" })],
+          }),
+        ],
+      });
+    // K. Command Succeeded, observation Diverged -- the command attempt
+    // itself truthfully reported success, but the runtime has since been
+    // independently observed elsewhere (e.g. a later, out-of-band change).
+    // Proves Audit 47's "Command Succeeded + Diverged" combination renders
+    // without contradiction or silent reconciliation between the two
+    // dimensions.
+    case "app-succeeded-but-diverged":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "diverged",
+        findings: [{ code: "wrong_node", message: "service-a observed on a node other than its desired placement" }],
+        services: [
+          servicePlacementFixture("service-a", {
+            desired_node_id: "node-auth-k",
+            convergence: "diverged",
+            findings: [{ code: "wrong_node", message: "service-a observed on a node other than its desired placement" }],
+            admitted_evidence: [evidenceFixture({ node_id: "node-b", observed_subject_node_id: "node-b" })],
+          }),
+        ],
+      });
+    // L. Multi-node partial convergence -- one service converged, a
+    // different service on a different node diverged, in the SAME
+    // application.
+    case "app-multi-node-partial":
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "diverged",
+        services: [
+          servicePlacementFixture("service-a", { desired_node_id: "fog-01", convergence: "converged" }),
+          servicePlacementFixture("service-b", {
+            desired_node_id: "cloud-01",
+            convergence: "diverged",
+            findings: [{ code: "wrong_node", message: "service-b observed on a node other than its desired placement" }],
+            admitted_evidence: [evidenceFixture({ node_id: "rpi-01", observed_subject_node_id: "rpi-01" })],
+          }),
+        ],
+      });
+    // A (default) -- command may have run or not; no trustworthy evidence
+    // has arrived yet. Zero admitted AND zero excluded evidence -- never
+    // fabricated as Diverged.
+    default:
+      return evaluateConvergenceResponseFixture(applicationId, {
+        convergence: "unknown",
+        findings: [{ code: "no_evidence", message: "no DMonitor evidence has been received yet" }],
+        services: [servicePlacementFixture("service-a", { convergence: "unknown", findings: [{ code: "no_evidence", message: "no evidence" }], admitted_evidence: [], excluded_evidence: [] })],
+      });
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const port = Number(process.env.DATUM_RECONCILIATION_FIXTURE_PORT ?? 8138);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid TEST ONLY fixture port.");
+  const convergenceOnlyScenarios = [
+    "app-converged-container",
+    "app-diverged-container",
+    "app-unhealthy-observed",
+    "app-stale-observation",
+    "app-clock-skew",
+    "app-superseded-authority",
+    "app-multi-node-partial",
+  ];
   createFixtureServer().listen(port, "127.0.0.1", () =>
     console.log(
-      `TEST ONLY Phase 138 Deploy/Reconciliation fixture on http://127.0.0.1:${port}; no server persistence or authority. ` +
-        `Scenarios (open /projects/project-a/applications/<id>/deploy): ${Object.keys(SCENARIOS).join(", ")}.`,
+      `TEST ONLY Phase 138/139B Deploy/Reconciliation + runtime-observation fixture on http://127.0.0.1:${port}; no server persistence or authority. ` +
+        `Request/batch scenarios (open /projects/project-a/applications/<id>/deploy): ${Object.keys(SCENARIOS).join(", ")}. ` +
+        `Convergence-only scenarios (same route, no batch needed): ${convergenceOnlyScenarios.join(", ")}.`,
     ),
   );
 }

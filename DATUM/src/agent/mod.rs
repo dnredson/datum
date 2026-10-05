@@ -6,6 +6,7 @@ pub mod canonical_dmap;
 pub mod canonical_dmap_v2;
 pub mod canonical_dmonitor;
 pub mod canonical_dscript;
+pub mod container_dmonitor;
 pub mod dcode_execution_dmonitor;
 pub mod diot_runtime_dmonitor;
 pub mod discovery;

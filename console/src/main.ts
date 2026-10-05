@@ -19,6 +19,7 @@ import { placementView } from "./pages/placement.ts";
 import { proposalReviewView } from "./pages/proposal-review.ts";
 import { ReconciliationClient } from "./api/reconciliation.ts";
 import { reconciliationView } from "./pages/reconciliation.ts";
+import { DMonitorConvergenceClient } from "./api/dmonitor-convergence.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -232,6 +233,7 @@ async function render(route: Route): Promise<void> {
       route.applicationId,
       new PlacementClient(route.projectId, signal),
       new ReconciliationClient(route.projectId, signal),
+      new DMonitorConvergenceClient(route.projectId, signal),
       (ready) => {
         if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
       },

@@ -664,6 +664,8 @@ fn base_report(
         local_substitutions: Vec::new(),
         mutation_boundaries_crossed: Vec::new(),
         verified_image_identity: None,
+        application_id: assignment.map(|a| a.application_id.clone()).filter(|value| !value.is_empty()),
+        dmap_ref: assignment.and_then(|a| a.dmap_ref.clone()),
     }
 }
 

@@ -94,23 +94,35 @@ test("proposal-review.ts never imports the Reconciliation client -- acceptance n
 });
 
 // Part M/AD -- DMonitor interpretation stays out of this phase entirely.
-// Scoped to the view/model/client/types this phase owns; it must never
-// reference DMonitor state or runtime code at all (unlike "convergence"/
-// "healthy", which this phase's own disclosure prose legitimately
-// mentions in order to DISCLAIM them -- see the next two tests for the
-// narrower, correct check on those).
-test("Phase 138 Console files never reference DMonitor", async () => {
-  for (const path of [
-    "../src/pages/reconciliation.ts",
-    "../src/pages/reconciliation-model.ts",
-    "../src/api/reconciliation.ts",
-    "../src/types/reconciliation.ts",
-  ]) {
+// Phase 138's own command-side-only files (model/client/types for request/
+// batch/attempt/authorization) must stay exactly as DMonitor-free as they
+// were before Phase 139B -- Phase 139B's own DMonitor integration lives
+// entirely in `pages/reconciliation.ts` (the view) plus its own separate
+// `api/dmonitor-convergence.ts`/`types/dmonitor-convergence.ts`/
+// `pages/dmonitor-convergence-model.ts` files, never mixed into these.
+test("Phase 138's command-side-only files never reference DMonitor", async () => {
+  for (const path of ["../src/pages/reconciliation-model.ts", "../src/api/reconciliation.ts", "../src/types/reconciliation.ts"]) {
     const code = await sourceWithoutComments(path);
     for (const forbidden of ["DMonitor", "dmonitor"]) {
       assert.ok(!code.includes(forbidden), `${path} must never reference '${forbidden}'`);
     }
   }
+});
+
+// Phase 139B Part 44 -- `pages/reconciliation.ts` now legitimately imports
+// DMonitor convergence (the one confirmed Phase 139A gap this phase
+// closes), but it must never let that data drive any COMMAND-SIDE or
+// AUTHORIZATION decision: request/attempt status, button enablement, or
+// authorization status must never read `convergence`/`convergenceError`.
+test("reconciliation.ts never lets DMonitor convergence drive button enablement, authorization, or command-side status", async () => {
+  const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  const canActLine = code.split("\n").find((line) => line.includes("const canAct ="));
+  assert.ok(canActLine, "canAct must still be computed");
+  assert.ok(!canActLine.includes("convergence"), "button enablement (canAct) must never read convergence state");
+  assert.ok(
+    !code.includes("authorizationDisplayStatus(") || !/authorizationDisplayStatus\([^)]*convergence/u.test(code),
+    "authorizationDisplayStatus must never be called with convergence data",
+  );
 });
 
 // Part G1/L -- "Healthy"/"Converged" must never appear as an actual status
@@ -163,5 +175,68 @@ test("loadBatch, loadLinkedAttempts, and loadSlices all guard their shared-state
     assert.ok(code.slice(start, start + 200).includes("myPollToken: number"), `${fn} must accept myPollToken`);
     const body = code.slice(start, start + 600);
     assert.ok(/myPollToken !== pollToken/u.test(body), `${fn} must check myPollToken !== pollToken before writing shared state`);
+  }
+});
+
+// Phase 139B Part U -- the convergence integration must never be, or become,
+// a remediation path. `DMonitorConvergenceClient` is structurally
+// read-only: its ONLY method is `evaluate`. This proves the view can never
+// call anything else on it, even if someone widens the client later without
+// reading its own header comment.
+test("DMonitorConvergenceClient exposes exactly one method -- evaluate -- and reconciliation.ts never calls any other method on it", async () => {
+  const clientSource = await sourceWithoutComments("../src/api/dmonitor-convergence.ts");
+  const methodNames = [...clientSource.matchAll(/\n\s+async (\w+)\(/gu)].map((m) => m[1]);
+  assert.deepEqual(methodNames, ["evaluate"], "DMonitorConvergenceClient must expose exactly one method: evaluate");
+
+  const viewCode = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  const calls = [...viewCode.matchAll(/\bdmonitorConvergenceClient\.(\w+)\(/gu)].map((m) => m[1]);
+  assert.ok(calls.length > 0, "reconciliation.ts must actually use the convergence client");
+  for (const call of calls) {
+    assert.equal(call, "evaluate", `reconciliation.ts must only ever call dmonitorConvergenceClient.evaluate(), saw .${call}(`);
+  }
+});
+
+// Phase 139B independent review (Audit 54) -- Phase 139A's own audit
+// confirmed node-offline vs. missing-service is not canonically
+// distinguished anywhere in the current DMonitor model, so the UI must
+// never claim "Node offline" (a diagnosis the backend never actually
+// proves). Only honest observation-availability language is allowed.
+test("reconciliation.ts never claims a node is offline -- only observation-availability language (Audit 54)", async () => {
+  const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  assert.ok(!/node offline/iu.test(code), "reconciliation.ts must never render 'node offline' -- the backend does not canonically prove this");
+});
+
+// Phase 139B independent review (Audit 45) -- convergence is a live fact
+// about CURRENT runtime state (unlike a reconciliation batch's own status,
+// which is genuinely terminal once settled), so polling must never
+// permanently stop once Converged/Diverged -- only slow down. Proves
+// `pollConvergenceOnce` calls `scheduleConvergencePoll` unconditionally
+// (never gated behind `isConvergenceSettled`), and that the schedule
+// function itself is what varies the delay for the settled case.
+test("convergence polling never terminally stops once settled -- only its cadence slows (Audit 45)", async () => {
+  const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  const start = code.indexOf("async function pollConvergenceOnce(");
+  assert.ok(start >= 0, "pollConvergenceOnce must exist");
+  const end = code.indexOf("\n  }", start);
+  const body = code.slice(start, end);
+  assert.ok(!/if\s*\(!isConvergenceSettled\(convergence\)\)\s*scheduleConvergencePoll/u.test(body), "pollConvergenceOnce must never gate rescheduling behind isConvergenceSettled -- it must always reschedule");
+  assert.ok(/scheduleConvergencePoll\(token, myToken\);/u.test(body), "pollConvergenceOnce must unconditionally call scheduleConvergencePoll");
+  const scheduleStart = code.indexOf("function scheduleConvergencePoll(");
+  assert.ok(scheduleStart >= 0, "scheduleConvergencePoll must exist");
+  const scheduleBody = code.slice(scheduleStart, code.indexOf("\n  }", scheduleStart));
+  assert.ok(scheduleBody.includes("isConvergenceSettled(convergence)"), "the slower settled cadence must be chosen inside scheduleConvergencePoll itself");
+});
+
+// Phase 139B Part V -- this phase must never wire a new event/alert
+// producer, and must never call any mutating client method (createBatch /
+// authorize / cancel, etc.) from convergence-handling code.
+test("convergence handling in reconciliation.ts never calls a mutating reconciliation-client method or an event/alert API", async () => {
+  const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  const start = code.indexOf("async function loadConvergence(");
+  assert.ok(start >= 0, "loadConvergence must exist");
+  const end = code.indexOf("\nasync function ", start + 1);
+  const body = code.slice(start, end > start ? end : start + 2000);
+  for (const forbidden of ["createBatch(", "authorize(", "cancel(", "EventSource(", "WebSocket(", "/alerts"]) {
+    assert.ok(!body.includes(forbidden), `loadConvergence must never call or reference '${forbidden}'`);
   }
 });

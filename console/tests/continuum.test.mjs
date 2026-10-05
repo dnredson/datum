@@ -70,3 +70,26 @@ test("no declared links is valid; a malformed link is rejected", () => {
   const withBadLink = { ...continuumFixture(), links: [{ link_id: "l1" }] };
   assert.ok(!validContinuumView(withBadLink));
 });
+
+// Phase 139B Part P -- Continuum must render container-sourced observations
+// with ZERO code changes: `continuum-model.ts`'s validator and
+// `continuum.ts`'s renderer carry no runtime-kind field/branch at all, so a
+// container producer's own, SEPARATE `monitor_instance_id` stream (its own
+// process epoch, per the DIoT multi-producer precedent -- never the native
+// emitter's own stream) must validate and render exactly like any other
+// opaque evidence entry.
+test("a second, independently-epoched monitor_instance_id (as a container producer would emit) validates unmodified alongside the native stream", () => {
+  const f = continuumFixture();
+  const nodeA = f.nodes.find((n) => n.node_id === "node-a");
+  nodeA.observations[0].admitted_evidence.push({
+    monitor_instance_id: "dmonitor-instance:node-a:container-epoch-uuid",
+    freshness: "fresh",
+    health: "healthy",
+    authority_correlation: "exact_match",
+    observed_at_utc: "2026-10-04T11:59:35Z",
+    received_at_utc: "2026-10-04T11:59:36Z",
+    age_seconds: 25,
+  });
+  assert.ok(validContinuumView(f), "a container producer's own evidence stream must validate with no schema change");
+  assert.equal(nodeA.observations[0].admitted_evidence.length, 2, "both the native and container evidence entries for the same placement must coexist");
+});

@@ -9,6 +9,7 @@
 import { el, badge } from "../components/presentation.ts";
 import { PlacementClient, PlacementError } from "../api/placement.ts";
 import { ReconciliationClient, ReconciliationError } from "../api/reconciliation.ts";
+import { DMonitorConvergenceClient, DMonitorConvergenceError } from "../api/dmonitor-convergence.ts";
 import type { ActiveDeploymentSummary } from "../types/placement.ts";
 import type {
   OperationalDGraphSlice,
@@ -17,6 +18,7 @@ import type {
   ReconciliationAttemptRecord,
   ReconciliationMode,
 } from "../types/reconciliation.ts";
+import type { EvaluateConvergenceResponse } from "../types/dmonitor-convergence.ts";
 import {
   REQUEST_STATUS_LABEL,
   REQUEST_STATUS_TONE,
@@ -33,6 +35,17 @@ import {
   isOtherApplicationService,
   nextClientRequestId,
 } from "./reconciliation-model.ts";
+import {
+  CONVERGENCE_LABEL,
+  CONVERGENCE_TONE,
+  FRESHNESS_LABEL,
+  FRESHNESS_TONE,
+  HEALTH_LABEL,
+  HEALTH_TONE,
+  latestAdmittedEvidence,
+  isWaitingForFirstObservation,
+  isConvergenceSettled,
+} from "./dmonitor-convergence-model.ts";
 
 export interface ReconciliationPageView {
   element: HTMLElement;
@@ -47,6 +60,15 @@ export interface ReconciliationPageView {
 // time per batch, guarded by `pollToken`).
 const POLL_VISIBLE_MS = 3000;
 const POLL_HIDDEN_MS = 15000;
+// Phase 139B independent review (Audit 45) -- unlike a reconciliation
+// batch's own status (genuinely terminal once Succeeded/Failed/Partial: that
+// COMMAND attempt is over and will never itself change again), convergence
+// is a live fact about CURRENT runtime state: a Converged service can still
+// diverge later (the container can crash or be killed outside any command
+// this page ever issued) with nobody having touched this page again. Polling
+// therefore never permanently stops on settling -- it only slows down, so a
+// later divergence is still eventually noticed without a manual refresh.
+const POLL_SETTLED_MS = 60000;
 
 // Part O -- ambiguous-transport codes: the HTTP response itself was never
 // received, so the outcome is genuinely unknown and a retry MUST reuse the
@@ -89,11 +111,13 @@ export function reconciliationView(
   applicationId: string,
   placementClient: PlacementClient,
   reconciliationClient: ReconciliationClient,
+  dmonitorConvergenceClient: DMonitorConvergenceClient,
   onReady: (ready: boolean) => void = () => {},
 ): ReconciliationPageView {
   let disposed = false;
   let sequence = 0;
   let pollToken = 0;
+  let convergencePollToken = 0;
 
   let activeDeployment: ActiveDeploymentSummary | undefined;
   let activeLoaded = false;
@@ -104,6 +128,15 @@ export function reconciliationView(
   let batch: ReconciliationBatchResponse | undefined;
   const attempts = new Map<string, ReconciliationAttemptRecord>();
   const attemptErrors = new Map<string, string>();
+
+  // Phase 139B -- OBSERVED runtime state, structurally independent of the
+  // command-side request/batch/attempt state above. Loaded and polled on
+  // its own cadence, regardless of whether a batch exists yet (Part Z#4 --
+  // observation is relevant for an application that was never reconciled
+  // from this page at all, e.g. deployed by a prior session).
+  let convergence: EvaluateConvergenceResponse | undefined;
+  let convergenceError: string | undefined;
+  let convergenceLoaded = false;
 
   let submitting: ReconciliationMode | null = null;
   let authorizingNode: string | null = null;
@@ -269,6 +302,54 @@ export function reconciliationView(
     stopPolling();
     const myPollToken = pollToken;
     schedulePoll(token, myPollToken);
+  }
+
+  // Phase 139B -- a SEPARATE bounded poll loop for runtime observation,
+  // independent of the batch poll loop above (Part S): it starts on page
+  // load regardless of whether a batch exists, and is independently
+  // restarted whenever a new submission might make a since-settled
+  // convergence worth re-checking. Same visible/hidden cadence, same
+  // never-overlapping/late-response-guarded discipline, own generation
+  // counter (`convergencePollToken`) so a stale convergence poll chain can
+  // never clobber a newer one, mirroring `pollToken`'s own exact role.
+  function stopConvergencePolling(): void {
+    convergencePollToken++;
+  }
+
+  function scheduleConvergencePoll(token: number, myToken: number): void {
+    const delay = isConvergenceSettled(convergence)
+      ? POLL_SETTLED_MS
+      : document.visibilityState === "hidden"
+        ? POLL_HIDDEN_MS
+        : POLL_VISIBLE_MS;
+    setTimeout(() => {
+      if (disposed || token !== sequence || myToken !== convergencePollToken) return;
+      void pollConvergenceOnce(token, myToken);
+    }, delay);
+  }
+
+  async function loadConvergence(token: number, myToken: number): Promise<void> {
+    try {
+      const result = await dmonitorConvergenceClient.evaluate(applicationId);
+      if (disposed || token !== sequence || myToken !== convergencePollToken) return;
+      convergence = result;
+      convergenceError = undefined;
+    } catch (e) {
+      if (disposed || token !== sequence || myToken !== convergencePollToken) return;
+      // A transient refresh failure never discards the last KNOWN-GOOD
+      // convergence result -- only a fresh success ever replaces it.
+      convergenceError = e instanceof DMonitorConvergenceError ? e.message : "Runtime observation is unavailable.";
+    }
+    convergenceLoaded = true;
+  }
+
+  async function pollConvergenceOnce(token: number, myToken: number): Promise<void> {
+    await loadConvergence(token, myToken);
+    if (disposed || token !== sequence || myToken !== convergencePollToken) return;
+    renderAll();
+    // Audit 45 -- never a terminal stop, even once settled: only the
+    // cadence slows (see `POLL_SETTLED_MS` above).
+    scheduleConvergencePoll(token, myToken);
   }
 
   // ---- Sections ----
@@ -550,6 +631,97 @@ export function reconciliationView(
     return section;
   }
 
+  // Phase 139B -- Part J1: kept visually and structurally SEPARATE from
+  // Desired (authoritySection/nodesSection) and Command-side result
+  // (batchSection/attemptDetail) -- never collapsed into one status.
+  // "Command success is not runtime health, and runtime health is not
+  // convergence" (this page's own header text) is enforced here by simply
+  // never reusing a command-side badge/label for anything rendered below.
+  function observationSection(): HTMLElement {
+    const section = el("section", "reconciliation-observation console-card");
+    section.append(el("h2", "h6", "Runtime observation / convergence"));
+    section.append(
+      el(
+        "p",
+        "small text-secondary",
+        "Independently observed by the node agent's own DMonitor producer, compared against the accepted operational target. This is OBSERVATION, not a command result -- it may lag behind a just-completed Reconcile action (Part 39), and it may show a problem even when the last command-side attempt reported Succeeded, or vice versa.",
+      ),
+    );
+    if (convergenceError) {
+      section.append(el("p", "small text-secondary mb-2", `Latest refresh: ${convergenceError}`));
+    }
+    if (!convergenceLoaded) {
+      section.append(el("p", "small text-secondary", "Loading runtime observation…"));
+      return section;
+    }
+    if (!convergence) {
+      section.append(el("p", "small text-secondary", "Runtime observation is currently unavailable."));
+      return section;
+    }
+    const summary = el("p", "small");
+    summary.append(badge(CONVERGENCE_LABEL[convergence.convergence], CONVERGENCE_TONE[convergence.convergence]));
+    summary.append(el("span", "small ms-2 text-secondary", `evaluated_at_utc: ${convergence.evaluated_at_utc}`));
+    section.append(summary);
+    if (convergence.findings.length) {
+      const findingsList = el("ul", "reconciliation-findings small mb-2");
+      for (const finding of convergence.findings) findingsList.append(el("li", "", `${finding.code}: ${finding.message}`));
+      section.append(findingsList);
+    }
+    if (!convergence.services.length) {
+      section.append(el("p", "small text-secondary", "No desired service placements to observe."));
+    } else {
+      const scroller = el("div", "table-responsive");
+      const table = el("table", "table table-sm reconciliation-observation-table");
+      const thead = el("thead");
+      const headRow = el("tr");
+      for (const columnLabel of ["Service", "Node", "Convergence", "Freshness", "Runtime observation health", "Findings"]) headRow.append(el("th", "small", columnLabel));
+      thead.append(headRow);
+      const tbody = el("tbody");
+      for (const service of convergence.services) {
+        const row = el("tr");
+        const convergenceCell = el("td", "small");
+        if (isWaitingForFirstObservation(service)) {
+          // Part J2/32/J5 -- a UI-only workflow label derived from already-
+          // true facts (zero evidence yet), never itself a backend
+          // convergence state and never rendered as Converged/Diverged.
+          convergenceCell.append(badge("Waiting for observation", "info"));
+        } else {
+          convergenceCell.append(badge(CONVERGENCE_LABEL[service.convergence], CONVERGENCE_TONE[service.convergence]));
+        }
+        const latest = latestAdmittedEvidence(service);
+        const freshnessCell = el("td", "small");
+        const healthCell = el("td", "small");
+        if (latest) {
+          freshnessCell.append(badge(FRESHNESS_LABEL[latest.freshness], FRESHNESS_TONE[latest.freshness]));
+          healthCell.append(badge(HEALTH_LABEL[latest.health], HEALTH_TONE[latest.health]));
+        } else {
+          freshnessCell.append(el("span", "small text-secondary", "—"));
+          healthCell.append(el("span", "small text-secondary", "—"));
+        }
+        const findingsCell = el("td", "small");
+        findingsCell.textContent = service.findings.map((f) => f.code).join(", ") || "—";
+        row.append(el("td", "small entity-identity", service.service_id), el("td", "small entity-identity", service.desired_node_id), convergenceCell, freshnessCell, healthCell, findingsCell);
+        tbody.append(row);
+      }
+      table.append(thead, tbody);
+      scroller.append(table);
+      section.append(scroller);
+    }
+    if (convergence.unexpected_realizations.length) {
+      const unexpected = el("div", "reconciliation-unexpected mt-2");
+      unexpected.append(badge("Unexpected realization(s)", "warning"));
+      unexpected.append(
+        el(
+          "p",
+          "small text-secondary mt-1 mb-0",
+          `Observed for service id(s) not in this application's current desired placement: ${convergence.unexpected_realizations.map((u) => u.service_id).join(", ")}.`,
+        ),
+      );
+      section.append(unexpected);
+    }
+    return section;
+  }
+
   function fencingNote(): HTMLElement {
     return el(
       "p",
@@ -559,7 +731,7 @@ export function reconciliationView(
   }
 
   function renderAll(): void {
-    body.replaceChildren(authoritySection(), nodesSection(), actionsSection(), batchSection(), fencingNote());
+    body.replaceChildren(authoritySection(), nodesSection(), actionsSection(), batchSection(), observationSection(), fencingNote());
   }
 
   // ---- Actions ----
@@ -638,6 +810,12 @@ export function reconciliationView(
       ]);
       renderAll();
       startPolling(token);
+      // Phase 139B: a fresh submission may make an already-settled
+      // convergence worth re-checking (e.g. a prior Diverged target that
+      // this Reconcile is meant to fix) -- restart observation polling
+      // rather than leaving it stopped at its last settled result.
+      stopConvergencePolling();
+      void pollConvergenceOnce(token, convergencePollToken);
     } catch (e) {
       if (disposed || token !== sequence) return;
       if (e instanceof ReconciliationError) {
@@ -677,6 +855,12 @@ export function reconciliationView(
       setStatus(activeDeployment ? `Accepted authority loaded for ${applicationId}.` : `No accepted authority yet for ${applicationId}.`);
       renderAll();
       if (!disposed) onReady(true);
+      // Phase 139B: runtime observation starts immediately (never waiting
+      // for the first scheduled tick), independent of whether any batch/
+      // command-side activity exists for this session. Fire-and-forget --
+      // it renders itself once loaded; `load()` does not block on it.
+      stopConvergencePolling();
+      void pollConvergenceOnce(token, convergencePollToken);
       await loadSlices(token, pollToken);
       if (disposed || token !== sequence) return;
       renderAll();
@@ -706,6 +890,7 @@ export function reconciliationView(
       disposed = true;
       sequence++;
       stopPolling();
+      stopConvergencePolling();
     },
     dirty: () => false,
     confirmLeave: () => true,

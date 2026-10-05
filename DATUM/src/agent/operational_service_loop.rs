@@ -223,6 +223,16 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
         requested_node_id.as_deref().unwrap_or("unknown"),
     );
     let mut dserv_emitter = NativeProcessMonitorEmitter::new(dserv_emission_context);
+    // Phase 139B: a SEPARATE epoch/stream for container observation, never
+    // sharing `dserv_emission_context` above -- mirrors
+    // `diot_runtime_dmonitor`'s own established "each producer gets its own
+    // monitor_instance_id" precedent (dserver's stream model already
+    // supports, and expects, multiple independent streams per node; see
+    // `dmonitor_interpretation`'s own "no implicit monitor leader" doc).
+    let container_emission_context = DMonitorEmissionContext::new_process_epoch(
+        requested_node_id.as_deref().unwrap_or("unknown"),
+    );
+    let mut container_emitter = crate::agent::container_dmonitor::ContainerMonitorEmitter::new(container_emission_context);
     let dserv_dmonitor_output = crate::outputs::dmonitor_http::DMonitorHttpOutput::new(
         options.dserver_url.clone(),
         options.project_id.clone(),
@@ -394,6 +404,7 @@ pub fn run_operational_service_loop(options: OperationalServiceLoopOptions) -> R
                 &mut last_drift_verification,
                 &mut last_control_signature,
                 &mut dserv_emitter,
+                &mut container_emitter,
                 &dserv_publisher,
             );
         }
@@ -454,6 +465,7 @@ fn run_hybrid_control_cycle(
     last_drift_verification: &mut Option<Instant>,
     last_control_signature: &mut Option<ControlSignature>,
     dserv_emitter: &mut NativeProcessMonitorEmitter,
+    container_emitter: &mut crate::agent::container_dmonitor::ContainerMonitorEmitter,
     dserv_publisher: &crate::dcall::dmonitor_publisher::DMonitorPublisherHandle,
 ) {
     let bootstrap = match run_bootstrap_with_resource_discovery(
@@ -737,6 +749,28 @@ fn run_hybrid_control_cycle(
                                 observation_json,
                             });
                         }
+                    }
+                }
+            }
+
+            // Phase 139B: independent, read-only DMonitor observation of
+            // every CONTAINER service this cycle reconciled -- mirrors the
+            // native-process loop immediately above exactly: never gates,
+            // never mutates, runs unconditionally (including during preview/
+            // dry-run, Part B3) and independently of whatever this cycle's
+            // own command-side `execution_status` concluded (Part B2).
+            // `ContainerMonitorEmitter::emit` itself silently produces `None`
+            // for any non-container service (no `trusted_container_name`) or
+            // one still missing Phase 115C/139B identity (`application_id`/
+            // `dmap_ref`) -- fail-closed, never fabricated, mirroring the
+            // native emitter's own silent-skip discipline.
+            for service in &report.services {
+                if let Some(observation) = container_emitter.emit(&report.node_id, &options.project_id, &observed_at_utc, service) {
+                    if let Ok(observation_json) = serde_json::to_value(&observation) {
+                        dserv_publisher.try_publish(crate::dcall::dmonitor_publisher::DMonitorPublishJob {
+                            observation_id: observation.observation_id.clone(),
+                            observation_json,
+                        });
                     }
                 }
             }

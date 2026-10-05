@@ -2361,6 +2361,145 @@ mod tests {
         assert_eq!(instances, BTreeSet::from(["mon-a", "mon-b"]));
     }
 
+    // ------------------------------------------- PHASE 139B CONTAINER PRODUCER PROOF
+    //
+    // DATUM's new container DMonitor producer (`agent::container_dmonitor`,
+    // Phase 139B) emits the SAME `DServRealization` subject shape as the
+    // native-process producer -- by design, no `runtime_kind`/instance-id
+    // field exists anywhere on the subject (Phase 139A audit finding). Since
+    // dserver and DATUM share no crate (ADR-0007), this engine cannot be
+    // exercised directly from DATUM's own container module; these tests
+    // instead construct observations shaped exactly as that producer would
+    // (its own `monitor_instance_id` epoch format, its own `collector`
+    // label) and drive them through the REAL, unmodified ingest ->
+    // evaluate pipeline, proving the engine needs no container-specific
+    // change: `collector` is read nowhere in this file (grep confirms), so
+    // it cannot influence the outcome below.
+    fn container_observation(
+        node_id: &str,
+        monitor_instance_id: &str,
+        sequence: u64,
+        service_id: &str,
+        observed_node_id: &str,
+        dmap_ref: Option<DMonitorContractRefV1>,
+        health: DMonitorHealthV1,
+        observed_at_utc: &str,
+        observation_id: &str,
+    ) -> CanonicalDMonitorObservationV1 {
+        CanonicalDMonitorObservationV1 {
+            schema: CANONICAL_DMONITOR_OBSERVATION_SCHEMA.to_string(),
+            observation_id: observation_id.to_string(),
+            project_id: Some(PROJECT.to_string()),
+            node_id: node_id.to_string(),
+            monitor_instance_id: monitor_instance_id.to_string(),
+            sequence,
+            observed_at_utc: observed_at_utc.to_string(),
+            cycle_id: None,
+            collector: "container_dmonitor".to_string(),
+            subject: DMonitorSubjectV1::DServRealization {
+                project_id: PROJECT.to_string(),
+                application_id: APP.to_string(),
+                service_id: service_id.to_string(),
+                node_id: observed_node_id.to_string(),
+                dmap_ref,
+            },
+            health,
+            facts: serde_json::json!({ "container_id": "c-1" }),
+        }
+    }
+
+    #[test]
+    fn container_producer_exact_ref_correct_node_fresh_is_converged() {
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            container_observation(NODE_A, "dmonitor-instance:fog-01:container-epoch", 1, SVC_A, NODE_A, Some(exact_ref()), DMonitorHealthV1::Healthy, FRESH, "container-obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_dserv_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &policy(), NOW,
+        );
+        assert_eq!(result.convergence, DMonitorConvergenceV1::Converged);
+        assert!(result.services[0].findings.iter().any(|f| f.code == FINDING_EXACT_MATCH));
+    }
+
+    #[test]
+    fn container_producer_old_dmap_ref_is_not_converged() {
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            container_observation(NODE_A, "dmonitor-instance:fog-01:container-epoch", 1, SVC_A, NODE_A, Some(old_ref()), DMonitorHealthV1::Healthy, FRESH, "container-obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_dserv_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &policy(), NOW,
+        );
+        assert_ne!(result.services[0].convergence, DMonitorConvergenceV1::Converged);
+    }
+
+    #[test]
+    fn container_producer_stale_observation_is_not_falsely_converged() {
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            container_observation(NODE_A, "dmonitor-instance:fog-01:container-epoch", 1, SVC_A, NODE_A, Some(exact_ref()), DMonitorHealthV1::Healthy, STALE, "container-obs-1"),
+            STALE,
+        );
+        let result = evaluate_application_dserv_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &policy(), NOW,
+        );
+        assert_ne!(result.services[0].convergence, DMonitorConvergenceV1::Converged, "stale container evidence must never be read as proof of convergence");
+    }
+
+    #[test]
+    fn container_producer_wrong_node_is_not_converged() {
+        let mut state = DMonitorStateV1::empty();
+        ingest(
+            &mut state,
+            container_observation(NODE_B, "dmonitor-instance:fog-02:container-epoch", 1, SVC_A, NODE_B, Some(exact_ref()), DMonitorHealthV1::Healthy, FRESH, "container-obs-1"),
+            FRESH,
+        );
+        let result = evaluate_application_dserv_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &policy(), NOW,
+        );
+        assert_ne!(result.services[0].convergence, DMonitorConvergenceV1::Converged, "evidence placed on the wrong node must never satisfy the desired placement");
+    }
+
+    #[test]
+    fn container_producer_wrong_project_application_or_service_never_false_matches() {
+        let mut state = DMonitorStateV1::empty();
+        // Wrong server project scope entirely -- must be invisible to this project's evaluation.
+        // (Ingestion requires the observation's own project_id to match the
+        // scope it is ingested under, so this is a genuinely different
+        // project's own container observation, not PROJECT's own evidence
+        // mislabeled -- same pattern as `evidence_from_another_server_project_scope_is_ignored`.)
+        let mut other_scope_observation = container_observation(
+            NODE_A, "dmonitor-instance:fog-01:container-epoch", 1, SVC_A, NODE_A, Some(exact_ref()), DMonitorHealthV1::Healthy, FRESH, "container-obs-other-scope",
+        );
+        other_scope_observation.project_id = Some(OTHER_PROJECT.to_string());
+        other_scope_observation.subject = DMonitorSubjectV1::DServRealization {
+            project_id: OTHER_PROJECT.to_string(),
+            application_id: APP.to_string(),
+            service_id: SVC_A.to_string(),
+            node_id: NODE_A.to_string(),
+            dmap_ref: Some(exact_ref()),
+        };
+        ingest_scope(&mut state, OTHER_PROJECT, other_scope_observation, FRESH);
+        // Right scope, but a service id this application never declared.
+        ingest(
+            &mut state,
+            container_observation(NODE_A, "dmonitor-instance:fog-01:container-epoch", 2, "unrelated-service", NODE_A, Some(exact_ref()), DMonitorHealthV1::Healthy, FRESH, "container-obs-unrelated"),
+            FRESH,
+        );
+        let result = evaluate_application_dserv_convergence(
+            PROJECT, APP, PROJECT, Some(&authority(vec![(SVC_A, NODE_A)])), &state, &policy(), NOW,
+        );
+        // The desired service has zero admitted evidence -- neither the
+        // cross-scope nor the cross-service observation may count for it.
+        assert_eq!(result.services[0].admitted_evidence.len(), 0);
+        assert_ne!(result.services[0].convergence, DMonitorConvergenceV1::Converged);
+    }
+
     // --------------------------------------------------------- DIOT CORE (114D0A)
 
     use crate::core::canonical_dcontinuum::{

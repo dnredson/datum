@@ -14,6 +14,7 @@ import {
   validReconciliationAttemptRecord,
   isOtherApplicationService,
 } from "../src/pages/reconciliation-model.ts";
+import { validEvaluateConvergenceResponse } from "../src/pages/dmonitor-convergence-model.ts";
 
 async function withServer(run) {
   const server = createFixtureServer();
@@ -184,5 +185,140 @@ test("unknown application_id in active/batch creation is reported, never a fabri
     assert.deepEqual(active.deployments, []);
     const response = await createBatch(baseUrl, "app-does-not-exist");
     assert.equal(response.status, 404);
+  });
+});
+
+async function evaluateConvergence(baseUrl, applicationId) {
+  return fetch(`${baseUrl}/api/v1/dmonitor/convergence/project-a/${encodeURIComponent(applicationId)}/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ max_observed_age_seconds: 90, max_received_age_seconds: 90, max_future_clock_skew_seconds: 10 }),
+  });
+}
+
+// Phase 139B (Part Y): every convergence scenario, contract-validated.
+test("convergence scenario A (default): waiting for observation -- zero evidence, never fabricated Diverged", async () => {
+  await withServer(async (baseUrl) => {
+    const response = await evaluateConvergence(baseUrl, "app-no-such-scenario");
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-no-such-scenario"));
+    assert.equal(body.convergence, "unknown");
+    assert.equal(body.services[0].admitted_evidence.length, 0);
+    assert.equal(body.services[0].excluded_evidence.length, 0);
+  });
+});
+
+test("convergence scenario B: native Converged", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-authorized-succeeded")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-authorized-succeeded"));
+    assert.equal(body.convergence, "converged");
+    assert.equal(body.services[0].admitted_evidence[0].health, "healthy");
+  });
+});
+
+test("convergence scenario C: container Converged -- convergence is runtime-kind-agnostic", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-converged-container")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-converged-container"));
+    assert.equal(body.convergence, "converged");
+  });
+});
+
+test("convergence scenario D: container Diverged via authority mismatch", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-diverged-container")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-diverged-container"));
+    assert.equal(body.convergence, "diverged");
+    assert.equal(body.services[0].admitted_evidence[0].authority_correlation, "mismatch");
+  });
+});
+
+test("convergence scenario E: stopped/unhealthy container is still Converged -- proves Converged != Healthy", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-unhealthy-observed")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-unhealthy-observed"));
+    assert.equal(body.convergence, "converged");
+    assert.equal(body.services[0].admitted_evidence[0].health, "unhealthy");
+  });
+});
+
+test("convergence scenario F: stale observation -- Unknown, never silently Diverged", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-stale-observation")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-stale-observation"));
+    assert.equal(body.convergence, "unknown");
+    assert.equal(body.services[0].excluded_evidence[0].freshness, "stale");
+  });
+});
+
+test("convergence scenario G: clock skew -- Unknown, distinct from plain Stale", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-clock-skew")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-clock-skew"));
+    assert.equal(body.services[0].excluded_evidence[0].freshness, "clock_skew");
+  });
+});
+
+test("convergence scenario H: no trustworthy evidence at all -- Unknown", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-unknown-result")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-unknown-result"));
+    assert.equal(body.convergence, "unknown");
+  });
+});
+
+test("convergence scenario I: command Partial but the failed node's runtime is independently observed Converged+Healthy", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-partial-3node")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-partial-3node"));
+    const rpi = body.services.find((s) => s.desired_node_id === "rpi-01");
+    assert.equal(rpi.convergence, "converged", "command-side failure must never be copied into the independent observation");
+  });
+});
+
+test("convergence scenario J: superseded authority -- old dmap_ref revision never counted as converged against new authority", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-superseded-authority")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-superseded-authority"));
+    assert.equal(body.convergence, "diverged");
+    assert.equal(body.dmap_ref.revision, 11);
+  });
+});
+
+test("convergence scenario H2: first deployment (command Succeeded) pairs with Unknown/waiting observation, not Converged", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-first-deploy")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-first-deploy"));
+    assert.equal(body.convergence, "unknown", "a just-succeeded first deploy must never be fabricated as already Converged before any evidence exists");
+    assert.equal(body.services[0].admitted_evidence.length, 0);
+    assert.equal(body.services[0].excluded_evidence.length, 0);
+  });
+});
+
+test("convergence scenario K: command Succeeded but runtime independently observed Diverged -- no contradiction, no silent reconciliation", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-succeeded-but-diverged")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-succeeded-but-diverged"));
+    assert.equal(body.convergence, "diverged", "command-side success must never be copied into, or suppress, an independently Diverged observation");
+  });
+});
+
+test("convergence scenario L: multi-node partial -- one service converged, a different service diverged, same application", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-multi-node-partial")).json();
+    assert.ok(validEvaluateConvergenceResponse(body, "project-a", "app-multi-node-partial"));
+    assert.equal(body.convergence, "diverged");
+    const statuses = body.services.map((s) => s.convergence).sort();
+    assert.deepEqual(statuses, ["converged", "diverged"]);
+  });
+});
+
+test("convergence evaluate response never leaks a different project/application scope", async () => {
+  await withServer(async (baseUrl) => {
+    const body = await (await evaluateConvergence(baseUrl, "app-authorized-succeeded")).json();
+    assert.equal(body.project_id, "project-a");
+    assert.equal(body.application_id, "app-authorized-succeeded");
   });
 });

@@ -609,6 +609,22 @@ pub struct OperationalServiceReconciliationReport {
     /// `execution_generation`/`execution_projection_digest`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_image_identity: Option<VerifiedImageIdentity>,
+    /// Phase 139B: the EXACT governed `application_id`/`dmap_ref` this
+    /// service's `OperationalArtifactAssignment` carried THIS cycle --
+    /// threaded verbatim the same way `artifact_id`/`execution_generation`
+    /// above already are, never independently re-derived and never read
+    /// from a runtime's own labels/content. `None` whenever no assignment
+    /// was resolved this cycle (contract-error/missing-assignment reports)
+    /// or the assignment predates Phase 115C identity propagation. Exists
+    /// SOLELY so `operational_service_loop.rs` can seed a container (or
+    /// native) DMonitor `DServRealization` observation with trustworthy
+    /// identity without re-deriving the governed context a second way --
+    /// this field is never itself a DMonitor observation or a health/
+    /// convergence claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dmap_ref: Option<CanonicalContractReferenceV1>,
 }
 
 /// One governed-host-mutation boundary attempt (review finding P1-2, v4).
@@ -1222,9 +1238,9 @@ fn verify_live_dgraph_revision(pin: &LiveRevisionPin) -> std::result::Result<(),
 /// plain field-presence comparison cannot detect) is caught by a label
 /// mismatch even when every individual `docker inspect` field the agent
 /// checks happens to still look superficially consistent.
-const DATUM_LABEL_ARTIFACT_ID: &str = "datum.artifact_id";
-const DATUM_LABEL_EXECUTION_GENERATION: &str = "datum.execution_generation";
-const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projection_digest";
+pub(crate) const DATUM_LABEL_ARTIFACT_ID: &str = "datum.artifact_id";
+pub(crate) const DATUM_LABEL_EXECUTION_GENERATION: &str = "datum.execution_generation";
+pub(crate) const DATUM_LABEL_EXECUTION_PROJECTION_DIGEST: &str = "datum.execution_projection_digest";
 /// Phase 119G (Phase 119F-R1 section 6.4 point 3): additive local-ownership
 /// labels giving containers the same "which exact historical D-Map placed
 /// this" proof native-process identity already has via
@@ -1254,13 +1270,13 @@ const DATUM_LABEL_DMAP_DIGEST: &str = "datum.dmap_digest";
 /// `inspected_container_dmap_ref_matches`. Kept as a distinct `Option` set
 /// on this same struct purely to reuse `as_docker_run_args()` at the single
 /// M1 call site, not because the two identity axes are related.
-struct ExecutionIdentityLabels<'a> {
-    artifact_id: &'a str,
-    execution_generation: u64,
-    execution_projection_digest: &'a str,
-    dmap_id: Option<&'a str>,
-    dmap_revision: Option<u64>,
-    dmap_digest: Option<&'a str>,
+pub(crate) struct ExecutionIdentityLabels<'a> {
+    pub(crate) artifact_id: &'a str,
+    pub(crate) execution_generation: u64,
+    pub(crate) execution_projection_digest: &'a str,
+    pub(crate) dmap_id: Option<&'a str>,
+    pub(crate) dmap_revision: Option<u64>,
+    pub(crate) dmap_digest: Option<&'a str>,
 }
 
 impl ExecutionIdentityLabels<'_> {
@@ -1375,7 +1391,7 @@ fn container_cleanup_local_ownership_confirmed(
 /// REMOVED from the current declaration entirely (field-presence comparison
 /// only ever checks that declared values are present, never that nothing
 /// extra/stale remains).
-fn inspected_container_labels_match(inspected: &serde_json::Value, expected: &ExecutionIdentityLabels) -> bool {
+pub(crate) fn inspected_container_labels_match(inspected: &serde_json::Value, expected: &ExecutionIdentityLabels) -> bool {
     let labels = inspected.get("Config").and_then(|config| config.get("Labels"));
     let label = |key: &str| labels.and_then(|labels| labels.get(key)).and_then(serde_json::Value::as_str);
     label(DATUM_LABEL_ARTIFACT_ID) == Some(expected.artifact_id)
@@ -2424,6 +2440,8 @@ fn run_operational_reconciliation_from_bootstrap(
                 local_substitutions: local_substitutions.clone(),
                 mutation_boundaries_crossed: mutation_boundaries.clone(),
                 verified_image_identity: pinned_image_evidence.clone(),
+                application_id: assignment.map(|artifact| artifact.application_id.clone()).filter(|value| !value.is_empty()),
+                dmap_ref: assignment.and_then(|artifact| artifact.dmap_ref.clone()),
             });
             continue;
         }
@@ -2721,6 +2739,8 @@ fn run_operational_reconciliation_from_bootstrap(
             local_substitutions,
             mutation_boundaries_crossed: mutation_boundaries,
             verified_image_identity: pinned_image_evidence,
+            application_id: assignment.map(|artifact| artifact.application_id.clone()).filter(|value| !value.is_empty()),
+            dmap_ref: assignment.and_then(|artifact| artifact.dmap_ref.clone()),
         });
     }
 
@@ -2950,6 +2970,8 @@ fn build_runtime_dispatch_error_report(
         local_substitutions: Vec::new(),
         mutation_boundaries_crossed: Vec::new(),
         verified_image_identity: None,
+        application_id: assignment.map(|artifact| artifact.application_id.clone()).filter(|value| !value.is_empty()),
+        dmap_ref: assignment.and_then(|artifact| artifact.dmap_ref.clone()),
     }
 }
 
@@ -3229,7 +3251,7 @@ fn trusted_container_mapping_for_service<'a>(cfg: &'a Config, service_id: &str) 
 /// (nothing to remove). Mirrors `container_attachments_match`'s own fetch
 /// pattern exactly, factored out here so the comparison logic above stays
 /// unit-testable without a real Docker daemon.
-fn inspect_container_full(container_name: &str) -> Result<Option<serde_json::Value>> {
+pub(crate) fn inspect_container_full(container_name: &str) -> Result<Option<serde_json::Value>> {
     let output = Command::new("docker")
         .args(["inspect", container_name])
         .output()
