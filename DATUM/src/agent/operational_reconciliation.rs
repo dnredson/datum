@@ -27,7 +27,8 @@ use crate::agent::stage107a_enforcement::{
     resolve_clock_skew_seconds, resolve_network_aliases, resolve_ports,
     resolve_secret_target_environment_variable, structurally_valid_resolved_image_identity,
     LeaseGuard, BLOCKED_IMAGE_IDENTITY_MISMATCH, BLOCKED_IMAGE_IDENTITY_UNVERIFIED,
-    BLOCKED_REQUIRED_INCOMPLETE, EXECUTION_PINNING_MODE_REQUIRED,
+    BLOCKED_LIVE_AUTHORITY_UNCONFIRMED, BLOCKED_REQUIRED_INCOMPLETE, BLOCKED_STALE_DGRAPH_REVISION,
+    EXECUTION_PINNING_MODE_REQUIRED,
 };
 use crate::config::{Config, DispatchContainerMapping};
 use crate::core::cycle::run_cycle_for_node_identity;
@@ -699,6 +700,10 @@ fn execution_error_status(error: &anyhow::Error) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OperationalReconciliationReport {
+    /// Phase 138A (Part B): the stable identity of this reconciliation
+    /// attempt, generated once per cycle -- see `reconciliation_attempt_id`
+    /// at its generation site for the full invariant.
+    pub reconciliation_attempt_id: String,
     pub bootstrap_state: BootstrapState,
     pub resource_id: String,
     pub node_id: String,
@@ -1129,6 +1134,84 @@ pub(crate) struct MutationBoundaryContext<'a> {
     pub(crate) authorization_id: Option<&'a str>,
     pub(crate) expires_at_utc: Option<&'a str>,
     pub(crate) configured_clock_skew_seconds: Option<u64>,
+    /// Phase 138A (TOCTOU fix): when `Some`, `check_boundary` additionally
+    /// re-fetches the LIVE authoritative `dgraph_id`/`dgraph_revision`
+    /// immediately before this boundary and fails closed on any mismatch
+    /// or on failure to confirm it -- never just once at cycle start. Every
+    /// one of the 14 governed mutation boundaries (M1-M8, N1-N6) threads
+    /// this through from the same `MutationBoundaryContext` the existing
+    /// lease-expiry check already uses, so there is exactly one guard
+    /// (`check_boundary`), not a second, independently-duplicated check at
+    /// each call site. `None` only where a boundary structurally cannot
+    /// mutate a host (the pre-138A test suite's own lease-isolation tests,
+    /// which test the expiry dimension independently of this one).
+    pub(crate) live_revision: Option<LiveRevisionPin<'a>>,
+}
+
+/// Phase 138A: the live authoritative `dgraph_id`/`dgraph_revision` this
+/// boundary check must re-confirm immediately before mutation, and what to
+/// ask (reuses the EXISTING lightweight `/operational-dgraph-slice` route
+/// already polled by `fetch_control_slice_head` -- no new DServer route).
+#[derive(Clone, Copy)]
+pub(crate) struct LiveRevisionPin<'a> {
+    pub(crate) client: &'a Client,
+    pub(crate) dserver_url: &'a str,
+    pub(crate) project_id: &'a str,
+    pub(crate) node_id: &'a str,
+    pub(crate) expected_dgraph_id: &'a str,
+    pub(crate) expected_dgraph_revision: u64,
+}
+
+/// Minimal deserialization target for the EXISTING `/operational-dgraph-slice`
+/// response -- only the two fields this freshness check needs. `serde`
+/// ignores the response's other fields (`desired_services`, `authorization`,
+/// etc.) by default, so this never needs to track that endpoint's full shape.
+#[derive(Debug, Deserialize)]
+struct LiveDgraphRevisionHead {
+    dgraph_id: String,
+    dgraph_revision: u64,
+}
+
+/// Phase 138A: fresh, no-cache re-read of the live authoritative D-Graph
+/// identity, performed immediately before an individual mutation boundary
+/// (never reused across boundaries within the same cycle -- mirrors
+/// `LeaseGuard::check_before_mutation_at`'s own "samples fresh at the
+/// instant of the call" discipline for the expiry dimension). Fails closed:
+/// an unreachable DServer, a non-success status, or an undecodable body are
+/// all `BLOCKED_LIVE_AUTHORITY_UNCONFIRMED`, never silently treated as "ok
+/// to proceed" -- an unconfirmed live authority is never permission to
+/// mutate. A confirmed but DIFFERENT `dgraph_id`/`dgraph_revision` is
+/// `BLOCKED_STALE_DGRAPH_REVISION`.
+fn verify_live_dgraph_revision(pin: &LiveRevisionPin) -> std::result::Result<(), String> {
+    let base = pin.dserver_url.trim().trim_end_matches('/');
+    let url = format!(
+        "{base}/api/v1/nodes/{}/operational-dgraph-slice",
+        pin.node_id.trim()
+    );
+    let response = pin
+        .client
+        .get(&url)
+        .header("X-Datum-Project", pin.project_id.trim())
+        .send()
+        .map_err(|error| {
+            format!("{BLOCKED_LIVE_AUTHORITY_UNCONFIRMED}: live authority poll failed: {error}")
+        })?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "{BLOCKED_LIVE_AUTHORITY_UNCONFIRMED}: live authority poll returned status {}",
+            response.status()
+        ));
+    }
+    let head: LiveDgraphRevisionHead = response.json().map_err(|error| {
+        format!("{BLOCKED_LIVE_AUTHORITY_UNCONFIRMED}: live authority response could not be decoded: {error}")
+    })?;
+    if head.dgraph_id != pin.expected_dgraph_id || head.dgraph_revision != pin.expected_dgraph_revision {
+        return Err(format!(
+            "{BLOCKED_STALE_DGRAPH_REVISION}: this cycle was pinned to {}@{}, but live authority is now {}@{}",
+            pin.expected_dgraph_id, pin.expected_dgraph_revision, head.dgraph_id, head.dgraph_revision
+        ));
+    }
+    Ok(())
 }
 
 /// Review finding P1-3 (v4): non-secret Docker label keys DATUM writes on
@@ -1316,7 +1399,17 @@ pub(crate) fn check_boundary(
     records: &mut Vec<MutationBoundaryRecord>,
 ) -> Result<()> {
     let now = Utc::now();
-    let result = lease.check_before_mutation_at(boundary, now);
+    // Phase 138A: two independent freshness dimensions, both re-evaluated
+    // fresh at THIS boundary, never cached from an earlier boundary in the
+    // same cycle -- (1) lease expiry (unchanged, P0-2), and (2) live
+    // dgraph-revision currency (new). Either one blocking is sufficient to
+    // block the boundary; `and_then` short-circuits on the first failure.
+    let result = lease.check_before_mutation_at(boundary, now).and_then(|()| {
+        match &boundary_context.live_revision {
+            Some(pin) => verify_live_dgraph_revision(pin),
+            None => Ok(()),
+        }
+    });
     records.push(MutationBoundaryRecord {
         boundary: boundary.to_string(),
         checked_at_utc: now.to_rfc3339(),
@@ -1457,6 +1550,17 @@ fn run_operational_reconciliation_from_bootstrap(
         .json()
         .context("decode artifact reconciliation context")?;
     validate_context(&context, project_id, &node_id)?;
+
+    // Phase 138A (Part B): one stable identity for this ENTIRE reconciliation
+    // attempt -- generated exactly once, here, immediately after the single
+    // per-cycle context fetch succeeds (never per-service, never derived
+    // from `authorization_id`, which can legitimately cover many cycles,
+    // and never derived from HTTP request identity, since the real
+    // mutation this identifies happens locally/asynchronously to any one
+    // request-response). Threaded unchanged into every per-service action
+    // and into every `OperationalEvidenceEvent` this cycle emits, so DServer
+    // can fold them into one attempt record (Part C).
+    let reconciliation_attempt_id = format!("reconciliation-attempt:{}", uuid::Uuid::new_v4());
 
     let expected_authorization_operation = if rollback_requested {
         AUTHORIZATION_OPERATION_ROLLBACK
@@ -1606,6 +1710,17 @@ fn run_operational_reconciliation_from_bootstrap(
                     authorization_id: authorization.map(|a| a.authorization_id.as_str()),
                     expires_at_utc: authorization.and_then(|a| a.expires_at_utc.as_deref()),
                     configured_clock_skew_seconds: cycle_gate.map(|gate| gate.skew_seconds),
+                    // Phase 138A: re-confirmed fresh, live, immediately before
+                    // EACH of this service's N1-N6 boundaries (never just
+                    // once at cycle start) -- see `check_boundary`.
+                    live_revision: Some(LiveRevisionPin {
+                        client: &client,
+                        dserver_url,
+                        project_id: &context.project_id,
+                        node_id: &context.node_id,
+                        expected_dgraph_id: &context.dgraph_id,
+                        expected_dgraph_revision: context.dgraph_revision,
+                    }),
                 };
                 let report = native_process_runtime::reconcile_native_service(
                     cfg,
@@ -1937,6 +2052,16 @@ fn run_operational_reconciliation_from_bootstrap(
             authorization_id: context.authorization.as_ref().map(|authorization| authorization.authorization_id.as_str()),
             expires_at_utc: authorization_expires_at_utc.as_deref(),
             configured_clock_skew_seconds: authorization_clock_skew_seconds,
+            // Phase 138A: same fresh, per-boundary live-revision guard as
+            // the native-process path above.
+            live_revision: Some(LiveRevisionPin {
+                client: &client,
+                dserver_url,
+                project_id: &context.project_id,
+                node_id: &context.node_id,
+                expected_dgraph_id: &context.dgraph_id,
+                expected_dgraph_revision: context.dgraph_revision,
+            }),
         };
         let mut mutation_boundaries: Vec<MutationBoundaryRecord> = Vec::new();
 
@@ -2612,6 +2737,8 @@ fn run_operational_reconciliation_from_bootstrap(
             cleanup_control_plane_authorized,
             execute_requested,
             cleanup_stage107a_cycle_gate.as_ref(),
+            &client,
+            dserver_url,
         )
     } else {
         Vec::new()
@@ -2634,6 +2761,7 @@ fn run_operational_reconciliation_from_bootstrap(
     };
 
     Ok(OperationalReconciliationReport {
+        reconciliation_attempt_id,
         bootstrap_state: bootstrap.bootstrap_state,
         resource_id: bootstrap.control_plane.resource_id,
         node_id,
@@ -4379,12 +4507,15 @@ fn container_state_from_inspected(inspected: Option<&serde_json::Value>) -> Cont
 /// the directive is an honest, reported no-op -- there is nothing
 /// DATUM-owned here to remove, which is an entirely expected outcome (e.g.
 /// cleanup already succeeded on a previous cycle, task section 25).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_cleanup_directives(
     cfg: &Config,
     context: &OperationalReconciliationContext,
     cleanup_control_plane_authorized: bool,
     execute_requested: bool,
     cleanup_cycle_gate: Option<&Stage107ACycleGate>,
+    client: &Client,
+    dserver_url: &str,
 ) -> Vec<CleanupDirectiveReport> {
     let mut reports = Vec::with_capacity(context.cleanup_directives.len());
     for directive in &context.cleanup_directives {
@@ -4394,6 +4525,17 @@ pub(crate) fn process_cleanup_directives(
             authorization_id: authorization.map(|a| a.authorization_id.as_str()),
             expires_at_utc: authorization.and_then(|a| a.expires_at_utc.as_deref()),
             configured_clock_skew_seconds: cleanup_cycle_gate.map(|gate| gate.skew_seconds),
+            // Phase 138A (task Part A6): cleanup/rollback require the same
+            // freshness semantics as ordinary reconcile -- ownership-label
+            // proof alone is never sufficient for a destructive action.
+            live_revision: Some(LiveRevisionPin {
+                client,
+                dserver_url,
+                project_id: &context.project_id,
+                node_id: &context.node_id,
+                expected_dgraph_id: &context.dgraph_id,
+                expected_dgraph_revision: context.dgraph_revision,
+            }),
         };
         let lease = cleanup_cycle_gate.map(|gate| &gate.lease);
 
@@ -5533,6 +5675,7 @@ mod tests {
             authorization_id: Some(authorization.authorization_id.as_str()),
             expires_at_utc: authorization.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = check_boundary(&lease, &boundary_context, "M1", &mut records);
@@ -5557,6 +5700,7 @@ mod tests {
             authorization_id: Some(authorization.authorization_id.as_str()),
             expires_at_utc: authorization.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = check_boundary(&lease, &boundary_context, "M3", &mut records);
@@ -5578,6 +5722,7 @@ mod tests {
             authorization_id: Some(authorization.authorization_id.as_str()),
             expires_at_utc: None,
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = check_boundary(&lease, &boundary_context, "M7", &mut records);
@@ -5601,6 +5746,7 @@ mod tests {
             authorization_id: Some(authorization.authorization_id.as_str()),
             expires_at_utc: authorization.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         check_boundary(&lease, &boundary_context, "M3", &mut records).unwrap();
@@ -5626,6 +5772,7 @@ mod tests {
             authorization_id: Some(authorization.authorization_id.as_str()),
             expires_at_utc: authorization.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         for boundary in ["M5", "M7", "M8"] {
@@ -5742,6 +5889,7 @@ mod tests {
             let context = MutationBoundaryContext {
                 authorization_id: Some(&authorization.authorization_id),
                 expires_at_utc: expiry, configured_clock_skew_seconds: Some(0),
+                live_revision: None,
             };
             for boundary in ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"] {
                 let mut records = Vec::new();
@@ -5845,7 +5993,7 @@ mod tests {
         runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
         let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -5871,7 +6019,7 @@ mod tests {
         runtime.queue_pull(&reference, Ok(()));
         runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '1', "linux", "amd64"))));
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -5921,7 +6069,7 @@ mod tests {
         runtime.queue_container_binding("mqtt", Ok(Some(stage_107b_b_digest('9'))));
 
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, Some("mqtt"), Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -5965,7 +6113,7 @@ mod tests {
         assert_eq!(evidence.container_binding_status, image_identity_verification::CONTAINER_BINDING_STATUS_MISMATCHES);
 
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, Some("mqtt"), Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6006,7 +6154,7 @@ mod tests {
         // pull -- a real hard mismatch, not a transient inspect failure.
         runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '9', "linux", "amd64"))));
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6032,7 +6180,7 @@ mod tests {
         runtime.queue_inspect(&reference, Err("permission denied".to_string()));
         let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6056,7 +6204,7 @@ mod tests {
             runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('2', "eclipse-mosquitto", '9', "linux", "amd64"))));
             let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
             let (lease, _auth) = far_future_boundary();
-            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
             let mut records = Vec::new();
             let result = resolve_pinned_image_outcome(
                 &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, mode,
@@ -6082,7 +6230,7 @@ mod tests {
         required_runtime.queue_inspect(&reference, Err("daemon unreachable".to_string()));
         let (required_evidence, required_outcome) = preflight_for(&required_runtime, &resolved, None);
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let required_result = resolve_pinned_image_outcome(
             &required_runtime, required_evidence, required_outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6136,7 +6284,7 @@ mod tests {
             });
             let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
             let (lease, _auth) = far_future_boundary();
-            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+            let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
             let mut records = Vec::new();
             let result = resolve_pinned_image_outcome(
                 &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, mode,
@@ -6162,7 +6310,7 @@ mod tests {
         runtime.queue_inspect(&reference, Ok(Some(stage_107b_b_inspect_record('9', "eclipse-mosquitto", '1', "linux", "amd64"))));
         let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6188,7 +6336,7 @@ mod tests {
         let (evidence, outcome) = preflight_for(&runtime, &resolved, None);
         let authorization = boundary_test_auth(Some("2020-01-01T00:00:00Z"));
         let lease = LeaseGuard::from_authorization(&authorization, 30).unwrap();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let result = resolve_pinned_image_outcome(
             &runtime, evidence, outcome, true, &resolved, None, Some(&lease), &boundary_context, &mut records, EXECUTION_PINNING_MODE_REQUIRED,
@@ -6217,7 +6365,7 @@ mod tests {
         let resolved = stage_107b_b_resolved(repository, vec![stage_107b_b_platform("linux", "amd64", '1', '2', repository)]);
         let reference = format!("{repository}@{}", stage_107b_b_digest('1'));
         let (lease, _auth) = far_future_boundary();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
 
         // Simulates: generation mismatch, projection mismatch,
         // required-incomplete, configuration-content mismatch, and
@@ -6698,5 +6846,262 @@ mod tests {
         ) {
         }
         let _ = assert_no_network_parameter;
+    }
+
+    // ---- Phase 138A: TOCTOU fix -- live dgraph-revision re-check at ------ //
+    // ---- every mutation boundary. ---------------------------------------- //
+
+    /// A minimal, local (no external mocking crate), raw-socket mock
+    /// DServer that answers every request with ONE fixed `(status, body)`,
+    /// adapted (trimmed to a single response, since these tests only ever
+    /// hit one route) from the established `PathRoutedMockDServer` pattern
+    /// in `agent::bootstrap::tests` / `outputs::dmonitor_http::tests` /
+    /// `dcode::client::tests`.
+    struct FixedResponseMockDServer {
+        url: String,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FixedResponseMockDServer {
+        fn start(status: u16, body: String) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopping = stop.clone();
+            let thread = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                            let mut bytes = Vec::new();
+                            let mut buffer = [0u8; 4096];
+                            loop {
+                                let count = match stream.read(&mut buffer) {
+                                    Ok(0) => break,
+                                    Ok(count) => count,
+                                    Err(_) => break,
+                                };
+                                bytes.extend_from_slice(&buffer[..count]);
+                                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            let reason = match status {
+                                200 => "OK",
+                                500 => "Internal Server Error",
+                                _ => "Status",
+                            };
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { url, stop, thread: Some(thread) }
+        }
+    }
+
+    impl Drop for FixedResponseMockDServer {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn live_revision_pin<'a>(server: &'a FixedResponseMockDServer, client: &'a Client, expected_dgraph_revision: u64) -> LiveRevisionPin<'a> {
+        LiveRevisionPin {
+            client,
+            dserver_url: &server.url,
+            project_id: "p",
+            node_id: "n",
+            expected_dgraph_id: "d",
+            expected_dgraph_revision,
+        }
+    }
+
+    #[test]
+    fn check_boundary_passes_when_live_revision_matches_the_pinned_revision() {
+        let server = FixedResponseMockDServer::start(200, r#"{"dgraph_id":"d","dgraph_revision":4}"#.to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        let mut records = Vec::new();
+        let result = check_boundary(&lease, &boundary_context, "M1", &mut records);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(records[0].result, "passed");
+    }
+
+    #[test]
+    fn check_boundary_blocks_with_stale_dgraph_revision_when_live_revision_has_moved_on() {
+        // Exactly the Phase 138/138A TOCTOU scenario: this cycle was pinned
+        // to revision 4 (far_future_boundary/boundary_test_auth both fix
+        // dgraph_revision at 1 in the AUTHORIZATION -- here we pin the
+        // MutationBoundaryContext's live check to 4, standing in for "the
+        // context this cycle actually fetched was revision 4") while the
+        // mock DServer now reports 5 as live/authoritative.
+        let server = FixedResponseMockDServer::start(200, r#"{"dgraph_id":"d","dgraph_revision":5}"#.to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        let mut records = Vec::new();
+        let result = check_boundary(&lease, &boundary_context, "M1", &mut records);
+        let error = result.unwrap_err();
+        assert!(error.to_string().starts_with(BLOCKED_STALE_DGRAPH_REVISION), "{error}");
+        assert_eq!(records[0].result, "blocked");
+        assert_eq!(records.len(), 1, "a blocked boundary must never be retried silently within the same check_boundary call");
+    }
+
+    #[test]
+    fn check_boundary_blocks_with_stale_dgraph_revision_when_live_dgraph_id_differs() {
+        let server = FixedResponseMockDServer::start(200, r#"{"dgraph_id":"other-d","dgraph_revision":4}"#.to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        let mut records = Vec::new();
+        let error = check_boundary(&lease, &boundary_context, "M1", &mut records).unwrap_err();
+        assert!(error.to_string().starts_with(BLOCKED_STALE_DGRAPH_REVISION), "{error}");
+    }
+
+    #[test]
+    fn check_boundary_blocks_when_live_authority_cannot_be_reached() {
+        // DServer unreachable: an unconfirmed live authority is NEVER
+        // permission to mutate (task Part A4).
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(LiveRevisionPin {
+                client: &client,
+                // An address nothing is listening on, so the connection
+                // itself fails fast rather than hanging on a real timeout.
+                dserver_url: "http://127.0.0.1:1",
+                project_id: "p",
+                node_id: "n",
+                expected_dgraph_id: "d",
+                expected_dgraph_revision: 4,
+            }),
+        };
+        let mut records = Vec::new();
+        let error = check_boundary(&lease, &boundary_context, "M1", &mut records).unwrap_err();
+        assert!(error.to_string().starts_with(BLOCKED_LIVE_AUTHORITY_UNCONFIRMED), "{error}");
+        assert_eq!(records[0].result, "blocked");
+    }
+
+    #[test]
+    fn check_boundary_blocks_when_live_authority_responds_with_a_non_success_status() {
+        let server = FixedResponseMockDServer::start(500, "{}".to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        let mut records = Vec::new();
+        let error = check_boundary(&lease, &boundary_context, "M1", &mut records).unwrap_err();
+        assert!(error.to_string().starts_with(BLOCKED_LIVE_AUTHORITY_UNCONFIRMED), "{error}");
+    }
+
+    #[test]
+    fn check_boundary_blocks_when_live_authority_response_is_malformed() {
+        let server = FixedResponseMockDServer::start(200, "not json".to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        let mut records = Vec::new();
+        let error = check_boundary(&lease, &boundary_context, "M1", &mut records).unwrap_err();
+        assert!(error.to_string().starts_with(BLOCKED_LIVE_AUTHORITY_UNCONFIRMED), "{error}");
+    }
+
+    #[test]
+    fn check_boundary_still_blocks_on_expired_lease_even_when_live_revision_matches() {
+        // The expiry dimension (P0-2, pre-existing) and the live-revision
+        // dimension (Phase 138A, new) are independent; either one alone
+        // must be sufficient to block. Lease expiry is checked first
+        // (`and_then`), so the live-revision check is never even reached
+        // here -- proven by using an unreachable dserver_url that would
+        // itself fail if it were ever actually queried.
+        let authorization = boundary_test_auth(Some("2020-01-01T00:00:00Z"));
+        let lease = LeaseGuard::from_authorization(&authorization, 30).unwrap();
+        let client = Client::new();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(LiveRevisionPin {
+                client: &client,
+                dserver_url: "http://127.0.0.1:1",
+                project_id: "p",
+                node_id: "n",
+                expected_dgraph_id: "d",
+                expected_dgraph_revision: 4,
+            }),
+        };
+        let mut records = Vec::new();
+        let error = check_boundary(&lease, &boundary_context, "M1", &mut records).unwrap_err();
+        assert!(
+            error.to_string().starts_with(crate::agent::stage107a_enforcement::BLOCKED_LEASE_EXPIRED),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn check_boundary_live_revision_guard_protects_every_governed_boundary() {
+        // Task Part A5: the fresh live-revision guard must cover every
+        // governed boundary name actually used in production, not only
+        // M1/N3 (create/spawn) -- M1-M8 (container) and N1-N6 (native) all
+        // funnel through this ONE shared `check_boundary` call, so proving
+        // it for a representative set here covers all of them structurally
+        // (the production call sites all pass the SAME boundary_context).
+        let server = FixedResponseMockDServer::start(200, r#"{"dgraph_id":"d","dgraph_revision":5}"#.to_string());
+        let client = Client::new();
+        let (lease, authorization) = far_future_boundary();
+        let boundary_context = MutationBoundaryContext {
+            authorization_id: Some(&authorization.authorization_id),
+            expires_at_utc: authorization.expires_at_utc.as_deref(),
+            configured_clock_skew_seconds: Some(30),
+            live_revision: Some(live_revision_pin(&server, &client, 4)),
+        };
+        for boundary in ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "N1", "N2", "N3", "N4", "N5", "N6"] {
+            let mut records = Vec::new();
+            let error = check_boundary(&lease, &boundary_context, boundary, &mut records).unwrap_err();
+            assert!(error.to_string().starts_with(BLOCKED_STALE_DGRAPH_REVISION), "{boundary}: {error}");
+        }
     }
 }

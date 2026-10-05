@@ -212,6 +212,14 @@ pub fn load_operational_evidence(
             event_kind,
             side_effects_performed,
             payload,
+            // Phase 138A: not persisted as a column in this table today --
+            // `api::operational_evidence::fold_reconciliation_attempt`
+            // reads it directly off the freshly-posted payload at
+            // ingestion time instead of round-tripping through storage
+            // (see that function's own doc comment). A row reloaded from
+            // here therefore never carries it; that is an accepted,
+            // disclosed scope boundary, not a bug.
+            reconciliation_attempt_id: None,
         };
         validate_operational_evidence_event(&event)?;
         events.push(event);
@@ -320,6 +328,7 @@ mod tests {
             event_kind: kind.to_string(),
             side_effects_performed: false,
             payload: json!({"sequence": sequence}),
+            reconciliation_attempt_id: None,
         }
     }
 

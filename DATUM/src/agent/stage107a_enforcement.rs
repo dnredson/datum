@@ -34,6 +34,19 @@ pub const BLOCKED_PINNING_MODE_INSUFFICIENT: &str = "blocked_pinning_mode_insuff
 pub const BLOCKED_MISSING_CLOCK_SKEW_CONFIG: &str = "blocked_missing_clock_skew_config";
 pub const BLOCKED_REQUIRED_INCOMPLETE: &str = "blocked_required_incomplete";
 pub const BLOCKED_WRONG_RESOURCE_IDENTITY: &str = "blocked_wrong_resource_identity";
+/// Phase 138A (TOCTOU fix): the live authoritative `dgraph_id`/`dgraph_revision`
+/// re-read immediately before this mutation boundary no longer matches the
+/// revision this cycle's authorization/context was validated against at
+/// fetch time. Distinct from `BLOCKED_LEASE_EXPIRED` -- a lease can still be
+/// time-valid while the authoritative revision it was pinned to has already
+/// been superseded by a later acceptance.
+pub const BLOCKED_STALE_DGRAPH_REVISION: &str = "blocked_stale_dgraph_revision";
+/// Phase 138A (TOCTOU fix): the live-revision re-read itself could not be
+/// completed (DServer unreachable, timeout, non-success status, or a
+/// malformed response) immediately before a mutation boundary. An
+/// unconfirmed live authority is never treated as permission to mutate --
+/// this blocks exactly like a confirmed mismatch.
+pub const BLOCKED_LIVE_AUTHORITY_UNCONFIRMED: &str = "blocked_live_authority_unconfirmed";
 /// Stage 107B-B (ADR-0014): a trustworthy pin (`resolved_image_identity`)
 /// exists, but runtime verification against the actual local Docker state
 /// could not be completed with confidence -- no matching/unambiguous local

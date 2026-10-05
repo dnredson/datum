@@ -113,6 +113,7 @@ use api::operational_dgraph::{
     post_operational_reconciliation_rollback_authorization, put_operational_dgraph,
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
+use api::reconciliation_attempt::{get_reconciliation_attempt, list_recent_reconciliation_attempts};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::resource_registry::{
     get_resource, get_resource_binding, list_resource_bindings, list_resources,
@@ -326,6 +327,15 @@ async fn main() {
         .route(
             "/api/v1/operational-evidence",
             post(post_operational_evidence).get(list_operational_evidence),
+        )
+        // Phase 138A (Part D): read-only only -- no execute endpoint here.
+        .route(
+            "/api/v1/reconciliation-attempts",
+            get(list_recent_reconciliation_attempts),
+        )
+        .route(
+            "/api/v1/reconciliation-attempts/:attempt_id",
+            get(get_reconciliation_attempt),
         )
         .route(
             "/api/v1/analysis-context/passive/:node_id",

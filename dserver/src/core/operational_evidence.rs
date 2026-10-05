@@ -21,6 +21,12 @@ pub struct OperationalEvidenceEvent {
     pub event_kind: String,
     pub side_effects_performed: bool,
     pub payload: Value,
+    /// Phase 138A: additive, mirrors
+    /// `DATUM::agent::operational_evidence::OperationalEvidenceEvent`'s own
+    /// new field exactly -- `None` for every event kind that is not part of
+    /// a governed reconciliation attempt (unchanged, backward compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_attempt_id: Option<String>,
 }
 
 pub fn validate_operational_evidence_event(event: &OperationalEvidenceEvent) -> Result<(), String> {
@@ -86,6 +92,7 @@ mod tests {
             event_kind: "reconciliation".to_string(),
             side_effects_performed: true,
             payload: json!({"execution_status":"deployed"}),
+            reconciliation_attempt_id: None,
         }
     }
 

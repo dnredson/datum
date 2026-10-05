@@ -28,6 +28,18 @@ pub struct OperationalEvidenceEvent {
     pub event_kind: String,
     pub side_effects_performed: bool,
     pub payload: Value,
+    /// Phase 138A: the stable `reconciliation_attempt_id` of the governed
+    /// reconciliation cycle this event occurred within, when this event is
+    /// part of one. Additive (`#[serde(default)]`) for backward
+    /// compatibility -- `None` for every pre-138A event kind that is not
+    /// reconciliation-cycle-shaped (e.g. `runtime_prerequisite`,
+    /// `control_poll_error`, bootstrap-only events): those producers are
+    /// unmodified and never set this field. Set via
+    /// `with_reconciliation_attempt_id` rather than a `new()` parameter, so
+    /// every existing non-reconciliation call site in this crate compiles
+    /// and behaves unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_attempt_id: Option<String>,
 }
 
 impl OperationalEvidenceEvent {
@@ -68,8 +80,18 @@ impl OperationalEvidenceEvent {
             event_kind: non_empty("event_kind", event_kind)?.to_string(),
             side_effects_performed,
             payload,
+            reconciliation_attempt_id: None,
         };
         Ok(event)
+    }
+
+    /// Phase 138A: attach this event to a governed reconciliation cycle.
+    /// Chainable and additive -- every existing call site that never calls
+    /// this leaves `reconciliation_attempt_id` as `None`, exactly as before
+    /// this field existed.
+    pub fn with_reconciliation_attempt_id(mut self, reconciliation_attempt_id: Option<&str>) -> Self {
+        self.reconciliation_attempt_id = optional_non_empty(reconciliation_attempt_id);
+        self
     }
 }
 
@@ -161,5 +183,66 @@ mod tests {
         assert_eq!(event.dgraph_revision, Some(2));
         assert!(event.side_effects_performed);
         assert!(event.event_id.starts_with("opev:"));
+        // Phase 138A: an event never opted into a reconciliation attempt
+        // (the default for every pre-138A event kind) carries None, never
+        // a fabricated identity.
+        assert_eq!(event.reconciliation_attempt_id, None);
+    }
+
+    #[test]
+    fn with_reconciliation_attempt_id_attaches_the_given_id() {
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            Some("fog-01"),
+            Some("dgraph:v1"),
+            Some(2),
+            1,
+            "reconciliation",
+            true,
+            json!({}),
+        )
+        .unwrap()
+        .with_reconciliation_attempt_id(Some("reconciliation-attempt:abc-123"));
+        assert_eq!(event.reconciliation_attempt_id.as_deref(), Some("reconciliation-attempt:abc-123"));
+    }
+
+    #[test]
+    fn with_reconciliation_attempt_id_none_leaves_the_field_absent() {
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            Some("fog-01"),
+            Some("dgraph:v1"),
+            Some(2),
+            1,
+            "runtime_prerequisite",
+            false,
+            json!({}),
+        )
+        .unwrap()
+        .with_reconciliation_attempt_id(None);
+        assert_eq!(event.reconciliation_attempt_id, None);
+    }
+
+    #[test]
+    fn reconciliation_attempt_id_is_omitted_from_serialized_json_when_absent() {
+        // Backward compatibility (task Part B4): a non-reconciliation
+        // event's serialized shape must be byte-identical to before this
+        // field existed -- `skip_serializing_if` must actually fire.
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            None,
+            None,
+            None,
+            1,
+            "control_poll_error",
+            false,
+            json!({}),
+        )
+        .unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("reconciliation_attempt_id"));
     }
 }

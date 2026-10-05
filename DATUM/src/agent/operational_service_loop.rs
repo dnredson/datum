@@ -937,7 +937,7 @@ fn write_reconciliation_result(
             Value::from(control_head.dgraph_revision),
         );
     }
-    record_event(
+    record_reconciliation_event(
         client,
         options,
         sequence,
@@ -948,6 +948,7 @@ fn write_reconciliation_result(
         event_kind,
         report.side_effects_performed,
         event_payload,
+        &report.reconciliation_attempt_id,
     );
 
     println!(
@@ -1064,6 +1065,51 @@ fn record_event(
     side_effects_performed: bool,
     payload: Value,
 ) {
+    record_event_inner(
+        client, options, sequence, resource_id, node_id, dgraph_id, dgraph_revision, event_kind,
+        side_effects_performed, payload, None,
+    )
+}
+
+/// Phase 138A (Part B4): identical to `record_event`, but attaches this
+/// event to a governed reconciliation attempt. Use for events emitted while
+/// processing an `OperationalReconciliationReport`/`OperationalServiceReconciliationReport`
+/// (the attempt is already known); every other, non-reconciliation-cycle
+/// event kind keeps calling plain `record_event` unchanged.
+#[allow(clippy::too_many_arguments)]
+fn record_reconciliation_event(
+    client: &Client,
+    options: &OperationalServiceLoopOptions,
+    sequence: u64,
+    resource_id: &str,
+    node_id: Option<&str>,
+    dgraph_id: Option<&str>,
+    dgraph_revision: Option<u64>,
+    event_kind: &str,
+    side_effects_performed: bool,
+    payload: Value,
+    reconciliation_attempt_id: &str,
+) {
+    record_event_inner(
+        client, options, sequence, resource_id, node_id, dgraph_id, dgraph_revision, event_kind,
+        side_effects_performed, payload, Some(reconciliation_attempt_id),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_event_inner(
+    client: &Client,
+    options: &OperationalServiceLoopOptions,
+    sequence: u64,
+    resource_id: &str,
+    node_id: Option<&str>,
+    dgraph_id: Option<&str>,
+    dgraph_revision: Option<u64>,
+    event_kind: &str,
+    side_effects_performed: bool,
+    payload: Value,
+    reconciliation_attempt_id: Option<&str>,
+) {
     let event = match OperationalEvidenceEvent::new(
         &options.project_id,
         resource_id,
@@ -1074,7 +1120,9 @@ fn record_event(
         event_kind,
         side_effects_performed,
         payload,
-    ) {
+    )
+    .map(|event| event.with_reconciliation_attempt_id(reconciliation_attempt_id))
+    {
         Ok(event) => event,
         Err(error) => {
             eprintln!(

@@ -2649,7 +2649,7 @@ mod tests {
             application_id: String::new(),
             dmap_ref: None,
         };
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
 
         let _report = reconcile_native_service(
             &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
@@ -2691,7 +2691,7 @@ mod tests {
             application_id: String::new(),
             dmap_ref: None,
         };
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let real_reason = format!(
             "{}: required mode needs an explicit authorization_clock_skew_seconds; there is no implicit zero",
             crate::agent::stage107a_enforcement::BLOCKED_MISSING_CLOCK_SKEW_CONFIG
@@ -2724,7 +2724,7 @@ mod tests {
             application_id: String::new(),
             dmap_ref: None,
         };
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
 
         let report = reconcile_native_service(
             &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
@@ -2767,7 +2767,7 @@ mod tests {
         let state_path = layout.state_path(&key).unwrap();
         std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
         std::fs::write(&state_path, b"not valid json").unwrap();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
 
         let report = reconcile_native_service(
             &cfg, "proj", "node", None, None, None, None, &boundary_context, &service, &assignment, true, true, false,
@@ -2833,6 +2833,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let outcome = governed_materialize_and_spawn(
@@ -2873,6 +2874,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let outcome = governed_materialize_and_spawn(
@@ -2896,6 +2898,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let outcome = governed_materialize_and_spawn(
@@ -2962,7 +2965,7 @@ mod tests {
     fn cleanup_directive_is_a_safe_no_op_with_no_native_process_root_configured() {
         let cfg = dispatch_cfg(true, Some(true), None);
         let directive = sample_cleanup_directive("svc", "app-a");
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
         assert_eq!(status, "cleanup_no_local_native_root");
@@ -2974,7 +2977,7 @@ mod tests {
         let root = temp_root("cleanup-no-state");
         let cfg = dispatch_cfg(true, Some(true), Some(&root.to_string_lossy().replace('\\', "/")));
         let directive = sample_cleanup_directive("svc-never-placed-here", "app-a");
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let (status, message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
         assert_eq!(status, "cleanup_no_local_state");
@@ -3004,7 +3007,7 @@ mod tests {
         native_process_state::persist_state(&state_path, &state).unwrap();
 
         let directive = sample_cleanup_directive("svc", "app-a");
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
         assert_eq!(status, "cleanup_dmap_ref_mismatch");
@@ -3029,7 +3032,7 @@ mod tests {
         state.dmap_ref = Some(directive.previous_dmap_ref.clone());
         native_process_state::persist_state(&state_path, &state).unwrap();
 
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let (status, _message, mutated) = process_native_cleanup_directive(&cfg, "proj-x", "node-a", &directive, None, &boundary_context, &mut records);
         assert_eq!(status, "cleanup_dmap_ref_mismatch");
@@ -3043,7 +3046,7 @@ mod tests {
     fn restart_for_drift_never_spawns_when_the_old_process_stop_is_not_confirmed() {
         let assignment = native_assignment_for_reconcile();
         let state = sample_persisted_state();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let outcome = execute_native_action(
             &NativeReconciliationAction::RestartForDrift,
@@ -3071,7 +3074,7 @@ mod tests {
     fn rollback_never_removes_state_when_the_stop_is_not_confirmed() {
         let assignment = native_assignment_for_reconcile();
         let state = sample_persisted_state();
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let outcome = execute_native_action(
             &NativeReconciliationAction::Rollback,
@@ -3188,6 +3191,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_remove_state(Some(&layout), Some(key), Some(&lease), &boundary_context, &mut records);
@@ -3210,6 +3214,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_remove_state(Some(&layout), Some(key), Some(&lease), &boundary_context, &mut records);
@@ -3243,6 +3248,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_remove_state(Some(&layout), Some(key), Some(&lease), &boundary_context, &mut records);
@@ -3281,6 +3287,7 @@ mod tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let assignment = native_assignment_for_reconcile();
         let mut records = Vec::new();
@@ -3350,6 +3357,7 @@ mod tests {
             authorization_id: None,
             expires_at_utc: None,
             configured_clock_skew_seconds: None,
+            live_revision: None,
         };
 
         let report = reconcile_native_service(
@@ -3394,6 +3402,7 @@ mod tests {
             authorization_id: None,
             expires_at_utc: None,
             configured_clock_skew_seconds: None,
+            live_revision: None,
         };
 
         let report = reconcile_native_service(
@@ -3948,6 +3957,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_stop(&state, Some(&lease), &boundary_context, &mut records);
@@ -3987,6 +3997,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         // This deliberately runs past GRACEFUL_STOP_TIMEOUT (SIGTERM is
@@ -4069,6 +4080,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_stop(&state, Some(&lease), &boundary_context, &mut records);
@@ -4108,6 +4120,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let assignment = env_probe_assignment(std::collections::BTreeMap::new());
         let mut records = Vec::new();
@@ -4144,6 +4157,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let assignment = env_probe_assignment(std::collections::BTreeMap::new());
         let mut records = Vec::new();
@@ -4177,6 +4191,7 @@ mod linux_integration_tests {
             authorization_id: Some(&auth.authorization_id),
             expires_at_utc: auth.expires_at_utc.as_deref(),
             configured_clock_skew_seconds: Some(30),
+            live_revision: None,
         };
         let mut records = Vec::new();
         let result = governed_stop(&state, Some(&lease), &boundary_context, &mut records);
@@ -4237,7 +4252,7 @@ mod linux_integration_tests {
         state.cmdline_digest = compute_args_digest(&["definitely-not-the-real-cmdline".to_string()]);
 
         let assignment = env_probe_assignment(std::collections::BTreeMap::new());
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let outcome = execute_native_action(
             &NativeReconciliationAction::RestartForDrift,
@@ -4273,7 +4288,7 @@ mod linux_integration_tests {
         state.cmdline_digest = compute_args_digest(&["definitely-not-the-real-cmdline".to_string()]);
 
         let assignment = env_probe_assignment(std::collections::BTreeMap::new());
-        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None };
+        let boundary_context = MutationBoundaryContext { authorization_id: None, expires_at_utc: None, configured_clock_skew_seconds: None, live_revision: None };
         let mut records = Vec::new();
         let outcome = execute_native_action(
             &NativeReconciliationAction::Rollback,
