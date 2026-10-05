@@ -8,6 +8,7 @@ export type Route =
   | { kind: "project_graph_editor"; projectId: string }
   | { kind: "project_continuum"; projectId: string }
   | { kind: "project_placement"; projectId: string }
+  | { kind: "project_proposal_review"; projectId: string; proposalId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -17,12 +18,29 @@ export function validProjectId(id: string): boolean {
     !/[\u0000-\u001f\u007f-\u009f]/u.test(id)
   );
 }
+// Proposal IDs are server-generated (`ddeploy-proposal:<uuid>`), never
+// operator-chosen, but the same bounded/control-character-free shape
+// check that guards a project_id is the right generic guard for any
+// opaque identifier placed into a URL path segment.
+export const validProposalId = validProjectId;
 export function parseRoute(pathname: string): Route {
   if (pathname === "/") return { kind: "overview" };
   if (pathname === "/catalog" || pathname === "/catalog/") return { kind: "catalog" };
   if (pathname === "/continuum" || pathname === "/continuum/") return { kind: "continuum" };
   if (pathname === "/projects" || pathname === "/projects/")
     return { kind: "projects" };
+  const proposalMatch = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/?$/u.exec(pathname);
+  if (proposalMatch?.[1] && proposalMatch?.[2]) {
+    try {
+      const projectId = decodeURIComponent(proposalMatch[1]);
+      const proposalId = decodeURIComponent(proposalMatch[2]);
+      if (validProjectId(projectId) && validProposalId(proposalId))
+        return { kind: "project_proposal_review", projectId, proposalId };
+    } catch {
+      /* malformed encoding is Not Found, never a crash */
+    }
+    return { kind: "not_found" };
+  }
   const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?|\/continuum|\/placement)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
@@ -50,6 +68,11 @@ export function parseRoute(pathname: string): Route {
 export function projectPath(id: string): string {
   if (!validProjectId(id)) throw new Error("Invalid project identifier");
   return `/projects/${encodeURIComponent(id)}`;
+}
+export function proposalReviewPath(projectId: string, proposalId: string): string {
+  if (!validProjectId(projectId)) throw new Error("Invalid project identifier");
+  if (!validProposalId(proposalId)) throw new Error("Invalid proposal identifier");
+  return `/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}`;
 }
 export function startRouter(render: (route: Route) => void, canNavigate: () => boolean = () => true): () => void {
   let lastPath = window.location.pathname;

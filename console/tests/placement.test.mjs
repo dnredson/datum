@@ -5,23 +5,23 @@ import { placementContinuumNodes } from "./placement-fixture.mjs";
 import { placementDiff } from "../src/pages/placement-model.ts";
 import { placementElements } from "../src/pages/placement.ts";
 
-// Mandatory Phase 136 regression (independent review, Audit 2): the
-// acceptance route/action must be structurally absent from every Phase 136
-// frontend file, never merely "not currently called". Mirrors the
-// established source-text-scan precedent in dgraph-editor.test.mjs
-// ("has no mutation endpoint").
-test("Phase 136 client and workspace contain no acceptance/approval/activation route or call in actual code (comments may still document what must never be called)", async () => {
-  const files = [
-    "../src/api/placement.ts",
-    "../src/pages/placement.ts",
-    "../src/pages/placement-model.ts",
-    "../src/types/placement.ts",
-  ];
+// Mandatory Phase 136 regression (independent review, Audit 2), narrowed by
+// Phase 137: Phase 136's OWN page/workspace file must still never call or
+// construct an acceptance/approval/activation action -- that boundary is
+// exactly what makes a Pending proposal "not active authority" from this
+// page's perspective. `api/placement.ts`/`placement-model.ts`/
+// `types/placement.ts` are SHARED files Phase 137 legitimately extended
+// with the one real acceptance call (`PlacementClient.acceptProposal`,
+// used only by `pages/proposal-review.ts`) -- they are intentionally no
+// longer part of this scan. Mirrors the established source-text-scan
+// precedent in dgraph-editor.test.mjs ("has no mutation endpoint").
+test("Phase 136 workspace page contains no acceptance/approval/activation route or call in actual code (comments may still document what must never be called)", async () => {
+  const files = ["../src/pages/placement.ts"];
   const forbidden = /\/accept\b|accept_proposal|acceptProposal|\bapprove\b|\bApprove\b|activate placement|\bActivate\b/u;
   for (const path of files) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
-    // Strip whole-line `//` comments first -- every file here documents,
-    // in prose, the exact route Phase 136 must NEVER call (so a future
+    // Strip whole-line `//` comments first -- this file documents, in
+    // prose, the exact route Phase 136 must NEVER call (so a future
     // reader/reviewer can grep for it) without ever constructing it in
     // real code. This mirrors scanning PRODUCTION code only, the same
     // discipline `dserver`'s own `production_source()` test helpers use.
@@ -32,10 +32,14 @@ test("Phase 136 client and workspace contain no acceptance/approval/activation r
     assert.doesNotMatch(code, forbidden, `${path}'s actual code (comments excluded) must never reference an acceptance/approval/activation action`);
   }
 });
-test("PlacementClient exposes exactly the five read/candidate/validate/create/get methods -- no accept method exists", async () => {
+test("PlacementClient exposes exactly the six read/candidate/validate/create/get/accept methods", async () => {
   const source = await readFile(new URL("../src/api/placement.ts", import.meta.url), "utf8");
   const methods = [...source.matchAll(/^\s*async (\w+)\(/gmu)].map((m) => m[1]);
-  assert.deepEqual(methods.sort(), ["active", "candidate", "createProposal", "getProposal", "validateCandidate"].sort());
+  // Phase 137 added `acceptProposal` -- the ONLY call in this client that
+  // can mutate accepted placement authority. It is used exclusively by
+  // `pages/proposal-review.ts`; the regression above keeps Phase 136's own
+  // page from ever calling it.
+  assert.deepEqual(methods.sort(), ["acceptProposal", "active", "candidate", "createProposal", "getProposal", "validateCandidate"].sort());
 });
 
 function diffFor(current, candidate) {

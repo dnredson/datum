@@ -16,6 +16,7 @@ import {dgraphEditorView} from "./pages/dgraph-editor.ts";
 import { continuumView } from "./pages/continuum.ts";
 import { PlacementClient } from "./api/placement.ts";
 import { placementView } from "./pages/placement.ts";
+import { proposalReviewView } from "./pages/proposal-review.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -147,7 +148,9 @@ async function render(route: Route): Promise<void> {
         ? "Continuum"
         : route.kind === "project_placement"
           ? "Placement"
-          : route.kind === "project"
+          : route.kind === "project_proposal_review"
+            ? "Proposal review"
+            : route.kind === "project"
             ? "Project"
             : route.kind === "projects"
               ? "Projects"
@@ -157,11 +160,11 @@ async function render(route: Route): Promise<void> {
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review"
       ? route.projectId
       : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review"
       ? route.projectId
       : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
@@ -170,7 +173,7 @@ async function render(route: Route): Promise<void> {
     const active =
       nav.dataset.nav === route.kind ||
       (nav.dataset.nav === "projects" &&
-        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"));
+        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
@@ -192,6 +195,22 @@ async function render(route: Route): Promise<void> {
       new DGraphEditorClient(route.projectId, signal),
       client,
       signal,
+      (ready) => {
+        if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
+      },
+    );
+    page.replaceChildren(editor.element);
+    editor.mount();
+    return;
+  }
+  if (route.kind === "project_proposal_review") {
+    document.querySelector(".workspace-toolbar .eyebrow")!.textContent = "PROJECT · PROPOSAL REVIEW (AUTHORITY ONLY)";
+    document.querySelector(".sidebar-footer span")!.textContent = "Acceptance changes placement authority only · never deployment or runtime";
+    setConnection("Connecting");
+    editor = proposalReviewView(
+      route.projectId,
+      route.proposalId,
+      new PlacementClient(route.projectId, signal),
       (ready) => {
         if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
       },

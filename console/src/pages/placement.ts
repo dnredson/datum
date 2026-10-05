@@ -17,6 +17,7 @@ import { EditorError } from "../api/dgraph-editor.ts";
 import { PlacementClient, PlacementError } from "../api/placement.ts";
 import { placementDiff } from "./placement-model.ts";
 import type { PlacementDiffEntry } from "./placement-model.ts";
+import { proposalReviewPath } from "../app/router.ts";
 import type { OperationsClient } from "../api/client.ts";
 import type { ContinuumNode, ContinuumView } from "../types/continuum.ts";
 import type { CandidateResponse, PlacementRef, ActiveDeploymentSummary } from "../types/placement.ts";
@@ -28,13 +29,15 @@ function bytes(value: number): string {
   return `${value} B`;
 }
 
-const CHANGE_LABEL: Record<PlacementDiffEntry["change"], string> = {
+// Exported for reuse by Phase 137 (proposal-review.ts) -- the diff badge
+// vocabulary must stay identical wherever a PlacementDiffEntry is shown.
+export const CHANGE_LABEL: Record<PlacementDiffEntry["change"], string> = {
   unchanged: "Unchanged",
   moved: "Moved",
   added: "Added",
   removed: "Removed",
 };
-const CHANGE_TONE: Record<PlacementDiffEntry["change"], Tone> = {
+export const CHANGE_TONE: Record<PlacementDiffEntry["change"], Tone> = {
   unchanged: "neutral",
   moved: "warning",
   added: "success",
@@ -526,10 +529,14 @@ export function placementView(
       .createProposal(selected.application_id, selected.graph, draftPlacements, candidateEdited ? "operator" : "deterministic")
       .then((result) => {
         if (disposed || token !== sequence) return;
+        const reviewLink = el("a", "btn btn-outline-primary btn-sm", "Review proposal");
+        reviewLink.setAttribute("href", proposalReviewPath(projectId, result.proposal.proposal_id));
+        reviewLink.dataset.route = "";
         findings.replaceChildren(
           el("h2", "h6", "Proposal created — Pending, not accepted"),
           el("p", "small entity-identity", `proposal_id: ${result.proposal.proposal_id}`),
           el("p", "small text-secondary", "This proposal is not active authority. A separate, later review/acceptance step decides whether it becomes active."),
+          reviewLink,
         );
         findings.focus();
         setStatus(`Proposal ${result.proposal.proposal_id} is Pending.`);

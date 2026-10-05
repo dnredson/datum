@@ -14,6 +14,8 @@ import type {
   PlacementProvenance,
   DDeployProposal,
   CanonicalDMap,
+  AcceptResponse,
+  DDeployAcceptance,
 } from "../types/placement.ts";
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -182,6 +184,52 @@ export function validActiveResponse(value: unknown, projectId: string): value is
     value.project_id === projectId &&
     Array.isArray(value.deployments) &&
     value.deployments.every((d) => activeDeploymentSummary(d, projectId))
+  );
+}
+
+// ------------------------------------------------------------- Phase 137
+
+function operationalProjectionRef(value: unknown): boolean {
+  return object(value) && text(value.operational_dgraph_id) && count(value.revision);
+}
+
+// `accepted_by` is validated only as a non-empty string -- it is a
+// caller-supplied AUDIT LABEL, never authenticated identity (ADR-0013 §6).
+function ddeployAcceptance(value: unknown, projectId: string, applicationId?: string): value is DDeployAcceptance {
+  return (
+    object(value) &&
+    text(value.schema) &&
+    text(value.acceptance_id) &&
+    text(value.proposal_id) &&
+    digest(value.proposal_digest) &&
+    value.project_id === projectId &&
+    text(value.application_id) &&
+    (applicationId === undefined || value.application_id === applicationId) &&
+    timestamp(value.accepted_at_utc) &&
+    text(value.accepted_by) &&
+    value.accepted_by.length > 0 &&
+    contractRef(value.materialized_dmap_ref) &&
+    operationalProjectionRef(value.operational_projection_ref)
+  );
+}
+
+// `POST /api/v1/ddeploy/proposals/:id/accept` response validator. Never
+// treats `materialized_dmap`/`currently_active` as a lasting snapshot --
+// callers must still re-fetch `GET /active` for the live authoritative
+// state (see that field's own type-level doc comment).
+export function validAcceptResponse(
+  value: unknown,
+  projectId: string,
+  applicationId?: string,
+): value is AcceptResponse {
+  return (
+    object(value) &&
+    ddeployAcceptance(value.acceptance, projectId, applicationId) &&
+    canonicalDMap(value.materialized_dmap, projectId) &&
+    text(value.operational_dgraph_id) &&
+    count(value.operational_revision) &&
+    typeof value.idempotent_replay === "boolean" &&
+    typeof value.currently_active === "boolean"
   );
 }
 

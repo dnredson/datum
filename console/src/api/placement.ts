@@ -5,12 +5,14 @@ import {
   validValidateResponse,
   validProposalResponse,
   validActiveResponse,
+  validAcceptResponse,
 } from "../pages/placement-model.ts";
 import type {
   CandidateResponse,
   ValidateResponse,
   ProposalResponse,
   ActiveResponse,
+  AcceptResponse,
   PlacementRef,
   ProposalSource,
 } from "../types/placement.ts";
@@ -166,6 +168,22 @@ export class PlacementClient {
   async getProposal(proposalId: string): Promise<ProposalResponse> {
     const value = await this.request(`/proposals/${encodeURIComponent(proposalId)}`);
     if (!validProposalResponse(value, this.project)) throw new PlacementError("invalid_response");
+    return value;
+  }
+
+  // Phase 137 -- the ONLY call in this client that can mutate accepted
+  // placement authority. `acceptedBy` is a caller-supplied AUDIT LABEL,
+  // never authenticated identity (ADR-0013 §6) -- the caller is
+  // responsible for collecting it explicitly from the operator, never
+  // defaulting it to a fabricated identity. `expectedProposalDigest`, when
+  // given, is an additional caller-side compare-and-swap guard on top of
+  // the server's own unconditional digest-tamper check -- optional here
+  // because the review page already displays the exact digest for the
+  // operator to have seen before confirming.
+  async acceptProposal(proposalId: string, acceptedBy: string, expectedProposalDigest?: string): Promise<AcceptResponse> {
+    const body = `{"accepted_by":${JSON.stringify(acceptedBy)}${expectedProposalDigest === undefined ? "" : `,"expected_proposal_digest":${JSON.stringify(expectedProposalDigest)}`}}`;
+    const value = await this.request(`/proposals/${encodeURIComponent(proposalId)}/accept`, body);
+    if (!validAcceptResponse(value, this.project)) throw new PlacementError("invalid_response");
     return value;
   }
 }

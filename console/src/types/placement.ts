@@ -125,3 +125,57 @@ export interface ActiveResponse {
   project_id: string;
   deployments: ActiveDeploymentSummary[];
 }
+
+// Phase 137 -- the governed authority-transition response types. Mirrors
+// `dserver/src/core/ddeploy.rs::DDeployAcceptanceV1`/`AcceptOutcome` and
+// `dserver/src/api/ddeploy.rs::AcceptResponse` field-for-field.
+
+export interface OperationalProjectionRef {
+  operational_dgraph_id: string;
+  revision: number;
+}
+
+// `accepted_by` is a CALLER-SUPPLIED AUDIT LABEL, never authenticated
+// identity -- DServer has no application-layer authentication (ADR-0013
+// §6). Never render this as "authenticated user" or similar.
+export interface DDeployAcceptance {
+  schema: string;
+  acceptance_id: string;
+  proposal_id: string;
+  proposal_digest: string;
+  project_id: string;
+  application_id: string;
+  accepted_at_utc: string;
+  accepted_by: string;
+  materialized_dmap_ref: ContractRef;
+  operational_projection_ref: OperationalProjectionRef;
+}
+
+// `POST /api/v1/ddeploy/proposals/:id/accept` response. `materialized_dmap`
+// is the D-Map THIS call's acceptance produced/replayed -- NOT necessarily
+// the CURRENT active D-Map (see `currently_active`). `idempotent_replay`
+// is true when the proposal was already Accepted; nothing was mutated on
+// that path.
+export interface AcceptResponse {
+  acceptance: DDeployAcceptance;
+  materialized_dmap: CanonicalDMap;
+  operational_dgraph_id: string;
+  operational_revision: number;
+  idempotent_replay: boolean;
+  // `true` iff `materialized_dmap` is still the CURRENT active D-Map for
+  // this application right now. `GET /api/v1/ddeploy/active` remains the
+  // authoritative source for "what is active right now" independent of
+  // this field -- Phase 137 must re-fetch it after every acceptance,
+  // never treat this response as a lasting snapshot.
+  currently_active: boolean;
+}
+
+// The backend's flat ddeploy error envelope: `{"error": "<code>",
+// "message"?, "findings"?}`. Exact finding codes (e.g.
+// `project_node_cpu_capacity_exceeded`, `stale_active_dmap_revision`,
+// `stale_authoritative_dcontinuum`, `proposal_digest_mismatch`,
+// `proposal_not_found`) are preserved verbatim -- never paraphrased away.
+export interface AcceptErrorFinding {
+  code: string;
+  message: string;
+}
