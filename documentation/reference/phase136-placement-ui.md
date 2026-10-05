@@ -1,6 +1,6 @@
-# Phase 136A — Placement Authority Foundation
+# Phase 136 — Placement Workspace (and Phase 136A — Placement Authority Foundation)
 
-**Status:** backend foundation only. Not committed at time of writing. The Placement Workspace (Console UI) is Phase 136 proper and has **not** started — this phase hardens and extends the backend so that UI can be built on correct authority semantics. Acceptance/review workflow remains Phase 137.
+**Status:** Phase 136A (backend foundation) is committed. Phase 136 (this document's second half — the Console Placement Workspace) is implemented and validated, not yet committed at time of writing. Acceptance/review workflow remains Phase 137, untouched by either.
 
 ## Purpose
 
@@ -145,3 +145,86 @@ diff /tmp/before.sha256 /tmp/after.sha256   # must be empty
 #    /plan alone carries). /plan this time DOES persist -- the DB hash
 #    will legitimately change after this call, unlike step 4.
 ```
+
+---
+
+## Phase 136 — Console Placement Workspace
+
+Built entirely on Phase 136A's backend — no backend file changed for this half. New route: `GET /projects/:id/placement` (project-scoped only; placement is inherently project+application scoped, unlike Phase 135's Continuum View, so there is no global `/placement` nav entry).
+
+### UX flow
+
+```
+Pick application (from this project's accepted D-Graphs)
+  → load current accepted placement (GET .../active) + generate a candidate (POST .../candidate, zero persistence)
+  → inspect/edit the candidate locally (service → node reassignment via a <select>, never drag-and-drop; zero persistence)
+  → Validate candidate (POST .../proposals/validate, zero persistence)
+  → Create proposal (POST .../proposals → Pending proposal; NOT active authority)
+  → Phase 137 (review/accept) — out of scope, never called from this page
+```
+
+### Files
+
+`console/src/types/placement.ts` (response types), `console/src/pages/placement-model.ts` (pure validators + `placementDiff()`), `console/src/api/placement.ts` (`PlacementClient`, mirroring `DGraphEditorClient`'s root-relative-fetch pattern; parses the ddeploy API's own flat `{"error": "<code>", "message"?, "findings"?}` error envelope — distinct from `OperationsClient`'s nested `{"error":{"code",...}}` shape), `console/src/pages/placement.ts` (the page + `placementElements()`). Wiring: `console/src/app/router.ts` (`project_placement` route), `console/src/main.ts` (dispatch, reusing the existing `editor` confirmLeave/dispose lifecycle slot `project_graph_editor` already established), `console/src/pages/project-workspace.ts` (the pre-reserved `["Placement","136"]` entry now links for real), `console/src/styles/console.css` (`.placement-*`, mirroring `.continuum-*`'s responsive pattern).
+
+### D-Graph source — no structural editing here
+
+The operator picks an application from the project's **accepted** D-Graphs, read via the existing `DGraphEditorClient.load()` (`GET .../dgraph-editor`, already built for Phase 134) — reused verbatim, not duplicated. Phase 136 never edits D-Graph structure (services/calls) — only which D-Node each already-declared service targets. Structural D-Graph editing remains Phase 134's editor.
+
+### Current vs. candidate vs. accepted — never collapsed
+
+- **Current accepted**: `GET /api/v1/ddeploy/active?application_id=…` (header-scoped by `X-Datum-Project`) — read-only, authoritative, never mutated from this page.
+- **Candidate**: `POST /api/v1/ddeploy/candidate` response, then a **local-only** editable copy (`draftPlacements`). Reassigning a service's target node never calls the network — zero persistence, exactly like the backend candidate endpoint itself.
+- A `candidateEdited` flag tracks whether the operator changed anything from the generated candidate; `source` sent to `/validate`/`/proposals` is honestly `"deterministic"` (untouched) or `"operator"` (edited) — never hardcoded.
+
+### Diff model
+
+`placementDiff(current, candidate)` (`placement-model.ts`) — deterministic, keyed by graph-local `service_id` only, never `ServiceDefinition` name (placement never references one). Four states: `unchanged`, `moved`, `added`, `removed`, sorted for stable rendering. Pure, unit-tested directly (added/moved/unchanged/removed, ordering, non-mutation).
+
+### Visual canvas
+
+`placementElements(nodes, diffEntries)` (`placement.ts`) reuses Phase 135's `infrastructure`/`software` categories verbatim — **zero new categories**. One D-Node per physical node (from the project's Continuum View, reused via `OperationsClient.projectContinuum()`); one software node per service appearing in either side of the diff. Edge semantics, local-only additive overlay (`placementOverlayStyles()`, never touching the shared `graph-visuals.ts`, mirroring Phase 135A's `observationOverlayStyles()` precedent exactly):
+
+- **unchanged** — reuses the EXISTING accepted `placement` relation token (dashed) untouched.
+- **moved** — shows BOTH edges simultaneously: the old target via a new, local-only `placement_superseded` relation (dotted, dimmed, no arrowhead — clearly historical) and the new target via a new, local-only `placement_candidate` relation (dashed, distinct purple, arrowed).
+- **added** (no prior accepted placement) — only the new `placement_candidate` edge.
+- **removed** (candidate drops a service's placement entirely) — only the old `placement_superseded` edge.
+
+No D-Node-to-D-Node edge is ever synthesized — every edge connects a service node to a D-Node, proven by a dedicated test. Layout is the same deterministic `breadthfirst` Phase 135 established; graceful try/catch fallback mirrors `project-graph.ts`/`continuum.ts` exactly.
+
+### Inspector and accessible fallback
+
+Selecting a service (canvas tap or list card) shows its requirements (ABI/CPU/memory, from the accepted D-Graph), its current accepted target, its change badge, and a `<select>` to reassign its candidate target — the **only** way to change a placement, never drag-and-drop. Selecting a D-Node shows its declared structure and which candidate placements target it, plus a clearly-labeled, non-authoritative DMonitor contextual note when the Continuum View already carries observation evidence for it ("Observed health does not affect placement eligibility — shown for context only"). The full service list beneath the canvas is an unconditional accessible/keyboard fallback, identical in spirit to Phase 135A's — the canvas is never the only way to inspect or act.
+
+### Validation and proposal UX
+
+Two distinct, never-conflated actions, matching two distinct backend calls, no "Save" anywhere:
+
+- **"Validate candidate"** → `POST .../proposals/validate`. Renders every backend finding verbatim (`code: message`, never paraphrased) plus the response's own `capacity_check_is_momentary` text unconditionally.
+- **"Create proposal"** → `POST .../proposals`. On success, shows the real `proposal_id` with explicit copy: "Pending, not accepted... not active authority. A separate, later review/acceptance step decides whether it becomes active." On a 422 (already-known capacity violation), shows the rejection's own findings verbatim and makes clear nothing was persisted.
+- **No code path calls `.../accept`** anywhere in this page — confirmed by direct source inspection (the only network calls `placement.ts`/`placement.ts`'s `PlacementClient` make are `active`, `candidate`, `validateCandidate`, `createProposal`, `getProposal`).
+
+### Failure/empty states
+
+No accepted applications in the project (`bases.length === 0`): explicit message, no fabricated default. No accepted placement yet for a chosen application (first deployment): `activeDeployment` is `undefined`, shown as "No accepted placement yet... (first deployment)", never treated as an error. Candidate generation failing closed (`no_nodes`/`no_abi_compatible_node`/`no_eligible_node`/`unsatisfied_static_capacity`, surfaced as the backend's own `candidate_dmap_invalid` findings): rendered verbatim, current accepted placement still loaded and shown independently so the page degrades gracefully rather than going blank. Continuum unavailable: canvas/node-picker degrade to empty with an explicit notice; the rest of the page (service list, diff against an empty node set) remains usable.
+
+### Test strategy
+
+`console/tests/placement-model.test.mjs` (validators for all four response shapes + `placementDiff` — added/moved/unchanged/removed, ordering, non-mutation), `console/tests/placement.test.mjs` (`placementElements()` — category reuse, edge-state correctness including the simultaneous-dual-edge "moved" case, no fake D-Node-to-D-Node edges, non-mutation), `console/tests/placement-visual-fixture.mjs` + `.test.mjs` (TEST ONLY fixture serving every route this page calls — dgraph-editor, continuum, ddeploy active/candidate/validate/proposals — verified end-to-end over real HTTP against the actual Console validators/parsers, including reusing the real `parseGraph()` production parser for the D-Graph read path).
+
+### Known gaps / deliberate scope choices (recorded at independent review)
+
+- **Dirty state after a successful "Create proposal"**: `dirty()` compares the local draft against the last *generated* candidate, not against "whatever was just proposed" — so if the operator edited the candidate before proposing, `dirty()` (and therefore `confirmLeave()`'s navigation prompt) can still read `true` immediately after a successful proposal creation. This is intentional, not a bug: nothing is actually at risk of being lost (the edited placements are already safely persisted in the created Pending proposal), so the only cost is one unnecessary confirmation dialog on the very next navigation. Not fixed, since `dirty`/`confirmLeave` is a Console-side convenience guard, not a data-integrity mechanism, and resetting it would need a judgment call about what "clean" means post-proposal that risks masking genuinely-unproposed further edits.
+- **Candidate's own `dgraph_ref`/`dcontinuum_ref` digests and `expected_active_dmap_revision` are validated but not displayed.** The operator does see the application's D-Graph identity and revision (via the application picker's own option label, `applicationId · dgraphId@revision`) and the current accepted D-Map revision (via status text), but the candidate response's raw digests and its own `expected_active_dmap_revision` snapshot are never surfaced in the UI. Low real-world risk — there is exactly one accepted D-Graph per application in scope at any time (no revision-selection ambiguity is actually possible in this workspace), and the backend recomputes `expected_active_dmap_revision` fresh at proposal-creation time regardless of anything the Console could echo back. Recorded as a possible future additive-only display improvement, not fixed in this pass (P2, non-blocking).
+- **Reassignment control is reached through the inspector, not inline on each list card.** A keyboard user activating a list card (Enter/Space) updates the inspector's content, but focus does not move there automatically — `aria-live="polite"` on the inspector body means a screen reader still announces the update, but a sighted keyboard-only user may need to navigate to the inspector manually. This exactly matches Phase 135/135A's own `continuum.ts` precedent (`select()` there has the identical characteristic) — not a new regression introduced here, and out of this phase's scope to fix unilaterally since it would also mean revisiting already-shipped Phase 135A code.
+
+### Known limitation: DOM-level automated tests
+
+Same pre-existing, environment-level limitation recorded in Phase 135/135A: `happy-dom` is not installed here, so no DOM-rendering test exists for `placement.ts`'s actual markup/interaction — all new automated tests target the DOM-independent pure logic (`placementDiff`, `placementElements`, the validators) and the fixture's real HTTP contract. The manual review procedure below is the current path to verify actual rendered/interactive behavior.
+
+### Manual visual review procedure
+
+1. `cd console && node --experimental-strip-types tests/placement-visual-fixture.mjs` (defaults to port 8138; override with `DATUM_PLACEMENT_FIXTURE_PORT`).
+2. In another shell: `cd console && DATUM_DEV_API_TARGET=http://127.0.0.1:8138 npm run dev`.
+3. Open the dev URL at `/projects/project-a/placement`.
+4. Confirm: the application picker lists `app-1`; selecting it loads "Current accepted D-Map revision 3" and a generated candidate; the canvas shows 2 D-Nodes and 2 service nodes (`service-a` moved node-a→node-b with both a dotted superseded edge and a dashed purple candidate edge simultaneously; `service-b` added, only a dashed purple edge into node-a); the diff list shows both rows with correct badges; selecting a service shows its requirements and a working node-reassignment `<select>`; "Validate candidate" and "Create proposal" both return the fixture's deterministic responses with the exact disclosure copy described above; resizing to 768–900px collapses the canvas/inspector grid to one column with no horizontal overflow.

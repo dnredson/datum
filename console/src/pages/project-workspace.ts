@@ -243,7 +243,7 @@ export function projectWorkspaceView(data: ProjectOverview): HTMLElement {
   const nav = el("nav", "project-subnav");
   nav.setAttribute("aria-label", "Project workspace sections");
   for (const [name, phase] of PROJECT_SECTIONS) {
-    if (name === "Overview" || name === "Graph" || name === "Continuum") {
+    if (name === "Overview" || name === "Graph" || name === "Continuum" || name === "Placement") {
       const link = el(
         "a",
         `project-section${name === "Overview" ? " current" : ""}`,
@@ -251,7 +251,7 @@ export function projectWorkspaceView(data: ProjectOverview): HTMLElement {
       );
       link.href =
         projectPath(data.project_id) +
-        (name === "Graph" ? "/graph" : name === "Continuum" ? "/continuum" : "");
+        (name === "Graph" ? "/graph" : name === "Continuum" ? "/continuum" : name === "Placement" ? "/placement" : "");
       link.dataset.route = "";
       if (name === "Overview") link.setAttribute("aria-current", "page");
       nav.append(link);

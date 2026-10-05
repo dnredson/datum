@@ -14,6 +14,8 @@ import { ModelingClient } from "./api/service-modeling.ts";
 import {DGraphEditorClient} from "./api/dgraph-editor.ts";
 import {dgraphEditorView} from "./pages/dgraph-editor.ts";
 import { continuumView } from "./pages/continuum.ts";
+import { PlacementClient } from "./api/placement.ts";
+import { placementView } from "./pages/placement.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -38,7 +40,9 @@ const connection = document.querySelector<HTMLDivElement>("#connection")!;
 const client = new OperationsClient();
 let disposeGraph: (() => void) | undefined;
 let disposeContinuum: (() => void) | undefined;
-let editor: ReturnType<typeof dgraphEditorView> | undefined;
+let editor:
+  | { element: HTMLElement; mount: () => void; dispose: () => void; dirty: () => boolean; confirmLeave: () => boolean }
+  | undefined;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const menuToggle = document.querySelector<HTMLButtonElement>("#menu-toggle")!;
 const workspace = document.querySelector<HTMLElement>("#workspace")!;
@@ -141,21 +145,23 @@ async function render(route: Route): Promise<void> {
       ? "Graph"
       : route.kind === "continuum" || route.kind === "project_continuum"
         ? "Continuum"
-        : route.kind === "project"
-          ? "Project"
-          : route.kind === "projects"
-            ? "Projects"
-            : route.kind === "not_found"
-              ? "Not found"
-              : "Overview";
+        : route.kind === "project_placement"
+          ? "Placement"
+          : route.kind === "project"
+            ? "Project"
+            : route.kind === "projects"
+              ? "Projects"
+              : route.kind === "not_found"
+                ? "Not found"
+                : "Overview";
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"
       ? route.projectId
       : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"
       ? route.projectId
       : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
@@ -164,7 +170,7 @@ async function render(route: Route): Promise<void> {
     const active =
       nav.dataset.nav === route.kind ||
       (nav.dataset.nav === "projects" &&
-        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum"));
+        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
@@ -175,6 +181,24 @@ async function render(route: Route): Promise<void> {
     setConnection("Connecting");
     editor=dgraphEditorView(route.projectId,new DGraphEditorClient(route.projectId,signal),ready=>{if(!signal.aborted)setConnection(ready?"Connected":"Degraded");});
     page.replaceChildren(editor.element);editor.mount();return;
+  }
+  if (route.kind === "project_placement") {
+    document.querySelector(".workspace-toolbar .eyebrow")!.textContent = "PROJECT · PLACEMENT CANDIDATE (NOT ACCEPTANCE)";
+    document.querySelector(".sidebar-footer span")!.textContent = "Candidate / validate / propose only · acceptance remains a separate step";
+    setConnection("Connecting");
+    editor = placementView(
+      route.projectId,
+      new PlacementClient(route.projectId, signal),
+      new DGraphEditorClient(route.projectId, signal),
+      client,
+      signal,
+      (ready) => {
+        if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
+      },
+    );
+    page.replaceChildren(editor.element);
+    editor.mount();
+    return;
   }
   if (route.kind === "not_found") {
     if (connectionState === "Connecting") setConnection("Disconnected");

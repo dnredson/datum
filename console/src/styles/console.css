@@ -917,3 +917,115 @@ summary:focus-visible,
     height: 22rem;
   }
 }
+/* Phase 136: placement candidate workspace. Visual states (unchanged/
+   moved/added/removed) are additive overlays, never a new category. */
+.placement-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem;
+  margin: 1rem 0 0.5rem;
+}
+.placement-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.placement-canvas-area,
+.placement-inspector {
+  min-width: 0;
+}
+.placement-canvas {
+  height: 26rem;
+  min-height: 18rem;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.4rem;
+  background: #f8fafb;
+}
+.placement-renderer-notice {
+  margin: 0.5rem 0 0;
+}
+.placement-inspector {
+  background: #f4f7f9;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.4rem;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+.placement-category-swatch {
+  display: inline-block;
+  flex: 0 0 1.3rem;
+  width: 1.3rem;
+  height: 0.9rem;
+  border: 1px solid var(--datum-border);
+  border-radius: 0.25rem;
+}
+.placement-node-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.placement-structure-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0.25rem 0 0;
+}
+.placement-structure-grid dt {
+  grid-column: 1;
+}
+.placement-structure-grid dd {
+  grid-column: 2;
+  margin: 0;
+}
+.placement-placement-list,
+.placement-evidence-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+}
+.placement-diff {
+  margin: 1rem 0;
+}
+.placement-diff-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.placement-diff-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--datum-border);
+}
+.placement-service-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.placement-service-card {
+  cursor: pointer;
+}
+.placement-service-card:focus-visible {
+  outline: 2px solid #244f70;
+  outline-offset: 2px;
+}
+.placement-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+@media (max-width: 900px) {
+  .placement-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .placement-canvas {
+    height: 20rem;
+  }
+}
