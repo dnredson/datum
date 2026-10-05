@@ -31,7 +31,8 @@ use crate::core::canonical_dmap_v2::{
 };
 use crate::core::ddeploy::{
     accept_proposal, active_operational_projection, active_placement_authority,
-    check_artifact_list_project_scope, compute_project_node_commitments_versioned, create_proposal,
+    check_artifact_list_project_scope, compute_global_node_commitments_versioned, create_proposal,
+    evaluate_global_node_capacity,
     derive_placement_eligibility_view, is_canonical_authority_active, load_state,
     operational_dgraph_id_for_project, persist_state, resolve_diot_artifact_authority,
     validate_full, validate_proposal_context, AcceptError, AcceptOutcome, CreateProposalInput,
@@ -188,11 +189,28 @@ fn default_source() -> ProposalSource {
 #[derive(Debug, Serialize)]
 pub struct ValidateResponse {
     pub valid: bool,
+    /// Phase 136A: now includes, alongside every structural/eligibility
+    /// finding `validate_full` already produced, any GLOBAL D-Node capacity
+    /// finding (`F_PROJECT_NODE_CPU_CAPACITY_EXCEEDED`/`_MEMORY_`) that is
+    /// ALREADY knowable against currently accepted state -- see
+    /// `CAPACITY_CHECK_IS_MOMENTARY_NOTICE` below for why this is still not
+    /// a guarantee.
     pub findings: Vec<Value>,
     pub dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1,
     pub dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1,
     pub candidate_placements: Vec<CanonicalDServPlacementV1>,
+    /// Phase 136A: ALWAYS present, regardless of `valid` -- this endpoint
+    /// never reserves or leases capacity. A `true` result only means "no
+    /// conflict exists against currently accepted state, right now"; a
+    /// later `POST .../proposals/validate` call, `POST .../proposals`
+    /// call, or `POST .../:proposal_id/accept` call still independently
+    /// re-checks against whatever is current AT THAT TIME, and may reject
+    /// even an already-"valid" candidate if another proposal is accepted
+    /// first in the meantime (R3C/R3D).
+    pub capacity_check_is_momentary: &'static str,
 }
+
+const CAPACITY_CHECK_IS_MOMENTARY_NOTICE: &str = "This result reflects currently accepted D-Node capacity only, at the moment of this call. It is not a reservation or lease -- a later proposal creation or acceptance independently re-checks current state and may still reject this candidate if another proposal is accepted first.";
 
 #[derive(Debug, Serialize)]
 pub struct ProposalResponse {
@@ -242,6 +260,45 @@ pub struct PlanResponse {
     /// reproducible anyway) policy to see WHY each D-Serv landed where it
     /// did.
     pub placement_provenance: crate::core::canonical_placement::PlacementProvenance,
+}
+
+/// Phase 136A. NOT a canonical wire contract (no `datum.*` schema is
+/// registered for it, it is never persisted, never digested, never
+/// accepted by any endpoint as input) -- purely a descriptive label for
+/// this ephemeral HTTP response shape, exactly like `ValidateResponse`
+/// carries no schema string either. Exists only so a client can assert
+/// "this is the shape I expect" without this module inventing a second,
+/// competing meaning for `datum.dmap/*`.
+pub const PLACEMENT_CANDIDATE_SCHEMA: &str = "datum.placement-candidate/1";
+
+/// Response of `POST /api/v1/ddeploy/candidate`. Deliberately carries NO
+/// `proposal_id`/`proposal_digest`/`state` field -- unlike
+/// [`PlanResponse`], nothing here was persisted, so nothing here has a
+/// proposal identity to report. A caller that wants to actually persist
+/// this exact candidate calls `POST .../proposals` (or `.../plan`, which
+/// persists its own freshly re-planned candidate) separately; this
+/// response is not itself reusable as that call's input verbatim (it
+/// carries no `source`/`dcode_artifact_authority`, which that endpoint
+/// still requires the caller to supply).
+#[derive(Debug, Serialize)]
+pub struct CandidateResponse {
+    pub schema: &'static str,
+    pub project_id: String,
+    pub application_id: String,
+    pub dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1,
+    pub dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1,
+    /// The CURRENT v1 active D-Map revision for this application, if any
+    /// -- the same CAS basis a real `POST .../proposals`/`.../plan` call
+    /// would capture as `expected_active_dmap_revision` AT THIS MOMENT.
+    /// Momentary, exactly like every other field here: by the time a real
+    /// proposal is created or accepted, this may have changed.
+    pub expected_active_dmap_revision: Option<u64>,
+    pub placements: Vec<CanonicalDServPlacementV1>,
+    /// Same `core::canonical_placement::PlacementProvenance` type
+    /// [`PlanResponse::placement_provenance`] exposes, for the identical
+    /// reason -- full decision evidence without re-running the (pure,
+    /// reproducible) policy.
+    pub planner_provenance: crate::core::canonical_placement::PlacementProvenance,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +374,7 @@ pub async fn post_validate_proposal(
             dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: payload.dgraph.dgraph_id.clone(), revision: payload.dgraph.revision, digest: String::new() },
             dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 { id: payload.dcontinuum.dcontinuum_id.clone(), revision: payload.dcontinuum.revision, digest: String::new() },
             candidate_placements: payload.placements,
+            capacity_check_is_momentary: CAPACITY_CHECK_IS_MOMENTARY_NOTICE,
         }));
     }
 
@@ -345,7 +403,25 @@ pub async fn post_validate_proposal(
     };
 
     let artifacts = fetch_project_artifacts(&state, &project_id)?;
-    let outcome = validate_full(&proposal, &payload.dgraph, &authoritative_dcontinuum, &artifacts, "dmap:preview", 1);
+    let mut outcome = validate_full(&proposal, &payload.dgraph, &authoritative_dcontinuum, &artifacts, "dmap:preview", 1);
+
+    // Phase 136A: additive. `validate_full` itself never checked capacity
+    // committed by OTHER already-accepted applications (only this one
+    // candidate's own internal aggregate, via `validate_cross_references`)
+    // -- this closes that gap for the subset of it that IS already
+    // knowable right now, against a momentary read of currently accepted
+    // state (never a lock held across this whole handler, exactly like
+    // `GET .../active`'s own unlocked read -- this is advisory, not an
+    // acceptance-time guarantee, which is why `capacity_check_is_momentary`
+    // is always present on the response).
+    let ddeploy_state = load_state(&ddeploy_db_path()).map_err(internal_error)?;
+    let baseline_commitments = compute_global_node_commitments_versioned(&ddeploy_state, Some((&project_id, &payload.application_id)))
+        .map_err(internal_error)?;
+    let candidate_services: std::collections::BTreeMap<&str, &crate::core::canonical_dgraph::CanonicalDServV1> =
+        payload.dgraph.services.iter().map(|s| (s.service_id.as_str(), s)).collect();
+    let capacity_findings = evaluate_global_node_capacity(&baseline_commitments, &outcome.candidate_dmap.placements, &candidate_services, &authoritative_dcontinuum)
+        .map_err(internal_error)?;
+    outcome.findings.extend(capacity_findings);
 
     Ok(JsonResponse(ValidateResponse {
         valid: outcome.findings.is_empty(),
@@ -353,6 +429,7 @@ pub async fn post_validate_proposal(
         dgraph_ref: proposal.dgraph_ref,
         dcontinuum_ref: proposal.dcontinuum_ref,
         candidate_placements: outcome.candidate_dmap.placements,
+        capacity_check_is_momentary: CAPACITY_CHECK_IS_MOMENTARY_NOTICE,
     }))
 }
 
@@ -409,6 +486,31 @@ pub async fn post_create_proposal(
         &artifacts,
     )
     .map_err(|findings| unprocessable(&findings))?;
+
+    // Phase 136A: avoid persisting a Pending proposal already known to
+    // violate CURRENT global D-Node capacity, when the architecture safely
+    // supports rejecting it here -- `create_proposal` itself only checked
+    // this candidate's OWN internal aggregate (via `validate_full`'s
+    // `validate_cross_references`), never capacity committed by OTHER
+    // already-accepted applications, across any project. This is
+    // advisory/momentary, never a reservation: a proposal that passes here
+    // can still, legitimately, fail this same check again at acceptance
+    // time if another proposal is accepted in between (R3C/R3D) -- that
+    // later case is not a bug, only a race this handler cannot close.
+    // Nothing is persisted on this path: `persist_state` below is never
+    // reached.
+    let baseline_commitments = compute_global_node_commitments_versioned(
+        &ddeploy_state,
+        Some((&record.proposal.project_id, &record.proposal.application_id)),
+    )
+    .map_err(internal_error)?;
+    let candidate_services: std::collections::BTreeMap<&str, &crate::core::canonical_dgraph::CanonicalDServV1> =
+        record.dgraph_snapshot.services.iter().map(|s| (s.service_id.as_str(), s)).collect();
+    let capacity_findings = evaluate_global_node_capacity(&baseline_commitments, &record.proposal.placements, &candidate_services, &record.dcontinuum_snapshot)
+        .map_err(internal_error)?;
+    if !capacity_findings.is_empty() {
+        return Err(unprocessable(&capacity_findings));
+    }
 
     persist_state(&db_path, &ddeploy_state).map_err(persistence_failure)?;
 
@@ -470,7 +572,12 @@ pub async fn post_plan_proposal(
     // used here previously was structurally blind to any active v2
     // application, letting the planner recommend a node that a v2
     // application had already fully consumed.
-    let commitments = compute_project_node_commitments_versioned(&project_id, &ddeploy_state, Some(&payload.application_id))
+    // Phase 136A: GLOBAL across every project sharing a D-Node, not scoped
+    // to this request's own project -- a project-scoped baseline would let
+    // the planner recommend a node another project had already
+    // structurally exhausted (see `evaluate_global_node_capacity`'s own
+    // doc comment and `documentation/reference/phase136-placement-ui.md`).
+    let commitments = compute_global_node_commitments_versioned(&ddeploy_state, Some((&project_id, &payload.application_id)))
         .map_err(internal_error)?;
 
     let (plan, record) = state
@@ -548,6 +655,86 @@ pub async fn post_plan_proposal(
             placement_provenance: plan.provenance,
         }),
     ))
+}
+
+/// `POST /api/v1/ddeploy/candidate` -- Phase 136A preview-only placement
+/// candidate. Deterministic auto-placement generation using the EXACT SAME
+/// authoritative inputs `POST .../plan` uses (authoritative D-Node
+/// registry/D-Continuum, the GLOBAL structural commitment baseline, CURRENT
+/// `ServiceArtifact` eligibility, the same deterministic planner) -- but
+/// with ZERO persistence: `create_proposal` is never called, no proposal is
+/// persisted, no D-Map is materialized, no authority is mutated anywhere.
+/// Exists so the Console can show "what would the deterministic planner
+/// suggest right now" without littering the proposal store with throwaway
+/// Pending records merely to preview one.
+///
+/// Read-only: no `DDEPLOY_TRANSACTION`/`DNODE_TRANSACTION` write lock is
+/// held, matching `GET .../active`'s own unlocked-read convention -- this
+/// handler never mutates D-Deploy, D-Node, or `ServiceArtifact` state, so
+/// there is nothing here that needs cross-request mutual exclusion. A
+/// concurrent write elsewhere may make this exact response stale the
+/// instant after it is returned; that is expected and is exactly why this
+/// is a PREVIEW, never a reservation (mirrors `ValidateResponse`'s own
+/// `capacity_check_is_momentary` disclosure).
+///
+/// Request contract mirrors [`PlanRequestPayload`] exactly, reusing the
+/// SAME type (same `deny_unknown_fields` reasoning: the caller can supply
+/// only `application_id`/`dgraph`, never `placements`/`dcontinuum`/
+/// `source`/accepted authority -- every one of those remains entirely
+/// server-derived, for the identical reason `post_plan_proposal`'s own doc
+/// comment gives).
+pub async fn post_placement_candidate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PlanRequestPayload>,
+) -> Result<JsonResponse<CandidateResponse>, ApiError> {
+    let project_id = extract_project_id(&headers)?;
+    let db_path = default_control_state_db_path();
+
+    let registry_state = crate::core::dnode_registry::load_state(&db_path).map_err(internal_error)?;
+    let authoritative_dcontinuum = crate::core::dnode_registry::build_canonical_dcontinuum(&registry_state, &project_id)
+        .map_err(|findings| unprocessable(&findings))?;
+
+    let ddeploy_state = load_state(&db_path).map_err(internal_error)?;
+    // Phase 136A: GLOBAL, exactly like `post_plan_proposal`'s own baseline
+    // -- see that handler's identical comment and
+    // `evaluate_global_node_capacity`'s own doc comment.
+    let commitments = compute_global_node_commitments_versioned(&ddeploy_state, Some((&project_id, &payload.application_id)))
+        .map_err(internal_error)?;
+    let expected_active_dmap_revision = ddeploy_state
+        .active_for(&project_id, &payload.application_id)
+        .map(|active| active.active_dmap.revision);
+
+    // R2: candidate nodes are filtered against the CURRENT ServiceArtifact
+    // eligibility view, read under the SAME stable-snapshot convention
+    // `post_plan_proposal` uses -- never a detached fetch taken before this
+    // read began.
+    let artifacts = state
+        .service_artifacts
+        .with_stable_view(|registry_state| registry_state.artifacts_by_project.get(&project_id).cloned().unwrap_or_default())
+        .map_err(internal_error)?;
+    let eligibility = derive_placement_eligibility_view(&payload.dgraph, &artifacts);
+    let plan = crate::core::canonical_placement::plan_canonical_placements(&payload.dgraph, &authoritative_dcontinuum, &commitments, &eligibility)
+        .map_err(|findings| unprocessable(&findings))?;
+
+    Ok(JsonResponse(CandidateResponse {
+        schema: PLACEMENT_CANDIDATE_SCHEMA,
+        project_id,
+        application_id: payload.application_id,
+        dgraph_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+            id: plan.provenance.dgraph_id.clone(),
+            revision: plan.provenance.dgraph_revision,
+            digest: plan.provenance.dgraph_digest.clone(),
+        },
+        dcontinuum_ref: crate::core::canonical_dmap::CanonicalContractReferenceV1 {
+            id: plan.provenance.dcontinuum_id.clone(),
+            revision: plan.provenance.dcontinuum_revision,
+            digest: plan.provenance.dcontinuum_digest.clone(),
+        },
+        expected_active_dmap_revision,
+        placements: plan.placements.clone(),
+        planner_provenance: plan.provenance,
+    }))
 }
 
 pub async fn get_proposal(
@@ -1577,6 +1764,121 @@ mod tests {
         assert!(
             dnode_lock_pos < stable_view_pos,
             "DNODE_TRANSACTION must be acquired before the ServiceArtifact stable view"
+        );
+    }
+
+    // ----------------------------------------------------------------- //
+    // Phase 136A: preview-only placement candidate endpoint              //
+    // ----------------------------------------------------------------- //
+
+    #[test]
+    fn post_placement_candidate_reuses_plan_request_payload_verbatim() {
+        // The task's explicit preference: the candidate endpoint's request
+        // contract must be the SAME caller-input shape `/plan` already
+        // uses, never a near-duplicate struct that could silently drift
+        // from it.
+        let body = fn_body(&production_source(), "pub async fn post_placement_candidate(");
+        assert!(
+            body.contains("Json(payload): Json<PlanRequestPayload>"),
+            "post_placement_candidate must reuse PlanRequestPayload verbatim, not a duplicate request type: {body}"
+        );
+    }
+
+    #[test]
+    fn post_placement_candidate_never_creates_or_persists_a_proposal() {
+        // Zero-persistence proof (mandatory): the candidate preview must
+        // never call `create_proposal`, `persist_state`, or
+        // `accept_proposal` -- no proposal creation, no acceptance, no
+        // authority mutation anywhere in this handler's body.
+        let body = fn_body(&production_source(), "pub async fn post_placement_candidate(");
+        for forbidden in ["create_proposal(", "persist_state(", "accept_proposal(", "accept_v2_proposal("] {
+            assert!(!body.contains(forbidden), "post_placement_candidate must never call '{forbidden}' -- found it in: {body}");
+        }
+    }
+
+    #[test]
+    fn post_placement_candidate_acquires_no_write_lock() {
+        // Read-only, matching `GET .../active`'s own unlocked-read
+        // convention -- this handler mutates nothing, so it must never
+        // acquire DDEPLOY_TRANSACTION/DNODE_TRANSACTION at all (acquiring
+        // either would wrongly suggest it participates in a mutating
+        // sequence).
+        let body = fn_body(&production_source(), "pub async fn post_placement_candidate(");
+        assert!(!body.contains("ddeploy_transaction().lock()"), "post_placement_candidate must never acquire DDEPLOY_TRANSACTION: {body}");
+        assert!(!body.contains("dnode_registry::dnode_transaction()"), "post_placement_candidate must never acquire DNODE_TRANSACTION: {body}");
+    }
+
+    #[test]
+    fn post_placement_candidate_uses_the_same_global_commitment_function_plan_uses() {
+        // Single shared source of commitment arithmetic (task requirement):
+        // both handlers must call the SAME GLOBAL (Phase 136A) function,
+        // never a project-scoped one and never two independently-drifting
+        // implementations.
+        let plan_body = fn_body(&production_source(), "pub async fn post_plan_proposal(");
+        let candidate_body = fn_body(&production_source(), "pub async fn post_placement_candidate(");
+        for body in [&plan_body, &candidate_body] {
+            assert!(
+                body.contains("compute_global_node_commitments_versioned("),
+                "both post_plan_proposal and post_placement_candidate must call compute_global_node_commitments_versioned: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_response_carries_no_proposal_identity_or_lifecycle_state() {
+        // Structural proof the response cannot be mistaken for a real,
+        // persisted proposal: no `proposal_id`/`proposal_digest`/lifecycle
+        // `state` field anywhere on `CandidateResponse`.
+        let body = struct_body(&production_source(), "CandidateResponse");
+        for forbidden in ["proposal_id", "proposal_digest", "state:"] {
+            assert!(!body.contains(forbidden), "CandidateResponse must never carry a proposal identity/lifecycle field ('{forbidden}'): {body}");
+        }
+        assert!(body.contains("placements") && body.contains("planner_provenance"), "sanity check that struct_body() actually found the real struct: {body}");
+    }
+
+    #[test]
+    fn candidate_route_is_additive_and_distinct_from_plan_and_proposals() {
+        // The task's explicit route preference, confirmed structurally
+        // against the registered handler name (the actual route string
+        // lives in main.rs, outside this file's own text-scan reach, but
+        // the handler existing with this exact name and signature is what
+        // main.rs wires to the new route).
+        let body = production_source();
+        assert!(body.contains("pub async fn post_placement_candidate("), "the preview-only candidate handler must exist: {body}");
+    }
+
+    #[test]
+    fn post_validate_proposal_additionally_checks_global_capacity_and_discloses_it_is_momentary() {
+        // Phase 136A: `/validate` now ALSO catches capacity conflicts
+        // already knowable against currently accepted state (the task's
+        // explicit preference), using the SAME shared function every other
+        // capacity gate uses -- and the response must always disclose that
+        // this is momentary, never a reservation.
+        let body = fn_body(&production_source(), "pub async fn post_validate_proposal(");
+        assert!(body.contains("evaluate_global_node_capacity("), "post_validate_proposal must additionally run the shared global capacity check: {body}");
+        assert!(body.contains("CAPACITY_CHECK_IS_MOMENTARY_NOTICE"), "post_validate_proposal's response must always disclose the momentary-capacity-check notice: {body}");
+        let struct_decl = struct_body(&production_source(), "ValidateResponse");
+        assert!(struct_decl.contains("capacity_check_is_momentary"), "ValidateResponse must carry the momentary-capacity-check disclosure field: {struct_decl}");
+    }
+
+    #[test]
+    fn post_create_proposal_rejects_a_proposal_already_known_to_violate_global_capacity_before_persisting() {
+        // Phase 136A: a Pending proposal already known to violate CURRENT
+        // global D-Node capacity must never be persisted when the
+        // architecture safely supports rejecting it here -- confirmed
+        // structurally: the capacity check must run, and `persist_state`
+        // must appear AFTER it in the function body (so a rejection short-
+        // circuits before any write).
+        let body = fn_body(&production_source(), "pub async fn post_create_proposal(");
+        let capacity_check_pos = body
+            .find("evaluate_global_node_capacity(")
+            .expect("post_create_proposal must run the shared global capacity check before persisting");
+        let persist_pos = body
+            .find("persist_state(")
+            .expect("post_create_proposal must still persist on the success path");
+        assert!(
+            capacity_check_pos < persist_pos,
+            "the global capacity check must run BEFORE persist_state, so a violation never gets persisted: {body}"
         );
     }
 

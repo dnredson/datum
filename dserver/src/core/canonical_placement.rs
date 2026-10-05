@@ -61,13 +61,16 @@ pub const PLANNER_VERSION: &str = "0.1.0";
 pub const PLACEMENT_POLICY_NAME: &str = "deterministic-min-residual-first-fit";
 pub const PLACEMENT_POLICY_VERSION: &str = "0.1.0";
 
-/// Foundation closure v2 (R3A/R3B): structural (never live/observed) CPU +
-/// memory already committed to a D-Node by applications OTHER than the one
-/// currently being planned. A plain data value -- this module never derives
-/// it itself (that requires `ActiveApplicationDeployment`/`ProposalRecord`,
-/// which live in `core::ddeploy` and are deliberately NOT imported here to
-/// keep this module's own dependency surface at zero DATUM-subsystem
-/// types); `core::ddeploy::compute_project_node_commitments` builds it.
+/// Foundation closure v2 (R3A/R3B), made GLOBAL by Phase 136A: structural
+/// (never live/observed) CPU + memory already committed to a D-Node by
+/// applications OTHER than the one currently being planned -- across EVERY
+/// project sharing that D-Node, never scoped to one project (D-Nodes are
+/// global; see `core::dnode_registry`'s own doc comment). A plain data
+/// value -- this module never derives it itself (that requires
+/// `ActiveApplicationDeployment`/`ProposalRecord`, which live in
+/// `core::ddeploy` and are deliberately NOT imported here to keep this
+/// module's own dependency surface at zero DATUM-subsystem types);
+/// `core::ddeploy::compute_global_node_commitments` builds it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCommitmentV1 {
     pub cpu_cores: u64,
@@ -259,13 +262,15 @@ struct NodeState {
 /// regardless of how many (or how few) nodes `dcontinuum` declares, since
 /// there is nothing to place.
 ///
-/// `committed` (R3A/R3B fix): per-node structural CPU/memory already
-/// committed by OTHER active applications in the same project
-/// (`core::ddeploy::compute_project_node_commitments`, excluding the
-/// application currently being (re)planned) -- subtracted from each node's
-/// declared `capacity` BEFORE this plan's own residual accounting starts.
-/// Pass an empty map for a project with no other active applications, or
-/// when project-wide commitment awareness is not applicable.
+/// `committed` (R3A/R3B fix, made GLOBAL by Phase 136A): per-node
+/// structural CPU/memory already committed by every OTHER active
+/// application GLOBALLY -- across every project sharing this D-Node, never
+/// scoped to one project (`core::ddeploy::compute_global_node_commitments`,
+/// excluding the application currently being (re)planned) -- subtracted
+/// from each node's declared `capacity` BEFORE this plan's own residual
+/// accounting starts. Pass an empty map when no other active application
+/// anywhere has committed anything, or when commitment awareness is not
+/// applicable.
 ///
 /// `eligibility` (R2 fix): ephemeral `ServiceArtifact`-derived candidate-node
 /// restriction (`core::ddeploy::derive_placement_eligibility_view`). Pass

@@ -37,8 +37,9 @@ use api::dcode::{
 use api::dcompile::post_compile;
 use api::ddeploy::{
     get_active, get_active_authority_v2, get_proposal, get_proposal_v2, post_accept_proposal,
-    post_accept_proposal_v2, post_create_proposal, post_create_proposal_v2, post_plan_proposal,
-    post_validate_proposal, post_validate_proposal_v2,
+    post_accept_proposal_v2, post_create_proposal, post_create_proposal_v2,
+    post_placement_candidate, post_plan_proposal, post_validate_proposal,
+    post_validate_proposal_v2,
 };
 use api::deployment_lifecycle::{
     get_deployment_attempt, list_deployment_attempts, post_deployment_attempt,
@@ -450,6 +451,7 @@ async fn main() {
         .route("/api/v1/ddeploy/proposals/validate", post(post_validate_proposal))
         .route("/api/v1/ddeploy/proposals", post(post_create_proposal))
         .route("/api/v1/ddeploy/plan", post(post_plan_proposal))
+        .route("/api/v1/ddeploy/candidate", post(post_placement_candidate))
         .route("/api/v1/ddeploy/proposals/:proposal_id", get(get_proposal))
         .route("/api/v1/ddeploy/proposals/:proposal_id/accept", post(post_accept_proposal))
         .route("/api/v1/ddeploy/active", get(get_active))
