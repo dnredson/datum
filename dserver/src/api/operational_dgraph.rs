@@ -513,6 +513,7 @@ pub fn operational_dgraph_slice_snapshot(
                 abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
                 host_imports_allowed: false,
             },
+            pending_request: resolve_pending_request(&graph.project_id, node_id)?,
         }));
     }
 
@@ -527,7 +528,33 @@ pub fn operational_dgraph_slice_snapshot(
     // section 14's required mixed scenario) -- always derive fresh here too,
     // never only in the cleanup-only branch above.
     slice.cleanup_directives = crate::core::ddeploy::cleanup_directives_for_node(&graph.project_id, node_id)?;
+    slice.pending_request = resolve_pending_request(&graph.project_id, node_id)?;
     Ok(Some(slice))
+}
+
+/// Phase 138C (Part E): resolves the control-slice `pending_request`
+/// signal for one node -- the EXISTING lightweight poll an agent already
+/// makes every cycle (Part E1: no new steady-state poll). `Ok(None)` both
+/// when persistence is unconfigured (the feature is simply inert, never
+/// an error) and when no request is currently claimable.
+fn resolve_pending_request(
+    project_id: &str,
+    node_id: &str,
+) -> Result<Option<crate::core::reconciliation_request::PendingRequestSignal>, String> {
+    let Some(db_path) = crate::storage::control_state::configured_control_state_db_path() else {
+        return Ok(None);
+    };
+    let now = Utc::now();
+    let candidates = crate::storage::reconciliation_request::list_claimable_for_node(&db_path, project_id, node_id)?;
+    let actionable: Vec<_> = candidates
+        .into_iter()
+        .filter(|request| {
+            crate::core::reconciliation_request::effective_status(request, now)
+                == crate::core::reconciliation_request::ReconciliationRequestStatus::Pending
+        })
+        .collect();
+    Ok(crate::core::reconciliation_request::select_next_pending(&actionable)
+        .map(crate::core::reconciliation_request::pending_request_signal))
 }
 
 pub async fn post_operational_reconciliation_authorization(

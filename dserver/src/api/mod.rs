@@ -51,6 +51,7 @@ pub mod operational_dgraph;
 pub mod operational_dgraph_acquisition;
 pub mod operational_evidence;
 pub mod reconciliation_attempt;
+pub mod reconciliation_request;
 pub mod operations;
 pub mod passive_observation_trigger;
 pub mod planner;

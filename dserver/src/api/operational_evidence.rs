@@ -221,6 +221,7 @@ fn fold_reconciliation_attempt(
         existing,
         reconciliation_attempt_id,
         authorization_id,
+        event.reconciliation_request_id.as_deref(),
         &now_utc,
         &EvidenceForFold {
             project_id: &event.project_id,
@@ -240,6 +241,50 @@ fn fold_reconciliation_attempt(
         .unwrap_or_else(|| crate::core::reconciliation_attempt::ReconciliationAttemptIndexV1::empty(&event.project_id));
     index.upsert(attempt_summary(&record));
     persist_domain_json(db_path, &attempt_index_domain(&event.project_id), &index)?;
+
+    // Phase 138C (Part G): when this evidence came from a claimed
+    // `ReconciliationRequest`, link it to this attempt now -- never
+    // inferred from time/proximity, only from the explicit id the evidence
+    // itself carries. `link_attempt` is idempotent and a best-effort
+    // linkage: a failure here must not roll back the attempt fold above
+    // (the attempt record is already the source of truth for execution
+    // history; the request's own status is a secondary, best-effort view).
+    //
+    // Independent review (Audit 24): `link_attempt`'s own SQL only scopes
+    // by `(project_id, reconciliation_request_id, status)` -- it has no way
+    // to know whether THIS evidence event actually originated from the SAME
+    // node/target the stored request names. An evidence payload carrying a
+    // `reconciliation_request_id` that happens to belong to a DIFFERENT
+    // node in the same project (e.g. from a bug, a stale cached id, or two
+    // co-resident agents confusing identifiers) must never be allowed to
+    // link to that other node's request. This is not a defense against a
+    // fully adversarial agent -- `event.node_id`/`event.dgraph_id` are
+    // self-reported by the agent with no independent verification, exactly
+    // like `reconciliation_attempt_id` itself (same trusted-control-plane
+    // model as the rest of this system, ADR-0013 Section 6) -- it is a
+    // correctness guard against accidental misattribution. Linking is
+    // skipped (never erroring the whole fold) when the stored request does
+    // not exist for this project, or exists but names a different
+    // `node_id`/`target_dgraph_id` than this evidence event itself reports.
+    if let Some(reconciliation_request_id) = event.reconciliation_request_id.as_deref() {
+        let stored_request = crate::storage::reconciliation_request::get_request(
+            db_path,
+            &event.project_id,
+            reconciliation_request_id,
+        )?;
+        let identity_matches = stored_request
+            .as_ref()
+            .is_some_and(|request| request.node_id == node_id && request.target_dgraph_id == dgraph_id);
+        if identity_matches {
+            crate::storage::reconciliation_request::link_attempt(
+                db_path,
+                &event.project_id,
+                reconciliation_request_id,
+                reconciliation_attempt_id,
+                &now_utc,
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -309,6 +354,7 @@ mod tests {
             side_effects_performed: true,
             payload,
             reconciliation_attempt_id: Some(reconciliation_attempt_id.to_string()),
+            reconciliation_request_id: None,
         }
     }
 
@@ -349,6 +395,116 @@ mod tests {
             load_domain_json(&db_path, &attempt_index_domain("project-a")).unwrap().unwrap();
         assert_eq!(index.attempts.len(), 1);
         assert_eq!(index.attempts[0].reconciliation_attempt_id, "reconciliation-attempt:fold-1");
+    }
+
+    fn claimed_request(db_path: &std::path::Path, project_id: &str, node_id: &str, dgraph_id: &str, request_id: &str, client_request_id: &str) {
+        use crate::core::reconciliation_request::{ReconciliationRequestStatus, ReconciliationRequestV1, RECONCILIATION_REQUEST_SCHEMA_VERSION, REQUEST_MODE_EXECUTE};
+        let now = "2026-10-05T11:59:00Z".to_string();
+        let request = ReconciliationRequestV1 {
+            schema_version: RECONCILIATION_REQUEST_SCHEMA_VERSION.to_string(),
+            reconciliation_request_id: request_id.to_string(),
+            client_request_id: client_request_id.to_string(),
+            reconciliation_batch_id: None,
+            project_id: project_id.to_string(),
+            node_id: node_id.to_string(),
+            target_dgraph_id: dgraph_id.to_string(),
+            target_dgraph_revision: 4,
+            mode: REQUEST_MODE_EXECUTE.to_string(),
+            requested_by: "operator".to_string(),
+            created_at_utc: now.clone(),
+            expires_at_utc: "2026-10-05T12:30:00Z".to_string(),
+            status: ReconciliationRequestStatus::Pending,
+            claim_token: None,
+            claimed_at_utc: None,
+            claim_expires_at_utc: None,
+            linked_attempt_id: None,
+            updated_at_utc: now.clone(),
+        };
+        crate::storage::reconciliation_request::create_request(db_path, &request).unwrap();
+        crate::storage::reconciliation_request::claim_request(
+            db_path, project_id, node_id, request_id, "claim:test", &now, "2026-10-05T12:05:00Z", &now,
+        )
+        .unwrap();
+    }
+
+    // Phase 138C independent review (Audit 23/25): request->attempt linking
+    // for the ordinary, matching case -- evidence whose own node_id/dgraph_id
+    // agree with the stored request's.
+    #[test]
+    fn fold_reconciliation_attempt_links_matching_request_to_attempt() {
+        let db_path = temp_db_path();
+        claimed_request(&db_path, "project-a", "node-a", "dgraph:app-1", "reconciliation-request:1", "client:1");
+
+        let mut event = reconciliation_event("reconciliation-attempt:fold-link-1", 1, json!({"services": []}));
+        event.reconciliation_request_id = Some("reconciliation-request:1".to_string());
+        fold_reconciliation_attempt(&db_path, "reconciliation-attempt:fold-link-1", &event).unwrap();
+
+        let request = crate::storage::reconciliation_request::get_request(&db_path, "project-a", "reconciliation-request:1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.status, crate::core::reconciliation_request::ReconciliationRequestStatus::Attempted);
+        assert_eq!(request.linked_attempt_id.as_deref(), Some("reconciliation-attempt:fold-link-1"));
+    }
+
+    // Phase 138C independent review (Audit 24): an evidence event must
+    // never link to a stored request that names a DIFFERENT node than the
+    // event itself reports, even when the `reconciliation_request_id`
+    // string matches exactly -- this is the accidental-misattribution guard
+    // the review demanded. The fold must still otherwise succeed (the
+    // attempt record itself is unaffected by a linkage mismatch).
+    #[test]
+    fn fold_reconciliation_attempt_never_links_a_request_for_a_different_node() {
+        let db_path = temp_db_path();
+        claimed_request(&db_path, "project-a", "node-b", "dgraph:app-1", "reconciliation-request:1", "client:1");
+
+        // `reconciliation_event` always reports node_id = "node-a".
+        let mut event = reconciliation_event("reconciliation-attempt:fold-link-2", 1, json!({"services": []}));
+        event.reconciliation_request_id = Some("reconciliation-request:1".to_string());
+        fold_reconciliation_attempt(&db_path, "reconciliation-attempt:fold-link-2", &event).unwrap();
+
+        let request = crate::storage::reconciliation_request::get_request(&db_path, "project-a", "reconciliation-request:1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.status, crate::core::reconciliation_request::ReconciliationRequestStatus::Claimed, "a node mismatch must never transition the request to Attempted");
+        assert_eq!(request.linked_attempt_id, None);
+
+        let record: ReconciliationAttemptRecordV1 =
+            load_domain_json(&db_path, &attempt_domain("reconciliation-attempt:fold-link-2")).unwrap().unwrap();
+        assert_eq!(record.reconciliation_request_id.as_deref(), Some("reconciliation-request:1"), "the attempt record itself still honestly records what the agent reported");
+    }
+
+    // Phase 138C independent review (Audit 24): same guard, but for a
+    // dgraph_id mismatch rather than a node_id mismatch.
+    #[test]
+    fn fold_reconciliation_attempt_never_links_a_request_for_a_different_target_dgraph() {
+        let db_path = temp_db_path();
+        claimed_request(&db_path, "project-a", "node-a", "dgraph:other-app", "reconciliation-request:1", "client:1");
+
+        let mut event = reconciliation_event("reconciliation-attempt:fold-link-3", 1, json!({"services": []}));
+        event.reconciliation_request_id = Some("reconciliation-request:1".to_string());
+        fold_reconciliation_attempt(&db_path, "reconciliation-attempt:fold-link-3", &event).unwrap();
+
+        let request = crate::storage::reconciliation_request::get_request(&db_path, "project-a", "reconciliation-request:1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.status, crate::core::reconciliation_request::ReconciliationRequestStatus::Claimed);
+        assert_eq!(request.linked_attempt_id, None);
+    }
+
+    // Phase 138C independent review (Audit 24): a `reconciliation_request_id`
+    // that does not exist at all in this project must never error the fold
+    // -- linking is best-effort and skipped, exactly like a node/target
+    // mismatch.
+    #[test]
+    fn fold_reconciliation_attempt_tolerates_an_unknown_reconciliation_request_id() {
+        let db_path = temp_db_path();
+        let mut event = reconciliation_event("reconciliation-attempt:fold-link-4", 1, json!({"services": []}));
+        event.reconciliation_request_id = Some("reconciliation-request:does-not-exist".to_string());
+        fold_reconciliation_attempt(&db_path, "reconciliation-attempt:fold-link-4", &event).unwrap();
+
+        let record: ReconciliationAttemptRecordV1 =
+            load_domain_json(&db_path, &attempt_domain("reconciliation-attempt:fold-link-4")).unwrap().unwrap();
+        assert_eq!(record.reconciliation_request_id.as_deref(), Some("reconciliation-request:does-not-exist"));
     }
 
     #[test]

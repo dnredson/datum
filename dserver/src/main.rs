@@ -114,6 +114,10 @@ use api::operational_dgraph::{
 };
 use api::operational_evidence::{list_operational_evidence, post_operational_evidence};
 use api::reconciliation_attempt::{get_reconciliation_attempt, list_recent_reconciliation_attempts};
+use api::reconciliation_request::{
+    get_reconciliation_batch, get_reconciliation_request, list_recent_reconciliation_requests,
+    post_claim_reconciliation_request, post_reconciliation_batch, post_reconciliation_request,
+};
 use api::planner::{build_latest_action_plan, get_materialized_action_plan};
 use api::resource_registry::{
     get_resource, get_resource_binding, list_resource_bindings, list_resources,
@@ -336,6 +340,30 @@ async fn main() {
         .route(
             "/api/v1/reconciliation-attempts/:attempt_id",
             get(get_reconciliation_attempt),
+        )
+        // Phase 138C: the control-plane trigger foundation. dserver
+        // persists request/claim state only -- it never executes anything
+        // (no std::process::Command, no Docker invocation, no SSH, no
+        // agent RPC push exists anywhere in this module tree).
+        .route(
+            "/api/v1/reconciliation-requests",
+            post(post_reconciliation_request).get(list_recent_reconciliation_requests),
+        )
+        .route(
+            "/api/v1/reconciliation-requests/batch",
+            post(post_reconciliation_batch),
+        )
+        .route(
+            "/api/v1/reconciliation-requests/batch/:batch_id",
+            get(get_reconciliation_batch),
+        )
+        .route(
+            "/api/v1/reconciliation-requests/:request_id",
+            get(get_reconciliation_request),
+        )
+        .route(
+            "/api/v1/nodes/:node_id/reconciliation-requests/:request_id/claim",
+            post(post_claim_reconciliation_request),
         )
         .route(
             "/api/v1/analysis-context/passive/:node_id",

@@ -1176,6 +1176,7 @@ mod tests {
                 abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
                 host_imports_allowed: false,
             },
+            pending_request: None,
         }
     }
 

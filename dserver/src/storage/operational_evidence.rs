@@ -220,6 +220,9 @@ pub fn load_operational_evidence(
             // here therefore never carries it; that is an accepted,
             // disclosed scope boundary, not a bug.
             reconciliation_attempt_id: None,
+            // Phase 138C: same accepted scope boundary as
+            // `reconciliation_attempt_id` immediately above.
+            reconciliation_request_id: None,
         };
         validate_operational_evidence_event(&event)?;
         events.push(event);
@@ -329,6 +332,7 @@ mod tests {
             side_effects_performed: false,
             payload: json!({"sequence": sequence}),
             reconciliation_attempt_id: None,
+            reconciliation_request_id: None,
         }
     }
 

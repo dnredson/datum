@@ -95,6 +95,21 @@ struct OperationalControlDesiredServiceHead {
     runtime: String,
 }
 
+/// Phase 138C (Part E3): mirrors dserver's `PendingRequestSignal` shape
+/// exactly. `None` whenever the control slice has nothing claimable for
+/// this node -- the existing steady-state poll (`fetch_control_slice_head`)
+/// is the ONLY thing that ever observes this; no new poll is added.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct OperationalPendingRequestHead {
+    reconciliation_request_id: String,
+    mode: String,
+    target_dgraph_id: String,
+    target_dgraph_revision: u64,
+}
+
+const RECONCILIATION_REQUEST_MODE_PREVIEW: &str = "preview";
+const RECONCILIATION_REQUEST_MODE_EXECUTE: &str = "execute";
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct OperationalControlSliceHead {
     dgraph_id: String,
@@ -104,6 +119,17 @@ struct OperationalControlSliceHead {
     desired_services: Vec<OperationalControlDesiredServiceHead>,
     #[serde(default)]
     authorization: Option<OperationalControlAuthorizationHead>,
+    #[serde(default)]
+    pending_request: Option<OperationalPendingRequestHead>,
+}
+
+/// Phase 138C (Part D): the claimed request, as returned by the claim
+/// endpoint -- only the fields this loop actually needs to decide how to
+/// run the one reconciliation cycle this claim authorizes.
+#[derive(Debug, Clone, Deserialize)]
+struct ClaimedReconciliationRequestHead {
+    reconciliation_request_id: String,
+    mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,6 +552,20 @@ fn run_hybrid_control_cycle(
         .map(|last| last.elapsed() >= Duration::from_secs(options.drift_verify_s))
         .unwrap_or(true);
 
+    // Phase 138C (Part F): a successfully claimed request demands exactly
+    // one reconciliation cycle regardless of drift timing -- claiming it
+    // is itself the trigger. `None` (no pending signal, a signal that
+    // failed sanity, or a lost claim race) falls through to the existing,
+    // unmodified event-driven/drift-driven trigger logic below.
+    let claimed_request = try_claim_pending_request(
+        client,
+        options,
+        sequence,
+        startup_resource_id,
+        node_id,
+        &control_head,
+    );
+
     if control_changed {
         record_event(
             client,
@@ -545,7 +585,7 @@ fn run_hybrid_control_cycle(
         );
     }
 
-    if !control_changed && !drift_due {
+    if !control_changed && !drift_due && claimed_request.is_none() {
         let drift_age_ms = last_drift_verification
             .as_ref()
             .map(|last| last.elapsed().as_millis())
@@ -580,10 +620,24 @@ fn run_hybrid_control_cycle(
         return;
     }
 
-    let trigger = if control_changed {
+    let trigger = if claimed_request.is_some() {
+        "reconciliation_request_claimed"
+    } else if control_changed {
         "event_driven_control_change"
     } else {
         "time_driven_drift_verification"
+    };
+
+    // Phase 138C (Part F2): a claimed `preview` request forces zero
+    // mutation for this cycle regardless of the process-level `--execute`
+    // capability -- the request's own mode is authoritative for THIS one
+    // cycle. A claimed `execute` request does NOT itself grant execution;
+    // it still passes through the unmodified `options.execute` gate (Part
+    // F1 backward compatibility -- the process-level flag remains the sole
+    // thing that can ever authorize a mutating cycle).
+    let execute_requested = match claimed_request.as_ref() {
+        Some(claimed) if claimed.mode == RECONCILIATION_REQUEST_MODE_PREVIEW => false,
+        _ => options.execute,
     };
 
     if control_head
@@ -615,7 +669,7 @@ fn run_hybrid_control_cycle(
         &options.dserver_url,
         &options.project_id,
         options.timeout_s,
-        options.execute,
+        execute_requested,
         false,
         false,
         false,
@@ -696,6 +750,7 @@ fn run_hybrid_control_cycle(
                 trigger,
                 &report,
                 snapshot_due,
+                claimed_request.as_ref().map(|claimed| claimed.reconciliation_request_id.as_str()),
             );
         }
         Err(error) => {
@@ -712,7 +767,8 @@ fn run_hybrid_control_cycle(
                 json!({
                     "error": error.to_string(),
                     "trigger": trigger,
-                    "control_signature": signature.as_json()
+                    "control_signature": signature.as_json(),
+                    "reconciliation_request_id": claimed_request.as_ref().map(|claimed| claimed.reconciliation_request_id.clone())
                 }),
             );
             println!(
@@ -897,6 +953,7 @@ fn ensure_container_runtime(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_reconciliation_result(
     client: &Client,
     options: &OperationalServiceLoopOptions,
@@ -906,6 +963,7 @@ fn write_reconciliation_result(
     trigger: &str,
     report: &OperationalReconciliationReport,
     snapshot_due: bool,
+    reconciliation_request_id: Option<&str>,
 ) {
     let write_status = match write_report(&options.report_path, report) {
         Ok(()) => "ok".to_string(),
@@ -949,6 +1007,7 @@ fn write_reconciliation_result(
         report.side_effects_performed,
         event_payload,
         &report.reconciliation_attempt_id,
+        reconciliation_request_id,
     );
 
     println!(
@@ -1009,6 +1068,108 @@ fn fetch_control_slice_head(
     Ok(head)
 }
 
+/// Phase 138C (Part D1/F): calls the atomic claim endpoint. A non-success
+/// status (already claimed by someone else, stale, terminal, expired) is an
+/// ordinary, expected outcome -- not necessarily a problem -- so the caller
+/// treats any error here as "nothing claimed this cycle", never as a reason
+/// to abort the surrounding control cycle.
+fn claim_reconciliation_request(
+    client: &Client,
+    dserver_url: &str,
+    project_id: &str,
+    node_id: &str,
+    reconciliation_request_id: &str,
+) -> Result<ClaimedReconciliationRequestHead> {
+    let url = format!(
+        "{}/api/v1/nodes/{}/reconciliation-requests/{}/claim",
+        dserver_url.trim().trim_end_matches('/'),
+        node_id.trim(),
+        reconciliation_request_id.trim(),
+    );
+    let response = client
+        .post(&url)
+        .header("X-Datum-Project", project_id.trim())
+        .send()
+        .with_context(|| format!("claim reconciliation request {url}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        bail!("claim reconciliation request failed with status {status}: {body}");
+    }
+    response
+        .json()
+        .context("decode claimed reconciliation request response")
+}
+
+/// Phase 138C (Part F): when the control slice signals a claimable
+/// request, verify client-side sanity (recognized mode; target still
+/// matches the control head this same poll just returned -- a defensive
+/// re-check, not a substitute for dserver's own authoritative re-validation
+/// at claim time) and attempt the atomic claim. Returns `None` for every
+/// outcome that means "run this cycle as an ordinary, unclaimed
+/// reconciliation" -- no pending signal, a signal that fails sanity, or a
+/// lost claim race -- never treated as an error.
+#[allow(clippy::too_many_arguments)]
+fn try_claim_pending_request(
+    client: &Client,
+    options: &OperationalServiceLoopOptions,
+    sequence: u64,
+    startup_resource_id: &str,
+    node_id: &str,
+    control_head: &OperationalControlSliceHead,
+) -> Option<ClaimedReconciliationRequestHead> {
+    let pending = control_head.pending_request.as_ref()?;
+
+    if pending.mode != RECONCILIATION_REQUEST_MODE_PREVIEW && pending.mode != RECONCILIATION_REQUEST_MODE_EXECUTE {
+        println!(
+            "mode=smartsentinel-operational event=reconciliation_request seq={} status=rejected_unknown_mode node_id={} reconciliation_request_id={} mode={}",
+            sequence, node_id, pending.reconciliation_request_id, pending.mode
+        );
+        return None;
+    }
+    if pending.target_dgraph_id != control_head.dgraph_id || pending.target_dgraph_revision != control_head.dgraph_revision {
+        println!(
+            "mode=smartsentinel-operational event=reconciliation_request seq={} status=rejected_target_mismatch node_id={} reconciliation_request_id={} signal_target={}@{} control_head_target={}@{}",
+            sequence, node_id, pending.reconciliation_request_id,
+            pending.target_dgraph_id, pending.target_dgraph_revision,
+            control_head.dgraph_id, control_head.dgraph_revision
+        );
+        return None;
+    }
+
+    match claim_reconciliation_request(client, &options.dserver_url, &options.project_id, node_id, &pending.reconciliation_request_id) {
+        Ok(claimed) => {
+            record_event(
+                client,
+                options,
+                sequence,
+                startup_resource_id,
+                Some(node_id),
+                Some(&control_head.dgraph_id),
+                Some(control_head.dgraph_revision),
+                "reconciliation_request_claimed",
+                false,
+                json!({
+                    "reconciliation_request_id": claimed.reconciliation_request_id,
+                    "mode": claimed.mode
+                }),
+            );
+            println!(
+                "mode=smartsentinel-operational event=reconciliation_request seq={} status=claimed node_id={} reconciliation_request_id={} mode={}",
+                sequence, node_id, claimed.reconciliation_request_id, claimed.mode
+            );
+            Some(claimed)
+        }
+        Err(error) => {
+            println!(
+                "mode=smartsentinel-operational event=reconciliation_request seq={} status=claim_failed node_id={} reconciliation_request_id={} err={}",
+                sequence, node_id, pending.reconciliation_request_id, error
+            );
+            None
+        }
+    }
+}
+
 fn record_waiting_or_error(
     client: &Client,
     options: &OperationalServiceLoopOptions,
@@ -1067,7 +1228,7 @@ fn record_event(
 ) {
     record_event_inner(
         client, options, sequence, resource_id, node_id, dgraph_id, dgraph_revision, event_kind,
-        side_effects_performed, payload, None,
+        side_effects_performed, payload, None, None,
     )
 }
 
@@ -1089,10 +1250,11 @@ fn record_reconciliation_event(
     side_effects_performed: bool,
     payload: Value,
     reconciliation_attempt_id: &str,
+    reconciliation_request_id: Option<&str>,
 ) {
     record_event_inner(
         client, options, sequence, resource_id, node_id, dgraph_id, dgraph_revision, event_kind,
-        side_effects_performed, payload, Some(reconciliation_attempt_id),
+        side_effects_performed, payload, Some(reconciliation_attempt_id), reconciliation_request_id,
     )
 }
 
@@ -1109,6 +1271,7 @@ fn record_event_inner(
     side_effects_performed: bool,
     payload: Value,
     reconciliation_attempt_id: Option<&str>,
+    reconciliation_request_id: Option<&str>,
 ) {
     let event = match OperationalEvidenceEvent::new(
         &options.project_id,
@@ -1121,7 +1284,11 @@ fn record_event_inner(
         side_effects_performed,
         payload,
     )
-    .map(|event| event.with_reconciliation_attempt_id(reconciliation_attempt_id))
+    .map(|event| {
+        event
+            .with_reconciliation_attempt_id(reconciliation_attempt_id)
+            .with_reconciliation_request_id(reconciliation_request_id)
+    })
     {
         Ok(event) => event,
         Err(error) => {
@@ -1415,6 +1582,7 @@ mod tests {
                 runtime: "container".to_string(),
             }],
             authorization: None,
+            pending_request: None,
         };
         let first = ControlSignature::from_head(&base);
 
@@ -1429,5 +1597,66 @@ mod tests {
             allow_host_mutation: true,
         });
         assert_ne!(first, ControlSignature::from_head(&authorized));
+    }
+
+    fn control_head_with_pending(pending: Option<OperationalPendingRequestHead>) -> OperationalControlSliceHead {
+        OperationalControlSliceHead {
+            dgraph_id: "dgraph:a".to_string(),
+            dgraph_revision: 1,
+            node_id: "fog-01".to_string(),
+            desired_services: vec![],
+            authorization: None,
+            pending_request: pending,
+        }
+    }
+
+    fn test_options() -> OperationalServiceLoopOptions {
+        let mut options = OperationalServiceLoopOptions::default();
+        options.dserver_url = "http://127.0.0.1:1".to_string();
+        options.project_id = "project-a".to_string();
+        options
+    }
+
+    // Phase 138C (Part F): an unrecognized mode must never reach the claim
+    // endpoint at all -- `Client::new()` never makes a network call here
+    // because `try_claim_pending_request` returns before attempting one.
+    #[test]
+    fn pending_request_with_unknown_mode_is_rejected_without_claim_attempt() {
+        let control_head = control_head_with_pending(Some(OperationalPendingRequestHead {
+            reconciliation_request_id: "reconciliation-request:1".to_string(),
+            mode: "bogus".to_string(),
+            target_dgraph_id: "dgraph:a".to_string(),
+            target_dgraph_revision: 1,
+        }));
+        let client = Client::new();
+        let options = test_options();
+        let claimed = try_claim_pending_request(&client, &options, 1, "resource:os:abc", "fog-01", &control_head);
+        assert!(claimed.is_none());
+    }
+
+    // Phase 138C (Part F): a pending signal whose target no longer matches
+    // THIS SAME control-slice poll's own head is a defensive inconsistency
+    // -- reject client-side rather than ever attempting the claim.
+    #[test]
+    fn pending_request_with_target_mismatch_is_rejected_without_claim_attempt() {
+        let control_head = control_head_with_pending(Some(OperationalPendingRequestHead {
+            reconciliation_request_id: "reconciliation-request:1".to_string(),
+            mode: RECONCILIATION_REQUEST_MODE_EXECUTE.to_string(),
+            target_dgraph_id: "dgraph:a".to_string(),
+            target_dgraph_revision: 999,
+        }));
+        let client = Client::new();
+        let options = test_options();
+        let claimed = try_claim_pending_request(&client, &options, 1, "resource:os:abc", "fog-01", &control_head);
+        assert!(claimed.is_none());
+    }
+
+    #[test]
+    fn no_pending_request_signal_yields_none_without_any_claim_attempt() {
+        let control_head = control_head_with_pending(None);
+        let client = Client::new();
+        let options = test_options();
+        let claimed = try_claim_pending_request(&client, &options, 1, "resource:os:abc", "fog-01", &control_head);
+        assert!(claimed.is_none());
     }
 }

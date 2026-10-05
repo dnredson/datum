@@ -346,6 +346,18 @@ pub struct OperationalDGraphSlice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<OperationalReconciliationAuthorization>,
     pub reconciler: OperationalReconcilerDescriptor,
+    /// Phase 138C (Part E): the EXISTING lightweight poll an agent already
+    /// makes every cycle also carries this signal -- never a second,
+    /// additional steady-state poll (Part E1). `None` when no claimable
+    /// `ReconciliationRequest` exists for this node; deliberately minimal
+    /// (just enough for the agent to decide whether to call the claim
+    /// endpoint), never the full request body. Populated by the caller
+    /// (`operational_dgraph_slice_snapshot`) for the same reason
+    /// `cleanup_directives` is: this module must not depend on
+    /// `core::reconciliation_request`'s storage-backed resolution without
+    /// a circular/layering concern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_request: Option<crate::core::reconciliation_request::PendingRequestSignal>,
 }
 
 fn is_empty_bootstrap_graph(graph: &OperationalDGraph) -> bool {
@@ -440,6 +452,9 @@ pub fn build_operational_slice(
             abi: "(desired_running:i32, observed_running:i32)->action_code:i32".to_string(),
             host_imports_allowed: false,
         },
+        // Populated by the caller, not here -- same reason as
+        // `cleanup_directives` above.
+        pending_request: None,
     })
 }
 

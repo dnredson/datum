@@ -88,6 +88,7 @@ pub mod operational_dgraph_persistence;
 pub mod operational_dgraph_recovery;
 pub mod operational_evidence;
 pub mod reconciliation_attempt;
+pub mod reconciliation_request;
 pub mod operations_read_models;
 pub mod project_graph_read_model;
 pub mod planner;

@@ -40,6 +40,16 @@ pub struct OperationalEvidenceEvent {
     /// and behaves unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconciliation_attempt_id: Option<String>,
+    /// Phase 138C (Part F3): the `ReconciliationRequestV1` whose claim
+    /// caused this reconciliation cycle, when one did. Additive
+    /// (`#[serde(default)]`) for backward compatibility -- `None` for a
+    /// manual `--execute` cycle with no claimed request behind it, and for
+    /// every event kind that is not reconciliation-cycle-shaped (unchanged
+    /// from `reconciliation_attempt_id`'s own precedent). Set via
+    /// `with_reconciliation_request_id` rather than a `new()` parameter,
+    /// mirroring that field's own pattern exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_request_id: Option<String>,
 }
 
 impl OperationalEvidenceEvent {
@@ -81,6 +91,7 @@ impl OperationalEvidenceEvent {
             side_effects_performed,
             payload,
             reconciliation_attempt_id: None,
+            reconciliation_request_id: None,
         };
         Ok(event)
     }
@@ -91,6 +102,16 @@ impl OperationalEvidenceEvent {
     /// this field existed.
     pub fn with_reconciliation_attempt_id(mut self, reconciliation_attempt_id: Option<&str>) -> Self {
         self.reconciliation_attempt_id = optional_non_empty(reconciliation_attempt_id);
+        self
+    }
+
+    /// Phase 138C (Part F3): attach this event to the claimed
+    /// `ReconciliationRequestV1` that caused it, when one did. Chainable and
+    /// additive, mirroring `with_reconciliation_attempt_id` exactly -- every
+    /// existing call site that never calls this leaves
+    /// `reconciliation_request_id` as `None`.
+    pub fn with_reconciliation_request_id(mut self, reconciliation_request_id: Option<&str>) -> Self {
+        self.reconciliation_request_id = optional_non_empty(reconciliation_request_id);
         self
     }
 }
@@ -223,6 +244,60 @@ mod tests {
         .unwrap()
         .with_reconciliation_attempt_id(None);
         assert_eq!(event.reconciliation_attempt_id, None);
+    }
+
+    #[test]
+    fn with_reconciliation_request_id_attaches_the_given_id() {
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            Some("fog-01"),
+            Some("dgraph:v1"),
+            Some(2),
+            1,
+            "reconciliation",
+            true,
+            json!({}),
+        )
+        .unwrap()
+        .with_reconciliation_request_id(Some("reconciliation-request:abc-123"));
+        assert_eq!(event.reconciliation_request_id.as_deref(), Some("reconciliation-request:abc-123"));
+    }
+
+    #[test]
+    fn with_reconciliation_request_id_none_leaves_the_field_absent() {
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            Some("fog-01"),
+            Some("dgraph:v1"),
+            Some(2),
+            1,
+            "reconciliation",
+            true,
+            json!({}),
+        )
+        .unwrap()
+        .with_reconciliation_request_id(None);
+        assert_eq!(event.reconciliation_request_id, None);
+    }
+
+    #[test]
+    fn reconciliation_request_id_is_omitted_from_serialized_json_when_absent() {
+        let event = OperationalEvidenceEvent::new(
+            "project-a",
+            "resource:os:abc",
+            None,
+            None,
+            None,
+            1,
+            "control_poll_error",
+            false,
+            json!({}),
+        )
+        .unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("reconciliation_request_id"));
     }
 
     #[test]

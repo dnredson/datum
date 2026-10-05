@@ -27,6 +27,13 @@ pub struct OperationalEvidenceEvent {
     /// a governed reconciliation attempt (unchanged, backward compatible).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconciliation_attempt_id: Option<String>,
+    /// Phase 138C (Part F3/G): additive, mirrors the agent-side field of
+    /// the same name exactly -- `None` for every event not caused by a
+    /// claimed `ReconciliationRequest` (manual `--execute` cycles included
+    /// -- Part T backward compatibility). Never changes
+    /// `reconciliation_attempt_id`'s own generation/ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_request_id: Option<String>,
 }
 
 pub fn validate_operational_evidence_event(event: &OperationalEvidenceEvent) -> Result<(), String> {
@@ -93,6 +100,7 @@ mod tests {
             side_effects_performed: true,
             payload: json!({"execution_status":"deployed"}),
             reconciliation_attempt_id: None,
+            reconciliation_request_id: None,
         }
     }
 

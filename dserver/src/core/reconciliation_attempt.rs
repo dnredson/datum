@@ -118,6 +118,13 @@ pub struct ReconciliationServiceResult {
 pub struct ReconciliationAttemptRecordV1 {
     pub schema_version: String,
     pub reconciliation_attempt_id: String,
+    /// Phase 138C (Part Q/G): the `ReconciliationRequestV1` that caused
+    /// this attempt, when one did -- `None` for a manual `--execute` cycle
+    /// with no claimed request behind it (Part T backward compatibility).
+    /// Set once, from the first evidence that carries it; never changes
+    /// `reconciliation_attempt_id`'s own agent-side generation/ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_request_id: Option<String>,
     pub project_id: String,
     /// One reconciliation cycle is node-scoped, not application-scoped --
     /// `OperationalReconciliationContext.desired_services` can legitimately
@@ -278,6 +285,7 @@ pub fn fold_evidence_into_attempt(
     existing: Option<ReconciliationAttemptRecordV1>,
     reconciliation_attempt_id: &str,
     authorization_id: Option<&str>,
+    reconciliation_request_id: Option<&str>,
     now_utc: &str,
     evidence: &EvidenceForFold,
 ) -> Result<ReconciliationAttemptRecordV1, String> {
@@ -363,9 +371,13 @@ pub fn fold_evidence_into_attempt(
     let authorization_id = authorization_id
         .map(str::to_string)
         .or_else(|| existing.as_ref().and_then(|record| record.authorization_id.clone()));
+    let reconciliation_request_id = reconciliation_request_id
+        .map(str::to_string)
+        .or_else(|| existing.as_ref().and_then(|record| record.reconciliation_request_id.clone()));
 
     Ok(ReconciliationAttemptRecordV1 {
         schema_version: RECONCILIATION_ATTEMPT_STATE_SCHEMA_VERSION.to_string(),
+        reconciliation_request_id,
         reconciliation_attempt_id: reconciliation_attempt_id.to_string(),
         project_id: evidence.project_id.to_string(),
         node_id: evidence.node_id.to_string(),
@@ -471,7 +483,7 @@ mod tests {
             {"service_id":"service-b","host_mutation_performed":false,"execution_status":"already_running"}
         ]});
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:1", Some("opauth:1"),
+            None, "reconciliation-attempt:1", Some("opauth:1"), None,
             "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
@@ -490,7 +502,7 @@ mod tests {
             {"service_id":"service-b","host_mutation_performed":false,"execution_status":"blocked_wrong_resource_identity"}
         ]});
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:2", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:2", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         assert_eq!(record.status, ReconciliationAttemptStatus::Partial);
@@ -502,7 +514,7 @@ mod tests {
             {"service_id":"service-a","host_mutation_performed":false,"execution_status":"blocked_stale_dgraph_revision"}
         ]});
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:3", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:3", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         assert_eq!(record.status, ReconciliationAttemptStatus::Failed);
@@ -514,7 +526,7 @@ mod tests {
             {"service_id":"service-a","host_mutation_performed":false,"execution_status":"something_this_module_has_never_seen"}
         ]});
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:4", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:4", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         assert_eq!(record.services["service-a"].result, ReconciliationActionResult::Unknown);
@@ -526,7 +538,7 @@ mod tests {
         let payload = json!({});
         let mut ev = evidence(&payload, 1);
         ev.side_effects_performed = false;
-        let record = fold_evidence_into_attempt(None, "reconciliation-attempt:5", None, "2026-10-05T12:00:01Z", &ev).unwrap();
+        let record = fold_evidence_into_attempt(None, "reconciliation-attempt:5", None, None, "2026-10-05T12:00:01Z", &ev).unwrap();
         assert_eq!(record.status, ReconciliationAttemptStatus::Unknown);
         assert!(record.services.is_empty());
     }
@@ -535,7 +547,7 @@ mod tests {
     fn side_effects_performed_with_no_breakdown_is_never_silently_unknown() {
         let payload = json!({});
         let ev = evidence(&payload, 1);
-        let record = fold_evidence_into_attempt(None, "reconciliation-attempt:6", None, "2026-10-05T12:00:01Z", &ev).unwrap();
+        let record = fold_evidence_into_attempt(None, "reconciliation-attempt:6", None, None, "2026-10-05T12:00:01Z", &ev).unwrap();
         assert_eq!(record.status, ReconciliationAttemptStatus::Succeeded);
         assert!(record.services.contains_key("(unspecified)"));
     }
@@ -544,15 +556,15 @@ mod tests {
     fn duplicate_or_out_of_order_sequence_is_rejected_and_never_applied() {
         let payload = json!({"services":[{"service_id":"service-a","host_mutation_performed":true,"execution_status":"started"}]});
         let first = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:7", None, "2026-10-05T12:00:01Z", &evidence(&payload, 5),
+            None, "reconciliation-attempt:7", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 5),
         )
         .unwrap();
         let replay = fold_evidence_into_attempt(
-            Some(first.clone()), "reconciliation-attempt:7", None, "2026-10-05T12:00:02Z", &evidence(&payload, 5),
+            Some(first.clone()), "reconciliation-attempt:7", None, None, "2026-10-05T12:00:02Z", &evidence(&payload, 5),
         );
         assert!(replay.is_err());
         let stale = fold_evidence_into_attempt(
-            Some(first.clone()), "reconciliation-attempt:7", None, "2026-10-05T12:00:02Z", &evidence(&payload, 3),
+            Some(first.clone()), "reconciliation-attempt:7", None, None, "2026-10-05T12:00:02Z", &evidence(&payload, 3),
         );
         assert!(stale.is_err());
     }
@@ -561,12 +573,12 @@ mod tests {
     fn identity_drift_across_folds_is_rejected() {
         let payload = json!({"services":[]});
         let first = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:8", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:8", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         let mut drifted = evidence(&payload, 2);
         drifted.node_id = "node-b";
-        let result = fold_evidence_into_attempt(Some(first), "reconciliation-attempt:8", None, "2026-10-05T12:00:02Z", &drifted);
+        let result = fold_evidence_into_attempt(Some(first), "reconciliation-attempt:8", None, None, "2026-10-05T12:00:02Z", &drifted);
         assert!(result.is_err());
     }
 
@@ -574,13 +586,13 @@ mod tests {
     fn later_fold_advances_sequence_and_merges_additional_services_without_losing_earlier_ones() {
         let first_payload = json!({"services":[{"service_id":"service-a","host_mutation_performed":true,"execution_status":"started"}]});
         let first = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:9", None, "2026-10-05T12:00:01Z", &evidence(&first_payload, 1),
+            None, "reconciliation-attempt:9", None, None, "2026-10-05T12:00:01Z", &evidence(&first_payload, 1),
         )
         .unwrap();
         let first_started_at_utc = first.started_at_utc.clone();
         let second_payload = json!({"services":[{"service_id":"service-b","host_mutation_performed":true,"execution_status":"started"}]});
         let second = fold_evidence_into_attempt(
-            Some(first), "reconciliation-attempt:9", None, "2026-10-05T12:00:05Z", &evidence(&second_payload, 2),
+            Some(first), "reconciliation-attempt:9", None, None, "2026-10-05T12:00:05Z", &evidence(&second_payload, 2),
         )
         .unwrap();
         assert_eq!(second.services.len(), 2);
@@ -604,7 +616,7 @@ mod tests {
         // claim full success over information it structurally dropped.
         let payload = many_mutated_services(MAX_SERVICE_RESULTS_PER_ATTEMPT + 10);
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:10", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:10", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         assert!(record.services_truncated);
@@ -617,7 +629,7 @@ mod tests {
     fn at_or_under_the_bound_never_sets_services_truncated() {
         let payload = many_mutated_services(MAX_SERVICE_RESULTS_PER_ATTEMPT);
         let record = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:11", None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+            None, "reconciliation-attempt:11", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
         )
         .unwrap();
         assert!(!record.services_truncated);
@@ -628,14 +640,14 @@ mod tests {
     fn services_truncated_is_sticky_and_cannot_be_cleared_by_a_later_untruncated_fold() {
         let first_payload = many_mutated_services(MAX_SERVICE_RESULTS_PER_ATTEMPT + 1);
         let first = fold_evidence_into_attempt(
-            None, "reconciliation-attempt:12", None, "2026-10-05T12:00:01Z", &evidence(&first_payload, 1),
+            None, "reconciliation-attempt:12", None, None, "2026-10-05T12:00:01Z", &evidence(&first_payload, 1),
         )
         .unwrap();
         assert!(first.services_truncated);
 
         let second_payload = json!({"services":[{"service_id":"service-0","host_mutation_performed":true,"execution_status":"started"}]});
         let second = fold_evidence_into_attempt(
-            Some(first), "reconciliation-attempt:12", None, "2026-10-05T12:00:05Z", &evidence(&second_payload, 2),
+            Some(first), "reconciliation-attempt:12", None, None, "2026-10-05T12:00:05Z", &evidence(&second_payload, 2),
         )
         .unwrap();
         assert!(second.services_truncated, "a later, well-formed fold must never silently clear a prior truncation");
