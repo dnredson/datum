@@ -1049,6 +1049,9 @@ summary:focus-visible,
   min-width: 10rem;
   max-width: 100%;
 }
+.history-field-hint {
+  color: var(--datum-muted);
+}
 .history-observation-list {
   display: flex;
   flex-direction: column;

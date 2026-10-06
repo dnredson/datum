@@ -28,8 +28,9 @@ export interface HistoryPageView {
   confirmLeave: () => boolean;
 }
 
-function observationDetail(observation: HistoricalDMonitorObservation): HTMLElement {
+function observationDetail(observation: HistoricalDMonitorObservation, detailId: string): HTMLElement {
   const detail = el("div", "history-observation-detail");
+  detail.id = detailId;
   const grid = el("dl", "history-detail-grid");
   const entry = (label: string, value: string) => grid.append(el("dt", "small text-secondary", label), el("dd", "small", value));
   entry("Observation id", observation.observation_id);
@@ -50,9 +51,11 @@ function observationDetail(observation: HistoricalDMonitorObservation): HTMLElem
 
 function observationRow(observation: HistoricalDMonitorObservation, expanded: boolean, onToggle: () => void): HTMLElement {
   const row = el("div", `history-observation-row console-card${expanded ? " expanded" : ""}`);
+  const detailId = `history-detail-${observation.observation_id.replace(/[^A-Za-z0-9_-]/gu, "_")}`;
   const summary = el("button", "history-observation-summary btn btn-sm btn-outline-secondary w-100 text-start");
   summary.type = "button";
   summary.setAttribute("aria-expanded", String(expanded));
+  summary.setAttribute("aria-controls", detailId);
   summary.addEventListener("click", onToggle);
 
   const line1 = el("div", "history-observation-line1");
@@ -67,7 +70,7 @@ function observationRow(observation: HistoricalDMonitorObservation, expanded: bo
   summary.append(line2);
 
   row.append(summary);
-  if (expanded) row.append(observationDetail(observation));
+  if (expanded) row.append(observationDetail(observation, detailId));
   return row;
 }
 
@@ -93,7 +96,12 @@ export function historyView(
     el(
       "p",
       "small text-secondary",
-      "Canonical, persisted DMonitor evidence over a bounded time window. This is a VIEW over what was actually recorded -- it never recomputes or reinterprets current placement authority, and it never shows a convergence verdict for a past observation.",
+      "Canonical, persisted DMonitor evidence over a bounded time window. This is a VIEW over what was actually recorded -- it never recomputes or reinterprets current placement authority, and it never shows a convergence verdict for a past observation. For current operational status, use Continuum or an application's own Deploy page instead -- this page shows recorded history, never live state.",
+    ),
+    el(
+      "p",
+      "small text-secondary",
+      "Rows are ordered by when DServer received each observation, not by the time the node itself recorded it -- so an entry labeled Fresh or Stale reflects a current age check against when it was last RECEIVED. Health and Freshness are independent: a Healthy service can show Stale evidence (nobody has reported in recently), and a correctly-placed service can still be Unhealthy (placement and runtime condition are separate facts). Neither implies a convergence verdict.",
     ),
   );
   root.append(header);
@@ -102,7 +110,7 @@ export function historyView(
   form.setAttribute("role", "search");
   form.setAttribute("aria-label", "Historical observation filters");
 
-  function field(label: string, id: string, type: string, value: string): HTMLInputElement {
+  function field(label: string, id: string, type: string, value: string, hint?: string): HTMLInputElement {
     const wrap = el("div", "history-field");
     const labelEl = el("label", "small", label);
     labelEl.htmlFor = id;
@@ -111,16 +119,29 @@ export function historyView(
     input.id = id;
     input.value = value;
     wrap.append(labelEl, input);
+    if (hint) {
+      const hintId = `${id}-hint`;
+      const hintEl = el("span", "small text-secondary history-field-hint", hint);
+      hintEl.id = hintId;
+      input.setAttribute("aria-describedby", hintId);
+      wrap.append(hintEl);
+    }
     form.append(wrap);
     return input;
   }
 
-  const startInput = field("Start (RFC 3339 UTC)", "history-start", "text", filters.startUtc);
-  const endInput = field("End (RFC 3339 UTC)", "history-end", "text", filters.endUtc);
-  const applicationInput = field("Application (optional)", "history-application", "text", filters.applicationId);
-  const nodeInput = field("Node (optional)", "history-node", "text", filters.nodeId);
-  const serviceInput = field("Service / logical subject (optional)", "history-service", "text", filters.serviceId);
-  const limitInput = field("Result limit (optional)", "history-limit", "number", filters.limit);
+  const startInput = field(
+    "Start (RFC 3339 UTC)",
+    "history-start",
+    "text",
+    filters.startUtc,
+    "Defaults to 24 hours before now.",
+  );
+  const endInput = field("End (RFC 3339 UTC)", "history-end", "text", filters.endUtc, "Defaults to now. Start/end together may span at most 7 days.");
+  const applicationInput = field("Application (optional)", "history-application", "text", filters.applicationId, "Leave blank to include every application.");
+  const nodeInput = field("Node (optional)", "history-node", "text", filters.nodeId, "Leave blank to include every node.");
+  const serviceInput = field("Service / logical subject (optional)", "history-service", "text", filters.serviceId, "Leave blank to include every service.");
+  const limitInput = field("Result limit (optional)", "history-limit", "number", filters.limit, "Default 100, maximum 500. Narrows, never widens, the server's own cap.");
 
   const submitButton = el("button", "btn btn-sm btn-primary mt-2", "Query");
   submitButton.type = "submit";
@@ -161,10 +182,14 @@ export function historyView(
     }
     if (!response) return;
     const summary = el("p", "small text-secondary");
-    summary.textContent = `${response.count} observation(s) between ${response.start_utc} and ${response.end_utc}, limit ${response.limit}.`;
+    summary.textContent = response.truncated
+      ? `Showing the first ${response.count} observation(s) (limit ${response.limit}) between ${response.start_utc} and ${response.end_utc}.`
+      : `${response.count} observation(s) between ${response.start_utc} and ${response.end_utc} -- the complete matching set for this query.`;
     body.append(summary);
     if (response.truncated) {
-      body.append(badge("More observations matched than the result limit -- narrow the window or raise the limit", "warning"));
+      body.append(
+        badge("More matching observations exist beyond this limit -- narrow the time window, add a filter, or raise the result limit", "warning"),
+      );
     }
     if (response.observations.length === 0) {
       body.append(el("p", "small text-secondary", "No DMonitor evidence was recorded in this range for the given filters."));

@@ -264,3 +264,34 @@ test("no mutation/remediation endpoint is reachable from this page -- DMonitorHi
   assert.ok(calls.length > 0);
   for (const call of calls) assert.equal(call, "query", `history.ts must only ever call client.query(), saw .${call}(`);
 });
+
+// Phase 140C polish -- aria-controls/aria-describedby wiring and explanatory
+// copy (default window, max window, limit default/max, health/freshness
+// independence, current-vs-history separation).
+test("expand/collapse button wires aria-controls to the detail panel's own id (Phase 140C)", async () => {
+  const code = await sourceWithoutComments("../src/pages/history.ts");
+  assert.ok(code.includes('summary.setAttribute("aria-controls", detailId)'));
+  assert.ok(code.includes("detail.id = detailId;"));
+});
+
+test("filter inputs carry an explanatory hint wired via aria-describedby (Phase 140C)", async () => {
+  const code = await sourceWithoutComments("../src/pages/history.ts");
+  assert.ok(code.includes('input.setAttribute("aria-describedby", hintId)'));
+  assert.ok(code.includes("24 hours before now"));
+  assert.ok(code.includes("at most 7 days"));
+  assert.ok(code.includes("Default 100, maximum 500"));
+});
+
+test("page copy clarifies health/freshness independence and current-vs-history separation without new semantics (Phase 140C)", async () => {
+  const code = await sourceWithoutComments("../src/pages/history.ts");
+  assert.ok(/Health and Freshness are independent/u.test(code));
+  assert.ok(/use Continuum or an application's own Deploy page instead/u.test(code));
+  assert.ok(/received each observation, not by the time the node itself recorded it/u.test(code));
+});
+
+test("truncation summary never implies a complete result set, and the complete-set wording is honest (Phase 140C)", async () => {
+  const code = await sourceWithoutComments("../src/pages/history.ts");
+  assert.ok(code.includes("response.truncated"));
+  assert.ok(code.includes("Showing the first"));
+  assert.ok(code.includes("the complete matching set for this query"));
+});
