@@ -4,8 +4,14 @@ import {
   validDMonitorHistoryQueryResponse,
   HEALTH_LABEL,
   FRESHNESS_LABEL,
+  FRESHNESS_TONE,
   subjectDisplayIdentity,
   subjectKindLabel,
+  defaultHistoryFilters,
+  clientSideHistoryValidationError,
+  historyObservationIdentityLine,
+  MAX_HISTORY_WINDOW_SECONDS,
+  DEFAULT_HISTORY_WINDOW_SECONDS,
 } from "../src/pages/dmonitor-history-model.ts";
 import { historicalObservationFixture, historyQueryResponseFixture } from "./dmonitor-history-fixture.mjs";
 
@@ -45,6 +51,67 @@ test("subjectDisplayIdentity extracts application/service identity for dserv_rea
   const dserv = historicalObservationFixture().subject;
   assert.deepEqual(subjectDisplayIdentity(dserv), { applicationId: "app-1", serviceId: "service-a" });
   assert.deepEqual(subjectDisplayIdentity({ kind: "dnode", node_id: "fog-01" }), { applicationId: null, serviceId: null });
+});
+
+// Phase 140B -- Part C: a useful, BOUNDED default (never unbounded history).
+test("defaultHistoryFilters defaults to the most recent 24 hours, never unbounded, and no optional filter is pre-filled", () => {
+  const now = new Date("2026-10-05T12:00:00.000Z");
+  const filters = defaultHistoryFilters(now);
+  assert.equal(filters.endUtc, now.toISOString());
+  assert.equal(Date.parse(now.toISOString()) - Date.parse(filters.startUtc), DEFAULT_HISTORY_WINDOW_SECONDS * 1000);
+  assert.equal(filters.applicationId, "");
+  assert.equal(filters.nodeId, "");
+  assert.equal(filters.serviceId, "");
+  assert.equal(filters.limit, "");
+});
+
+// Part B/Audit 9/10 -- a >7-day window or start>end must be clearly
+// blocked client-side BEFORE any request is sent, never silently narrowed.
+test("clientSideHistoryValidationError rejects a window wider than 7 days without altering it", () => {
+  const filters = { ...defaultHistoryFilters(), startUtc: "2026-09-01T00:00:00Z", endUtc: "2026-10-05T00:00:00Z" };
+  const error = clientSideHistoryValidationError(filters);
+  assert.ok(error);
+  assert.match(error, /exceeds the maximum/);
+  assert.match(error, new RegExp(`${MAX_HISTORY_WINDOW_SECONDS / 86_400} days`));
+});
+
+test("clientSideHistoryValidationError rejects start after end clearly", () => {
+  const filters = { ...defaultHistoryFilters(), startUtc: "2026-10-05T00:00:00Z", endUtc: "2026-10-01T00:00:00Z" };
+  const error = clientSideHistoryValidationError(filters);
+  assert.ok(error);
+  assert.match(error, /must not be after/);
+});
+
+test("clientSideHistoryValidationError accepts a window within 7 days and a valid limit", () => {
+  const filters = { ...defaultHistoryFilters(), limit: "50" };
+  assert.equal(clientSideHistoryValidationError(filters), undefined);
+});
+
+test("clientSideHistoryValidationError rejects a non-positive or non-integer limit", () => {
+  assert.ok(clientSideHistoryValidationError({ ...defaultHistoryFilters(), limit: "0" }));
+  assert.ok(clientSideHistoryValidationError({ ...defaultHistoryFilters(), limit: "-5" }));
+  assert.ok(clientSideHistoryValidationError({ ...defaultHistoryFilters(), limit: "abc" }));
+});
+
+test("clientSideHistoryValidationError rejects an unparsable start/end timestamp", () => {
+  assert.ok(clientSideHistoryValidationError({ ...defaultHistoryFilters(), startUtc: "not-a-timestamp" }));
+  assert.ok(clientSideHistoryValidationError({ ...defaultHistoryFilters(), endUtc: "not-a-timestamp" }));
+});
+
+// Part E -- ClockSkew must never collapse into Stale, textually or by tone.
+test("FRESHNESS_LABEL/FRESHNESS_TONE never collapse ClockSkew into Stale", () => {
+  assert.notEqual(FRESHNESS_LABEL.clock_skew, FRESHNESS_LABEL.stale);
+  assert.ok(FRESHNESS_LABEL.clock_skew.toLowerCase().includes("clock"));
+  assert.notEqual(FRESHNESS_TONE.clock_skew, undefined);
+});
+
+test("historyObservationIdentityLine includes application/service only when the subject actually carries them, never PID/container-id", () => {
+  const dserv = historicalObservationFixture().subject;
+  const line = historyObservationIdentityLine(dserv);
+  assert.match(line, /app: app-1/);
+  assert.match(line, /service: service-a/);
+  const dnodeLine = historyObservationIdentityLine({ kind: "dnode", node_id: "fog-01" });
+  assert.doesNotMatch(dnodeLine, /app:|service:/);
 });
 
 test("subjectKindLabel covers every one of the 8 canonical subject kinds", () => {

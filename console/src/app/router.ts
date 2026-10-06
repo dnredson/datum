@@ -8,6 +8,7 @@ export type Route =
   | { kind: "project_graph_editor"; projectId: string }
   | { kind: "project_continuum"; projectId: string }
   | { kind: "project_placement"; projectId: string }
+  | { kind: "project_history"; projectId: string }
   | { kind: "project_proposal_review"; projectId: string; proposalId: string }
   | { kind: "project_application_deploy"; projectId: string; applicationId: string }
   | { kind: "not_found" };
@@ -66,7 +67,7 @@ export function parseRoute(pathname: string): Route {
     }
     return { kind: "not_found" };
   }
-  const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?|\/continuum|\/placement)?\/?$/u.exec(pathname);
+  const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?|\/continuum|\/placement|\/history)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
       const projectId = decodeURIComponent(match[1]);
@@ -81,7 +82,9 @@ export function parseRoute(pathname: string): Route {
                   ? "project_continuum"
                   : match[2] === "/placement"
                     ? "project_placement"
-                    : "project",
+                    : match[2] === "/history"
+                      ? "project_history"
+                      : "project",
           projectId,
         };
     } catch {

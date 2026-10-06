@@ -1029,3 +1029,72 @@ summary:focus-visible,
     height: 20rem;
   }
 }
+/* Phase 140B -- Historical Explorer (independent review Audit 50/53: long
+   observation_id/monitor_instance_id/service_id/node_id values and raw
+   collector facts must never cause page-level horizontal overflow). */
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.history-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.history-field input {
+  min-width: 10rem;
+  max-width: 100%;
+}
+.history-observation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.history-observation-row {
+  min-width: 0;
+}
+.history-observation-summary {
+  min-width: 0;
+}
+.history-observation-line1,
+.history-observation-line2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  overflow-wrap: anywhere;
+}
+.history-observation-detail {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--datum-border);
+  overflow-wrap: anywhere;
+}
+.history-detail-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.15rem 0.75rem;
+  margin: 0.25rem 0 0;
+}
+.history-detail-grid dt {
+  grid-column: 1;
+}
+.history-detail-grid dd {
+  grid-column: 2;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.history-facts {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 20rem;
+  overflow: auto;
+  border: 1px solid var(--datum-border);
+  padding: 0.75rem;
+  font-size: 0.78rem;
+}

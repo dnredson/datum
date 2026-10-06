@@ -125,6 +125,66 @@ export function validDMonitorHistoryQueryResponse(value: unknown, projectId?: st
   );
 }
 
+// Phase 140B -- mirrors `dserver/src/core/dmonitor_history.rs`'s own
+// `MAX_HISTORY_WINDOW_SECONDS`/`DEFAULT_HISTORY_WINDOW_SECONDS` exactly, for
+// a PROACTIVE client-side check only (Part B): this never silently narrows
+// what is actually sent -- it only lets the UI show a clear validation
+// message before even making the round trip. The backend's own 422
+// rejection remains the authoritative bound in every case.
+export const MAX_HISTORY_WINDOW_SECONDS = 7 * 86_400;
+export const DEFAULT_HISTORY_WINDOW_SECONDS = 86_400;
+
+export interface HistoryFilters {
+  startUtc: string;
+  endUtc: string;
+  applicationId: string;
+  nodeId: string;
+  serviceId: string;
+  limit: string;
+}
+
+export function defaultHistoryFilters(now: Date = new Date()): HistoryFilters {
+  const start = new Date(now.getTime() - DEFAULT_HISTORY_WINDOW_SECONDS * 1000);
+  return {
+    startUtc: start.toISOString(),
+    endUtc: now.toISOString(),
+    applicationId: "",
+    nodeId: "",
+    serviceId: "",
+    limit: "",
+  };
+}
+
+// Part B -- a proactive, non-authoritative check only: never silently
+// narrows the request, only blocks submission with a clear message so an
+// obviously-oversized/invalid request never even round-trips. `undefined`
+// means "no obvious problem" -- the backend's own validation still runs.
+export function clientSideHistoryValidationError(filters: HistoryFilters): string | undefined {
+  const start = Date.parse(filters.startUtc);
+  const end = Date.parse(filters.endUtc);
+  if (filters.startUtc && Number.isNaN(start)) return `start time '${filters.startUtc}' is not a valid RFC 3339 timestamp.`;
+  if (filters.endUtc && Number.isNaN(end)) return `end time '${filters.endUtc}' is not a valid RFC 3339 timestamp.`;
+  if (!Number.isNaN(start) && !Number.isNaN(end)) {
+    if (start > end) return "Start time must not be after end time.";
+    if ((end - start) / 1000 > MAX_HISTORY_WINDOW_SECONDS) {
+      return `The requested window exceeds the maximum of ${MAX_HISTORY_WINDOW_SECONDS / 86_400} days. Narrow the start/end time instead of submitting -- the range is never silently shortened for you.`;
+    }
+  }
+  if (filters.limit) {
+    const limitValue = Number(filters.limit);
+    if (!Number.isInteger(limitValue) || limitValue < 1) return "Result limit must be a positive whole number.";
+  }
+  return undefined;
+}
+
+export function historyObservationIdentityLine(subject: DMonitorSubject): string {
+  const { applicationId, serviceId } = subjectDisplayIdentity(subject);
+  const parts = [subjectKindLabel(subject)];
+  if (applicationId) parts.push(`app: ${applicationId}`);
+  if (serviceId) parts.push(`service: ${serviceId}`);
+  return parts.join(" · ");
+}
+
 // ---- Display mappings (enum -> label/tone only; never re-derives state) ----
 
 // Part BA -- labeled as RUNTIME OBSERVATION health, never business/

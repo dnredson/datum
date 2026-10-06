@@ -20,6 +20,8 @@ import { proposalReviewView } from "./pages/proposal-review.ts";
 import { ReconciliationClient } from "./api/reconciliation.ts";
 import { reconciliationView } from "./pages/reconciliation.ts";
 import { DMonitorConvergenceClient } from "./api/dmonitor-convergence.ts";
+import { DMonitorHistoryClient } from "./api/dmonitor-history.ts";
+import { historyView } from "./pages/history.ts";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Console root missing");
@@ -151,6 +153,8 @@ async function render(route: Route): Promise<void> {
         ? "Continuum"
         : route.kind === "project_placement"
           ? "Placement"
+          : route.kind === "project_history"
+            ? "History"
           : route.kind === "project_proposal_review"
             ? "Proposal review"
             : route.kind === "project_application_deploy"
@@ -165,11 +169,11 @@ async function render(route: Route): Promise<void> {
   document.title = `${title} · DATUM Console`;
   document.querySelector("#page-title")!.textContent = title;
   document.querySelector("#project-context")!.textContent =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_history" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"
       ? route.projectId
       : "";
   document.querySelector<HTMLElement>("#project-context")!.title =
-    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"
+    route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_history" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"
       ? route.projectId
       : "";
   for (const nav of document.querySelectorAll<HTMLAnchorElement>(
@@ -178,7 +182,7 @@ async function render(route: Route): Promise<void> {
     const active =
       nav.dataset.nav === route.kind ||
       (nav.dataset.nav === "projects" &&
-        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"));
+        (route.kind === "project" || route.kind === "project_graph" || route.kind === "project_graph_editor" || route.kind === "project_continuum" || route.kind === "project_placement" || route.kind === "project_history" || route.kind === "project_proposal_review" || route.kind === "project_application_deploy"));
     if (active) nav.setAttribute("aria-current", "page");
     else nav.removeAttribute("aria-current");
   }
@@ -204,6 +208,17 @@ async function render(route: Route): Promise<void> {
         if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
       },
     );
+    page.replaceChildren(editor.element);
+    editor.mount();
+    return;
+  }
+  if (route.kind === "project_history") {
+    document.querySelector(".workspace-toolbar .eyebrow")!.textContent = "PROJECT · HISTORICAL EXPLORER (READ ONLY)";
+    document.querySelector(".sidebar-footer span")!.textContent = "Canonical persisted DMonitor evidence only · no convergence recomputation, no remediation";
+    setConnection("Connecting");
+    editor = historyView(route.projectId, new DMonitorHistoryClient(route.projectId, signal), (ready) => {
+      if (!signal.aborted) setConnection(ready ? "Connected" : "Degraded");
+    });
     page.replaceChildren(editor.element);
     editor.mount();
     return;
