@@ -1568,6 +1568,12 @@ pub struct OperationsSources {
     scheduler: SourceSection<MonitoringSchedulerStatus>,
     expected_streams: Vec<super::active_monitoring::DMonitorStreamSelector>,
     policy: DMonitorFreshnessPolicyV1,
+    /// Phase 141B: additive. Needed only by `application_overview`'s own
+    /// readiness section (DIoT convergence/readiness requires it, exactly
+    /// like `api::dmonitor_readiness`'s own handler already loads it) --
+    /// the pre-existing `convergence` section never needed it since that
+    /// code path only ever evaluated D-Serv convergence here.
+    diot_runtime_binding: SourceSection<super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1>,
 }
 #[derive(Debug, Clone, Copy)]
 pub enum OperationsSource {
@@ -1576,6 +1582,7 @@ pub enum OperationsSource {
     DMonitor,
     Nodes,
     Scheduler,
+    DiotRuntimeBinding,
 }
 impl Default for OperationsSources {
     fn default() -> Self {
@@ -1588,6 +1595,7 @@ impl Default for OperationsSources {
             scheduler: SourceSection::NotConfigured,
             expected_streams: vec![],
             policy: Default::default(),
+            diot_runtime_binding: SourceSection::NotConfigured,
         }
     }
 }
@@ -1607,6 +1615,9 @@ impl OperationsSources {
             OperationsSource::DMonitor => self.dmonitor = SourceSection::from_result(Err(issue)),
             OperationsSource::Nodes => self.nodes = SourceSection::from_result(Err(issue)),
             OperationsSource::Scheduler => self.scheduler = SourceSection::from_result(Err(issue)),
+            OperationsSource::DiotRuntimeBinding => {
+                self.diot_runtime_binding = SourceSection::from_result(Err(issue))
+            }
         }
         self
     }
@@ -1700,6 +1711,15 @@ impl OperationsSources {
             dnode_registry::validate_persisted_dnode_registry_integrity(&state)
                 .map(|_| state)
                 .map_err(|e| error(ReadErrorKind::SourceCorrupt, "dnode_registry", e)),
+        );
+        self
+    }
+    /// Phase 141B: additive, mirrors `with_nodes`'s own shape exactly.
+    pub fn with_diot_runtime_binding(mut self, state: super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1) -> Self {
+        self.diot_runtime_binding = SourceSection::from_result(
+            super::diot_runtime_binding::validate_persisted_diot_runtime_binding_registry_integrity(&state)
+                .map(|_| state)
+                .map_err(|e| error(ReadErrorKind::SourceCorrupt, "diot_runtime_binding_registry", e)),
         );
         self
     }
@@ -1902,6 +1922,40 @@ fn convergence_view(
         findings: page(v.findings, limit),
     }
 }
+/// Phase 141B. Mirrors `ApplicationConvergenceView`'s own shape/discipline
+/// exactly, for the readiness dimension -- a structurally SEPARATE section,
+/// never merged with convergence (section stays independently
+/// `SourceSection`-wrapped on `ApplicationOperationsOverview`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ApplicationReadinessView {
+    pub evaluated_at_utc: String,
+    pub readiness: super::dmonitor_readiness::DMonitorReadinessV1,
+    pub findings: BoundedPage<super::dmonitor_readiness::DMonitorReadinessFindingV1>,
+}
+fn readiness_view(
+    v: super::dmonitor_readiness::DMonitorApplicationReadinessV1,
+    limit: u32,
+) -> ApplicationReadinessView {
+    let mut findings = v.findings;
+    findings.sort_by(|a, b| a.code.cmp(b.code).then(a.message.cmp(&b.message)));
+    ApplicationReadinessView {
+        evaluated_at_utc: v.evaluated_at_utc,
+        readiness: v.readiness,
+        findings: page(findings, limit),
+    }
+}
+/// Phase 141B. A small, bounded pointer into recently-recorded DMonitor
+/// evidence for this application -- evidence only (Part C1/C4): never a
+/// historical convergence/readiness verdict, never raw collector facts.
+/// `None` fields mean genuinely zero matching evidence exists, never a
+/// missing/unavailable distinction (that is what the enclosing
+/// `SourceSection` itself already expresses).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecentHistoryPointerView {
+    pub recent_observation_count: usize,
+    pub latest_received_at_utc: Option<String>,
+    pub latest_observation_id: Option<String>,
+}
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlannedPlacementView {
     pub proposal_id: String,
@@ -1931,9 +1985,24 @@ pub struct ApplicationOperationsOverview {
     pub observed_runtime: SourceSection<BoundedPage<ObservedRuntimeView>>,
     pub temporal_quality: SourceSection<BoundedPage<TemporalQualityView>>,
     pub convergence: SourceSection<ApplicationConvergenceView>,
+    /// Phase 141B: additive. Fail-closed Ready/NotReady governance,
+    /// reused verbatim from `dmonitor_readiness` -- this field never
+    /// recomputes or widens that engine's own rules, and never adds a
+    /// third aggregate state. Kept structurally separate from
+    /// `convergence` above (never merged into one "status").
+    pub readiness: SourceSection<ApplicationReadinessView>,
     pub reconciliation_execution: SourceSection<String>,
     pub alerts: SourceSection<AlertSection>,
     pub recent_events: SourceSection<BoundedPage<OperationalEventView>>,
+    /// Phase 141B: additive. A small, bounded pointer into Phase 140's own
+    /// Historical Explorer -- evidence only, never a historical
+    /// convergence/readiness reconstruction. Derived from the SAME
+    /// already-loaded `DMonitorStateV1` scan `observed_runtime` above
+    /// already performs (see `recent_history_pointer`); never a second
+    /// `core::dmonitor_history` query, so this section carries no
+    /// additional O(total history) cost beyond the state load every other
+    /// section here already requires.
+    pub recent_history: SourceSection<RecentHistoryPointerView>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProjectOperationsOverview {
@@ -2602,7 +2671,10 @@ generated_at_utc:canonical_at(at),
             }
             _ => self.deployment.map(|_| unreachable!()),
         };
-        let observed = self.dmonitor.map(|d| {
+        // Phase 141B: `recent_history` is derived from this SAME scan,
+        // before `observed_runtime`'s own `page(...)` truncation -- never a
+        // second `core::dmonitor_history` query/state load (Part M).
+        let observed_and_history = self.dmonitor.map(|d| {
             let mut records = BTreeMap::new();
             for streams in d.subject_index.values() {
                 for (key, seq) in streams {
@@ -2621,8 +2693,18 @@ generated_at_utc:canonical_at(at),
                     }
                 }
             }
-            page(records.into_values().collect(), q.limit)
+            let mut sorted: Vec<ObservedRuntimeView> = records.into_values().collect();
+            sorted.sort_by(|a, b| a.received_at_utc.cmp(&b.received_at_utc).then(a.observation_id.cmp(&b.observation_id)));
+            let latest = sorted.last();
+            let history = RecentHistoryPointerView {
+                recent_observation_count: sorted.len(),
+                latest_received_at_utc: latest.map(|v| v.received_at_utc.clone()),
+                latest_observation_id: latest.map(|v| v.observation_id.clone()),
+            };
+            (page(sorted, q.limit), history)
         });
+        let observed = observed_and_history.map(|(p, _)| p.clone());
+        let recent_history = observed_and_history.map(|(_, h)| h.clone());
         let convergence = match (&authority, &self.dmonitor) {
             (SourceSection::Available(authority), SourceSection::Available(d)) => {
                 SourceSection::Available(convergence_view(
@@ -2644,6 +2726,46 @@ generated_at_utc:canonical_at(at),
             (SourceSection::Unavailable(e), _) => SourceSection::Unavailable(e.clone()),
             _ => SourceSection::NotConfigured,
         };
+        // Phase 141B: readiness reuses `dmonitor_readiness` verbatim --
+        // never re-derived here -- and its own canonical, server-owned
+        // `default_readiness_policy()`, exactly like the dedicated
+        // `GET /api/v1/dmonitor/readiness/:p/:a` endpoint, independent of
+        // whatever freshness policy `self.policy`/`convergence` above
+        // happens to be using (Part B1: same engine, its own canonical
+        // policy -- not a second, divergent reimplementation).
+        let readiness = match (&authority, &self.dmonitor, &self.nodes, &self.diot_runtime_binding) {
+            (SourceSection::Available(authority), SourceSection::Available(dmonitor), SourceSection::Available(nodes), SourceSection::Available(diot_runtime_binding)) => {
+                match &self.deployment {
+                    SourceSection::Available(ddeploy_state) => SourceSection::Available(readiness_view(
+                        super::dmonitor_readiness::evaluate_application_readiness(
+                            project,
+                            application,
+                            project,
+                            authority.as_ref(),
+                            dmonitor,
+                            diot_runtime_binding,
+                            ddeploy_state,
+                            nodes,
+                            &super::dmonitor_readiness::default_readiness_policy(),
+                            &canonical_at(at),
+                        ),
+                        q.limit,
+                    )),
+                    SourceSection::Corrupt(e) => SourceSection::Corrupt(e.clone()),
+                    SourceSection::Unavailable(e) => SourceSection::Unavailable(e.clone()),
+                    _ => SourceSection::NotConfigured,
+                }
+            }
+            (SourceSection::Corrupt(e), ..)
+            | (_, SourceSection::Corrupt(e), ..)
+            | (_, _, SourceSection::Corrupt(e), _)
+            | (_, _, _, SourceSection::Corrupt(e)) => SourceSection::Corrupt(e.clone()),
+            (SourceSection::Unavailable(e), ..)
+            | (_, SourceSection::Unavailable(e), ..)
+            | (_, _, SourceSection::Unavailable(e), _)
+            | (_, _, _, SourceSection::Unavailable(e)) => SourceSection::Unavailable(e.clone()),
+            _ => SourceSection::NotConfigured,
+        };
         Ok(ApplicationOperationsOverview {
             generated_at_utc: canonical_at(at),
             project_id: project.into(),
@@ -2659,9 +2781,11 @@ generated_at_utc:canonical_at(at),
                 .temporal_views(Some(project), Some(application), at, q.limit)
                 .scoped(Some(project), Some(application)),
             convergence: convergence.scoped(Some(project), Some(application)),
+            readiness: readiness.scoped(Some(project), Some(application)),
             reconciliation_execution: SourceSection::NotConfigured,
             alerts: db.alerts,
             recent_events: db.events,
+            recent_history: recent_history.scoped(Some(project), Some(application)),
         })
     }
 }
@@ -3934,6 +4058,196 @@ mod tests {
             application.convergence,
             SourceSection::Unavailable(_)
         ));
+    }
+    // ----------------------------------------------- PHASE 141B: READINESS
+    fn ready_sources() -> OperationsSources {
+        OperationsSources::default()
+            .with_deployment(deployment(true))
+            .with_dmonitor(state(0, 0, true), Default::default(), expected())
+            .unwrap()
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_diot_runtime_binding(super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty())
+    }
+    #[test]
+    fn readiness_is_a_structurally_separate_section_from_convergence() {
+        let v = app(&ready_sources());
+        // Both present, independently -- never merged into one aggregate.
+        let _ = available(v.convergence);
+        let readiness = available(v.readiness);
+        assert_eq!(readiness.evaluated_at_utc, text(60));
+    }
+    #[test]
+    fn readiness_reuses_the_canonical_engine_exactly_as_the_dedicated_endpoint_would() {
+        let sources = ready_sources();
+        let v = app(&sources);
+        let overview_readiness = available(v.readiness);
+        let authority = ddeploy::active_placement_authority(&deployment(true), "p", "app")
+            .unwrap()
+            .unwrap();
+        let direct = super::super::dmonitor_readiness::evaluate_application_readiness(
+            "p",
+            "app",
+            "p",
+            Some(&authority),
+            &state(0, 0, true),
+            &super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty(),
+            &deployment(true),
+            &DNodeRegistryStateV1::empty(),
+            &super::super::dmonitor_readiness::default_readiness_policy(),
+            &text(60),
+        );
+        assert_eq!(overview_readiness.readiness, direct.readiness, "the overview must reach byte-identical readiness to a direct call against the same canonical engine/inputs");
+    }
+    #[test]
+    fn readiness_is_notready_with_no_accepted_authority_never_fabricated_ready() {
+        let sources = OperationsSources::default()
+            .with_deployment(deployment(false))
+            .with_dmonitor(state(0, 0, true), Default::default(), expected())
+            .unwrap()
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_diot_runtime_binding(super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty());
+        let v = app(&sources);
+        let readiness = available(v.readiness);
+        assert_eq!(readiness.readiness, super::super::dmonitor_readiness::DMonitorReadinessV1::NotReady);
+        assert!(!readiness.findings.items.is_empty(), "NotReady must always carry an explanatory finding, never a bare verdict");
+    }
+    #[test]
+    fn readiness_never_introduces_a_third_aggregate_state_and_findings_stay_typed() {
+        // Structural proof: the readiness field's own type is the real,
+        // two-state `DMonitorReadinessV1` and its findings stay the real
+        // typed `DMonitorReadinessFindingV1` -- never flattened to a
+        // generic string list (Part B3/B2). This compiles only if that
+        // remains true, so this test is itself the proof.
+        fn assert_type(_: super::super::dmonitor_readiness::DMonitorReadinessV1) {}
+        fn assert_findings_type(_: BoundedPage<super::super::dmonitor_readiness::DMonitorReadinessFindingV1>) {}
+        let v = app(&ready_sources());
+        let readiness = available(v.readiness);
+        assert_type(readiness.readiness);
+        assert_findings_type(readiness.findings);
+    }
+    #[test]
+    fn readiness_section_reflects_dmonitor_unavailability_like_every_other_dmonitor_backed_section() {
+        let sources = OperationsSources::default()
+            .with_deployment(deployment(true))
+            .with_source_error(
+                OperationsSource::DMonitor,
+                error(ReadErrorKind::SourceUnavailable, "dmonitor", "snapshot acquisition failed"),
+            )
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_diot_runtime_binding(super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty());
+        let v = app(&sources);
+        assert!(matches!(v.readiness, SourceSection::Unavailable(_)));
+        assert!(matches!(v.convergence, SourceSection::Unavailable(_)), "readiness and convergence must degrade the same honest way for the same missing source");
+    }
+    #[test]
+    fn readiness_section_reflects_diot_runtime_binding_unavailability_never_silently_ready() {
+        // Independent review Audit 52: readiness needs `diot_runtime_binding`
+        // for its own DIoT half even when this application has zero DIoT
+        // placements declared -- the engine itself decides that
+        // (`diot_required_count == 0` short-circuits to OK), but the
+        // SOURCE must still be genuinely available for readiness to be
+        // computed at all, mirroring every other required source here.
+        let sources = OperationsSources::default()
+            .with_deployment(deployment(true))
+            .with_dmonitor(state(0, 0, true), Default::default(), expected())
+            .unwrap()
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_source_error(
+                OperationsSource::DiotRuntimeBinding,
+                error(ReadErrorKind::SourceUnavailable, "diot_runtime_binding_registry", "snapshot acquisition failed"),
+            );
+        let v = app(&sources);
+        assert!(matches!(v.readiness, SourceSection::Unavailable(_)), "readiness must never silently report Ready when a required source it depends on failed to load");
+        // Convergence does not depend on diot_runtime_binding at all (only
+        // D-Serv convergence is computed in this response) -- it must stay
+        // Available, proving the two sections fail independently, not in
+        // lockstep for an unrelated missing source.
+        assert!(matches!(v.convergence, SourceSection::Available(_)));
+    }
+    // ------------------------------------------ PHASE 141B: HISTORY POINTER
+    #[test]
+    fn recent_history_pointer_reflects_the_same_observations_as_observed_runtime_never_a_second_scan() {
+        let v = app(&ready_sources());
+        let observed = available(v.observed_runtime);
+        let history = available(v.recent_history);
+        assert_eq!(history.recent_observation_count, observed.items.len());
+        assert_eq!(history.latest_observation_id.as_deref(), Some("obs"));
+        assert_eq!(history.latest_received_at_utc.as_deref(), Some(text(0).as_str()));
+    }
+    #[test]
+    fn recent_history_pointer_is_honestly_empty_with_zero_matching_observations() {
+        let sources = OperationsSources::default()
+            .with_deployment(deployment(true))
+            .with_dmonitor(DMonitorStateV1::empty(), Default::default(), vec![])
+            .unwrap()
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_diot_runtime_binding(super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty());
+        let v = app(&sources);
+        let history = available(v.recent_history);
+        assert_eq!(history.recent_observation_count, 0);
+        assert_eq!(history.latest_observation_id, None);
+        assert_eq!(history.latest_received_at_utc, None);
+    }
+    #[test]
+    fn recent_history_pointer_never_carries_raw_facts_or_a_convergence_field() {
+        // Structural: `RecentHistoryPointerView` itself has no `facts` or
+        // `convergence`/`readiness`-shaped field at all -- proven by the
+        // serialized shape containing only the three documented keys.
+        let v = app(&ready_sources());
+        let history = available(v.recent_history);
+        let json = serde_json::to_value(&history).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(
+            obj.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["recent_observation_count".to_string(), "latest_received_at_utc".to_string(), "latest_observation_id".to_string()]),
+        );
+    }
+    #[test]
+    fn phase_141b_source_never_references_the_legacy_analysis_context_or_firebase_observation_pathway() {
+        // Independent review Audits 74-76: critical isolation proof. Scans
+        // this module's own source text (comments excluded, since this
+        // module's own doc comments legitimately NAME these legacy items to
+        // explain why they are not used).
+        let source = include_str!("operations_read_models.rs");
+        let before_tests = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let implementation_only: String = before_tests
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "operational_analysis_context",
+            "active_ai_context",
+            "ai_gnn_data_contract",
+            "get_latest_snapshot",
+            "build_global_events",
+        ] {
+            assert!(!implementation_only.contains(forbidden), "operations_read_models.rs must never reference legacy pathway '{forbidden}'");
+        }
+    }
+    #[test]
+    fn application_overview_isolates_project_and_application_scope_for_the_new_sections_too() {
+        // A second application's own observation must never leak into this
+        // application's readiness/history sections, mirroring the existing
+        // project/application isolation every other section already proves.
+        let mut evidence = state(0, 0, true);
+        let mut other = evidence.stream_head("p", "node", "monitor").unwrap().observation.clone();
+        other.observation_id = "other-app-obs".into();
+        other.sequence = 2;
+        if let DMonitorSubjectV1::DServRealization { application_id, .. } = &mut other.subject {
+            *application_id = "other-app".into();
+        }
+        dmonitor_state::ingest_observation(&mut evidence, "p", other, &text(0)).unwrap();
+        let sources = OperationsSources::default()
+            .with_deployment(deployment(true))
+            .with_dmonitor(evidence, Default::default(), expected())
+            .unwrap()
+            .with_nodes(DNodeRegistryStateV1::empty())
+            .with_diot_runtime_binding(super::super::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1::empty());
+        let v = app(&sources);
+        let history = available(v.recent_history);
+        assert_eq!(history.recent_observation_count, 1, "the other application's own observation must never be counted here");
+        assert_eq!(history.latest_observation_id.as_deref(), Some("obs"));
     }
     #[test]
     fn presentation_history_has_generation_and_cursor() {

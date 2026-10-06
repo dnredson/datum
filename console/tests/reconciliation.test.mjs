@@ -22,9 +22,9 @@ test("application deploy route parses and rebuilds for a variety of project/appl
     assert.deepEqual(parseRoute(path), { kind: "project_application_deploy", projectId, applicationId });
   }
 });
-test("application deploy route requires exactly /projects/:id/applications/:id/deploy -- shorter, longer, or differently-suffixed paths are Not Found", () => {
+test("application deploy route requires exactly /projects/:id/applications/:id/deploy -- /projects/:id/applications/:id alone is Phase 141B's own distinct application overview route, not deploy; other shapes are Not Found", () => {
   assert.equal(parseRoute("/projects/a/applications").kind, "not_found");
-  assert.equal(parseRoute("/projects/a/applications/app-1").kind, "not_found");
+  assert.deepEqual(parseRoute("/projects/a/applications/app-1"), { kind: "project_application_overview", projectId: "a", applicationId: "app-1" });
   assert.equal(parseRoute("/projects/a/applications/app-1/deploy/extra").kind, "not_found");
   assert.equal(parseRoute("/projects/a/applications//deploy").kind, "not_found");
 });

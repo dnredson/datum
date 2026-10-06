@@ -15,7 +15,7 @@ import {
   lifecycleBadge,
   temporalView,
 } from "../components/presentation.ts";
-import { projectPath } from "../app/router.ts";
+import { projectPath, applicationOverviewPath } from "../app/router.ts";
 import {
   activeAttention,
   subjectLabel,
@@ -429,8 +429,13 @@ export function projectWorkspaceView(data: ProjectOverview): HTMLElement {
     PROJECT_LIMITS.applications,
   )) {
     const row = el("article", "application-item");
+    const heading = el("h3", "small fw-semibold entity-identity");
+    const overviewLink = el("a", "", app.application_id);
+    overviewLink.href = applicationOverviewPath(data.project_id, app.application_id);
+    overviewLink.dataset.route = "";
+    heading.append(overviewLink);
     row.append(
-      el("h3", "small fw-semibold entity-identity", app.application_id),
+      heading,
       el(
         "p",
         "small text-secondary application-provenance",

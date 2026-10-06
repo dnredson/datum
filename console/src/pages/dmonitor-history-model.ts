@@ -53,7 +53,10 @@ function runtimeBindingRef(value: unknown): boolean {
 // Closed-set validator mirroring `DMonitorSubjectV1`'s 8 tagged variants
 // exactly -- a `kind` this validator does not recognize is REJECTED, never
 // permissively accepted (Part AW: no fictional states).
-function subject(value: unknown): value is DMonitorSubject {
+// Phase 141B: exported so `application-overview-model.ts` can validate the
+// SAME `DMonitorSubjectV1` shape (`ObservedRuntimeView.subject` carries the
+// identical type) without a third, drifting copy of this closed-set match.
+export function validDMonitorSubject(value: unknown): value is DMonitorSubject {
   if (!object(value) || !text(value.kind)) return false;
   switch (value.kind) {
     case "dnode":
@@ -94,7 +97,7 @@ function historicalObservation(value: unknown): value is HistoricalDMonitorObser
     text(value.monitor_instance_id) &&
     count(value.sequence) &&
     text(value.collector) &&
-    subject(value.subject) &&
+    validDMonitorSubject(value.subject) &&
     HEALTH.has(String(value.health)) &&
     timestamp(value.observed_at_utc) &&
     timestamp(value.received_at_utc) &&

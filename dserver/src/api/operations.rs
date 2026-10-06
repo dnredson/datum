@@ -61,6 +61,7 @@ impl OperationsApiRuntime {
                 control_state::DOMAIN_DDEPLOY_STATE,
                 control_state::DOMAIN_DMONITOR_STATE,
                 control_state::DOMAIN_DNODE_REGISTRY,
+                control_state::DOMAIN_DIOT_RUNTIME_BINDING_REGISTRY,
             ];
             let blobs = control_path
                 .as_ref()
@@ -79,6 +80,7 @@ impl OperationsApiRuntime {
                         (OperationsSource::Deployment, "ddeploy"),
                         (OperationsSource::DMonitor, "dmonitor"),
                         (OperationsSource::Nodes, "dnode_registry"),
+                        (OperationsSource::DiotRuntimeBinding, "diot_runtime_binding_registry"),
                     ] {
                         sources =
                             sources.with_source_error(source, issue(kind.clone(), name, e.clone()));
@@ -89,6 +91,7 @@ impl OperationsApiRuntime {
                         (domains[0], OperationsSource::Deployment, "ddeploy"),
                         (domains[1], OperationsSource::DMonitor, "dmonitor"),
                         (domains[2], OperationsSource::Nodes, "dnode_registry"),
+                        (domains[3], OperationsSource::DiotRuntimeBinding, "diot_runtime_binding_registry"),
                     ] {
                         if let Some(Some(blob)) = blobs.get(domain) {
                             sources = match source {
@@ -122,6 +125,17 @@ impl OperationsApiRuntime {
                                     blob
                                 ) {
                                     Ok(v) => sources.with_nodes(v),
+                                    Err(e) => sources.with_source_error(
+                                        source,
+                                        issue(ReadErrorKind::SourceCorrupt, name, e.to_string()),
+                                    ),
+                                },
+                                OperationsSource::DiotRuntimeBinding => match serde_json::from_str::<
+                                    crate::core::diot_runtime_binding::DIoTRuntimeBindingRegistryStateV1,
+                                >(
+                                    blob
+                                ) {
+                                    Ok(v) => sources.with_diot_runtime_binding(v),
                                     Err(e) => sources.with_source_error(
                                         source,
                                         issue(ReadErrorKind::SourceCorrupt, name, e.to_string()),
@@ -257,6 +271,10 @@ pub fn router(runtime: OperationsApiRuntime) -> Router {
             get(project_overview),
         )
         .route(
+            "/api/v1/operations/projects/:project_id/applications/:application_id",
+            get(application_overview),
+        )
+        .route(
             "/api/v1/operations/projects/:project_id/graph",
             get(project_graph),
         )
@@ -294,6 +312,39 @@ async fn project_overview(
     }
     runtime
         .build(move |sources, at, query| sources.project_overview(&project, at, &query))
+        .await
+        .map(|body| ([("cache-control", "no-store")], body))
+}
+
+/// Phase 141B. Thin read-only delegation to the already-built, already-
+/// tested `OperationsSources::application_overview` -- this handler
+/// performs no assembly logic of its own (Part A), mirroring
+/// `project_overview`'s own exact validation/header/cache-control
+/// convention.
+async fn application_overview(
+    State(runtime): State<OperationsApiRuntime>,
+    path: Result<Path<(String, String)>, PathRejection>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiFailure> {
+    let Path((project, application)) = path.map_err(|_| ApiFailure::invalid())?;
+    if project.is_empty()
+        || project.len() > 256
+        || project.trim() != project
+        || project.chars().any(char::is_control)
+        || application.is_empty()
+        || application.len() > 256
+        || application.trim() != application
+        || application.chars().any(char::is_control)
+        || headers
+            .get("x-datum-project")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            != Some(project.as_str())
+    {
+        return Err(ApiFailure::invalid());
+    }
+    runtime
+        .build(move |sources, at, query| sources.application_overview(&project, &application, at, &query))
         .await
         .map(|body| ([("cache-control", "no-store")], body))
 }
@@ -596,6 +647,71 @@ mod tests {
                 request.send().await.unwrap().status(),
                 StatusCode::BAD_REQUEST
             );
+        }
+    }
+    // ----------------------------------------------- PHASE 141B: APPLICATION OVERVIEW ROUTE
+    #[tokio::test]
+    async fn application_overview_scoping_and_encoded_identity_are_preserved() {
+        let server = serve(fixed_runtime()).await;
+        let client = reqwest::Client::new();
+        let path = format!(
+            "{}/api/v1/operations/projects/project%20one/applications/app%20one",
+            server.base
+        );
+        let response = client
+            .get(&path)
+            .header("X-Datum-Project", "project one")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.json::<Value>().await.unwrap();
+        assert_eq!(body["project_id"], "project one");
+        assert_eq!(body["application_id"], "app one");
+        for header in [None, Some("other")] {
+            let mut request = client.get(&path);
+            if let Some(h) = header {
+                request = request.header("X-Datum-Project", h);
+            }
+            assert_eq!(request.send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+    }
+    #[tokio::test]
+    async fn application_overview_wires_readiness_and_recent_history_sections_delegating_to_the_existing_builder() {
+        // Thin-delegation proof (Part A): this handler must not assemble
+        // its own shape -- the real response is exactly whatever
+        // `OperationsSources::application_overview` returns, proven here by
+        // asserting the new Phase 141B keys are present (even as
+        // `not_configured` against empty sources) rather than silently
+        // dropped by the API layer.
+        let server = serve(fixed_runtime()).await;
+        let path = format!("{}/api/v1/operations/projects/p/applications/app", server.base);
+        let response = reqwest::Client::new()
+            .get(&path)
+            .header("X-Datum-Project", "p")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.json::<Value>().await.unwrap();
+        for key in ["readiness", "recent_history", "convergence", "observed_runtime", "accepted", "alerts", "recent_events"] {
+            assert!(body.get(key).is_some(), "response must carry the '{key}' section (even as not_configured)");
+        }
+        assert_eq!(body["readiness"]["availability"], "not_configured");
+        assert_eq!(body["recent_history"]["availability"], "not_configured");
+    }
+    #[tokio::test]
+    async fn application_overview_invalid_path_is_safe() {
+        let server = serve(fixed_runtime()).await;
+        let client = reqwest::Client::new();
+        for app_segment in ["%20", "%FF", "a%0Ab"] {
+            let response = client
+                .get(format!("{}/api/v1/operations/projects/p/applications/{app_segment}", server.base))
+                .header("x-datum-project", "p")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "segment '{app_segment}' must be rejected safely, never a 500 or a panic");
         }
     }
     #[tokio::test]

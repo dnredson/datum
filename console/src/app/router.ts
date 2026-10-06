@@ -11,6 +11,7 @@ export type Route =
   | { kind: "project_history"; projectId: string }
   | { kind: "project_proposal_review"; projectId: string; proposalId: string }
   | { kind: "project_application_deploy"; projectId: string; applicationId: string }
+  | { kind: "project_application_overview"; projectId: string; applicationId: string }
   | { kind: "not_found" };
 export function validProjectId(id: string): boolean {
   return (
@@ -67,6 +68,22 @@ export function parseRoute(pathname: string): Route {
     }
     return { kind: "not_found" };
   }
+  // Phase 141B -- the application's own read-only operational context
+  // (never a push-execution surface, unlike `/deploy` above). Distinct
+  // literal path shape (no `/deploy` suffix) guarantees no collision with
+  // the deploy route matched immediately above.
+  const applicationOverviewMatch = /^\/projects\/([^/]+)\/applications\/([^/]+)\/?$/u.exec(pathname);
+  if (applicationOverviewMatch?.[1] && applicationOverviewMatch?.[2]) {
+    try {
+      const projectId = decodeURIComponent(applicationOverviewMatch[1]);
+      const applicationId = decodeURIComponent(applicationOverviewMatch[2]);
+      if (validProjectId(projectId) && validApplicationId(applicationId))
+        return { kind: "project_application_overview", projectId, applicationId };
+    } catch {
+      /* malformed encoding is Not Found, never a crash */
+    }
+    return { kind: "not_found" };
+  }
   const match = /^\/projects\/([^/]+)(\/graph(?:\/edit)?|\/continuum|\/placement|\/history)?\/?$/u.exec(pathname);
   if (match?.[1]) {
     try {
@@ -106,6 +123,11 @@ export function applicationDeployPath(projectId: string, applicationId: string):
   if (!validProjectId(projectId)) throw new Error("Invalid project identifier");
   if (!validApplicationId(applicationId)) throw new Error("Invalid application identifier");
   return `/projects/${encodeURIComponent(projectId)}/applications/${encodeURIComponent(applicationId)}/deploy`;
+}
+export function applicationOverviewPath(projectId: string, applicationId: string): string {
+  if (!validProjectId(projectId)) throw new Error("Invalid project identifier");
+  if (!validApplicationId(applicationId)) throw new Error("Invalid application identifier");
+  return `/projects/${encodeURIComponent(projectId)}/applications/${encodeURIComponent(applicationId)}`;
 }
 export function startRouter(render: (route: Route) => void, canNavigate: () => boolean = () => true): () => void {
   let lastPath = window.location.pathname;
