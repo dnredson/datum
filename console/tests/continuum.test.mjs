@@ -57,6 +57,14 @@ test("missing required structural fields are rejected", () => {
   delete f.nodes[0].structure.capacity;
   assert.ok(!validContinuumView(f));
 });
+// Phase 140A finding -- `generated_at_utc` is real-backend-generated via
+// plain `Utc::now().to_rfc3339()`, which renders as `+00:00`, never `Z`.
+// The validator must accept both spellings of the same UTC instant.
+test("validator accepts a +00:00-offset timestamp exactly as the real backend formatter produces, not only a Z-suffixed one", () => {
+  const f = { ...continuumFixture(), generated_at_utc: "2026-10-04T12:00:00.000000+00:00" };
+  assert.ok(validContinuumView(f));
+});
+
 test("malformed schema/timestamp is rejected", () => {
   assert.ok(!validContinuumView({ ...continuumFixture(), schema: "datum.continuum-view/2" }));
   assert.ok(!validContinuumView({ ...continuumFixture(), generated_at_utc: "not-a-timestamp" }));

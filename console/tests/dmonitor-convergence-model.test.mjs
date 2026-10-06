@@ -80,6 +80,14 @@ test("isConvergenceSettled is false for unknown (keep polling) and true for conv
   assert.ok(!isConvergenceSettled(undefined));
 });
 
+// Phase 140A finding -- `evaluated_at_utc` is real-backend-generated via
+// plain `Utc::now().to_rfc3339()`, which renders as `+00:00`, never `Z`.
+// The validator must accept BOTH spellings of the same UTC instant.
+test("validator accepts a +00:00-offset timestamp exactly as the real backend formatter produces, not only a Z-suffixed one", () => {
+  const withOffset = applicationConvergenceFixture("app-1", { evaluated_at_utc: "2026-10-05T12:00:05.123456+00:00" });
+  assert.ok(validDMonitorApplicationConvergence(withOffset));
+});
+
 test("findServicePlacement looks up by exact service_id, never a prefix/fuzzy match", () => {
   const convergence = applicationConvergenceFixture("app-1", { services: [servicePlacementFixture("service-a"), servicePlacementFixture("service-ab")] });
   assert.equal(findServicePlacement(convergence, "service-a")?.service_id, "service-a");

@@ -70,6 +70,7 @@ use api::dmonitor::{
 };
 use api::continuum_view::{get_continuum_view, get_project_continuum_view};
 use api::dmonitor_convergence::post_evaluate_dmonitor_convergence;
+use api::dmonitor_history::get_dmonitor_history;
 use api::dmonitor_readiness::get_dmonitor_readiness;
 use api::dnode_registry::{
     delete_dnode, get_authoritative_dcontinuum, get_dnode, list_dnodes, put_dnode,
@@ -524,6 +525,7 @@ async fn main() {
         .route("/api/v1/dmonitor/observations/:project_id/by-id/:observation_id", get(get_dmonitor_observation_by_id))
         .route("/api/v1/dmonitor/observations/:project_id/:node_id/:monitor_instance_id/head", get(get_dmonitor_stream_head))
         .route("/api/v1/dmonitor/convergence/:project_id/:application_id/evaluate", post(post_evaluate_dmonitor_convergence))
+        .route("/api/v1/dmonitor/history/:project_id", get(get_dmonitor_history))
         .route("/api/v1/dmonitor/readiness/:project_id/:application_id", get(get_dmonitor_readiness))
         .route("/api/v1/operations/continuum", get(get_continuum_view))
         .route("/api/v1/operations/projects/:project_id/continuum", get(get_project_continuum_view))

@@ -196,7 +196,7 @@ pub fn evaluate_freshness(
     })
 }
 
-fn parse_timestamp(value: &str, label: &str) -> Result<DateTime<Utc>, String> {
+pub(crate) fn parse_timestamp(value: &str, label: &str) -> Result<DateTime<Utc>, String> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|error| format!("{label} is not a valid RFC 3339 timestamp: '{value}': {error}"))

@@ -11,10 +11,16 @@ function object(value: unknown): value is Record<string, unknown> {
 function text(value: unknown): value is string {
   return typeof value === "string";
 }
+// Phase 140A finding: `generated_at_utc` (`core::continuum_view`) is
+// server-generated via plain `Utc::now().to_rfc3339()`, which chrono
+// renders with a `+00:00` offset suffix, never a literal `Z` -- see
+// `dmonitor-convergence-model.ts`'s own identical fix/comment for the full
+// explanation. Both valid RFC 3339 spellings of the same UTC instant are
+// accepted.
 function timestamp(value: unknown): boolean {
   return (
     typeof value === "string" &&
-    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/u.test(value) &&
     Number.isFinite(Date.parse(value))
   );
 }

@@ -29,10 +29,21 @@ function count(value: unknown): value is number {
 function bool(value: unknown): value is boolean {
   return typeof value === "boolean";
 }
+// Phase 140A finding (discovered building the sibling historical read
+// model): `evaluated_at_utc` here is server-generated via plain
+// `Utc::now().to_rfc3339()` (`api::dmonitor_convergence`), which chrono
+// renders with a `+00:00` offset suffix, NEVER a literal `Z` -- a
+// `Z`-only regex would reject every REAL response this endpoint ever
+// produces (fixtures only ever looked right because they hand-write `Z`
+// literals, never round-tripping through the real formatter). Both valid
+// RFC 3339 spellings of the same UTC instant are accepted; this is not a
+// "permissive parser accepting fictional states" (no enum/state value is
+// involved), only a timestamp SPELLING the validator was wrongly strict
+// about.
 function timestamp(value: unknown): boolean {
   return (
     typeof value === "string" &&
-    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/u.test(value) &&
     Number.isFinite(Date.parse(value))
   );
 }
