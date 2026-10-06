@@ -616,4 +616,42 @@ mod tests {
         let observation = build_dserv_realization_from_container_state(&context(), 1, NODE, PROJECT, "2026-01-01T00:00:05Z", &r, ContainerIdentityCheck::Confirmed).unwrap();
         assert!(observation.facts.get("desired_state").is_none());
     }
+
+    // Phase 139 closure review (Audit E) -- a mixed node (one native-process
+    // service, one container service) must produce independent canonical
+    // observations, never cross-emit or double-count. `observe_current_native_state`
+    // (native_process_runtime.rs) depends on a persisted native runtime-state
+    // FILE keyed by (project_id, node_id, service_id) that nothing ever
+    // writes for a container service -- so the complementary native-side
+    // skip is structurally guaranteed by that precondition, not duplicated
+    // here. This test proves the container side's own half of that
+    // independence directly: in ONE emitter (ONE cycle), a native-shaped
+    // report (no `trusted_container_name`, as every native service's report
+    // actually looks) is silently skipped while a container-shaped report in
+    // the SAME cycle is still correctly emitted, with its own independently
+    // allocated sequence (the skipped native-shaped report consumes a
+    // sequence too -- a permitted gap, never reused, matching this emitter's
+    // own documented contract).
+    #[test]
+    fn mixed_node_skips_native_shaped_report_and_still_emits_for_the_container_shaped_one() {
+        let mut native_shaped = report("irrelevant");
+        native_shaped.service_id = "native-service".to_string();
+        native_shaped.trusted_container_name = None;
+        let container_shaped = report("decode-container");
+
+        let mut emitter = ContainerMonitorEmitter::new(context());
+        let native_result = emitter.emit(NODE, PROJECT, "2026-01-01T00:00:05Z", &native_shaped);
+        let container_result = emitter.emit(NODE, PROJECT, "2026-01-01T00:00:05Z", &container_shaped);
+
+        assert!(native_result.is_none(), "a native-shaped report must never be emitted by the container producer");
+        let observation = container_result.expect("the container-shaped report in the same cycle must still be emitted");
+        match observation.subject {
+            DMonitorSubjectV1::DServRealization { service_id, .. } => assert_eq!(service_id, "decode"),
+            other => panic!("expected DServRealization, got {other:?}"),
+        }
+        // Sequence 1 was allocated (and left unpublished) for the skipped
+        // native-shaped report; the container-shaped one correctly got the
+        // NEXT sequence, never reusing 1.
+        assert_eq!(observation.sequence, 2);
+    }
 }

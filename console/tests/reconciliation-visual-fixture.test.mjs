@@ -305,6 +305,28 @@ test("convergence scenario K: command Succeeded but runtime independently observ
   });
 });
 
+test("convergence scenario M: live transition Converged -> Diverged across repeated polls (Audit AG)", async () => {
+  await withServer(async (baseUrl) => {
+    const first = await (await evaluateConvergence(baseUrl, "app-live-converged-then-diverged")).json();
+    assert.ok(validEvaluateConvergenceResponse(first, "project-a", "app-live-converged-then-diverged"));
+    assert.equal(first.convergence, "converged");
+    const second = await (await evaluateConvergence(baseUrl, "app-live-converged-then-diverged")).json();
+    assert.ok(validEvaluateConvergenceResponse(second, "project-a", "app-live-converged-then-diverged"));
+    assert.equal(second.convergence, "diverged", "a later poll must be able to replace an already-settled Converged result with Diverged -- proves live monitoring, not a frozen one-time check");
+  });
+});
+
+test("convergence scenario N: live recovery Unknown -> Converged across repeated polls, no remediation (Audit AH)", async () => {
+  await withServer(async (baseUrl) => {
+    const first = await (await evaluateConvergence(baseUrl, "app-live-diverged-then-converged")).json();
+    assert.ok(validEvaluateConvergenceResponse(first, "project-a", "app-live-diverged-then-converged"));
+    assert.equal(first.convergence, "unknown");
+    const second = await (await evaluateConvergence(baseUrl, "app-live-diverged-then-converged")).json();
+    assert.ok(validEvaluateConvergenceResponse(second, "project-a", "app-live-diverged-then-converged"));
+    assert.equal(second.convergence, "converged", "a later poll reflecting fresh correct evidence must update away from Unknown with no remediation action ever taken by this workspace");
+  });
+});
+
 test("convergence scenario L: multi-node partial -- one service converged, a different service diverged, same application", async () => {
   await withServer(async (baseUrl) => {
     const body = await (await evaluateConvergence(baseUrl, "app-multi-node-partial")).json();

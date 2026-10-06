@@ -158,6 +158,22 @@ const SCENARIOS = {
 const batches = new Map();
 let nextBatchSuffix = 1;
 
+// Phase 139 closure review (Audit AG/AH/BG) -- a deterministic, TEST-ONLY
+// per-applicationId call counter so a chosen handful of convergence
+// scenarios can transition across repeated polls (Converged -> Diverged,
+// and the reverse), proving Console's own polling loop actually picks up a
+// LATER, DIFFERENT result rather than only ever rendering a frozen
+// snapshot. This is fixture-only state (never production behavior): real
+// dserver recomputes convergence fresh from live DMonitorStateV1 on every
+// call; this counter merely stands in for "the real runtime changed
+// between two polls."
+const convergenceCallCounts = new Map();
+function nextConvergenceCallCount(applicationId) {
+  const count = (convergenceCallCounts.get(applicationId) ?? 0) + 1;
+  convergenceCallCounts.set(applicationId, count);
+  return count;
+}
+
 function scenarioFor(applicationId) {
   return SCENARIOS[applicationId];
 }
@@ -344,6 +360,39 @@ export function createFixtureServer() {
 // for observation").
 function convergenceResponseFor(applicationId) {
   switch (applicationId) {
+    // M. Live transition, Converged -> Diverged across repeated polls --
+    // proves Console's polling loop actually replaces an already-settled
+    // result with a LATER, different one (Audit AG), never freezing at the
+    // first-seen snapshot.
+    case "app-live-converged-then-diverged": {
+      const firstDiverged = nextConvergenceCallCount(applicationId) >= 2;
+      return evaluateConvergenceResponseFixture(applicationId, firstDiverged
+        ? {
+            convergence: "diverged",
+            findings: [{ code: "wrong_node", message: "service-a observed on a node other than its desired placement" }],
+            services: [
+              servicePlacementFixture("service-a", {
+                convergence: "diverged",
+                findings: [{ code: "wrong_node", message: "service-a observed on a node other than its desired placement" }],
+                admitted_evidence: [evidenceFixture({ node_id: "node-b", observed_subject_node_id: "node-b" })],
+              }),
+            ],
+          }
+        : { services: [servicePlacementFixture("service-a")] });
+    }
+    // N. Live recovery, Diverged/Unknown -> Converged across repeated polls
+    // -- the reverse of M (Audit AH): no remediation occurred, only a later
+    // observation proving the placement is now correct.
+    case "app-live-diverged-then-converged": {
+      const nowConverged = nextConvergenceCallCount(applicationId) >= 2;
+      return evaluateConvergenceResponseFixture(applicationId, nowConverged
+        ? { services: [servicePlacementFixture("service-a")] }
+        : {
+            convergence: "unknown",
+            findings: [{ code: "no_evidence", message: "no DMonitor evidence has been received for service-a yet" }],
+            services: [servicePlacementFixture("service-a", { convergence: "unknown", findings: [{ code: "no_evidence", message: "no evidence" }], admitted_evidence: [], excluded_evidence: [] })],
+          });
+    }
     // B. Native Converged (reuses Phase 138's own authorized-succeeded node).
     case "app-authorized-succeeded":
       return evaluateConvergenceResponseFixture(applicationId, {
