@@ -30,6 +30,18 @@ import {
 test("valid reconciliation request fixture round-trips through the validator", () => {
   assert.ok(validReconciliationRequest(reconciliationRequestFixture("node-a"), "project-a"));
 });
+test("reconciliation request accepts RFC3339 numeric offsets emitted by the Rust backend", () => {
+  const request = reconciliationRequestFixture("node-a");
+  request.created_at_utc = "2026-10-12T20:48:48.273621300+00:00";
+  request.expires_at_utc = "2026-10-12T21:48:48.273621300+00:00";
+  request.updated_at_utc = "2026-10-12T17:49:00.000000000-03:00";
+  assert.ok(validReconciliationRequest(request, "project-a"));
+});
+test("reconciliation request rejects timestamps without an RFC3339 timezone", () => {
+  const request = reconciliationRequestFixture("node-a");
+  request.updated_at_utc = "2026-10-12T20:49:00.000000000";
+  assert.ok(!validReconciliationRequest(request, "project-a"));
+});
 test("reconciliation request validator rejects an unknown status/mode and a project scope mismatch", () => {
   assert.ok(!validReconciliationRequest({ ...reconciliationRequestFixture("node-a"), status: "done" }));
   assert.ok(!validReconciliationRequest({ ...reconciliationRequestFixture("node-a"), mode: "deploy" }));

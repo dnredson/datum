@@ -46,6 +46,20 @@ test("deterministic proposal-response fixture validates as Pending, never Accept
   assert.ok(validProposalResponse(f, "project-a", "app-1"));
   assert.equal(f.state, "pending");
 });
+test("proposal response accepts RFC3339 numeric UTC offsets emitted by the Rust backend", () => {
+  const f = proposalResponseFixture();
+  f.proposal.created_at_utc = "2026-10-12T20:48:48.273621300+00:00";
+  assert.ok(validProposalResponse(f, "project-a", "app-1"));
+});
+test("proposal response accepts non-zero RFC3339 offsets but rejects a missing timezone", () => {
+  const offset = proposalResponseFixture();
+  offset.proposal.created_at_utc = "2026-10-12T17:48:48.273621300-03:00";
+  assert.ok(validProposalResponse(offset, "project-a", "app-1"));
+
+  const noZone = proposalResponseFixture();
+  noZone.proposal.created_at_utc = "2026-10-12T20:48:48.273621300";
+  assert.ok(!validProposalResponse(noZone, "project-a", "app-1"));
+});
 test("proposal response rejects an unknown lifecycle state", () => {
   const f = { ...proposalResponseFixture(), state: "activated" };
   assert.ok(!validProposalResponse(f, "project-a", "app-1"));

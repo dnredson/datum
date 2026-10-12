@@ -38,7 +38,7 @@ function bool(value: unknown): value is boolean {
 function timestamp(value: unknown): boolean {
   return (
     typeof value === "string" &&
-    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/u.test(value) &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/u.test(value) &&
     Number.isFinite(Date.parse(value))
   );
 }
