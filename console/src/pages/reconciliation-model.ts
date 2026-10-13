@@ -271,8 +271,10 @@ export function authorizationDisplayStatus(
 ): AuthorizationDisplayStatus {
   if (!authorization) return "none";
   if (!authorization.allow_host_mutation) return "not_authorized";
+  if (authorization.operation !== "reconcile" || authorization.persistence_scope !== "durable" || !authorization.expires_at_utc)
+    return "not_authorized";
   if (authorization.dgraph_id !== currentDgraphId || authorization.dgraph_revision !== currentDgraphRevision) return "wrong_target";
-  if (authorization.expires_at_utc && Date.parse(authorization.expires_at_utc) <= nowMs) return "expired";
+  if (Date.parse(authorization.expires_at_utc) <= nowMs) return "expired";
   return "authorized";
 }
 
