@@ -47,6 +47,48 @@ test("stale observation is excluded evidence, never admitted, and carries an exc
   assert.equal(observation.excluded_evidence[0].exclusion_reason, "stale_evidence");
   assert.equal(observation.placement_convergence, "unknown");
 });
+test("project-scoped current host resource observation validates without replacing declared capacity", () => {
+  const f = continuumProjectOverlayFixture("project-a");
+  const nodeA = f.nodes.find((n) => n.node_id === "node-a");
+  nodeA.resource_observation = {
+    resource_id: "resource:hw:abc",
+    observed_at_utc: "2026-10-04T11:59:50Z",
+    last_seen_utc: "2026-10-04T11:59:55Z",
+    age_seconds: 10,
+    cpu: { logical_cores: 4, usage_percent: 12.5 },
+    memory: { total_bytes: 4294967296, used_bytes: 1073741824, available_bytes: 3221225472 },
+    swap: { total_bytes: 1073741824, used_bytes: 0, available_bytes: 1073741824 },
+  };
+  assert.equal(nodeA.structure.capacity.cpu_cores, 8, "declared planning capacity remains a separate fact");
+  assert.ok(validContinuumView(f, "project-a"));
+});
+
+test("runtime usage on admitted placement evidence validates as typed telemetry", () => {
+  const f = continuumFixture();
+  const evidence = f.nodes[0].observations[0].admitted_evidence[0];
+  evidence.runtime_usage = {
+    cpu_percent: 2.5,
+    memory_used_bytes: 10485760,
+    memory_limit_bytes: 1073741824,
+    pids: 6,
+  };
+  assert.ok(validContinuumView(f));
+});
+
+test("malformed live resource values are rejected rather than coerced", () => {
+  const f = continuumProjectOverlayFixture("project-a");
+  f.nodes[0].resource_observation = {
+    resource_id: "resource:hw:abc",
+    observed_at_utc: "2026-10-04T11:59:50Z",
+    last_seen_utc: "2026-10-04T11:59:55Z",
+    age_seconds: 10,
+    cpu: { logical_cores: 4, usage_percent: 101 },
+    memory: { total_bytes: 100, used_bytes: 20, available_bytes: 80 },
+    swap: { total_bytes: 0, used_bytes: 0, available_bytes: 0 },
+  };
+  assert.ok(!validContinuumView(f, "project-a"));
+});
+
 test("unknown enum values anywhere are rejected, never silently coerced", () => {
   const f = continuumFixture();
   f.nodes[0].observations[0].placement_convergence = "not_a_real_state";
