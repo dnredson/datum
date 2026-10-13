@@ -21,7 +21,7 @@
 //!   for each accepted placement -- reused EXACTLY as that module computes
 //!   it, never reinterpreted or recomputed here.
 //!
-//! # Project-scoped physical resource observation
+//! # Physical resource observation
 //!
 //! The GLOBAL physical node set remains owned exclusively by
 //! `DNodeRegistryStateV1`. An optional `resource_observation` may be joined
@@ -31,7 +31,7 @@
 //! project partitions for the same physical node. This is live observation
 //! (CPU usage, observed memory/swap), never structural capacity, placement
 //! authority, or project ownership. The older `core::resource_observation`
- //! Firebase/manifest pathway remains unused.
+//! Firebase/manifest pathway remains unused.
 //!
 //! # Global, not project-partitioned (critical ownership rule)
 //!
