@@ -661,26 +661,38 @@ mod tests {
         }
     }
 
-    // 13/14. No desired-state authority mutation, no Docker mutation command
-    // -- structural proof: this module's own source never references a
-    // mutating Docker subcommand or spawns a process directly (it reuses
-    // `inspect_container_full`, the ONE read-only call, imported -- never
-    // calling `Command::new` itself).
+    // 13/14. No desired-state authority mutation, no Docker mutation command.
+    // Identity still reuses inspect_container_full; the ONLY direct process
+    // invocation allowed here is the observational docker-stats sample.
     #[test]
-    fn source_never_spawns_a_process_or_names_a_mutating_docker_subcommand() {
+    fn source_allows_only_read_only_docker_stats_and_no_mutating_subcommand() {
         let source = include_str!("container_dmonitor.rs");
         let before_tests = source.split("#[cfg(test)]").next().unwrap_or(source);
         // Scoped to actual CODE (comments excluded) -- this module's own doc
-        // comment legitimately NAMES these mutating subcommands in prose,
-        // to explain that none of them are ever invoked here.
+        // comment legitimately names mutating subcommands in prose.
         let implementation_only: String = before_tests
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!implementation_only.contains("Command::new"), "container_dmonitor.rs must never spawn a process directly -- it reuses inspect_container_full only");
-        for forbidden in ["\"run\"", "\"stop\"", "\"rm\"", "\"start\"", "\"kill\"", "\"restart\"", "docker run", "docker stop"] {
-            assert!(!implementation_only.contains(forbidden), "container_dmonitor.rs must never reference a mutating docker subcommand: '{forbidden}'");
+        assert_eq!(
+            implementation_only.matches("Command::new(\"docker\")").count(),
+            1,
+            "container monitoring may spawn only one direct docker command site"
+        );
+        assert!(
+            implementation_only.contains("\"stats\"")
+                && implementation_only.contains("\"--no-stream\""),
+            "the one direct Docker invocation must be the read-only stats sample"
+        );
+        for forbidden in [
+            "\"run\"", "\"stop\"", "\"rm\"", "\"start\"", "\"kill\"",
+            "\"restart\"", "\"pull\"", "\"create\"", "docker run", "docker stop",
+        ] {
+            assert!(
+                !implementation_only.contains(forbidden),
+                "container_dmonitor.rs must never reference a mutating docker subcommand: '{forbidden}'"
+            );
         }
     }
 
