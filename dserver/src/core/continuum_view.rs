@@ -72,6 +72,7 @@ use crate::core::dmonitor_interpretation::{
 };
 use crate::core::dmonitor_state::DMonitorStateV1;
 use crate::core::dnode_registry::DNodeRegistryStateV1;
+use crate::core::resource_registry::ResourceRegistryRecord;
 use crate::core::canonical_dmonitor::DMonitorHealthV1;
 
 pub const CONTINUUM_VIEW_SCHEMA: &str = "datum.continuum-view/1";
@@ -126,6 +127,11 @@ pub struct ContinuumViewV1 {
 pub struct ContinuumNodeV1 {
     pub node_id: String,
     pub structure: NodeStructureV1,
+    /// Latest project-scoped physical resource observation for the resource
+    /// currently bound to this D-Node. Observation only: never placement
+    /// authority and never a replacement for declared structural capacity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_observation: Option<ProjectResourceObservationV1>,
     pub accepted_placements: Vec<AcceptedPlacementRefV1>,
     pub placements_truncated: bool,
     pub observations: Vec<NodeObservationV1>,
@@ -143,6 +149,39 @@ pub struct NodeStructureV1 {
     /// (Phase 135 brief, section 7). Declared total != currently available.
     pub capacity: CanonicalNodeCapacityV1,
     pub dnode_abi_versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProjectResourceObservationV1 {
+    pub resource_id: String,
+    pub observed_at_utc: String,
+    pub last_seen_utc: String,
+    pub age_seconds: i64,
+    pub cpu: ObservedCpuResourcesV1,
+    pub memory: ObservedMemoryResourcesV1,
+    pub swap: ObservedMemoryResourcesV1,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ObservedCpuResourcesV1 {
+    pub logical_cores: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ObservedMemoryResourcesV1 {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RuntimeResourceUsageV1 {
+    pub cpu_percent: f64,
+    pub memory_used_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub pids: u64,
 }
 
 /// One accepted `(project, application, service) -> this node` binding,
@@ -199,6 +238,10 @@ pub struct NodeObservationV1 {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ObservationEvidenceV1 {
     pub monitor_instance_id: String,
+    /// Safe typed subset of DMonitor facts emitted by governed container
+    /// realization monitoring. Raw facts are never exposed by this view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_usage: Option<RuntimeResourceUsageV1>,
     /// The authoritative freshness verdict, copied verbatim from DMonitor's
     /// own policy evaluation -- never recomputed here (Phase 135 brief,
     /// section 12).
@@ -279,6 +322,7 @@ pub fn build_continuum_view(
                         capacity: node.capacity,
                         dnode_abi_versions: node.capabilities.dnode_abi_versions.clone(),
                     },
+                    resource_observation: None,
                     accepted_placements: Vec::new(),
                     placements_truncated: false,
                     observations: Vec::new(),
@@ -354,6 +398,7 @@ pub fn build_continuum_view(
                 .iter()
                 .map(|e| ObservationEvidenceV1 {
                     monitor_instance_id: e.monitor_instance_id.clone(),
+                    runtime_usage: runtime_usage_for_observation(dmonitor_state, &e.observation_id),
                     freshness: e.freshness,
                     health: e.health,
                     authority_correlation: e.authority_correlation,
@@ -424,6 +469,113 @@ fn observation_age_seconds(observed_at_utc: &str, now: DateTime<Utc>) -> i64 {
     match DateTime::parse_from_rfc3339(observed_at_utc) {
         Ok(observed_at) => (now - observed_at.with_timezone(&Utc)).num_seconds(),
         Err(_) => 0,
+    }
+}
+
+
+fn runtime_usage_for_observation(
+    state: &DMonitorStateV1,
+    observation_id: &str,
+) -> Option<RuntimeResourceUsageV1> {
+    let record = state.by_observation_id(observation_id)?;
+    let usage = record.observation.facts.get("resource_usage")?.as_object()?;
+    let cpu_percent = usage.get("cpu_percent")?.as_f64()?;
+    if !cpu_percent.is_finite() || cpu_percent < 0.0 {
+        return None;
+    }
+    let memory_used_bytes = usage.get("memory_used_bytes")?.as_u64()?;
+    let memory_limit_bytes = usage.get("memory_limit_bytes")?.as_u64()?;
+    let pids = usage.get("pids")?.as_u64()?;
+    if memory_limit_bytes > 0 && memory_used_bytes > memory_limit_bytes {
+        return None;
+    }
+    Some(RuntimeResourceUsageV1 {
+        cpu_percent,
+        memory_used_bytes,
+        memory_limit_bytes,
+        pids,
+    })
+}
+
+fn parse_observed_memory(value: &serde_json::Value) -> Option<ObservedMemoryResourcesV1> {
+    let object = value.as_object()?;
+    let total_bytes = object.get("total_bytes")?.as_u64()?;
+    let used_bytes = object.get("used_bytes")?.as_u64()?;
+    let available_bytes = object.get("available_bytes")?.as_u64()?;
+    if used_bytes > total_bytes || available_bytes > total_bytes {
+        return None;
+    }
+    Some(ObservedMemoryResourcesV1 {
+        total_bytes,
+        used_bytes,
+        available_bytes,
+    })
+}
+
+fn project_resource_observation(
+    record: &ResourceRegistryRecord,
+    now: DateTime<Utc>,
+) -> Option<ProjectResourceObservationV1> {
+    let resources = record.discovery.resources.as_object()?;
+    let cpu = resources.get("cpu")?.as_object()?;
+    let logical_cores = cpu.get("logical_cores")?.as_u64()?;
+    if logical_cores == 0 {
+        return None;
+    }
+    let usage_percent = match cpu.get("usage_percent") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let value = value.as_f64()?;
+            if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+                return None;
+            }
+            Some(value)
+        }
+    };
+    let observed_at = DateTime::parse_from_rfc3339(&record.discovery.observed_at_utc)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(ProjectResourceObservationV1 {
+        resource_id: record.resource_id.clone(),
+        observed_at_utc: record.discovery.observed_at_utc.clone(),
+        last_seen_utc: record.last_seen_utc.clone(),
+        age_seconds: (now - observed_at).num_seconds().max(0),
+        cpu: ObservedCpuResourcesV1 {
+            logical_cores,
+            usage_percent,
+        },
+        memory: parse_observed_memory(resources.get("memory")?)?,
+        swap: parse_observed_memory(resources.get("swap")?)?,
+    })
+}
+
+/// Adds live physical-resource observation to the SAME global D-Node objects
+/// for a project-scoped Continuum response. The project scope only identifies
+/// which Resource Registry binding supplied the observation; it never changes
+/// the structural node set or placement authority.
+pub fn attach_project_resource_observations(
+    view: &mut ContinuumViewV1,
+    records: &[ResourceRegistryRecord],
+    project_id: &str,
+    now: DateTime<Utc>,
+) {
+    let mut newest_by_node: BTreeMap<&str, &ResourceRegistryRecord> = BTreeMap::new();
+    for record in records.iter().filter(|record| record.project_id == project_id) {
+        let Some(node_id) = record.assigned_node_id.as_deref() else { continue };
+        let replace = newest_by_node
+            .get(node_id)
+            .and_then(|existing| DateTime::parse_from_rfc3339(&existing.last_seen_utc).ok())
+            .zip(DateTime::parse_from_rfc3339(&record.last_seen_utc).ok())
+            .map(|(existing, candidate)| candidate > existing)
+            .unwrap_or(!newest_by_node.contains_key(node_id));
+        if replace {
+            newest_by_node.insert(node_id, record);
+        }
+    }
+    for node in &mut view.nodes {
+        node.resource_observation = newest_by_node
+            .get(node.node_id.as_str())
+            .and_then(|record| project_resource_observation(record, now));
     }
 }
 
