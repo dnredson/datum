@@ -23,6 +23,34 @@ export interface ContinuumNodeStructure {
   dnode_abi_versions: string[];
 }
 
+export interface ObservedCpuResources {
+  logical_cores: number;
+  usage_percent?: number;
+}
+
+export interface ObservedMemoryResources {
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+}
+
+export interface ProjectResourceObservation {
+  resource_id: string;
+  observed_at_utc: string;
+  last_seen_utc: string;
+  age_seconds: number;
+  cpu: ObservedCpuResources;
+  memory: ObservedMemoryResources;
+  swap: ObservedMemoryResources;
+}
+
+export interface RuntimeResourceUsage {
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_limit_bytes: number;
+  pids: number;
+}
+
 // PLACEMENT AUTHORITY only -- never ownership. See
 // `documentation/reference/phase135-continuum-view.md`.
 export interface AcceptedPlacementRef {
@@ -42,6 +70,7 @@ export type DMonitorConvergence = "converged" | "diverged" | "unknown";
 
 export interface ObservationEvidence {
   monitor_instance_id: string;
+  runtime_usage?: RuntimeResourceUsage;
   freshness: DMonitorFreshness;
   health: DMonitorHealth;
   authority_correlation: AuthorityCorrelation;
@@ -77,6 +106,7 @@ export interface NodeObservation {
 export interface ContinuumNode {
   node_id: string;
   structure: ContinuumNodeStructure;
+  resource_observation?: ProjectResourceObservation;
   accepted_placements: AcceptedPlacementRef[];
   placements_truncated: boolean;
   observations: NodeObservation[];
