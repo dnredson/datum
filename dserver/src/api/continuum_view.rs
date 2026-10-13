@@ -83,9 +83,10 @@ pub struct ContinuumQuery {
 
 /// `GET /api/v1/operations/continuum[?project_id=...]` -- the GLOBAL
 /// Continuum View. The physical node set is always the full, global
-/// registry; `project_id`, if given, only adds a [`ProjectOverlayV1`]
-/// (`core::continuum_view::ProjectOverlayV1`) onto the SAME node list --
-/// it never filters or re-scopes `nodes` itself.
+/// registry. `project_id`, if given, adds a [`ProjectOverlayV1`]
+/// (`core::continuum_view::ProjectOverlayV1`) onto the SAME node list and
+/// scopes the optional Resource Registry telemetry attached to those nodes.
+/// It never filters or re-scopes the D-Node inventory itself.
 pub async fn get_continuum_view(
     Query(query): Query<ContinuumQuery>,
 ) -> Result<JsonResponse<ContinuumViewV1>, ApiError> {
@@ -98,8 +99,9 @@ pub async fn get_continuum_view(
 }
 
 /// `GET /api/v1/operations/projects/:project_id/continuum` -- identical
-/// physical data to the global route, with `project_id`'s overlay always
-/// populated. Mirrors the existing `/api/v1/operations/projects/:project/dgraph-editor`
+/// physical D-Node structure to the global route, with `project_id`'s
+/// placement overlay always populated and host telemetry sourced only from
+/// that project's matching Resource Registry observation. Mirrors the existing `/api/v1/operations/projects/:project/dgraph-editor`
 /// path convention (`api::dgraph_editor`).
 pub async fn get_project_continuum_view(
     Path(project_id): Path<String>,
