@@ -27,7 +27,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::core::continuum_view::{
-    attach_project_resource_observations, build_continuum_view, ContinuumViewV1,
+    attach_resource_observations, build_continuum_view, ContinuumViewV1,
 };
 use crate::core::dmonitor_readiness::default_readiness_policy;
 use crate::core::dmonitor_state::load_state as load_dmonitor_state;
@@ -109,15 +109,13 @@ pub async fn get_project_continuum_view(
 }
 
 async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<ContinuumViewV1>, ApiError> {
-    // Resource Registry state is project-scoped and uses an independent
-    // lock/domain. Clone it BEFORE the established DDeploy/DNode/DMonitor
-    // lock chain so this additive observation cannot introduce a lock-order
-    // cycle. Global Continuum deliberately carries no project-scoped
-    // resource observation.
-    let resource_records = project_id
-        .map(crate::api::resource_registry::resource_registry_snapshot)
-        .transpose()
-        .map_err(internal_error)?;
+    // Resource Registry state uses an independent lock/domain. Clone all
+    // observation records BEFORE the established DDeploy/DNode/DMonitor lock
+    // chain so this additive read cannot introduce a lock-order cycle.
+    // Project scope is applied only when the observation is attached; the
+    // D-Node inventory itself always remains global.
+    let resource_records =
+        crate::api::resource_registry::resource_registry_all_snapshot().map_err(internal_error)?;
 
     // Reuses DMonitor's own server-owned default freshness policy
     // (`core::dmonitor_readiness::default_readiness_policy`) -- never a
@@ -152,9 +150,7 @@ async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<Continu
         project_id,
         now,
     );
-    if let (Some(project_id), Some(records)) = (project_id, resource_records.as_deref()) {
-        attach_project_resource_observations(&mut view, records, project_id, now);
-    }
+    attach_resource_observations(&mut view, &resource_records, project_id, now);
     Ok(JsonResponse(view))
 }
 
@@ -260,11 +256,11 @@ mod tests {
     }
 
     #[test]
-    fn resource_registry_snapshot_occurs_before_the_established_transaction_lock_chain() {
+    fn resource_registry_all_snapshot_occurs_before_the_established_transaction_lock_chain() {
         let source = production_source();
         let start = source.find("async fn build_response(").unwrap();
         let body = &source[start..];
-        let resource_pos = body.find("resource_registry_snapshot").unwrap();
+        let resource_pos = body.find("resource_registry_all_snapshot").unwrap();
         let ddeploy_lock_pos = body.find("ddeploy::ddeploy_transaction()").unwrap();
         assert!(
             resource_pos < ddeploy_lock_pos,
