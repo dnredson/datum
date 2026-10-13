@@ -52,7 +52,7 @@ function nullableText(value: unknown): boolean {
 const REQUEST_STATUSES = new Set(["pending", "claimed", "attempted", "stale", "expired"]);
 const BATCH_STATUSES = new Set(["pending", "executing", "succeeded", "partial", "failed", "unknown", "stale"]);
 const ATTEMPT_STATUSES = new Set(["succeeded", "partial", "failed", "unknown"]);
-const ACTION_RESULTS = new Set(["no_op", "mutated", "blocked", "unknown"]);
+const ACTION_RESULTS = new Set(["no_op", "suggested", "mutated", "blocked", "unknown"]);
 const MODES = new Set(["preview", "execute"]);
 
 export function validReconciliationRequest(value: unknown, projectId?: string): value is ReconciliationRequest {
@@ -239,12 +239,14 @@ export const ATTEMPT_STATUS_TONE: Record<ReconciliationAttemptStatus, "neutral" 
 // Create/Start/Replace/Remove vocabulary to surface.
 export const ACTION_RESULT_LABEL: Record<ReconciliationActionResult, string> = {
   no_op: "No change",
+  suggested: "Suggested (preview)",
   mutated: "Mutated",
   blocked: "Blocked",
   unknown: "Unknown",
 };
 export const ACTION_RESULT_TONE: Record<ReconciliationActionResult, "neutral" | "info" | "success" | "warning" | "danger"> = {
   no_op: "neutral",
+  suggested: "info",
   mutated: "success",
   blocked: "warning",
   unknown: "neutral",
