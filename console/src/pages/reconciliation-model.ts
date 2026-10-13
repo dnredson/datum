@@ -234,8 +234,8 @@ export const ATTEMPT_STATUS_TONE: Record<ReconciliationAttemptStatus, "neutral" 
 };
 
 // Only the distinctions the backend itself actually exposes (Part X) --
-// never invented. "No-op" / "Mutated" / "Blocked" / "Unknown" exactly
-// mirror `ReconciliationActionResult`; there is no richer
+// never invented. "No-op" / "Suggested" / "Mutated" / "Blocked" /
+// "Unknown" exactly mirror `ReconciliationActionResult`; there is no richer
 // Create/Start/Replace/Remove vocabulary to surface.
 export const ACTION_RESULT_LABEL: Record<ReconciliationActionResult, string> = {
   no_op: "No change",
@@ -253,8 +253,9 @@ export const ACTION_RESULT_TONE: Record<ReconciliationActionResult, "neutral" | 
 };
 
 // Part E1 -- authorization status, computed ONLY from fields the server
-// already supplies (`allow_host_mutation`, `expires_at_utc`,
-// `dgraph_revision` vs. the slice's own CURRENT `dgraph_revision`). This is
+// already supplies (`allow_host_mutation`, reconcile operation, durable
+// scope, finite `expires_at_utc`, and `dgraph_revision` vs. the slice's
+// own CURRENT `dgraph_revision`). This is
 // not re-deriving dserver's own lease-expiry math (that remains
 // `should_restore_authorization`'s job at the moment of actual mutation) --
 // it is a DISPLAY-ONLY read of already-served fields, same spirit as every
