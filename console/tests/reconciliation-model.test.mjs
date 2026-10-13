@@ -108,10 +108,31 @@ test("authorizationDisplayStatus distinguishes none/not_authorized/wrong_target/
   assert.equal(authorizationDisplayStatus(authorizationFixture("node-a", { expires_at_utc: "2026-10-05T12:00:00Z" }), "dgraph:project-a", 7, now), "expired");
   assert.equal(authorizationDisplayStatus(authorizationFixture("node-a"), "dgraph:project-a", 7, now), "authorized");
 });
-test("authorizationDisplayStatus treats a missing expires_at_utc as never expiring", () => {
-  const authorization = authorizationFixture("node-a");
-  delete authorization.expires_at_utc;
-  assert.equal(authorizationDisplayStatus(authorization, "dgraph:project-a", 7, Date.parse("2099-01-01T00:00:00Z")), "authorized");
+test("authorizationDisplayStatus refuses legacy/process/non-finite authorization for host mutation", () => {
+  const noExpiry = authorizationFixture("node-a");
+  delete noExpiry.expires_at_utc;
+  assert.equal(
+    authorizationDisplayStatus(noExpiry, "dgraph:project-a", 7, Date.parse("2026-10-05T12:30:00Z")),
+    "not_authorized",
+  );
+  assert.equal(
+    authorizationDisplayStatus(
+      authorizationFixture("node-a", { persistence_scope: "process" }),
+      "dgraph:project-a",
+      7,
+      Date.parse("2026-10-05T12:30:00Z"),
+    ),
+    "not_authorized",
+  );
+  assert.equal(
+    authorizationDisplayStatus(
+      authorizationFixture("node-a", { operation: "rollback" }),
+      "dgraph:project-a",
+      7,
+      Date.parse("2026-10-05T12:30:00Z"),
+    ),
+    "not_authorized",
+  );
 });
 
 test("terminal status helpers match exactly the backend's own terminal states", () => {
