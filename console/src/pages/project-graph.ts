@@ -142,7 +142,7 @@ export function projectGraphView(
       );
     if (e.resource_usage) {
       evidenceDetails.append(
-        el("p", "small fw-semibold", "Current container resource sample"),
+        el("p", "small fw-semibold", "Container resource sample"),
         el("p", "small", `Current container CPU · ${e.resource_usage.cpu_percent.toFixed(1)}%`),
         el(
           "p",
@@ -397,9 +397,13 @@ export function projectGraphView(
               ),
             );
           if (node.kind === "dserv") {
-            const currentUsage = evidence.filter(
-              (item) => item.logical_node_id === node.id && item.resource_usage !== undefined,
-            );
+            const currentUsage = evidence.filter((item) => {
+              if (item.logical_node_id !== node.id || item.resource_usage === undefined) return false;
+              const temporal = runtime?.temporal_quality.find(
+                (candidate) => candidate.observation_id === item.observation_id,
+              );
+              return temporal?.observation_freshness === "fresh";
+            });
             detailBody.append(
               el("h3", "small fw-semibold mt-3", "Current runtime resource usage"),
             );
@@ -408,7 +412,7 @@ export function projectGraphView(
                 el(
                   "p",
                   "small text-secondary",
-                  "No current container resource telemetry is available for this D-Serv.",
+                  "No fresh container resource telemetry is currently available for this D-Serv.",
                 ),
               );
             } else {
