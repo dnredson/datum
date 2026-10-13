@@ -26,7 +26,9 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::continuum_view::{build_continuum_view, ContinuumViewV1};
+use crate::core::continuum_view::{
+    attach_project_resource_observations, build_continuum_view, ContinuumViewV1,
+};
 use crate::core::dmonitor_readiness::default_readiness_policy;
 use crate::core::dmonitor_state::load_state as load_dmonitor_state;
 use crate::core::dnode_registry::load_state as load_dnode_registry_state;
@@ -107,6 +109,16 @@ pub async fn get_project_continuum_view(
 }
 
 async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<ContinuumViewV1>, ApiError> {
+    // Resource Registry state is project-scoped and uses an independent
+    // lock/domain. Clone it BEFORE the established DDeploy/DNode/DMonitor
+    // lock chain so this additive observation cannot introduce a lock-order
+    // cycle. Global Continuum deliberately carries no project-scoped
+    // resource observation.
+    let resource_records = project_id
+        .map(crate::api::resource_registry::resource_registry_snapshot)
+        .transpose()
+        .map_err(internal_error)?;
+
     // Reuses DMonitor's own server-owned default freshness policy
     // (`core::dmonitor_readiness::default_readiness_policy`) -- never a
     // caller-suppliable or independently-invented one (Phase 135 brief,
@@ -132,7 +144,7 @@ async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<Continu
     // mirrors `get_dmonitor_readiness`'s identical rule).
     let now = Utc::now();
 
-    let view = build_continuum_view(
+    let mut view = build_continuum_view(
         &dnode_registry_state,
         &ddeploy_state,
         &dmonitor_state,
@@ -140,6 +152,9 @@ async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<Continu
         project_id,
         now,
     );
+    if let (Some(project_id), Some(records)) = (project_id, resource_records.as_deref()) {
+        attach_project_resource_observations(&mut view, records, project_id, now);
+    }
     Ok(JsonResponse(view))
 }
 
