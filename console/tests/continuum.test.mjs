@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { continuumFixture, continuumProjectOverlayFixture } from "./continuum-fixture.mjs";
 import { validContinuumView } from "../src/pages/continuum-model.ts";
 
@@ -142,4 +143,20 @@ test("a second, independently-epoched monitor_instance_id (as a container produc
   });
   assert.ok(validContinuumView(f), "a container producer's own evidence stream must validate with no schema change");
   assert.equal(nodeA.observations[0].admitted_evidence.length, 2, "both the native and container evidence entries for the same placement must coexist");
+});
+
+
+test("placement_ref taps route to the placement inspector instead of being treated as a D-Node id", async () => {
+  const code = await readFile(new URL("../src/pages/continuum.ts", import.meta.url), "utf8");
+  assert.ok(code.includes('target.data("kind") === "placement_ref"'));
+  assert.ok(code.includes("selectPlacement("));
+  assert.ok(code.includes('target.data("parent_node_id")'));
+});
+
+test("Continuum inspector keeps declared capacity, current host resources, and current runtime usage visibly separate", async () => {
+  const code = await readFile(new URL("../src/pages/continuum.ts", import.meta.url), "utf8");
+  assert.ok(code.includes('"Structure"'));
+  assert.ok(code.includes('"Current host resources"'));
+  assert.ok(code.includes('"Current runtime usage"'));
+  assert.ok(code.includes("Observed host resources are live telemetry"));
 });
