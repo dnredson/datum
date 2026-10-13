@@ -24,14 +24,14 @@
 //! # Project-scoped physical resource observation
 //!
 //! The GLOBAL physical node set remains owned exclusively by
-//! `DNodeRegistryStateV1`. For a project-scoped response only, an optional
-//! `resource_observation` may be joined from that project's Stage-107
-//! Resource Registry record for the resource currently bound to the D-Node.
-//! This is live observation (CPU usage, observed memory/swap), never
-//! structural capacity, placement authority, or project ownership. The
-//! project scope identifies the observation source only; it never filters or
-//! redefines the global D-Node set. The older
-//! `core::resource_observation` Firebase/manifest pathway remains unused.
+//! `DNodeRegistryStateV1`. An optional `resource_observation` may be joined
+//! from Stage-107 Resource Registry discovery for the resource currently
+//! bound to the D-Node. A project-scoped Continuum uses only that project's
+//! records; the global Continuum may use the newest unambiguous record across
+//! project partitions for the same physical node. This is live observation
+//! (CPU usage, observed memory/swap), never structural capacity, placement
+//! authority, or project ownership. The older `core::resource_observation`
+ //! Firebase/manifest pathway remains unused.
 //!
 //! # Global, not project-partitioned (critical ownership rule)
 //!
@@ -549,35 +549,52 @@ fn project_resource_observation(
     })
 }
 
-/// Adds live physical-resource observation to the SAME global D-Node objects
-/// for a project-scoped Continuum response. The project scope only identifies
-/// which Resource Registry binding supplied the observation; it never changes
-/// the structural node set or placement authority.
-pub fn attach_project_resource_observations(
+/// Adds live physical-resource observation to the SAME global D-Node objects.
+/// Project scope, when present, restricts the observation source to that
+/// project's Resource Registry partition; it never filters or redefines the
+/// physical node set. In the global view, replicated records for the same
+/// canonical resource may be considered across projects, but conflicting
+/// distinct resource_ids bound to one D-Node are treated as ambiguous and
+/// omitted rather than guessed.
+pub fn attach_resource_observations(
     view: &mut ContinuumViewV1,
     records: &[ResourceRegistryRecord],
-    project_id: &str,
+    project_id: Option<&str>,
     now: DateTime<Utc>,
 ) {
-    let mut newest_by_node: BTreeMap<&str, &ResourceRegistryRecord> = BTreeMap::new();
-    for record in records.iter().filter(|record| record.project_id == project_id) {
+    let mut candidates_by_node: BTreeMap<&str, Vec<&ResourceRegistryRecord>> = BTreeMap::new();
+    for record in records.iter().filter(|record| {
+        record.state == "bound"
+            && project_id.is_none_or(|project_id| record.project_id == project_id)
+    }) {
         let Some(node_id) = record.assigned_node_id.as_deref() else { continue };
-        let replace = newest_by_node
-            .get(node_id)
-            .and_then(|existing| DateTime::parse_from_rfc3339(&existing.last_seen_utc).ok())
-            .zip(DateTime::parse_from_rfc3339(&record.last_seen_utc).ok())
-            .map(|(existing, candidate)| candidate > existing)
-            .unwrap_or(!newest_by_node.contains_key(node_id));
-        if replace {
-            newest_by_node.insert(node_id, record);
-        }
+        candidates_by_node.entry(node_id).or_default().push(record);
     }
+
     for node in &mut view.nodes {
-        node.resource_observation = newest_by_node
-            .get(node.node_id.as_str())
-            .and_then(|record| project_resource_observation(record, now));
+        let Some(candidates) = candidates_by_node.get(node.node_id.as_str()) else {
+            node.resource_observation = None;
+            continue;
+        };
+        let distinct_resources = candidates
+            .iter()
+            .map(|record| record.resource_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if distinct_resources.len() != 1 {
+            // Observation identity is ambiguous. Never pick a project or
+            // resource arbitrarily and accidentally imply physical ownership.
+            node.resource_observation = None;
+            continue;
+        }
+        let newest = candidates.iter().copied().max_by(|a, b| {
+            let a_time = DateTime::parse_from_rfc3339(&a.last_seen_utc).ok();
+            let b_time = DateTime::parse_from_rfc3339(&b.last_seen_utc).ok();
+            a_time.cmp(&b_time)
+        });
+        node.resource_observation = newest.and_then(|record| project_resource_observation(record, now));
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -917,7 +934,7 @@ mod tests {
             },
         };
 
-        attach_project_resource_observations(&mut view, &[record], "project-a", now());
+        attach_resource_observations(&mut view, &[record], Some("project-a"), now());
         let node = &view.nodes[0];
         assert_eq!(node.structure.capacity.cpu_cores, 1, "declared planning capacity is unchanged");
         let observed = node.resource_observation.as_ref().expect("project resource observation");
