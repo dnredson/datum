@@ -46,12 +46,12 @@
 //! NOT a closed, shared enum between the two crates -- re-deriving a
 //! precise Created/Started/Replaced/Removed distinction from it here would
 //! be guessing, not deriving. `classify_service_result` therefore uses only
-//! the two reliable, structurally-guaranteed signals every
-//! `OperationalServiceReconciliationReport` carries
-//! (`host_mutation_performed: bool`, and whether `execution_status` carries
-//! a `blocked`-prefixed code matching this codebase's established
-//! `BLOCKED_*` constant convention) and otherwise reports `Unknown` rather
-//! than fabricate a specific class it cannot prove. The raw
+//! structurally reliable signals: `host_mutation_performed: bool`, the
+//! established `blocked_*` prefix convention, and the agent's exact
+//! `execution_status="suggested"` value for a successful dry-run/Preview
+//! decision that deliberately performed no host mutation. Everything else
+//! remains `Unknown` rather than fabricating a specific class it cannot
+//! prove. The raw
 //! `execution_status`/`message` strings are retained verbatim alongside the
 //! classification on every `ReconciliationServiceResult`, so nothing is
 //! ever lost to this conservative collapse.
@@ -95,6 +95,11 @@ pub enum ReconciliationAttemptStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ReconciliationActionResult {
     NoOp,
+    /// The agent completed a dry-run/Preview decision and reported the
+    /// concrete action it would take, while intentionally performing no
+    /// host mutation. Distinct from NoOp: desired and observed state may
+    /// differ; the action was merely not executed.
+    Suggested,
     Mutated,
     Blocked,
     Unknown,
@@ -245,6 +250,9 @@ fn classify_service_result(host_mutation_performed: bool, execution_status: Opti
     if normalized.starts_with("blocked") {
         return ReconciliationActionResult::Blocked;
     }
+    if normalized == "suggested" {
+        return ReconciliationActionResult::Suggested;
+    }
     if normalized.is_empty()
         || normalized.contains("observed_only")
         || normalized.contains("no_op")
@@ -261,7 +269,12 @@ fn derive_status(services: &BTreeMap<String, ReconciliationServiceResult>) -> Re
         return ReconciliationAttemptStatus::Unknown;
     }
     let any_ok = services.values().any(|service| {
-        matches!(service.result, ReconciliationActionResult::NoOp | ReconciliationActionResult::Mutated)
+        matches!(
+            service.result,
+            ReconciliationActionResult::NoOp
+                | ReconciliationActionResult::Suggested
+                | ReconciliationActionResult::Mutated
+        )
     });
     let any_blocked = services.values().any(|service| matches!(service.result, ReconciliationActionResult::Blocked));
     let any_unknown = services.values().any(|service| matches!(service.result, ReconciliationActionResult::Unknown));
@@ -518,6 +531,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(record.status, ReconciliationAttemptStatus::Failed);
+    }
+
+    #[test]
+    fn suggested_preview_folds_to_suggested_and_succeeded_without_mutation() {
+        let payload = json!({"services":[
+            {
+                "service_id":"service-a",
+                "host_mutation_performed":false,
+                "execution_status":"suggested",
+                "message":"WASM requested ensure_service_running, but --execute was not provided"
+            }
+        ]});
+        let record = fold_evidence_into_attempt(
+            None, "reconciliation-attempt:preview", None, None, "2026-10-05T12:00:01Z", &evidence(&payload, 1),
+        )
+        .unwrap();
+        assert_eq!(record.services["service-a"].result, ReconciliationActionResult::Suggested);
+        assert!(!record.services["service-a"].host_mutation_performed);
+        assert_eq!(record.status, ReconciliationAttemptStatus::Succeeded);
     }
 
     #[test]
