@@ -61,13 +61,14 @@
 //!
 //! # No mutation, no second Docker-inspect parser (Part A4)
 //!
-//! This module performs exactly one read-only Docker operation
-//! (`operational_reconciliation::inspect_container_full`, reused verbatim --
-//! never a second inspect-JSON parser) and reuses
+//! Identity/state uses `operational_reconciliation::inspect_container_full`
+//! verbatim -- never a second inspect-JSON parser -- and reuses
 //! `operational_reconciliation::inspected_container_labels_match`/
 //! `ExecutionIdentityLabels` for the identical label comparison M1/M3
-//! convergence already performs. No `docker run`/`docker stop`/`docker rm`/
-//! any mutating command is ever invoked here.
+//! convergence already performs. Resource telemetry adds one independent,
+//! best-effort, read-only `docker stats --no-stream` sample; failure to read
+//! stats never changes health or gates reconciliation. No `docker run`/
+//! `docker stop`/`docker rm`/pull or any mutating command is invoked here.
 //!
 //! # Preview mode (Part B3)
 //!
