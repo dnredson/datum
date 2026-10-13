@@ -232,26 +232,27 @@ mod tests {
     }
 
     #[test]
-    fn project_scope_only_adds_resource_observation_never_changes_physical_node_authority() {
+    fn resource_observation_is_additive_never_changes_physical_node_authority() {
         // The same D-Node Registry / DDeploy / DMonitor states always feed
-        // build_continuum_view. Project scope may additionally select a
-        // Resource Registry observation AFTER the global node set is built,
-        // but must never select a different D-Node source or filter nodes.
+        // build_continuum_view. Resource Registry telemetry is attached
+        // AFTER the global node set is built; project scope may restrict its
+        // observation source, but must never select a different D-Node source
+        // or filter nodes.
         let source = production_source();
         let start = source.find("async fn build_response(").unwrap();
         let body = &source[start..];
         assert!(body.contains("build_continuum_view("));
-        assert!(body.contains("attach_project_resource_observations("));
+        assert!(body.contains("attach_resource_observations("));
         assert_eq!(
             body.matches("load_dnode_registry_state(&db_path)").count(),
             1,
             "there must remain exactly one global D-Node Registry load"
         );
         let build_pos = body.find("let mut view = build_continuum_view(").unwrap();
-        let attach_pos = body.find("attach_project_resource_observations(").unwrap();
+        let attach_pos = body.find("attach_resource_observations(").unwrap();
         assert!(
             build_pos < attach_pos,
-            "project resource telemetry must be an additive observation joined after the physical Continuum is built"
+            "resource telemetry must be an additive observation joined after the physical Continuum is built"
         );
     }
 
@@ -264,7 +265,7 @@ mod tests {
         let ddeploy_lock_pos = body.find("ddeploy::ddeploy_transaction()").unwrap();
         assert!(
             resource_pos < ddeploy_lock_pos,
-            "project Resource Registry observation must be cloned before acquiring the established Continuum lock chain"
+            "Resource Registry observation must be cloned before acquiring the established Continuum lock chain"
         );
     }
 
