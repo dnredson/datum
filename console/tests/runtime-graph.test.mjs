@@ -65,6 +65,19 @@ test("equivalent RFC3339 offset timestamps preserve canonical temporal provenanc
   f.runtime.value.evidence[0].observed_at_utc = "2026-09-30T11:51:00-03:00";
   assert.equal(validRuntimeGraph(f, "alpha"), false);
 });
+test("typed container resource usage is accepted and malformed usage fails closed", () => {
+  const f = fresh();
+  f.runtime.value.evidence[0].resource_usage = {
+    cpu_percent: 3.25,
+    memory_used_bytes: 12582912,
+    memory_limit_bytes: 1073741824,
+    pids: 7,
+  };
+  assert.ok(validRuntimeGraph(f, "alpha"));
+  f.runtime.value.evidence[0].resource_usage.memory_used_bytes = 2147483648;
+  assert.equal(validRuntimeGraph(f, "alpha"), false);
+});
+
 test("runtime source is admitted typed realization evidence, not desired/events/temporal", () => {
   assert.ok(validRuntimeGraph(fresh(), "alpha"));
   for (const source of [
