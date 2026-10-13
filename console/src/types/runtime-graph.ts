@@ -1,5 +1,11 @@
 import type { ProjectGraph } from "./graph.ts";
 import type { SourceSection, TemporalQuality } from "./operations.ts";
+export interface RuntimeResourceUsage {
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_limit_bytes: number;
+  pids: number;
+}
 export interface RuntimeEvidence {
   id: string;
   project_id: string;
@@ -14,6 +20,7 @@ export interface RuntimeEvidence {
   observed_at_utc: string;
   received_at_utc: string;
   observed_health_claim: "unknown" | "healthy" | "degraded" | "unhealthy";
+  resource_usage?: RuntimeResourceUsage;
   dmap_ref: { id: string; revision: number; digest: string } | null;
   logical_node_id: string | null;
 }
