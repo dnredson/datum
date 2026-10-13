@@ -21,19 +21,17 @@
 //!   for each accepted placement -- reused EXACTLY as that module computes
 //!   it, never reinterpreted or recomputed here.
 //!
-//! # Why `resource_observation`/`resource_registry`/`resource_binding` are
-//! deliberately NOT used (Phase 135 design decision, not an oversight)
+//! # Project-scoped physical resource observation
 //!
-//! `core::resource_observation` is an older, project-manifest/Firebase-
-//! snapshot-scoped telemetry pathway, pre-dating DMonitor/ADR-0024; it is
-//! not the canonical observation authority this view is scoped to use.
-//! `core::resource_registry`/`core::resource_binding` are a separate,
-//! project-scoped Stage 107 "O2" hardware/OS-identity bootstrap subsystem
-//! (confirmed unrelated by `dnode_registry`'s own doc comment) whose
-//! capacity is an OPAQUE digest, never resolved to real numbers, and whose
-//! project-scoping would falsely imply a specific project OWNS a piece of
-//! hardware -- exactly the false inference this view must never produce.
-//! None of the three are imported by this module.
+//! The GLOBAL physical node set remains owned exclusively by
+//! `DNodeRegistryStateV1`. For a project-scoped response only, an optional
+//! `resource_observation` may be joined from that project's Stage-107
+//! Resource Registry record for the resource currently bound to the D-Node.
+//! This is live observation (CPU usage, observed memory/swap), never
+//! structural capacity, placement authority, or project ownership. The
+//! project scope identifies the observation source only; it never filters or
+//! redefines the global D-Node set. The older
+//! `core::resource_observation` Firebase/manifest pathway remains unused.
 //!
 //! # Global, not project-partitioned (critical ownership rule)
 //!
@@ -287,7 +285,9 @@ pub struct ProjectOverlayV1 {
     pub node_ids_in_use: Vec<String>,
 }
 
-/// Builds the Continuum View from three already-loaded states. Pure/
+/// Builds the core Continuum View from three already-loaded authority /
+/// observation states. Project-scoped Resource Registry telemetry is joined
+/// additively afterward by [`attach_project_resource_observations`]. Pure/
 /// synchronous -- no I/O, no locking (the caller, `api::continuum_view`,
 /// owns acquiring the established lock order and loading each state
 /// before calling this). `project_overlay_id`, if present, only adds a
