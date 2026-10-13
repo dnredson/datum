@@ -303,7 +303,7 @@ export function projectGraphView(
           el(
             "p",
             "small text-secondary",
-            "Select an entity or D-Call in the graph or accessible list. No editing, deployment or runtime status is exposed.",
+            "Select an entity or D-Call in the graph or accessible list. Runtime resource samples are observation evidence only; no editing or deployment action is available.",
           ),
         );
       };
