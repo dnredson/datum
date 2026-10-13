@@ -197,13 +197,13 @@ export function reconciliationView(
   const authorizationLeaseHelp = el(
     "p",
     "small text-secondary",
-    "Authorization lease in seconds. Reconciliation host mutation requires a durable, finite lease; default 900 seconds (15 minutes), maximum 86400.",
+    "Used only by Authorize. Reconciliation host mutation requires a durable, finite lease; default 900 seconds (15 minutes), maximum 86400.",
   );
 
   function requireAuditLabel(): string | undefined {
     const value = auditLabelInput.value.trim();
     if (!value) {
-      setActionNotice(["An audit label is required before this action."]);
+      setActionNotice(["Enter an audit label in Actions before authorizing, previewing, or reconciling."]);
       auditLabelInput.focus();
       return undefined;
     }
@@ -491,7 +491,7 @@ export function reconciliationView(
     section.append(labelEl, auditLabelInput, auditLabelHelp);
 
     const leaseId = "reconciliation-authorization-lease";
-    const leaseLabel = el("label", "small mt-2", "Authorization lease (seconds)");
+    const leaseLabel = el("label", "small mt-2", "Authorization lease (seconds · Authorize only)");
     leaseLabel.htmlFor = leaseId;
     authorizationLeaseInput.id = leaseId;
     authorizationLeaseInput.setAttribute("aria-describedby", `${leaseId}-help`);
