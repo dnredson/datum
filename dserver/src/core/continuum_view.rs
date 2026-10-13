@@ -479,10 +479,8 @@ fn runtime_usage_for_observation(
 ) -> Option<RuntimeResourceUsageV1> {
     let record = state.by_observation_id(observation_id)?;
     let usage = record.observation.facts.get("resource_usage")?.as_object()?;
-    let cpu_percent = usage.get("cpu_percent")?.as_f64()?;
-    if !cpu_percent.is_finite() || cpu_percent < 0.0 {
-        return None;
-    }
+    let cpu_percent_basis_points = usage.get("cpu_percent_basis_points")?.as_u64()?;
+    let cpu_percent = cpu_percent_basis_points as f64 / 100.0;
     let memory_used_bytes = usage.get("memory_used_bytes")?.as_u64()?;
     let memory_limit_bytes = usage.get("memory_limit_bytes")?.as_u64()?;
     let pids = usage.get("pids")?.as_u64()?;
@@ -991,7 +989,7 @@ mod tests {
         );
         observation.facts = json!({
             "resource_usage": {
-                "cpu_percent": 3.5,
+                "cpu_percent_basis_points": 350_u64,
                 "memory_used_bytes": 10485760_u64,
                 "memory_limit_bytes": 1073741824_u64,
                 "pids": 6_u64
