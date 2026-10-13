@@ -847,6 +847,87 @@ mod tests {
     }
 
     #[test]
+    fn project_resource_observation_is_separate_from_declared_capacity() {
+        use crate::core::resource_registry::{
+            ResourceDiscoveryRequest, ResourceIdentityEvidence, ResourceIdentityScope,
+            ResourceRegistryRecord,
+        };
+
+        let registry = registry_with(&[("node-01", 1, 268_435_456)]);
+        let ddeploy = DDeployStateV1::empty();
+        let dmonitor = DMonitorStateV1::empty();
+        let mut view = build_continuum_view(
+            &registry,
+            &ddeploy,
+            &dmonitor,
+            &policy(),
+            Some("project-a"),
+            now(),
+        );
+        let record = ResourceRegistryRecord {
+            registry_schema_version: "0.1.0".to_string(),
+            project_id: "project-a".to_string(),
+            resource_id: "resource:hw:test".to_string(),
+            identity_scope: ResourceIdentityScope::CanonicalHardware,
+            planning_eligible: true,
+            state: "bound".to_string(),
+            assigned_node_id: Some("node-01".to_string()),
+            first_seen_utc: "2026-10-04T11:00:00Z".to_string(),
+            last_seen_utc: "2026-10-04T11:59:55Z".to_string(),
+            observation_count: 2,
+            latest_instance_id: "instance-1".to_string(),
+            discovery: ResourceDiscoveryRequest {
+                schema_version: "0.4.0".to_string(),
+                observed_at_utc: "2026-10-04T11:59:50Z".to_string(),
+                instance_id: "instance-1".to_string(),
+                observation_host_id: "host:pi".to_string(),
+                stage_hint: None,
+                identity: ResourceIdentityEvidence {
+                    hostname: "rpi".to_string(),
+                    sentinel_version: "0.1.0".to_string(),
+                    hardware_fingerprint_id: None,
+                    hardware_identity_basis: Vec::new(),
+                    hardware_identity_confidence: "unknown".to_string(),
+                    hardware_identity_attested: false,
+                    os_installation_id: None,
+                    os_identity_basis: "unknown".to_string(),
+                    role_binding_id: None,
+                    predecessor_binding_id: None,
+                },
+                platform: json!({"os_family":"linux","os_name":"Debian","os_version":"13","arch":"aarch64"}),
+                resources: json!({
+                    "capacity_profile_id": "capacity:test",
+                    "uptime_seconds": 1000,
+                    "cpu": {"logical_cores":4,"usage_percent":12.5},
+                    "memory": {
+                        "total_bytes":4294967296_u64,
+                        "used_bytes":1073741824_u64,
+                        "available_bytes":3221225472_u64
+                    },
+                    "swap": {
+                        "total_bytes":1073741824_u64,
+                        "used_bytes":0_u64,
+                        "available_bytes":1073741824_u64
+                    },
+                    "filesystems":[]
+                }),
+                capabilities: Vec::new(),
+                safe_to_auto_execute: false,
+                side_effects_performed: false,
+            },
+        };
+
+        attach_project_resource_observations(&mut view, &[record], "project-a", now());
+        let node = &view.nodes[0];
+        assert_eq!(node.structure.capacity.cpu_cores, 1, "declared planning capacity is unchanged");
+        let observed = node.resource_observation.as_ref().expect("project resource observation");
+        assert_eq!(observed.cpu.logical_cores, 4);
+        assert_eq!(observed.cpu.usage_percent, Some(12.5));
+        assert_eq!(observed.memory.available_bytes, 3_221_225_472);
+        assert_eq!(observed.age_seconds, 10);
+    }
+
+    #[test]
     fn project_overlay_for_a_project_with_no_placements_is_empty_not_an_error() {
         let registry = registry_with(&[("node-01", 8, 17_179_869_184)]);
         let ddeploy = DDeployStateV1::empty();
@@ -870,6 +951,51 @@ mod tests {
         assert_eq!(observation.placement_convergence, DMonitorConvergenceV1::Unknown);
         assert!(observation.admitted_evidence.is_empty(), "no evidence must mean an empty list, never a fabricated offline status");
         assert!(observation.excluded_evidence.is_empty());
+    }
+
+    #[test]
+    fn fresh_matching_observation_exposes_typed_runtime_usage_without_raw_facts() {
+        let registry = registry_with(&[("node-01", 8, 17_179_869_184)]);
+        let mut ddeploy = DDeployStateV1::empty();
+        let (dmap_id, dmap_digest) =
+            placed_application(&mut ddeploy, "project-a", "app-1", "service-foo", "node-01");
+
+        let mut dmonitor = DMonitorStateV1::empty();
+        let mut observation = dserv_observation(
+            "project-a",
+            "node-01",
+            "app-1",
+            "service-foo",
+            &dmap_id,
+            1,
+            &dmap_digest,
+            "2026-10-04T11:59:30Z",
+            "monitor-1",
+        );
+        observation.facts = json!({
+            "resource_usage": {
+                "cpu_percent": 3.5,
+                "memory_used_bytes": 10485760_u64,
+                "memory_limit_bytes": 1073741824_u64,
+                "pids": 6_u64
+            },
+            "raw_private_detail": "must-not-be-projected"
+        });
+        ingest_observation(&mut dmonitor, "project-a", observation, &now().to_rfc3339()).unwrap();
+
+        let view = build_continuum_view(&registry, &ddeploy, &dmonitor, &policy(), None, now());
+        let evidence = &view.nodes[0].observations[0].admitted_evidence[0];
+        assert_eq!(
+            evidence.runtime_usage,
+            Some(RuntimeResourceUsageV1 {
+                cpu_percent: 3.5,
+                memory_used_bytes: 10_485_760,
+                memory_limit_bytes: 1_073_741_824,
+                pids: 6,
+            })
+        );
+        let json = serde_json::to_value(evidence).unwrap();
+        assert!(json.get("raw_private_detail").is_none(), "raw DMonitor facts must never leak through the Continuum projection");
     }
 
     #[test]
