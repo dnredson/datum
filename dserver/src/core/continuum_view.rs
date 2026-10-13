@@ -287,7 +287,7 @@ pub struct ProjectOverlayV1 {
 
 /// Builds the core Continuum View from three already-loaded authority /
 /// observation states. Project-scoped Resource Registry telemetry is joined
-/// additively afterward by [`attach_project_resource_observations`]. Pure/
+/// additively afterward by [`attach_resource_observations`]. Pure/
 /// synchronous -- no I/O, no locking (the caller, `api::continuum_view`,
 /// owns acquiring the established lock order and loading each state
 /// before calling this). `project_overlay_id`, if present, only adds a
