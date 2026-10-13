@@ -236,17 +236,39 @@ mod tests {
     }
 
     #[test]
-    fn global_route_never_filters_nodes_by_project() {
-        // Structural guard against a future regression: the global handler
-        // must pass `project_id` only as the LAST (overlay) argument to
-        // `build_continuum_view`, never use it to branch which nodes/registry
-        // state gets loaded.
+    fn project_scope_only_adds_resource_observation_never_changes_physical_node_authority() {
+        // The same D-Node Registry / DDeploy / DMonitor states always feed
+        // build_continuum_view. Project scope may additionally select a
+        // Resource Registry observation AFTER the global node set is built,
+        // but must never select a different D-Node source or filter nodes.
         let source = production_source();
         let start = source.find("async fn build_response(").unwrap();
         let body = &source[start..];
+        assert!(body.contains("build_continuum_view("));
+        assert!(body.contains("attach_project_resource_observations("));
+        assert_eq!(
+            body.matches("load_dnode_registry_state(&db_path)").count(),
+            1,
+            "there must remain exactly one global D-Node Registry load"
+        );
+        let build_pos = body.find("let mut view = build_continuum_view(").unwrap();
+        let attach_pos = body.find("attach_project_resource_observations(").unwrap();
         assert!(
-            !body.contains("if project_id") && !body.contains("match project_id"),
-            "build_response must not branch control flow on project_id -- the physical read path must be identical regardless of overlay"
+            build_pos < attach_pos,
+            "project resource telemetry must be an additive observation joined after the physical Continuum is built"
+        );
+    }
+
+    #[test]
+    fn resource_registry_snapshot_occurs_before_the_established_transaction_lock_chain() {
+        let source = production_source();
+        let start = source.find("async fn build_response(").unwrap();
+        let body = &source[start..];
+        let resource_pos = body.find("resource_registry_snapshot").unwrap();
+        let ddeploy_lock_pos = body.find("ddeploy::ddeploy_transaction()").unwrap();
+        assert!(
+            resource_pos < ddeploy_lock_pos,
+            "project Resource Registry observation must be cloned before acquiring the established Continuum lock chain"
         );
     }
 
