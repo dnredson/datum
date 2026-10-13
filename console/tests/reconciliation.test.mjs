@@ -78,6 +78,14 @@ test("reconciliation.ts and api/reconciliation.ts never reference host-execution
 // Part AC -- this workspace may only ever change request/authorization
 // control state, never accepted placement authority itself. It must never
 // import or call the ddeploy acceptance path.
+test("Authorize always requests a durable finite lease compatible with the hardened backend contract", async () => {
+  const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
+  assert.ok(code.includes('persistence_scope: "durable"'), "Console authorization must explicitly request durable scope");
+  assert.ok(code.includes('operation: "reconcile"'), "Console authorization must explicitly bind the reconcile operation");
+  assert.ok(code.includes("valid_for_seconds: validForSeconds"), "Console authorization must send an explicit finite lease");
+  assert.ok(code.includes('authorizationLeaseInput.value = "900"'), "Console must provide a bounded operator-visible default lease");
+});
+
 test("reconciliation.ts never imports or calls the ddeploy proposal-acceptance path", async () => {
   const code = await sourceWithoutComments("../src/pages/reconciliation.ts");
   assert.ok(!code.includes("acceptProposal"), "reconciliation.ts must never accept a proposal -- that remains Phase 137's own, separate action");
