@@ -66,6 +66,20 @@ test("batch response validator rejects an unknown batch status", () => {
 test("valid attempt record fixture round-trips, including per-service results", () => {
   assert.ok(validReconciliationAttemptRecord(reconciliationAttemptRecordFixture("reconciliation-attempt:1", "node-a"), "project-a"));
 });
+test("preview suggested is a recognized command-side result with an explicit display label", () => {
+  const record = reconciliationAttemptRecordFixture("reconciliation-attempt:preview", "node-a");
+  record.status = "succeeded";
+  record.services["service-a"] = {
+    service_id: "service-a",
+    result: "suggested",
+    host_mutation_performed: false,
+    execution_status: "suggested",
+    message: "WASM requested an action, but preview performed no mutation",
+  };
+  assert.ok(validReconciliationAttemptRecord(record));
+  assert.equal(ACTION_RESULT_LABEL.suggested, "Suggested (preview)");
+});
+
 test("attempt record validator rejects an invented action-result vocabulary", () => {
   const record = reconciliationAttemptRecordFixture("reconciliation-attempt:1", "node-a");
   record.services["service-a"].result = "created"; // not a real ReconciliationActionResult
@@ -120,7 +134,7 @@ test("every enum variant this module validates has a corresponding display label
   for (const status of ["pending", "claimed", "attempted", "stale", "expired"]) assert.ok(REQUEST_STATUS_LABEL[status]);
   for (const status of ["pending", "executing", "succeeded", "partial", "failed", "unknown", "stale"]) assert.ok(BATCH_STATUS_LABEL[status]);
   for (const status of ["succeeded", "partial", "failed", "unknown"]) assert.ok(ATTEMPT_STATUS_LABEL[status]);
-  for (const result of ["no_op", "mutated", "blocked", "unknown"]) assert.ok(ACTION_RESULT_LABEL[result]);
+  for (const result of ["no_op", "suggested", "mutated", "blocked", "unknown"]) assert.ok(ACTION_RESULT_LABEL[result]);
 });
 
 test("command-side result labels never claim runtime health (Part L)", () => {
