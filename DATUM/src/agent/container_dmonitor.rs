@@ -201,15 +201,37 @@ pub(crate) fn observe_container_identity(container_name: &str, expected: &Execut
 /// changes placement/identity health and never blocks reconciliation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerRuntimeUsage {
-    pub cpu_percent: f64,
+    /// CPU percentage in basis points (1 bp = 0.01 percentage point).
+    /// Kept integer because canonical DATUM JSON/digest contracts forbid
+    /// fractional/exponential JSON numbers.
+    pub cpu_percent_basis_points: u64,
     pub memory_used_bytes: u64,
     pub memory_limit_bytes: u64,
     pub pids: u64,
 }
 
-fn parse_percent(value: &str) -> Option<f64> {
-    let parsed = value.trim().trim_end_matches('%').trim().parse::<f64>().ok()?;
-    parsed.is_finite().then_some(parsed)
+fn parse_percent_basis_points(value: &str) -> Option<u64> {
+    let raw = value.trim().strip_suffix('%')?.trim();
+    if raw.is_empty() || raw.starts_with('-') {
+        return None;
+    }
+    let mut parts = raw.split('.');
+    let whole = parts.next()?.parse::<u64>().ok()?;
+    let fractional = match parts.next() {
+        None => 0,
+        Some("") => 0,
+        Some(digits) if digits.len() == 1 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            u64::from(digits.as_bytes()[0] - b'0') * 10
+        }
+        Some(digits) if digits.len() == 2 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            digits.parse::<u64>().ok()?
+        }
+        Some(_) => return None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    whole.checked_mul(100)?.checked_add(fractional)
 }
 
 fn parse_docker_bytes(value: &str) -> Option<u64> {
@@ -246,7 +268,7 @@ fn parse_docker_bytes(value: &str) -> Option<u64> {
 
 fn parse_docker_stats_line(line: &str) -> Option<ContainerRuntimeUsage> {
     let mut fields = line.trim().split('\t');
-    let cpu_percent = parse_percent(fields.next()?)?;
+    let cpu_percent_basis_points = parse_percent_basis_points(fields.next()?)?;
     let memory = fields.next()?.trim();
     let pids = fields.next()?.trim().parse::<u64>().ok()?;
     if fields.next().is_some() {
@@ -254,7 +276,7 @@ fn parse_docker_stats_line(line: &str) -> Option<ContainerRuntimeUsage> {
     }
     let (used, limit) = memory.split_once('/')?;
     Some(ContainerRuntimeUsage {
-        cpu_percent,
+        cpu_percent_basis_points,
         memory_used_bytes: parse_docker_bytes(used)?,
         memory_limit_bytes: parse_docker_bytes(limit)?,
         pids,
@@ -409,7 +431,7 @@ impl ContainerMonitorEmitter {
         )?;
         if let Some(usage) = observe_container_runtime_usage(container_name) {
             observation.facts["resource_usage"] = json!({
-                "cpu_percent": usage.cpu_percent,
+                "cpu_percent_basis_points": usage.cpu_percent_basis_points,
                 "memory_used_bytes": usage.memory_used_bytes,
                 "memory_limit_bytes": usage.memory_limit_bytes,
                 "pids": usage.pids,
@@ -500,7 +522,7 @@ mod tests {
     #[test]
     fn docker_stats_parser_accepts_binary_memory_units() {
         let usage = parse_docker_stats_line("1.25%\t12.5MiB / 3.75GiB\t7").unwrap();
-        assert_eq!(usage.cpu_percent, 1.25);
+        assert_eq!(usage.cpu_percent_basis_points, 125);
         assert_eq!(usage.memory_used_bytes, 13_107_200);
         assert_eq!(usage.memory_limit_bytes, 4_026_531_840);
         assert_eq!(usage.pids, 7);
@@ -509,6 +531,7 @@ mod tests {
     #[test]
     fn docker_stats_parser_rejects_malformed_or_non_finite_values() {
         assert!(parse_docker_stats_line("nan%\t12MiB / 1GiB\t2").is_none());
+        assert!(parse_docker_stats_line("1.234%\t12MiB / 1GiB\t2").is_none());
         assert!(parse_docker_stats_line("1%\tbogus / 1GiB\t2").is_none());
         assert!(parse_docker_stats_line("1%\t12MiB / 1GiB\tnot-a-number").is_none());
     }
