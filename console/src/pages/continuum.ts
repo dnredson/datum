@@ -400,9 +400,15 @@ function placementDetail(
   container.append(identity);
 
   container.append(el("h3", "h6 small text-uppercase text-secondary mt-3", "Current runtime usage"));
-  const usageEvidence = observation?.admitted_evidence.filter((e) => e.runtime_usage !== undefined) ?? [];
+  const usageEvidence =
+    observation?.admitted_evidence.filter(
+      (e) =>
+        e.runtime_usage !== undefined &&
+        e.freshness === "fresh" &&
+        e.authority_correlation === "exact_match",
+    ) ?? [];
   if (usageEvidence.length === 0) {
-    container.append(el("p", "small text-secondary", "No admitted runtime resource telemetry is currently available."));
+    container.append(el("p", "small text-secondary", "No fresh, authority-matched runtime resource telemetry is currently available."));
   } else {
     const list = el("ul", "continuum-evidence-list");
     for (const evidence of usageEvidence) {
