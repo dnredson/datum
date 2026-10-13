@@ -46,10 +46,8 @@ pub struct RuntimeContent {
 }
 fn runtime_resource_usage(record: &DMonitorObservationRecordV1) -> Option<RuntimeResourceUsage> {
     let usage = record.observation.facts.get("resource_usage")?.as_object()?;
-    let cpu_percent = usage.get("cpu_percent")?.as_f64()?;
-    if !cpu_percent.is_finite() || cpu_percent < 0.0 {
-        return None;
-    }
+    let cpu_percent_basis_points = usage.get("cpu_percent_basis_points")?.as_u64()?;
+    let cpu_percent = cpu_percent_basis_points as f64 / 100.0;
     let memory_used_bytes = usage.get("memory_used_bytes")?.as_u64()?;
     let memory_limit_bytes = usage.get("memory_limit_bytes")?.as_u64()?;
     if memory_limit_bytes > 0 && memory_used_bytes > memory_limit_bytes {
@@ -244,7 +242,7 @@ mod tests {
         let mut obs = observation("p", "a", "s", "fog", "epoch", 1);
         obs.facts = serde_json::json!({
             "resource_usage": {
-                "cpu_percent": 2.25,
+                "cpu_percent_basis_points": 225_u64,
                 "memory_used_bytes": 8_388_608_u64,
                 "memory_limit_bytes": 1_073_741_824_u64,
                 "pids": 5_u64
