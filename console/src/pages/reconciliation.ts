@@ -188,12 +188,33 @@ export function reconciliationView(
     "small text-secondary",
     "A caller-supplied audit label recorded with requests/authorizations -- not authenticated identity. DServer has no application-layer authentication; this is an operator-entered note in a trusted, local control plane.",
   );
+  const authorizationLeaseInput = el("input", "form-control form-control-sm reconciliation-lease-input");
+  authorizationLeaseInput.setAttribute("type", "number");
+  authorizationLeaseInput.setAttribute("min", "1");
+  authorizationLeaseInput.setAttribute("max", "86400");
+  authorizationLeaseInput.setAttribute("step", "1");
+  authorizationLeaseInput.value = "900";
+  const authorizationLeaseHelp = el(
+    "p",
+    "small text-secondary",
+    "Authorization lease in seconds. Reconciliation host mutation requires a durable, finite lease; default 900 seconds (15 minutes), maximum 86400.",
+  );
 
   function requireAuditLabel(): string | undefined {
     const value = auditLabelInput.value.trim();
     if (!value) {
       setActionNotice(["An audit label is required before this action."]);
       auditLabelInput.focus();
+      return undefined;
+    }
+    return value;
+  }
+
+  function requireAuthorizationLeaseSeconds(): number | undefined {
+    const value = Number(authorizationLeaseInput.value);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 86400) {
+      setActionNotice(["Authorization lease must be an integer between 1 and 86400 seconds."]);
+      authorizationLeaseInput.focus();
       return undefined;
     }
     return value;
@@ -469,6 +490,14 @@ export function reconciliationView(
     auditLabelHelp.id = `${labelId}-help`;
     section.append(labelEl, auditLabelInput, auditLabelHelp);
 
+    const leaseId = "reconciliation-authorization-lease";
+    const leaseLabel = el("label", "small mt-2", "Authorization lease (seconds)");
+    leaseLabel.htmlFor = leaseId;
+    authorizationLeaseInput.id = leaseId;
+    authorizationLeaseInput.setAttribute("aria-describedby", `${leaseId}-help`);
+    authorizationLeaseHelp.id = `${leaseId}-help`;
+    section.append(leaseLabel, authorizationLeaseInput, authorizationLeaseHelp);
+
     const buttons = el("div", "reconciliation-action-buttons mt-2");
     const previewButton = el("button", "btn btn-outline-primary btn-sm me-2", "Preview reconciliation");
     previewButton.setAttribute("type", "button");
@@ -740,8 +769,10 @@ export function reconciliationView(
     if (authorizingNode) return;
     const authorizedBy = requireAuditLabel();
     if (!authorizedBy) return;
+    const validForSeconds = requireAuthorizationLeaseSeconds();
+    if (validForSeconds === undefined) return;
     const confirmed = window.confirm(
-      `Authorize host mutation on node ${nodeId} for operational target ${slice.dgraph_id}@${slice.dgraph_revision}?\n\nThis permits mutation. It does not itself start reconciliation.`,
+      `Authorize host mutation on node ${nodeId} for operational target ${slice.dgraph_id}@${slice.dgraph_revision}?\n\nLease: ${validForSeconds} seconds (durable).\n\nThis permits mutation. It does not itself start reconciliation.`,
     );
     if (!confirmed) return;
     authorizingNode = nodeId;
@@ -753,12 +784,15 @@ export function reconciliationView(
         dgraph_revision: slice.dgraph_revision,
         authorized_by: authorizedBy,
         allow_host_mutation: true,
+        operation: "reconcile",
+        persistence_scope: "durable",
+        valid_for_seconds: validForSeconds,
       });
       if (disposed || token !== sequence) return;
       const refreshed = await reconciliationClient.slice(nodeId).catch(() => undefined);
       if (disposed || token !== sequence) return;
       if (refreshed) slices.set(nodeId, refreshed);
-      setActionNotice([`Authorization issued for node ${nodeId}.`]);
+      setActionNotice([`Durable authorization issued for node ${nodeId} for ${validForSeconds} seconds.`]);
     } catch (e) {
       if (disposed || token !== sequence) return;
       setActionNotice([e instanceof ReconciliationError ? `Authorization failed: ${e.message}` : "Authorization failed unexpectedly."]);
