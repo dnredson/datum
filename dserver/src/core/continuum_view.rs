@@ -565,7 +565,7 @@ pub fn attach_resource_observations(
     let mut candidates_by_node: BTreeMap<&str, Vec<&ResourceRegistryRecord>> = BTreeMap::new();
     for record in records.iter().filter(|record| {
         record.state == "bound"
-            && project_id.is_none_or(|project_id| record.project_id == project_id)
+            && project_id.map_or(true, |project_id| record.project_id == project_id)
     }) {
         let Some(node_id) = record.assigned_node_id.as_deref() else { continue };
         candidates_by_node.entry(node_id).or_default().push(record);
