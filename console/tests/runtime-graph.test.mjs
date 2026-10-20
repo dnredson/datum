@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import cytoscape from "cytoscape";
+import { readFile } from "node:fs/promises";
 import { runtimeFixture, runtimeVisualReviewFixture } from "./runtime-graph-fixture.mjs";
 import { unevenGraphFixture } from "./graph-fixture.mjs";
 import {
@@ -65,6 +66,19 @@ test("equivalent RFC3339 offset timestamps preserve canonical temporal provenanc
   f.runtime.value.evidence[0].observed_at_utc = "2026-09-30T11:51:00-03:00";
   assert.equal(validRuntimeGraph(f, "alpha"), false);
 });
+test("typed container resource usage is accepted and malformed usage fails closed", () => {
+  const f = fresh();
+  f.runtime.value.evidence[0].resource_usage = {
+    cpu_percent: 3.25,
+    memory_used_bytes: 12582912,
+    memory_limit_bytes: 1073741824,
+    pids: 7,
+  };
+  assert.ok(validRuntimeGraph(f, "alpha"));
+  f.runtime.value.evidence[0].resource_usage.memory_used_bytes = 2147483648;
+  assert.equal(validRuntimeGraph(f, "alpha"), false);
+});
+
 test("runtime source is admitted typed realization evidence, not desired/events/temporal", () => {
   assert.ok(validRuntimeGraph(fresh(), "alpha"));
   for (const source of [
@@ -251,4 +265,14 @@ test("one scoped runtime request, no per-service fetch", async () => {
   } finally {
     globalThis.fetch = original;
   }
+});
+
+
+test("logical D-Serv inspector exposes only fresh runtime resource samples", async () => {
+  const code = await readFile(new URL("../src/pages/project-graph.ts", import.meta.url), "utf8");
+  assert.ok(code.includes('"Current runtime resource usage"'));
+  assert.ok(code.includes('temporal?.observation_freshness === "fresh"'));
+  assert.ok(code.includes("usage.cpu_percent.toFixed(1)"));
+  assert.ok(code.includes("usage.memory_used_bytes"));
+  assert.ok(code.includes("usage.pids"));
 });

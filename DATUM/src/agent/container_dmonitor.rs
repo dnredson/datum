@@ -61,13 +61,14 @@
 //!
 //! # No mutation, no second Docker-inspect parser (Part A4)
 //!
-//! This module performs exactly one read-only Docker operation
-//! (`operational_reconciliation::inspect_container_full`, reused verbatim --
-//! never a second inspect-JSON parser) and reuses
+//! Identity/state uses `operational_reconciliation::inspect_container_full`
+//! verbatim -- never a second inspect-JSON parser -- and reuses
 //! `operational_reconciliation::inspected_container_labels_match`/
 //! `ExecutionIdentityLabels` for the identical label comparison M1/M3
-//! convergence already performs. No `docker run`/`docker stop`/`docker rm`/
-//! any mutating command is ever invoked here.
+//! convergence already performs. Resource telemetry adds one independent,
+//! best-effort, read-only `docker stats --no-stream` sample; failure to read
+//! stats never changes health or gates reconciliation. No `docker run`/
+//! `docker stop`/`docker rm`/pull or any mutating command is invoked here.
 //!
 //! # Preview mode (Part B3)
 //!
@@ -88,6 +89,8 @@
 //! carries, and stays stable across a container recreate with a new
 //! container id -- exactly mirroring how native's subject never carries a
 //! PID either.
+
+use std::process::Command;
 
 use serde_json::json;
 
@@ -191,6 +194,114 @@ pub(crate) fn observe_container_identity(container_name: &str, expected: &Execut
         Ok(inspected) => classify_inspected_container(inspected.as_ref(), expected),
         Err(_) => ContainerIdentityCheck::InspectUnavailable,
     }
+}
+
+/// Read-only, best-effort runtime resource observation for a governed
+/// container. This is telemetry only: inability to obtain stats never
+/// changes placement/identity health and never blocks reconciliation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerRuntimeUsage {
+    /// CPU percentage in basis points (1 bp = 0.01 percentage point).
+    /// Kept integer because canonical DATUM JSON/digest contracts forbid
+    /// fractional/exponential JSON numbers.
+    pub cpu_percent_basis_points: u64,
+    pub memory_used_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub pids: u64,
+}
+
+fn parse_percent_basis_points(value: &str) -> Option<u64> {
+    let raw = value.trim().strip_suffix('%')?.trim();
+    if raw.is_empty() || raw.starts_with('-') {
+        return None;
+    }
+    let mut parts = raw.split('.');
+    let whole = parts.next()?.parse::<u64>().ok()?;
+    let fractional = match parts.next() {
+        None => 0,
+        Some("") => 0,
+        Some(digits) if digits.len() == 1 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            u64::from(digits.as_bytes()[0] - b'0') * 10
+        }
+        Some(digits) if digits.len() == 2 && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            digits.parse::<u64>().ok()?
+        }
+        Some(_) => return None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    whole.checked_mul(100)?.checked_add(fractional)
+}
+
+fn parse_docker_bytes(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let split = value
+        .find(|ch: char| !ch.is_ascii_digit() && ch != '.')
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number = number.parse::<f64>().ok()?;
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
+    let multiplier = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1_f64,
+        "kb" => 1_000_f64,
+        "mb" => 1_000_000_f64,
+        "gb" => 1_000_000_000_f64,
+        "tb" => 1_000_000_000_000_f64,
+        "kib" => 1_024_f64,
+        "mib" => 1_048_576_f64,
+        "gib" => 1_073_741_824_f64,
+        "tib" => 1_099_511_627_776_f64,
+        _ => return None,
+    };
+    let bytes = number * multiplier;
+    if !bytes.is_finite() || bytes > u64::MAX as f64 {
+        return None;
+    }
+    Some(bytes.round() as u64)
+}
+
+fn parse_docker_stats_line(line: &str) -> Option<ContainerRuntimeUsage> {
+    let mut fields = line.trim().split('\t');
+    let cpu_percent_basis_points = parse_percent_basis_points(fields.next()?)?;
+    let memory = fields.next()?.trim();
+    let pids = fields.next()?.trim().parse::<u64>().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    let (used, limit) = memory.split_once('/')?;
+    Some(ContainerRuntimeUsage {
+        cpu_percent_basis_points,
+        memory_used_bytes: parse_docker_bytes(used)?,
+        memory_limit_bytes: parse_docker_bytes(limit)?,
+        pids,
+    })
+}
+
+/// One read-only Docker stats sample. Failure is represented as None so
+/// resource telemetry can never turn a confirmed realization unhealthy
+/// merely because stats were temporarily unavailable.
+pub(crate) fn observe_container_runtime_usage(container_name: &str) -> Option<ContainerRuntimeUsage> {
+    let output = Command::new("docker")
+        .args([
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}",
+            container_name,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_docker_stats_line(stdout.lines().next()?)
 }
 
 /// Builds one canonical `DServRealization` DMonitor observation from a
@@ -309,7 +420,24 @@ impl ContainerMonitorEmitter {
             dmap_digest: None,
         };
         let identity = observe_container_identity(container_name, &expected);
-        build_dserv_realization_from_container_state(&self.context, sequence, this_node_id, project_id, observed_at_utc, report, identity)
+        let mut observation = build_dserv_realization_from_container_state(
+            &self.context,
+            sequence,
+            this_node_id,
+            project_id,
+            observed_at_utc,
+            report,
+            identity,
+        )?;
+        if let Some(usage) = observe_container_runtime_usage(container_name) {
+            observation.facts["resource_usage"] = json!({
+                "cpu_percent_basis_points": usage.cpu_percent_basis_points,
+                "memory_used_bytes": usage.memory_used_bytes,
+                "memory_limit_bytes": usage.memory_limit_bytes,
+                "pids": usage.pids,
+            });
+        }
+        Some(observation)
     }
 }
 
@@ -391,6 +519,22 @@ mod tests {
         })
     }
 
+    #[test]
+    fn docker_stats_parser_accepts_binary_memory_units() {
+        let usage = parse_docker_stats_line("1.25%\t12.5MiB / 3.75GiB\t7").unwrap();
+        assert_eq!(usage.cpu_percent_basis_points, 125);
+        assert_eq!(usage.memory_used_bytes, 13_107_200);
+        assert_eq!(usage.memory_limit_bytes, 4_026_531_840);
+        assert_eq!(usage.pids, 7);
+    }
+
+    #[test]
+    fn docker_stats_parser_rejects_malformed_or_non_finite_values() {
+        assert!(parse_docker_stats_line("nan%\t12MiB / 1GiB\t2").is_none());
+        assert!(parse_docker_stats_line("1.234%\t12MiB / 1GiB\t2").is_none());
+        assert!(parse_docker_stats_line("1%\tbogus / 1GiB\t2").is_none());
+        assert!(parse_docker_stats_line("1%\t12MiB / 1GiB\tnot-a-number").is_none());
+    }
     // 1. exact governed container running -> valid DServRealization, Healthy.
     #[test]
     fn exact_governed_container_running_is_healthy_dserv_realization() {
@@ -540,26 +684,38 @@ mod tests {
         }
     }
 
-    // 13/14. No desired-state authority mutation, no Docker mutation command
-    // -- structural proof: this module's own source never references a
-    // mutating Docker subcommand or spawns a process directly (it reuses
-    // `inspect_container_full`, the ONE read-only call, imported -- never
-    // calling `Command::new` itself).
+    // 13/14. No desired-state authority mutation, no Docker mutation command.
+    // Identity still reuses inspect_container_full; the ONLY direct process
+    // invocation allowed here is the observational docker-stats sample.
     #[test]
-    fn source_never_spawns_a_process_or_names_a_mutating_docker_subcommand() {
+    fn source_allows_only_read_only_docker_stats_and_no_mutating_subcommand() {
         let source = include_str!("container_dmonitor.rs");
         let before_tests = source.split("#[cfg(test)]").next().unwrap_or(source);
         // Scoped to actual CODE (comments excluded) -- this module's own doc
-        // comment legitimately NAMES these mutating subcommands in prose,
-        // to explain that none of them are ever invoked here.
+        // comment legitimately names mutating subcommands in prose.
         let implementation_only: String = before_tests
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!implementation_only.contains("Command::new"), "container_dmonitor.rs must never spawn a process directly -- it reuses inspect_container_full only");
-        for forbidden in ["\"run\"", "\"stop\"", "\"rm\"", "\"start\"", "\"kill\"", "\"restart\"", "docker run", "docker stop"] {
-            assert!(!implementation_only.contains(forbidden), "container_dmonitor.rs must never reference a mutating docker subcommand: '{forbidden}'");
+        assert_eq!(
+            implementation_only.matches("Command::new(\"docker\")").count(),
+            1,
+            "container monitoring may spawn only one direct docker command site"
+        );
+        assert!(
+            implementation_only.contains("\"stats\"")
+                && implementation_only.contains("\"--no-stream\""),
+            "the one direct Docker invocation must be the read-only stats sample"
+        );
+        for forbidden in [
+            "\"run\"", "\"stop\"", "\"rm\"", "\"start\"", "\"kill\"",
+            "\"restart\"", "\"pull\"", "\"create\"", "docker run", "docker stop",
+        ] {
+            assert!(
+                !implementation_only.contains(forbidden),
+                "container_dmonitor.rs must never reference a mutating docker subcommand: '{forbidden}'"
+            );
         }
     }
 

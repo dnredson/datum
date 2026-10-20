@@ -66,6 +66,20 @@ test("batch response validator rejects an unknown batch status", () => {
 test("valid attempt record fixture round-trips, including per-service results", () => {
   assert.ok(validReconciliationAttemptRecord(reconciliationAttemptRecordFixture("reconciliation-attempt:1", "node-a"), "project-a"));
 });
+test("preview suggested is a recognized command-side result with an explicit display label", () => {
+  const record = reconciliationAttemptRecordFixture("reconciliation-attempt:preview", "node-a");
+  record.status = "succeeded";
+  record.services["service-a"] = {
+    service_id: "service-a",
+    result: "suggested",
+    host_mutation_performed: false,
+    execution_status: "suggested",
+    message: "WASM requested an action, but preview performed no mutation",
+  };
+  assert.ok(validReconciliationAttemptRecord(record));
+  assert.equal(ACTION_RESULT_LABEL.suggested, "Suggested (preview)");
+});
+
 test("attempt record validator rejects an invented action-result vocabulary", () => {
   const record = reconciliationAttemptRecordFixture("reconciliation-attempt:1", "node-a");
   record.services["service-a"].result = "created"; // not a real ReconciliationActionResult
@@ -94,10 +108,31 @@ test("authorizationDisplayStatus distinguishes none/not_authorized/wrong_target/
   assert.equal(authorizationDisplayStatus(authorizationFixture("node-a", { expires_at_utc: "2026-10-05T12:00:00Z" }), "dgraph:project-a", 7, now), "expired");
   assert.equal(authorizationDisplayStatus(authorizationFixture("node-a"), "dgraph:project-a", 7, now), "authorized");
 });
-test("authorizationDisplayStatus treats a missing expires_at_utc as never expiring", () => {
-  const authorization = authorizationFixture("node-a");
-  delete authorization.expires_at_utc;
-  assert.equal(authorizationDisplayStatus(authorization, "dgraph:project-a", 7, Date.parse("2099-01-01T00:00:00Z")), "authorized");
+test("authorizationDisplayStatus refuses legacy/process/non-finite authorization for host mutation", () => {
+  const noExpiry = authorizationFixture("node-a");
+  delete noExpiry.expires_at_utc;
+  assert.equal(
+    authorizationDisplayStatus(noExpiry, "dgraph:project-a", 7, Date.parse("2026-10-05T12:30:00Z")),
+    "not_authorized",
+  );
+  assert.equal(
+    authorizationDisplayStatus(
+      authorizationFixture("node-a", { persistence_scope: "process" }),
+      "dgraph:project-a",
+      7,
+      Date.parse("2026-10-05T12:30:00Z"),
+    ),
+    "not_authorized",
+  );
+  assert.equal(
+    authorizationDisplayStatus(
+      authorizationFixture("node-a", { operation: "rollback" }),
+      "dgraph:project-a",
+      7,
+      Date.parse("2026-10-05T12:30:00Z"),
+    ),
+    "not_authorized",
+  );
 });
 
 test("terminal status helpers match exactly the backend's own terminal states", () => {
@@ -120,7 +155,7 @@ test("every enum variant this module validates has a corresponding display label
   for (const status of ["pending", "claimed", "attempted", "stale", "expired"]) assert.ok(REQUEST_STATUS_LABEL[status]);
   for (const status of ["pending", "executing", "succeeded", "partial", "failed", "unknown", "stale"]) assert.ok(BATCH_STATUS_LABEL[status]);
   for (const status of ["succeeded", "partial", "failed", "unknown"]) assert.ok(ATTEMPT_STATUS_LABEL[status]);
-  for (const result of ["no_op", "mutated", "blocked", "unknown"]) assert.ok(ACTION_RESULT_LABEL[result]);
+  for (const result of ["no_op", "suggested", "mutated", "blocked", "unknown"]) assert.ok(ACTION_RESULT_LABEL[result]);
 });
 
 test("command-side result labels never claim runtime health (Part L)", () => {

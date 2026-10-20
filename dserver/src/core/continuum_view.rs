@@ -21,19 +21,17 @@
 //!   for each accepted placement -- reused EXACTLY as that module computes
 //!   it, never reinterpreted or recomputed here.
 //!
-//! # Why `resource_observation`/`resource_registry`/`resource_binding` are
-//! deliberately NOT used (Phase 135 design decision, not an oversight)
+//! # Physical resource observation
 //!
-//! `core::resource_observation` is an older, project-manifest/Firebase-
-//! snapshot-scoped telemetry pathway, pre-dating DMonitor/ADR-0024; it is
-//! not the canonical observation authority this view is scoped to use.
-//! `core::resource_registry`/`core::resource_binding` are a separate,
-//! project-scoped Stage 107 "O2" hardware/OS-identity bootstrap subsystem
-//! (confirmed unrelated by `dnode_registry`'s own doc comment) whose
-//! capacity is an OPAQUE digest, never resolved to real numbers, and whose
-//! project-scoping would falsely imply a specific project OWNS a piece of
-//! hardware -- exactly the false inference this view must never produce.
-//! None of the three are imported by this module.
+//! The GLOBAL physical node set remains owned exclusively by
+//! `DNodeRegistryStateV1`. An optional `resource_observation` may be joined
+//! from Stage-107 Resource Registry discovery for the resource currently
+//! bound to the D-Node. A project-scoped Continuum uses only that project's
+//! records; the global Continuum may use the newest unambiguous record across
+//! project partitions for the same physical node. This is live observation
+//! (CPU usage, observed memory/swap), never structural capacity, placement
+//! authority, or project ownership. The older `core::resource_observation`
+//! Firebase/manifest pathway remains unused.
 //!
 //! # Global, not project-partitioned (critical ownership rule)
 //!
@@ -72,6 +70,7 @@ use crate::core::dmonitor_interpretation::{
 };
 use crate::core::dmonitor_state::DMonitorStateV1;
 use crate::core::dnode_registry::DNodeRegistryStateV1;
+use crate::core::resource_registry::ResourceRegistryRecord;
 use crate::core::canonical_dmonitor::DMonitorHealthV1;
 
 pub const CONTINUUM_VIEW_SCHEMA: &str = "datum.continuum-view/1";
@@ -126,6 +125,11 @@ pub struct ContinuumViewV1 {
 pub struct ContinuumNodeV1 {
     pub node_id: String,
     pub structure: NodeStructureV1,
+    /// Latest project-scoped physical resource observation for the resource
+    /// currently bound to this D-Node. Observation only: never placement
+    /// authority and never a replacement for declared structural capacity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_observation: Option<ProjectResourceObservationV1>,
     pub accepted_placements: Vec<AcceptedPlacementRefV1>,
     pub placements_truncated: bool,
     pub observations: Vec<NodeObservationV1>,
@@ -143,6 +147,39 @@ pub struct NodeStructureV1 {
     /// (Phase 135 brief, section 7). Declared total != currently available.
     pub capacity: CanonicalNodeCapacityV1,
     pub dnode_abi_versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProjectResourceObservationV1 {
+    pub resource_id: String,
+    pub observed_at_utc: String,
+    pub last_seen_utc: String,
+    pub age_seconds: i64,
+    pub cpu: ObservedCpuResourcesV1,
+    pub memory: ObservedMemoryResourcesV1,
+    pub swap: ObservedMemoryResourcesV1,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ObservedCpuResourcesV1 {
+    pub logical_cores: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ObservedMemoryResourcesV1 {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RuntimeResourceUsageV1 {
+    pub cpu_percent: f64,
+    pub memory_used_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub pids: u64,
 }
 
 /// One accepted `(project, application, service) -> this node` binding,
@@ -199,6 +236,10 @@ pub struct NodeObservationV1 {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ObservationEvidenceV1 {
     pub monitor_instance_id: String,
+    /// Safe typed subset of DMonitor facts emitted by governed container
+    /// realization monitoring. Raw facts are never exposed by this view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_usage: Option<RuntimeResourceUsageV1>,
     /// The authoritative freshness verdict, copied verbatim from DMonitor's
     /// own policy evaluation -- never recomputed here (Phase 135 brief,
     /// section 12).
@@ -244,7 +285,9 @@ pub struct ProjectOverlayV1 {
     pub node_ids_in_use: Vec<String>,
 }
 
-/// Builds the Continuum View from three already-loaded states. Pure/
+/// Builds the core Continuum View from three already-loaded authority /
+/// observation states. Project-scoped Resource Registry telemetry is joined
+/// additively afterward by [`attach_resource_observations`]. Pure/
 /// synchronous -- no I/O, no locking (the caller, `api::continuum_view`,
 /// owns acquiring the established lock order and loading each state
 /// before calling this). `project_overlay_id`, if present, only adds a
@@ -279,6 +322,7 @@ pub fn build_continuum_view(
                         capacity: node.capacity,
                         dnode_abi_versions: node.capabilities.dnode_abi_versions.clone(),
                     },
+                    resource_observation: None,
                     accepted_placements: Vec::new(),
                     placements_truncated: false,
                     observations: Vec::new(),
@@ -354,6 +398,7 @@ pub fn build_continuum_view(
                 .iter()
                 .map(|e| ObservationEvidenceV1 {
                     monitor_instance_id: e.monitor_instance_id.clone(),
+                    runtime_usage: runtime_usage_for_observation(dmonitor_state, &e.observation_id),
                     freshness: e.freshness,
                     health: e.health,
                     authority_correlation: e.authority_correlation,
@@ -426,6 +471,128 @@ fn observation_age_seconds(observed_at_utc: &str, now: DateTime<Utc>) -> i64 {
         Err(_) => 0,
     }
 }
+
+
+fn runtime_usage_for_observation(
+    state: &DMonitorStateV1,
+    observation_id: &str,
+) -> Option<RuntimeResourceUsageV1> {
+    let record = state.by_observation_id(observation_id)?;
+    let usage = record.observation.facts.get("resource_usage")?.as_object()?;
+    let cpu_percent_basis_points = usage.get("cpu_percent_basis_points")?.as_u64()?;
+    let cpu_percent = cpu_percent_basis_points as f64 / 100.0;
+    let memory_used_bytes = usage.get("memory_used_bytes")?.as_u64()?;
+    let memory_limit_bytes = usage.get("memory_limit_bytes")?.as_u64()?;
+    let pids = usage.get("pids")?.as_u64()?;
+    if memory_limit_bytes > 0 && memory_used_bytes > memory_limit_bytes {
+        return None;
+    }
+    Some(RuntimeResourceUsageV1 {
+        cpu_percent,
+        memory_used_bytes,
+        memory_limit_bytes,
+        pids,
+    })
+}
+
+fn parse_observed_memory(value: &serde_json::Value) -> Option<ObservedMemoryResourcesV1> {
+    let object = value.as_object()?;
+    let total_bytes = object.get("total_bytes")?.as_u64()?;
+    let used_bytes = object.get("used_bytes")?.as_u64()?;
+    let available_bytes = object.get("available_bytes")?.as_u64()?;
+    if used_bytes > total_bytes || available_bytes > total_bytes {
+        return None;
+    }
+    Some(ObservedMemoryResourcesV1 {
+        total_bytes,
+        used_bytes,
+        available_bytes,
+    })
+}
+
+fn project_resource_observation(
+    record: &ResourceRegistryRecord,
+    now: DateTime<Utc>,
+) -> Option<ProjectResourceObservationV1> {
+    let resources = record.discovery.resources.as_object()?;
+    let cpu = resources.get("cpu")?.as_object()?;
+    let logical_cores = cpu.get("logical_cores")?.as_u64()?;
+    if logical_cores == 0 {
+        return None;
+    }
+    let usage_percent = match cpu.get("usage_percent") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let value = value.as_f64()?;
+            if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+                return None;
+            }
+            Some(value)
+        }
+    };
+    let observed_at = DateTime::parse_from_rfc3339(&record.discovery.observed_at_utc)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(ProjectResourceObservationV1 {
+        resource_id: record.resource_id.clone(),
+        observed_at_utc: record.discovery.observed_at_utc.clone(),
+        last_seen_utc: record.last_seen_utc.clone(),
+        age_seconds: (now - observed_at).num_seconds().max(0),
+        cpu: ObservedCpuResourcesV1 {
+            logical_cores,
+            usage_percent,
+        },
+        memory: parse_observed_memory(resources.get("memory")?)?,
+        swap: parse_observed_memory(resources.get("swap")?)?,
+    })
+}
+
+/// Adds live physical-resource observation to the SAME global D-Node objects.
+/// Project scope, when present, restricts the observation source to that
+/// project's Resource Registry partition; it never filters or redefines the
+/// physical node set. In the global view, replicated records for the same
+/// canonical resource may be considered across projects, but conflicting
+/// distinct resource_ids bound to one D-Node are treated as ambiguous and
+/// omitted rather than guessed.
+pub fn attach_resource_observations(
+    view: &mut ContinuumViewV1,
+    records: &[ResourceRegistryRecord],
+    project_id: Option<&str>,
+    now: DateTime<Utc>,
+) {
+    let mut candidates_by_node: BTreeMap<&str, Vec<&ResourceRegistryRecord>> = BTreeMap::new();
+    for record in records.iter().filter(|record| {
+        record.state == "bound"
+            && project_id.map_or(true, |project_id| record.project_id == project_id)
+    }) {
+        let Some(node_id) = record.assigned_node_id.as_deref() else { continue };
+        candidates_by_node.entry(node_id).or_default().push(record);
+    }
+
+    for node in &mut view.nodes {
+        let Some(candidates) = candidates_by_node.get(node.node_id.as_str()) else {
+            node.resource_observation = None;
+            continue;
+        };
+        let distinct_resources = candidates
+            .iter()
+            .map(|record| record.resource_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if distinct_resources.len() != 1 {
+            // Observation identity is ambiguous. Never pick a project or
+            // resource arbitrarily and accidentally imply physical ownership.
+            node.resource_observation = None;
+            continue;
+        }
+        let newest = candidates.iter().copied().max_by(|a, b| {
+            let a_time = DateTime::parse_from_rfc3339(&a.last_seen_utc).ok();
+            let b_time = DateTime::parse_from_rfc3339(&b.last_seen_utc).ok();
+            a_time.cmp(&b_time)
+        });
+        node.resource_observation = newest.and_then(|record| project_resource_observation(record, now));
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -695,6 +862,87 @@ mod tests {
     }
 
     #[test]
+    fn project_resource_observation_is_separate_from_declared_capacity() {
+        use crate::core::resource_registry::{
+            ResourceDiscoveryRequest, ResourceIdentityEvidence, ResourceIdentityScope,
+            ResourceRegistryRecord,
+        };
+
+        let registry = registry_with(&[("node-01", 1, 268_435_456)]);
+        let ddeploy = DDeployStateV1::empty();
+        let dmonitor = DMonitorStateV1::empty();
+        let mut view = build_continuum_view(
+            &registry,
+            &ddeploy,
+            &dmonitor,
+            &policy(),
+            Some("project-a"),
+            now(),
+        );
+        let record = ResourceRegistryRecord {
+            registry_schema_version: "0.1.0".to_string(),
+            project_id: "project-a".to_string(),
+            resource_id: "resource:hw:test".to_string(),
+            identity_scope: ResourceIdentityScope::CanonicalHardware,
+            planning_eligible: true,
+            state: "bound".to_string(),
+            assigned_node_id: Some("node-01".to_string()),
+            first_seen_utc: "2026-10-04T11:00:00Z".to_string(),
+            last_seen_utc: "2026-10-04T11:59:55Z".to_string(),
+            observation_count: 2,
+            latest_instance_id: "instance-1".to_string(),
+            discovery: ResourceDiscoveryRequest {
+                schema_version: "0.4.0".to_string(),
+                observed_at_utc: "2026-10-04T11:59:50Z".to_string(),
+                instance_id: "instance-1".to_string(),
+                observation_host_id: "host:pi".to_string(),
+                stage_hint: None,
+                identity: ResourceIdentityEvidence {
+                    hostname: "rpi".to_string(),
+                    sentinel_version: "0.1.0".to_string(),
+                    hardware_fingerprint_id: None,
+                    hardware_identity_basis: Vec::new(),
+                    hardware_identity_confidence: "unknown".to_string(),
+                    hardware_identity_attested: false,
+                    os_installation_id: None,
+                    os_identity_basis: "unknown".to_string(),
+                    role_binding_id: None,
+                    predecessor_binding_id: None,
+                },
+                platform: json!({"os_family":"linux","os_name":"Debian","os_version":"13","arch":"aarch64"}),
+                resources: json!({
+                    "capacity_profile_id": "capacity:test",
+                    "uptime_seconds": 1000,
+                    "cpu": {"logical_cores":4,"usage_percent":12.5},
+                    "memory": {
+                        "total_bytes":4294967296_u64,
+                        "used_bytes":1073741824_u64,
+                        "available_bytes":3221225472_u64
+                    },
+                    "swap": {
+                        "total_bytes":1073741824_u64,
+                        "used_bytes":0_u64,
+                        "available_bytes":1073741824_u64
+                    },
+                    "filesystems":[]
+                }),
+                capabilities: Vec::new(),
+                safe_to_auto_execute: false,
+                side_effects_performed: false,
+            },
+        };
+
+        attach_resource_observations(&mut view, &[record], Some("project-a"), now());
+        let node = &view.nodes[0];
+        assert_eq!(node.structure.capacity.cpu_cores, 1, "declared planning capacity is unchanged");
+        let observed = node.resource_observation.as_ref().expect("project resource observation");
+        assert_eq!(observed.cpu.logical_cores, 4);
+        assert_eq!(observed.cpu.usage_percent, Some(12.5));
+        assert_eq!(observed.memory.available_bytes, 3_221_225_472);
+        assert_eq!(observed.age_seconds, 10);
+    }
+
+    #[test]
     fn project_overlay_for_a_project_with_no_placements_is_empty_not_an_error() {
         let registry = registry_with(&[("node-01", 8, 17_179_869_184)]);
         let ddeploy = DDeployStateV1::empty();
@@ -718,6 +966,51 @@ mod tests {
         assert_eq!(observation.placement_convergence, DMonitorConvergenceV1::Unknown);
         assert!(observation.admitted_evidence.is_empty(), "no evidence must mean an empty list, never a fabricated offline status");
         assert!(observation.excluded_evidence.is_empty());
+    }
+
+    #[test]
+    fn fresh_matching_observation_exposes_typed_runtime_usage_without_raw_facts() {
+        let registry = registry_with(&[("node-01", 8, 17_179_869_184)]);
+        let mut ddeploy = DDeployStateV1::empty();
+        let (dmap_id, dmap_digest) =
+            placed_application(&mut ddeploy, "project-a", "app-1", "service-foo", "node-01");
+
+        let mut dmonitor = DMonitorStateV1::empty();
+        let mut observation = dserv_observation(
+            "project-a",
+            "node-01",
+            "app-1",
+            "service-foo",
+            &dmap_id,
+            1,
+            &dmap_digest,
+            "2026-10-04T11:59:30Z",
+            "monitor-1",
+        );
+        observation.facts = json!({
+            "resource_usage": {
+                "cpu_percent_basis_points": 350_u64,
+                "memory_used_bytes": 10485760_u64,
+                "memory_limit_bytes": 1073741824_u64,
+                "pids": 6_u64
+            },
+            "raw_private_detail": "must-not-be-projected"
+        });
+        ingest_observation(&mut dmonitor, "project-a", observation, &now().to_rfc3339()).unwrap();
+
+        let view = build_continuum_view(&registry, &ddeploy, &dmonitor, &policy(), None, now());
+        let evidence = &view.nodes[0].observations[0].admitted_evidence[0];
+        assert_eq!(
+            evidence.runtime_usage,
+            Some(RuntimeResourceUsageV1 {
+                cpu_percent: 3.5,
+                memory_used_bytes: 10_485_760,
+                memory_limit_bytes: 1_073_741_824,
+                pids: 6,
+            })
+        );
+        let json = serde_json::to_value(evidence).unwrap();
+        assert!(json.get("raw_private_detail").is_none(), "raw DMonitor facts must never leak through the Continuum projection");
     }
 
     #[test]

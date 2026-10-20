@@ -21,6 +21,13 @@ import {
   graphCoverageText,
 } from "./graph-model.ts";
 
+function formatBytes(value: number): string {
+  if (value >= 1_073_741_824) return `${(value / 1_073_741_824).toFixed(1)} GiB`;
+  if (value >= 1_048_576) return `${(value / 1_048_576).toFixed(1)} MiB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${value} B`;
+}
+
 export function projectGraphView(
   data: ProjectGraph,
   runtime?: ProjectRuntimeGraph,
@@ -133,6 +140,18 @@ export function projectGraphView(
       evidenceDetails.append(
         el("p", "small entity-identity", `${label} · ${value}`),
       );
+    if (e.resource_usage) {
+      evidenceDetails.append(
+        el("p", "small fw-semibold", "Container resource sample"),
+        el("p", "small", `Current container CPU · ${e.resource_usage.cpu_percent.toFixed(1)}%`),
+        el(
+          "p",
+          "small",
+          `Current container memory · ${formatBytes(e.resource_usage.memory_used_bytes)} / ${formatBytes(e.resource_usage.memory_limit_bytes)}`,
+        ),
+        el("p", "small", `Current container PIDs · ${e.resource_usage.pids}`),
+      );
+    }
     // The client validates observation-ID uniqueness and positional evidence /
     // temporal correspondence before this view is created.
     const temporal = runtime?.temporal_quality.find(
@@ -284,7 +303,7 @@ export function projectGraphView(
           el(
             "p",
             "small text-secondary",
-            "Select an entity or D-Call in the graph or accessible list. No editing, deployment or runtime status is exposed.",
+            "Select an entity or D-Call in the graph or accessible list. Runtime resource samples are observation evidence only; no editing or deployment action is available.",
           ),
         );
       };
@@ -377,6 +396,46 @@ export function projectGraphView(
                 `Declared minimum memory bytes · ${node.memory_bytes}`,
               ),
             );
+          if (node.kind === "dserv") {
+            const currentUsage = evidence.filter((item) => {
+              if (item.logical_node_id !== node.id || item.resource_usage === undefined) return false;
+              const temporal = runtime?.temporal_quality.find(
+                (candidate) => candidate.observation_id === item.observation_id,
+              );
+              return temporal?.observation_freshness === "fresh";
+            });
+            detailBody.append(
+              el("h3", "small fw-semibold mt-3", "Current runtime resource usage"),
+            );
+            if (currentUsage.length === 0) {
+              detailBody.append(
+                el(
+                  "p",
+                  "small text-secondary",
+                  "No fresh container resource telemetry is currently available for this D-Serv.",
+                ),
+              );
+            } else {
+              for (const item of currentUsage) {
+                const usage = item.resource_usage!;
+                const temporal = runtime?.temporal_quality.find(
+                  (candidate) => candidate.observation_id === item.observation_id,
+                );
+                detailBody.append(
+                  el(
+                    "p",
+                    "small",
+                    `CPU ${usage.cpu_percent.toFixed(1)}% · memory ${formatBytes(usage.memory_used_bytes)} / ${formatBytes(usage.memory_limit_bytes)} · PIDs ${usage.pids}`,
+                  ),
+                  el(
+                    "p",
+                    "small text-secondary",
+                    `Observation ${item.observation_id} · ${temporal?.observation_freshness ?? "freshness unavailable"}`,
+                  ),
+                );
+              }
+            }
+          }
         } else if (edge) {
           const source = graph.nodes.find((n) => n.id === edge.source)!,
             target = graph.nodes.find((n) => n.id === edge.target)!;

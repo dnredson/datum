@@ -355,6 +355,29 @@ pub fn resource_registry_snapshot(project_id: &str) -> Result<Vec<ResourceRegist
     Ok(resources)
 }
 
+
+/// Read-only snapshot across every project scope. Intended for global
+/// physical-observation projections only: callers must never treat the
+/// project-partitioned registry records returned here as ownership or
+/// placement authority. Records are cloned under the registry read lock and
+/// the lock is released before the caller composes them with other domains.
+pub fn resource_registry_all_snapshot() -> Result<Vec<ResourceRegistryRecord>, String> {
+    ensure_resource_registry_persistence_initialized();
+    let mut resources = resource_state_store()
+        .read()
+        .map_err(|error| format!("resource registry state lock poisoned: {error}"))?
+        .resources
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    resources.sort_by(|a, b| {
+        a.project_id
+            .cmp(&b.project_id)
+            .then_with(|| a.resource_id.cmp(&b.resource_id))
+    });
+    Ok(resources)
+}
+
 pub fn active_resource_binding_for_node(
     project_id: &str,
     node_id: &str,

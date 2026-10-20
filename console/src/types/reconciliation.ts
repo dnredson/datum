@@ -75,7 +75,7 @@ export interface ReconciliationBatchCreateResponse {
 }
 
 export type ReconciliationAttemptStatus = "succeeded" | "partial" | "failed" | "unknown";
-export type ReconciliationActionResult = "no_op" | "mutated" | "blocked" | "unknown";
+export type ReconciliationActionResult = "no_op" | "suggested" | "mutated" | "blocked" | "unknown";
 
 export interface ReconciliationServiceResult {
   service_id: string;
@@ -161,7 +161,9 @@ export interface AuthorizeRequest {
   dgraph_revision?: number;
   authorized_by: string;
   allow_host_mutation: boolean;
-  valid_for_seconds?: number;
+  operation: "reconcile";
+  persistence_scope: "durable";
+  valid_for_seconds: number;
 }
 
 // The backend's error envelope for this family of endpoints: `{"error":

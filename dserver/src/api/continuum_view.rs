@@ -26,7 +26,9 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::core::continuum_view::{build_continuum_view, ContinuumViewV1};
+use crate::core::continuum_view::{
+    attach_resource_observations, build_continuum_view, ContinuumViewV1,
+};
 use crate::core::dmonitor_readiness::default_readiness_policy;
 use crate::core::dmonitor_state::load_state as load_dmonitor_state;
 use crate::core::dnode_registry::load_state as load_dnode_registry_state;
@@ -81,9 +83,10 @@ pub struct ContinuumQuery {
 
 /// `GET /api/v1/operations/continuum[?project_id=...]` -- the GLOBAL
 /// Continuum View. The physical node set is always the full, global
-/// registry; `project_id`, if given, only adds a [`ProjectOverlayV1`]
-/// (`core::continuum_view::ProjectOverlayV1`) onto the SAME node list --
-/// it never filters or re-scopes `nodes` itself.
+/// registry. `project_id`, if given, adds a [`ProjectOverlayV1`]
+/// (`core::continuum_view::ProjectOverlayV1`) onto the SAME node list and
+/// scopes the optional Resource Registry telemetry attached to those nodes.
+/// It never filters or re-scopes the D-Node inventory itself.
 pub async fn get_continuum_view(
     Query(query): Query<ContinuumQuery>,
 ) -> Result<JsonResponse<ContinuumViewV1>, ApiError> {
@@ -96,8 +99,9 @@ pub async fn get_continuum_view(
 }
 
 /// `GET /api/v1/operations/projects/:project_id/continuum` -- identical
-/// physical data to the global route, with `project_id`'s overlay always
-/// populated. Mirrors the existing `/api/v1/operations/projects/:project/dgraph-editor`
+/// physical D-Node structure to the global route, with `project_id`'s
+/// placement overlay always populated and host telemetry sourced only from
+/// that project's matching Resource Registry observation. Mirrors the existing `/api/v1/operations/projects/:project/dgraph-editor`
 /// path convention (`api::dgraph_editor`).
 pub async fn get_project_continuum_view(
     Path(project_id): Path<String>,
@@ -107,6 +111,14 @@ pub async fn get_project_continuum_view(
 }
 
 async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<ContinuumViewV1>, ApiError> {
+    // Resource Registry state uses an independent lock/domain. Clone all
+    // observation records BEFORE the established DDeploy/DNode/DMonitor lock
+    // chain so this additive read cannot introduce a lock-order cycle.
+    // Project scope is applied only when the observation is attached; the
+    // D-Node inventory itself always remains global.
+    let resource_records =
+        crate::api::resource_registry::resource_registry_all_snapshot().map_err(internal_error)?;
+
     // Reuses DMonitor's own server-owned default freshness policy
     // (`core::dmonitor_readiness::default_readiness_policy`) -- never a
     // caller-suppliable or independently-invented one (Phase 135 brief,
@@ -132,7 +144,7 @@ async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<Continu
     // mirrors `get_dmonitor_readiness`'s identical rule).
     let now = Utc::now();
 
-    let view = build_continuum_view(
+    let mut view = build_continuum_view(
         &dnode_registry_state,
         &ddeploy_state,
         &dmonitor_state,
@@ -140,6 +152,7 @@ async fn build_response(project_id: Option<&str>) -> Result<JsonResponse<Continu
         project_id,
         now,
     );
+    attach_resource_observations(&mut view, &resource_records, project_id, now);
     Ok(JsonResponse(view))
 }
 
@@ -221,17 +234,40 @@ mod tests {
     }
 
     #[test]
-    fn global_route_never_filters_nodes_by_project() {
-        // Structural guard against a future regression: the global handler
-        // must pass `project_id` only as the LAST (overlay) argument to
-        // `build_continuum_view`, never use it to branch which nodes/registry
-        // state gets loaded.
+    fn resource_observation_is_additive_never_changes_physical_node_authority() {
+        // The same D-Node Registry / DDeploy / DMonitor states always feed
+        // build_continuum_view. Resource Registry telemetry is attached
+        // AFTER the global node set is built; project scope may restrict its
+        // observation source, but must never select a different D-Node source
+        // or filter nodes.
         let source = production_source();
         let start = source.find("async fn build_response(").unwrap();
         let body = &source[start..];
+        assert!(body.contains("build_continuum_view("));
+        assert!(body.contains("attach_resource_observations("));
+        assert_eq!(
+            body.matches("load_dnode_registry_state(&db_path)").count(),
+            1,
+            "there must remain exactly one global D-Node Registry load"
+        );
+        let build_pos = body.find("let mut view = build_continuum_view(").unwrap();
+        let attach_pos = body.find("attach_resource_observations(").unwrap();
         assert!(
-            !body.contains("if project_id") && !body.contains("match project_id"),
-            "build_response must not branch control flow on project_id -- the physical read path must be identical regardless of overlay"
+            build_pos < attach_pos,
+            "resource telemetry must be an additive observation joined after the physical Continuum is built"
+        );
+    }
+
+    #[test]
+    fn resource_registry_all_snapshot_occurs_before_the_established_transaction_lock_chain() {
+        let source = production_source();
+        let start = source.find("async fn build_response(").unwrap();
+        let body = &source[start..];
+        let resource_pos = body.find("resource_registry_all_snapshot").unwrap();
+        let ddeploy_lock_pos = body.find("ddeploy::ddeploy_transaction()").unwrap();
+        assert!(
+            resource_pos < ddeploy_lock_pos,
+            "Resource Registry observation must be cloned before acquiring the established Continuum lock chain"
         );
     }
 

@@ -10,6 +10,14 @@ use std::collections::BTreeMap;
 
 pub const MAX_RUNTIME_EVIDENCE: usize = 1000;
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RuntimeResourceUsage {
+    pub cpu_percent: f64,
+    pub memory_used_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub pids: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RuntimeEvidence {
     pub id: String,
     pub project_id: String,
@@ -24,6 +32,8 @@ pub struct RuntimeEvidence {
     pub observed_at_utc: String,
     pub received_at_utc: String,
     pub observed_health_claim: DMonitorHealthV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<RuntimeResourceUsage>,
     pub dmap_ref: Option<DMonitorContractRefV1>,
     pub logical_node_id: Option<String>,
 }
@@ -34,6 +44,23 @@ pub struct RuntimeContent {
     pub included_evidence_count: usize,
     pub evidence: Vec<RuntimeEvidence>,
 }
+fn runtime_resource_usage(record: &DMonitorObservationRecordV1) -> Option<RuntimeResourceUsage> {
+    let usage = record.observation.facts.get("resource_usage")?.as_object()?;
+    let cpu_percent_basis_points = usage.get("cpu_percent_basis_points")?.as_u64()?;
+    let cpu_percent = cpu_percent_basis_points as f64 / 100.0;
+    let memory_used_bytes = usage.get("memory_used_bytes")?.as_u64()?;
+    let memory_limit_bytes = usage.get("memory_limit_bytes")?.as_u64()?;
+    if memory_limit_bytes > 0 && memory_used_bytes > memory_limit_bytes {
+        return None;
+    }
+    Some(RuntimeResourceUsage {
+        cpu_percent,
+        memory_used_bytes,
+        memory_limit_bytes,
+        pids: usage.get("pids")?.as_u64()?,
+    })
+}
+
 pub fn build(
     project: &str,
     state: &DMonitorStateV1,
@@ -118,6 +145,7 @@ pub fn build(
                 observed_at_utc: record.observation.observed_at_utc.clone(),
                 received_at_utc: record.received_at_utc.clone(),
                 observed_health_claim: record.observation.health,
+                resource_usage: runtime_resource_usage(record),
                 dmap_ref: dmap_ref.clone(),
                 logical_node_id: matched,
             });
@@ -208,6 +236,35 @@ mod tests {
             .unwrap()
             .contains("same-display-name"));
     }
+    #[test]
+    fn resource_usage_is_typed_and_other_raw_facts_stay_hidden() {
+        let mut state = DMonitorStateV1::empty();
+        let mut obs = observation("p", "a", "s", "fog", "epoch", 1);
+        obs.facts = serde_json::json!({
+            "resource_usage": {
+                "cpu_percent_basis_points": 225_u64,
+                "memory_used_bytes": 8_388_608_u64,
+                "memory_limit_bytes": 1_073_741_824_u64,
+                "pids": 5_u64
+            },
+            "secret_raw_fact": "not-projected"
+        });
+        admit(&mut state, obs);
+        let result = build("p", &state, None).unwrap();
+        assert_eq!(
+            result.evidence[0].resource_usage,
+            Some(RuntimeResourceUsage {
+                cpu_percent: 2.25,
+                memory_used_bytes: 8_388_608,
+                memory_limit_bytes: 1_073_741_824,
+                pids: 5,
+            })
+        );
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("secret_raw_fact"));
+        assert!(!json.contains("not-projected"));
+    }
+
     #[test]
     fn app_node_epoch_identity_multiple_realizations_and_project_isolation() {
         let mut state = DMonitorStateV1::empty();

@@ -52,7 +52,7 @@ function nullableText(value: unknown): boolean {
 const REQUEST_STATUSES = new Set(["pending", "claimed", "attempted", "stale", "expired"]);
 const BATCH_STATUSES = new Set(["pending", "executing", "succeeded", "partial", "failed", "unknown", "stale"]);
 const ATTEMPT_STATUSES = new Set(["succeeded", "partial", "failed", "unknown"]);
-const ACTION_RESULTS = new Set(["no_op", "mutated", "blocked", "unknown"]);
+const ACTION_RESULTS = new Set(["no_op", "suggested", "mutated", "blocked", "unknown"]);
 const MODES = new Set(["preview", "execute"]);
 
 export function validReconciliationRequest(value: unknown, projectId?: string): value is ReconciliationRequest {
@@ -234,25 +234,28 @@ export const ATTEMPT_STATUS_TONE: Record<ReconciliationAttemptStatus, "neutral" 
 };
 
 // Only the distinctions the backend itself actually exposes (Part X) --
-// never invented. "No-op" / "Mutated" / "Blocked" / "Unknown" exactly
-// mirror `ReconciliationActionResult`; there is no richer
+// never invented. "No-op" / "Suggested" / "Mutated" / "Blocked" /
+// "Unknown" exactly mirror `ReconciliationActionResult`; there is no richer
 // Create/Start/Replace/Remove vocabulary to surface.
 export const ACTION_RESULT_LABEL: Record<ReconciliationActionResult, string> = {
   no_op: "No change",
+  suggested: "Suggested (preview)",
   mutated: "Mutated",
   blocked: "Blocked",
   unknown: "Unknown",
 };
 export const ACTION_RESULT_TONE: Record<ReconciliationActionResult, "neutral" | "info" | "success" | "warning" | "danger"> = {
   no_op: "neutral",
+  suggested: "info",
   mutated: "success",
   blocked: "warning",
   unknown: "neutral",
 };
 
 // Part E1 -- authorization status, computed ONLY from fields the server
-// already supplies (`allow_host_mutation`, `expires_at_utc`,
-// `dgraph_revision` vs. the slice's own CURRENT `dgraph_revision`). This is
+// already supplies (`allow_host_mutation`, reconcile operation, durable
+// scope, finite `expires_at_utc`, and `dgraph_revision` vs. the slice's
+// own CURRENT `dgraph_revision`). This is
 // not re-deriving dserver's own lease-expiry math (that remains
 // `should_restore_authorization`'s job at the moment of actual mutation) --
 // it is a DISPLAY-ONLY read of already-served fields, same spirit as every
@@ -269,8 +272,10 @@ export function authorizationDisplayStatus(
 ): AuthorizationDisplayStatus {
   if (!authorization) return "none";
   if (!authorization.allow_host_mutation) return "not_authorized";
+  if (authorization.operation !== "reconcile" || authorization.persistence_scope !== "durable" || !authorization.expires_at_utc)
+    return "not_authorized";
   if (authorization.dgraph_id !== currentDgraphId || authorization.dgraph_revision !== currentDgraphRevision) return "wrong_target";
-  if (authorization.expires_at_utc && Date.parse(authorization.expires_at_utc) <= nowMs) return "expired";
+  if (Date.parse(authorization.expires_at_utc) <= nowMs) return "expired";
   return "authorized";
 }
 

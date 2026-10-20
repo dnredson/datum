@@ -7,6 +7,15 @@ const object = (v: unknown): v is Record<string, unknown> =>
 const text = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 const count = (v: unknown): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const finiteNonNegative = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0;
+const runtimeUsage = (v: unknown): boolean =>
+  object(v) &&
+  finiteNonNegative(v.cpu_percent) &&
+  count(v.memory_used_bytes) &&
+  count(v.memory_limit_bytes) &&
+  (v.memory_limit_bytes === 0 || Number(v.memory_used_bytes) <= Number(v.memory_limit_bytes)) &&
+  count(v.pids);
 const timestamp = (v: unknown) =>
   text(v) && /^\d{4}-\d\d-\d\dT/u.test(v) && Number.isFinite(Date.parse(v));
 export function validRuntimeGraph(
@@ -71,7 +80,8 @@ export function validRuntimeGraph(
       !timestamp(e.received_at_utc) ||
       !["unknown", "healthy", "degraded", "unhealthy"].includes(
         String(e.observed_health_claim),
-      )
+      ) ||
+      (e.resource_usage !== undefined && !runtimeUsage(e.resource_usage))
     )
       return false;
     if (!text(e.reporting_node_id)) return false;

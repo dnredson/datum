@@ -522,6 +522,13 @@ pub struct OperationalServiceReconciliationReport {
     pub authorization_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_expires_at_utc: Option<String>,
+    /// Governed artifact execution identity delivered for this service in
+    /// the current reconciliation context. Unlike authorization/lease
+    /// evidence above, these two fields are observation-safe and remain
+    /// present whenever an artifact assignment resolved, including preview
+    /// or post-lease read-only cycles. Container DMonitor uses them to keep
+    /// realization monitoring continuous without treating authorization as
+    /// observation authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2428,8 +2435,8 @@ fn run_operational_reconciliation_from_bootstrap(
                 execution_semantics: stage107a_evidence.as_ref().map(|evidence| evidence.0.clone()),
                 authorization_id: stage107a_evidence.as_ref().and_then(|evidence| evidence.1.clone()),
                 authorization_expires_at_utc: authorization_expires_at_utc.clone(),
-                execution_generation: stage107a_evidence.as_ref().and_then(|evidence| evidence.2),
-                expected_execution_projection_digest: stage107a_evidence.as_ref().and_then(|evidence| evidence.3.clone()),
+                execution_generation: assignment.map(|artifact| artifact.execution_generation),
+                expected_execution_projection_digest: assignment.map(|artifact| artifact.execution_projection_digest.clone()),
                 recomputed_execution_projection_digest: stage107a_evidence.as_ref().and_then(|evidence| evidence.4.clone()),
                 execution_pinning_mode: stage107a_evidence.as_ref().and_then(|evidence| evidence.5).map(str::to_string),
                 f2_status: stage107a_evidence.as_ref().map(|_| "partial_hardening".to_string()),
@@ -2727,8 +2734,8 @@ fn run_operational_reconciliation_from_bootstrap(
             execution_semantics: stage107a_evidence.as_ref().map(|evidence| evidence.0.clone()),
             authorization_id: stage107a_evidence.as_ref().and_then(|evidence| evidence.1.clone()),
             authorization_expires_at_utc: authorization_expires_at_utc.clone(),
-            execution_generation: stage107a_evidence.as_ref().and_then(|evidence| evidence.2),
-            expected_execution_projection_digest: stage107a_evidence.as_ref().and_then(|evidence| evidence.3.clone()),
+            execution_generation: assignment.map(|artifact| artifact.execution_generation),
+            expected_execution_projection_digest: assignment.map(|artifact| artifact.execution_projection_digest.clone()),
             recomputed_execution_projection_digest: stage107a_evidence.as_ref().and_then(|evidence| evidence.4.clone()),
             execution_pinning_mode: stage107a_evidence.as_ref().and_then(|evidence| evidence.5).map(str::to_string),
             f2_status: stage107a_evidence.as_ref().map(|_| "partial_hardening".to_string()),

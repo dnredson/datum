@@ -14,6 +14,7 @@ import type { Core, ElementDefinition, StylesheetJson } from "cytoscape";
 import type {
   ContinuumView,
   ContinuumNode,
+  AcceptedPlacementRef,
   NodeObservation,
   ObservationEvidence,
   DMonitorFreshness,
@@ -206,6 +207,10 @@ export function continuumElements(data: ContinuumView): ElementDefinition[] {
           label: placement.service_id,
           visual_category: "software",
           kind: "placement_ref",
+          parent_node_id: node.node_id,
+          project_id: placement.project_id,
+          application_id: placement.application_id,
+          service_id: placement.service_id,
           observation_state: observationState,
         },
       });
@@ -255,6 +260,16 @@ function evidenceRow(e: ObservationEvidence, excludedReason?: string | null): HT
     badge(CORRELATION_LABEL[e.authority_correlation], CORRELATION_TONE[e.authority_correlation]),
     el("span", "small text-secondary", `observed ${e.age_seconds}s ago`),
   );
+  if (e.runtime_usage) {
+    const usage = e.runtime_usage;
+    row.append(
+      el(
+        "span",
+        "small",
+        `CPU ${usage.cpu_percent.toFixed(1)}% · memory ${bytes(usage.memory_used_bytes)} / ${bytes(usage.memory_limit_bytes)} · ${usage.pids} PIDs`,
+      ),
+    );
+  }
   if (excludedReason !== undefined) {
     row.append(badge(excludedReason ? `Excluded: ${excludedReason}` : "Excluded", "neutral"));
   }
@@ -308,6 +323,34 @@ function nodeDetail(node: ContinuumNode, projectNodeIds: Set<string> | undefined
   entry("D-Node ABI", node.structure.dnode_abi_versions.length ? node.structure.dnode_abi_versions.join(", ") : "None declared");
   container.append(structure);
 
+  const resourceHeading = el("h3", "h6 small text-uppercase text-secondary mt-3", "Current host resources");
+  container.append(resourceHeading);
+  if (node.resource_observation) {
+    const resource = node.resource_observation;
+    const current = el("dl", "continuum-structure-grid");
+    const currentEntry = (label: string, value: string) => {
+      current.append(el("dt", "small text-secondary", label), el("dd", "small", value));
+    };
+    currentEntry("Resource", resource.resource_id);
+    currentEntry("Observed", `${resource.age_seconds}s ago`);
+    currentEntry("Logical cores (observed)", String(resource.cpu.logical_cores));
+    currentEntry("CPU usage", resource.cpu.usage_percent === undefined ? "Unavailable" : `${resource.cpu.usage_percent.toFixed(1)}%`);
+    currentEntry("Memory used", bytes(resource.memory.used_bytes));
+    currentEntry("Memory available", bytes(resource.memory.available_bytes));
+    currentEntry("Memory total (observed)", bytes(resource.memory.total_bytes));
+    currentEntry("Swap available", bytes(resource.swap.available_bytes));
+    container.append(current);
+    container.append(
+      el(
+        "p",
+        "small text-secondary",
+        "Observed host resources are live telemetry from the project-scoped physical resource binding. They do not replace declared planning capacity.",
+      ),
+    );
+  } else {
+    container.append(el("p", "small text-secondary", "No current project-scoped host resource observation."));
+  }
+
   const placementsHeading = el("h3", "h6 small text-uppercase text-secondary mt-3", "Accepted placement");
   placementsHeading.style.color = GRAPH_RELATIONS.placement.color;
   container.append(placementsHeading);
@@ -330,6 +373,62 @@ function nodeDetail(node: ContinuumNode, projectNodeIds: Set<string> | undefined
     for (const observation of node.observations) container.append(observationView(observation));
     if (node.observations_truncated) container.append(el("p", "small text-secondary", "Additional observations were truncated."));
   }
+  return container;
+}
+
+
+function placementDetail(
+  node: ContinuumNode,
+  placement: AcceptedPlacementRef,
+  observation: NodeObservation | undefined,
+): HTMLElement {
+  const container = el("div", "continuum-placement-detail");
+  const header = el("div", "continuum-node-header");
+  const swatch = el("span", "continuum-category-swatch");
+  swatch.style.backgroundColor = GRAPH_CATEGORIES.software.color;
+  swatch.setAttribute("aria-hidden", "true");
+  header.append(swatch, el("h2", "h6 mb-0", placement.service_id), badge("Accepted placement", "info"));
+  container.append(header);
+
+  const identity = el("dl", "continuum-structure-grid");
+  const entry = (label: string, value: string) => {
+    identity.append(el("dt", "small text-secondary", label), el("dd", "small", value));
+  };
+  entry("Project", placement.project_id);
+  entry("Application", placement.application_id);
+  entry("D-Node", node.node_id);
+  container.append(identity);
+
+  container.append(el("h3", "h6 small text-uppercase text-secondary mt-3", "Current runtime usage"));
+  const usageEvidence =
+    observation?.admitted_evidence.filter(
+      (e) =>
+        e.runtime_usage !== undefined &&
+        e.freshness === "fresh" &&
+        e.authority_correlation === "exact_match",
+    ) ?? [];
+  if (usageEvidence.length === 0) {
+    container.append(el("p", "small text-secondary", "No fresh, authority-matched runtime resource telemetry is currently available."));
+  } else {
+    const list = el("ul", "continuum-evidence-list");
+    for (const evidence of usageEvidence) {
+      const usage = evidence.runtime_usage!;
+      const item = el("li", "continuum-evidence-row");
+      item.append(
+        el("span", "small", `CPU ${usage.cpu_percent.toFixed(1)}%`),
+        el("span", "small", `Memory ${bytes(usage.memory_used_bytes)} / ${bytes(usage.memory_limit_bytes)}`),
+        el("span", "small", `PIDs ${usage.pids}`),
+        badge(FRESHNESS_LABEL[evidence.freshness], FRESHNESS_TONE[evidence.freshness]),
+        el("span", "small text-secondary", `observed ${evidence.age_seconds}s ago`),
+      );
+      list.append(item);
+    }
+    container.append(list);
+  }
+
+  container.append(el("h3", "h6 small text-uppercase text-secondary mt-3", "DMonitor observation"));
+  if (observation) container.append(observationView(observation));
+  else container.append(el("p", "small text-secondary", "No DMonitor realization evidence for this placement."));
   return container;
 }
 
@@ -466,20 +565,20 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
   const rendererNotice = el("p", "small text-secondary continuum-renderer-notice");
   canvasArea.append(canvas, rendererNotice);
   const inspector = el("section", "continuum-inspector");
-  inspector.setAttribute("aria-label", "Selected D-Node detail");
+  inspector.setAttribute("aria-label", "Selected Continuum element detail");
   const inspectorBody = el("div", "continuum-inspector-body");
   inspectorBody.setAttribute("aria-live", "polite");
   inspector.append(el("h2", "section-title", "Inspector"), inspectorBody);
   const clearInspector = () => {
     inspectorBody.replaceChildren(
-      el("p", "small text-secondary", "Select a D-Node in the canvas or the list below to inspect it."),
+      el("p", "small text-secondary", "Select a D-Node or accepted service placement in the canvas to inspect current resources and observation evidence."),
     );
   };
   clearInspector();
   grid.append(canvasArea, inspector);
   root.append(grid);
 
-  function select(nodeId: string): void {
+  function selectNode(nodeId: string): void {
     const node = data.nodes.find((n) => n.node_id === nodeId);
     if (!node) return;
     inspectorBody.replaceChildren(nodeDetail(node, projectNodeIds));
@@ -488,6 +587,32 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
     const card = list.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
     card?.focus();
     card?.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectPlacement(
+    elementId: string,
+    nodeId: string,
+    project: string,
+    application: string,
+    service: string,
+  ): void {
+    const node = data.nodes.find((candidate) => candidate.node_id === nodeId);
+    const placement = node?.accepted_placements.find(
+      (candidate) =>
+        candidate.project_id === project &&
+        candidate.application_id === application &&
+        candidate.service_id === service,
+    );
+    if (!node || !placement) return;
+    const observation = node.observations.find(
+      (candidate) =>
+        candidate.project_id === project &&
+        candidate.application_id === application &&
+        candidate.service_id === service,
+    );
+    inspectorBody.replaceChildren(placementDetail(node, placement, observation));
+    cy?.elements().unselect();
+    cy?.getElementById(elementId).select();
   }
 
   function draw(): void {
@@ -505,7 +630,20 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
         style: [...graphVisualStyles(), ...observationOverlayStyles()],
       });
       cy.fit(undefined, 35);
-      cy.on("tap", "node", (e) => select(e.target.id()));
+      cy.on("tap", "node", (e) => {
+        const target = e.target;
+        if (target.data("kind") === "placement_ref") {
+          selectPlacement(
+            target.id(),
+            String(target.data("parent_node_id")),
+            String(target.data("project_id")),
+            String(target.data("application_id")),
+            String(target.data("service_id")),
+          );
+        } else {
+          selectNode(target.id());
+        }
+      });
       rendererNotice.textContent = "Pan / zoom; node position is visual only and is never saved. Dashed edges are accepted placement references, not D-Call.";
     } catch {
       cy?.destroy();
@@ -530,7 +668,7 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
       return;
     }
     for (const node of matched) {
-      const card = nodeCard(node, projectNodeIds, select);
+      const card = nodeCard(node, projectNodeIds, selectNode);
       card.dataset.nodeId = node.node_id;
       list.append(card);
     }
