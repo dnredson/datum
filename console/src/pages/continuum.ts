@@ -455,7 +455,10 @@ function placementDetail(
   if (usageEvidence.length === 0) {
     container.append(el("p", "small text-secondary", "No fresh, authority-matched runtime resource telemetry is currently available."));
   } else {
-    const evidence = usageEvidence[0];
+    // TypeScript does not narrow indexed array access from the preceding
+    // length check when noUncheckedIndexedAccess is enabled. The branch
+    // invariant guarantees index 0 exists here.
+    const evidence = usageEvidence[0]!;
     const usage = evidence.runtime_usage!;
     const panel = terminalMetricPanel({
       title: `D-SERV :: ${placement.application_id} / ${placement.service_id}`,
