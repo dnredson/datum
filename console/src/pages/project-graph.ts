@@ -8,6 +8,10 @@ import type {
 import { runtimeElements, realizationEdgeId } from "./runtime-graph-model.ts";
 import { el, badge, sectionValue } from "../components/presentation.ts";
 import {
+  terminalMetricPanel,
+  type TerminalMetricPanelState,
+} from "../components/terminal-metrics.ts";
+import {
   graphVisualStyles,
   graphLegendItemsFor,
   renderGraphLegend,
@@ -28,9 +32,96 @@ function formatBytes(value: number): string {
   return `${value} B`;
 }
 
+
+export interface ProjectGraphLiveOptions {
+  fetchRuntime?: (signal: AbortSignal) => Promise<ProjectRuntimeGraph>;
+  pollMs?: number;
+}
+
+function dservMetricState(
+  logicalNodeId: string,
+  applicationId: string,
+  serviceId: string,
+  source: ProjectRuntimeGraph | undefined,
+  liveLabel?: string,
+): TerminalMetricPanelState {
+  const candidates =
+    source?.runtime.availability === "available"
+      ? source.runtime.value.evidence
+          .filter((item) => {
+            if (
+              item.logical_node_id !== logicalNodeId ||
+              item.resource_usage === undefined
+            )
+              return false;
+            const temporal = source.temporal_quality.find(
+              (candidate) => candidate.observation_id === item.observation_id,
+            );
+            return temporal?.observation_freshness === "fresh";
+          })
+          .sort(
+            (a, b) =>
+              Date.parse(b.received_at_utc) - Date.parse(a.received_at_utc),
+          )
+      : [];
+  const latest = candidates[0];
+  if (!latest?.resource_usage) {
+    return {
+      title: `D-SERV :: ${applicationId} / ${serviceId}`,
+      subtitle: "fresh runtime telemetry unavailable",
+      liveLabel,
+      metrics: [
+        { label: "CPU", valueText: "--", ratio: null },
+        { label: "MEMORY", valueText: "--", ratio: null },
+        { label: "PIDs", valueText: "--", ratio: null },
+      ],
+      meta: [["state", "no fresh container resource observation"]],
+    };
+  }
+  const usage = latest.resource_usage;
+  const temporal = source?.temporal_quality.find(
+    (candidate) => candidate.observation_id === latest.observation_id,
+  );
+  return {
+    title: `D-SERV :: ${applicationId} / ${serviceId}`,
+    subtitle: `node ${latest.node_id}`,
+    liveLabel,
+    metrics: [
+      {
+        label: "CPU",
+        valueText: `${usage.cpu_percent.toFixed(1)}%`,
+        ratio: usage.cpu_percent / 100,
+      },
+      {
+        label: "MEMORY",
+        valueText:
+          usage.memory_limit_bytes > 0
+            ? `${formatBytes(usage.memory_used_bytes)} / ${formatBytes(usage.memory_limit_bytes)}`
+            : `${formatBytes(usage.memory_used_bytes)} / limit unavailable`,
+        ratio:
+          usage.memory_limit_bytes > 0
+            ? usage.memory_used_bytes / usage.memory_limit_bytes
+            : null,
+      },
+      {
+        label: "PIDs",
+        valueText: String(usage.pids),
+        ratio: null,
+      },
+    ],
+    meta: [
+      ["observation", latest.observation_id],
+      ["monitor", latest.monitor_instance_id],
+      ["freshness", temporal?.observation_freshness ?? "unavailable"],
+      ["observed", latest.observed_at_utc],
+    ],
+  };
+}
+
 export function projectGraphView(
   data: ProjectGraph,
   runtime?: ProjectRuntimeGraph,
+  live: ProjectGraphLiveOptions = {},
 ) {
   const expanded = new Set<string>();
   const evidence =
@@ -41,6 +132,60 @@ export function projectGraphView(
   let disposed = false;
   let resize: ResizeObserver | undefined;
   let mount = () => {};
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  let liveController: AbortController | undefined;
+  let liveSelection: string | undefined;
+  const stopLiveMetrics = () => {
+    if (liveTimer !== undefined) clearTimeout(liveTimer);
+    liveTimer = undefined;
+    liveController?.abort();
+    liveController = undefined;
+    liveSelection = undefined;
+  };
+  const startLiveMetrics = (
+    logicalNodeId: string,
+    applicationId: string,
+    serviceId: string,
+    panel: ReturnType<typeof terminalMetricPanel>,
+  ) => {
+    stopLiveMetrics();
+    if (!live.fetchRuntime) return;
+    liveSelection = logicalNodeId;
+    const pollMs = Math.max(1000, live.pollMs ?? 2000);
+    const poll = async () => {
+      if (disposed || liveSelection !== logicalNodeId || !live.fetchRuntime) return;
+      const controller = new AbortController();
+      liveController = controller;
+      try {
+        const next = await live.fetchRuntime(controller.signal);
+        if (disposed || liveSelection !== logicalNodeId) return;
+        panel.update(
+          dservMetricState(
+            logicalNodeId,
+            applicationId,
+            serviceId,
+            next,
+            `LIVE · ${(pollMs / 1000).toFixed(pollMs % 1000 === 0 ? 0 : 1)}s`,
+          ),
+        );
+      } catch {
+        if (!controller.signal.aborted && liveSelection === logicalNodeId) {
+          const fallback = dservMetricState(
+            logicalNodeId,
+            applicationId,
+            serviceId,
+            undefined,
+            "LIVE · retrying",
+          );
+          panel.update(fallback);
+        }
+      } finally {
+        if (!disposed && liveSelection === logicalNodeId)
+          liveTimer = setTimeout(() => void poll(), pollMs);
+      }
+    };
+    liveTimer = setTimeout(() => void poll(), pollMs);
+  };
   const element = el("div", "page-content project-graph");
   const breadcrumb = el("nav", "workspace-breadcrumb");
   breadcrumb.setAttribute("aria-label", "Breadcrumb");
@@ -299,6 +444,7 @@ export function projectGraphView(
       detailBody.setAttribute("aria-live", "polite");
       details.append(el("h2", "section-title", "Selected entity"), detailBody);
       const clear = () => {
+        stopLiveMetrics();
         detailBody.replaceChildren(
           el(
             "p",
@@ -315,6 +461,7 @@ export function projectGraphView(
           (e) => e.id === id || realizationEdgeId(e.id) === id,
         );
         if (observed) {
+          stopLiveMetrics();
           inspectEvidence(observed);
           detailBody.replaceChildren(
             el(
@@ -397,44 +544,24 @@ export function projectGraphView(
               ),
             );
           if (node.kind === "dserv") {
-            const currentUsage = evidence.filter((item) => {
-              if (item.logical_node_id !== node.id || item.resource_usage === undefined) return false;
-              const temporal = runtime?.temporal_quality.find(
-                (candidate) => candidate.observation_id === item.observation_id,
-              );
-              return temporal?.observation_freshness === "fresh";
-            });
-            detailBody.append(
-              el("h3", "small fw-semibold mt-3", "Current runtime resource usage"),
+            const panel = terminalMetricPanel(
+              dservMetricState(
+                node.id,
+                node.application_id,
+                node.canonical_id,
+                runtime,
+                live.fetchRuntime ? `LIVE · ${((live.pollMs ?? 2000) / 1000).toFixed((live.pollMs ?? 2000) % 1000 === 0 ? 0 : 1)}s` : undefined,
+              ),
             );
-            if (currentUsage.length === 0) {
-              detailBody.append(
-                el(
-                  "p",
-                  "small text-secondary",
-                  "No fresh container resource telemetry is currently available for this D-Serv.",
-                ),
-              );
-            } else {
-              for (const item of currentUsage) {
-                const usage = item.resource_usage!;
-                const temporal = runtime?.temporal_quality.find(
-                  (candidate) => candidate.observation_id === item.observation_id,
-                );
-                detailBody.append(
-                  el(
-                    "p",
-                    "small",
-                    `CPU ${usage.cpu_percent.toFixed(1)}% · memory ${formatBytes(usage.memory_used_bytes)} / ${formatBytes(usage.memory_limit_bytes)} · PIDs ${usage.pids}`,
-                  ),
-                  el(
-                    "p",
-                    "small text-secondary",
-                    `Observation ${item.observation_id} · ${temporal?.observation_freshness ?? "freshness unavailable"}`,
-                  ),
-                );
-              }
-            }
+            detailBody.append(panel.element);
+            startLiveMetrics(
+              node.id,
+              node.application_id,
+              node.canonical_id,
+              panel,
+            );
+          } else {
+            stopLiveMetrics();
           }
         } else if (edge) {
           const source = graph.nodes.find((n) => n.id === edge.source)!,
@@ -703,6 +830,7 @@ export function projectGraphView(
     mount: () => mount(),
     dispose: () => {
       disposed = true;
+      stopLiveMetrics();
       resize?.disconnect();
       cy?.destroy();
       cy = undefined;
