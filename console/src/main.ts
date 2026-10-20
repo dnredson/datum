@@ -312,7 +312,10 @@ async function render(route: Route): Promise<void> {
       const runtime = await client.runtimeGraph(route.projectId, signal);
       const data = runtime.logical;
       if (signal.aborted) return;
-      const view = projectGraphView(data, runtime);
+      const view = projectGraphView(data, runtime, {
+        fetchRuntime: (pollSignal) => client.runtimeGraph(route.projectId, pollSignal),
+        pollMs: 2000,
+      });
       page.replaceChildren(view.element);
       disposeGraph = view.dispose;
       view.mount();
