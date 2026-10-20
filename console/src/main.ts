@@ -344,7 +344,13 @@ async function render(route: Route): Promise<void> {
         ? await client.projectContinuum(projectId, signal)
         : await client.continuum(signal);
       if (signal.aborted) return;
-      const continuumPage = continuumView(data, projectId);
+      const continuumPage = continuumView(data, projectId, {
+        fetchContinuum: (pollSignal) =>
+          projectId
+            ? client.projectContinuum(projectId, pollSignal)
+            : client.continuum(pollSignal),
+        pollMs: 2000,
+      });
       page.replaceChildren(continuumPage.element);
       disposeContinuum = continuumPage.dispose;
       continuumPage.mount();
