@@ -544,6 +544,13 @@ export function projectGraphView(
               ),
             );
           if (node.kind === "dserv") {
+            detailBody.append(
+              el(
+                "h3",
+                "small fw-semibold mt-3",
+                "Current runtime resource usage",
+              ),
+            );
             const panel = terminalMetricPanel(
               dservMetricState(
                 node.id,
