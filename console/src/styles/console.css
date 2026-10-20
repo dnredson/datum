@@ -1101,3 +1101,96 @@ summary:focus-visible,
   padding: 0.75rem;
   font-size: 0.78rem;
 }
+
+
+/* Terminal-inspired live resource panel. Presentation only: exact values remain
+   visible beside the bars, so saturation never changes telemetry semantics. */
+.terminal-metrics {
+  margin-top: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid #2b4654;
+  border-radius: 0.4rem;
+  background: #10222d;
+  color: #d8e7ec;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+.terminal-metrics-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid #28414d;
+}
+.terminal-metrics-title {
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  color: #f2f8fa;
+}
+.terminal-metrics-live {
+  color: #77d3c1;
+  font-size: 0.69rem;
+  white-space: nowrap;
+}
+.terminal-metrics-live::before {
+  content: "● ";
+}
+.terminal-metrics-subtitle {
+  color: #9eb4be;
+  padding: 0.45rem 0 0.25rem;
+}
+.terminal-metrics-rows {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.35rem 0;
+}
+.terminal-metric-row {
+  display: grid;
+  grid-template-columns: 5.25rem max-content minmax(7rem, 1fr);
+  gap: 0.6rem;
+  align-items: baseline;
+  white-space: nowrap;
+}
+.terminal-metric-label {
+  color: #9eb4be;
+}
+.terminal-metric-bar {
+  color: #79c7b7;
+  letter-spacing: -0.04em;
+}
+.terminal-metric-value-text {
+  color: #f2f8fa;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.terminal-metrics-meta {
+  margin-top: 0.35rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid #28414d;
+  display: grid;
+  gap: 0.15rem;
+}
+.terminal-metric-meta-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+}
+.terminal-metric-meta-label {
+  color: #78929e;
+}
+.terminal-metric-meta-value {
+  color: #bed0d7;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 550px) {
+  .terminal-metric-row {
+    grid-template-columns: 4.5rem max-content minmax(5rem, 1fr);
+    gap: 0.4rem;
+  }
+  .terminal-metric-meta-row {
+    grid-template-columns: 6rem minmax(0, 1fr);
+  }
+}
