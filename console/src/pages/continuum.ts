@@ -298,10 +298,19 @@ function observationView(observation: NodeObservation): HTMLElement {
   return box;
 }
 
+export interface ContinuumLiveOptions {
+  fetchContinuum?: (signal: AbortSignal) => Promise<ContinuumView>;
+  pollMs?: number;
+}
+
 // Shared by both the inspector panel and the accessible list -- a single
 // implementation of the three explicit, never-collapsed sections (Phase
 // 135A, section 6): STRUCTURE / ACCEPTED PLACEMENT / DMONITOR OBSERVATION.
-function nodeDetail(node: ContinuumNode, projectNodeIds: Set<string> | undefined): HTMLElement {
+function nodeDetail(
+  node: ContinuumNode,
+  projectNodeIds: Set<string> | undefined,
+  liveLabel?: string,
+): HTMLElement {
   const container = el("div", "continuum-node-detail");
 
   const header = el("div", "continuum-node-header");
@@ -331,6 +340,7 @@ function nodeDetail(node: ContinuumNode, projectNodeIds: Set<string> | undefined
     const panel = terminalMetricPanel({
       title: `NODE :: ${node.node_id}`,
       subtitle: `${node.structure.platform.os} / ${node.structure.platform.architecture}`,
+      liveLabel,
       metrics: [
         {
           label: "CPU",
@@ -413,6 +423,7 @@ function placementDetail(
   node: ContinuumNode,
   placement: AcceptedPlacementRef,
   observation: NodeObservation | undefined,
+  liveLabel?: string,
 ): HTMLElement {
   const container = el("div", "continuum-placement-detail");
   const header = el("div", "continuum-node-header");
@@ -449,6 +460,7 @@ function placementDetail(
     const panel = terminalMetricPanel({
       title: `D-SERV :: ${placement.application_id} / ${placement.service_id}`,
       subtitle: `node ${node.node_id}`,
+      liveLabel,
       metrics: [
         {
           label: "CPU",
@@ -531,10 +543,28 @@ export interface ContinuumPageView {
   dispose: () => void;
 }
 
-export function continuumView(data: ContinuumView, projectId?: string): ContinuumPageView {
+export function continuumView(
+  data: ContinuumView,
+  projectId?: string,
+  live: ContinuumLiveOptions = {},
+): ContinuumPageView {
   let disposed = false;
   let cy: Core | undefined;
   let resize: ResizeObserver | undefined;
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  let liveController: AbortController | undefined;
+  let liveSelectionKey: string | undefined;
+  const stopLiveMetrics = () => {
+    if (liveTimer !== undefined) clearTimeout(liveTimer);
+    liveTimer = undefined;
+    liveController?.abort();
+    liveController = undefined;
+    liveSelectionKey = undefined;
+  };
+  const liveLabel = () => {
+    const pollMs = Math.max(1000, live.pollMs ?? 2000);
+    return `LIVE · ${(pollMs / 1000).toFixed(pollMs % 1000 === 0 ? 0 : 1)}s`;
+  };
 
   const root = el("div", "page-content continuum-view");
   const header = el("header", "page-intro");
@@ -626,6 +656,7 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
   inspectorBody.setAttribute("aria-live", "polite");
   inspector.append(el("h2", "section-title", "Inspector"), inspectorBody);
   const clearInspector = () => {
+    stopLiveMetrics();
     inspectorBody.replaceChildren(
       el("p", "small text-secondary", "Select a D-Node or accepted service placement in the canvas to inspect current resources and observation evidence."),
     );
@@ -634,10 +665,99 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
   grid.append(canvasArea, inspector);
   root.append(grid);
 
+  const startLiveNode = (nodeId: string) => {
+    stopLiveMetrics();
+    if (!live.fetchContinuum) return;
+    liveSelectionKey = `node:${nodeId}`;
+    const key = liveSelectionKey;
+    const pollMs = Math.max(1000, live.pollMs ?? 2000);
+    const poll = async () => {
+      if (disposed || liveSelectionKey !== key || !live.fetchContinuum) return;
+      const controller = new AbortController();
+      liveController = controller;
+      try {
+        const next = await live.fetchContinuum(controller.signal);
+        if (disposed || liveSelectionKey !== key) return;
+        const freshNode = next.nodes.find((candidate) => candidate.node_id === nodeId);
+        if (freshNode)
+          inspectorBody.replaceChildren(
+            nodeDetail(
+              freshNode,
+              next.project_overlay
+                ? new Set(next.project_overlay.node_ids_in_use)
+                : projectNodeIds,
+              liveLabel(),
+            ),
+          );
+      } catch {
+        // Keep the last good telemetry visible; the next poll retries.
+      } finally {
+        if (!disposed && liveSelectionKey === key)
+          liveTimer = setTimeout(() => void poll(), pollMs);
+      }
+    };
+    liveTimer = setTimeout(() => void poll(), pollMs);
+  };
+
+  const startLivePlacement = (
+    elementId: string,
+    nodeId: string,
+    project: string,
+    application: string,
+    service: string,
+  ) => {
+    stopLiveMetrics();
+    if (!live.fetchContinuum) return;
+    liveSelectionKey = `placement:${elementId}`;
+    const key = liveSelectionKey;
+    const pollMs = Math.max(1000, live.pollMs ?? 2000);
+    const poll = async () => {
+      if (disposed || liveSelectionKey !== key || !live.fetchContinuum) return;
+      const controller = new AbortController();
+      liveController = controller;
+      try {
+        const next = await live.fetchContinuum(controller.signal);
+        if (disposed || liveSelectionKey !== key) return;
+        const freshNode = next.nodes.find((candidate) => candidate.node_id === nodeId);
+        const freshPlacement = freshNode?.accepted_placements.find(
+          (candidate) =>
+            candidate.project_id === project &&
+            candidate.application_id === application &&
+            candidate.service_id === service,
+        );
+        if (freshNode && freshPlacement) {
+          const freshObservation = freshNode.observations.find(
+            (candidate) =>
+              candidate.project_id === project &&
+              candidate.application_id === application &&
+              candidate.service_id === service,
+          );
+          inspectorBody.replaceChildren(
+            placementDetail(
+              freshNode,
+              freshPlacement,
+              freshObservation,
+              liveLabel(),
+            ),
+          );
+        }
+      } catch {
+        // Keep the last good telemetry visible; the next poll retries.
+      } finally {
+        if (!disposed && liveSelectionKey === key)
+          liveTimer = setTimeout(() => void poll(), pollMs);
+      }
+    };
+    liveTimer = setTimeout(() => void poll(), pollMs);
+  };
+
   function selectNode(nodeId: string): void {
     const node = data.nodes.find((n) => n.node_id === nodeId);
     if (!node) return;
-    inspectorBody.replaceChildren(nodeDetail(node, projectNodeIds));
+    inspectorBody.replaceChildren(
+      nodeDetail(node, projectNodeIds, live.fetchContinuum ? liveLabel() : undefined),
+    );
+    startLiveNode(nodeId);
     cy?.elements().unselect();
     cy?.getElementById(nodeId).select();
     const card = list.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
@@ -666,7 +786,15 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
         candidate.application_id === application &&
         candidate.service_id === service,
     );
-    inspectorBody.replaceChildren(placementDetail(node, placement, observation));
+    inspectorBody.replaceChildren(
+      placementDetail(
+        node,
+        placement,
+        observation,
+        live.fetchContinuum ? liveLabel() : undefined,
+      ),
+    );
+    startLivePlacement(elementId, nodeId, project, application, service);
     cy?.elements().unselect();
     cy?.getElementById(elementId).select();
   }
@@ -774,6 +902,7 @@ export function continuumView(data: ContinuumView, projectId?: string): Continuu
     },
     dispose: () => {
       disposed = true;
+      stopLiveMetrics();
       resize?.disconnect();
       cy?.destroy();
       cy = undefined;
