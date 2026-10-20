@@ -82,9 +82,16 @@ impl OperationalDGraphRecoveryPolicy {
             if !self.allow_empty && self.expected_project_id.is_some() {
                 return Err("operational D-Graph state is missing or empty for the expected project; recovery refused. Restore the accepted project state before startup or create a new project explicitly".to_string());
             }
-            if state.is_some_and(|state| !state.authorizations.is_empty()) {
-                return Err("empty operational D-Graph bootstrap cannot contain authorizations".to_string());
-            }
+            // Canonical D-Map authority (Stage 111+) deliberately does NOT
+            // populate this domain's legacy `graphs` map. A durable
+            // reconciliation authorization for such a project is therefore a
+            // valid persisted shape even when `graphs` is empty. Structural
+            // validation above still verifies every authorization record; the
+            // startup path re-admits each one later against the CURRENT
+            // canonical-or-legacy effective graph plus active resource
+            // binding before it becomes usable. Do not reject that valid
+            // canonical-authority shape here merely because the legacy map is
+            // empty.
             return Ok(());
         }
         let state = state.expect("nonempty state checked above");
@@ -176,8 +183,14 @@ fn sibling_backup_path(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::operational_dgraph::{OperationalDGraph, OperationalNodeDesiredState, OPERATIONAL_DGRAPH_SCHEMA_VERSION};
-    use crate::core::operational_dgraph_persistence::OPERATIONAL_DGRAPH_PERSISTENCE_VERSION;
+    use crate::core::operational_dgraph::{
+        OperationalDGraph, OperationalNodeDesiredState,
+        OperationalReconciliationAuthorization, AUTHORIZATION_OPERATION_RECONCILE,
+        AUTHORIZATION_SCOPE_DURABLE, OPERATIONAL_DGRAPH_SCHEMA_VERSION,
+    };
+    use crate::core::operational_dgraph_persistence::{
+        authorization_key, OPERATIONAL_DGRAPH_PERSISTENCE_VERSION,
+    };
     use rusqlite::params;
     use uuid::Uuid;
 
@@ -192,6 +205,33 @@ mod tests {
         });
         state
     }
+    fn canonical_authorization_only_state() -> OperationalDGraphPersistedState {
+        let mut state = OperationalDGraphPersistedState::empty();
+        let authorization = OperationalReconciliationAuthorization {
+            authorization_id: "opauth:canonical-recovery-test".to_string(),
+            project_id: "project-canonical".to_string(),
+            dgraph_id: "ddeploy-operational:project-canonical".to_string(),
+            dgraph_revision: 7,
+            node_id: "node-01".to_string(),
+            binding_id: Some("binding:canonical-recovery-test".to_string()),
+            resource_id: Some("resource:hw:canonical-recovery-test".to_string()),
+            authorized_by: "recovery-test".to_string(),
+            authorized_at_utc: "2026-10-20T00:00:00Z".to_string(),
+            allow_host_mutation: true,
+            operation: AUTHORIZATION_OPERATION_RECONCILE.to_string(),
+            persistence_scope: AUTHORIZATION_SCOPE_DURABLE.to_string(),
+            expires_at_utc: Some("2099-10-20T00:00:00Z".to_string()),
+            artifact_bindings: Vec::new(),
+            execution_pinning_mode: "required".to_string(),
+            snapshot: Vec::new(),
+        };
+        state.authorizations.insert(
+            authorization_key(&authorization.project_id, &authorization.node_id),
+            authorization,
+        );
+        state
+    }
+
     fn strict() -> OperationalDGraphRecoveryPolicy {
         OperationalDGraphRecoveryPolicy { expected_project_id: Some("monitor-f49c8".to_string()), expected_dgraph_id: Some("dgraph:o2-mqtt-role-1".to_string()), expected_revision: Some(4), ..Default::default() }
     }
@@ -239,6 +279,24 @@ mod tests {
         no_project.expected_revision = Some(0);
         assert!(no_project.validate(Some(&state(4))).is_err());
     }
+    #[test]
+    fn canonical_authorization_without_legacy_graph_is_not_empty_bootstrap_corruption() {
+        let state = canonical_authorization_only_state();
+        assert!(state.graphs.is_empty());
+        assert!(!state.authorizations.is_empty());
+
+        OperationalDGraphRecoveryPolicy::default()
+            .validate(Some(&state))
+            .expect(
+                "a structurally valid durable authorization for canonical D-Map authority                  must survive recovery preflight even when the legacy graph map is empty;                  startup re-admission decides whether it is still current authority",
+            );
+
+        // An operator pinning recovery to a legacy graph identity still fails
+        // closed because this policy cannot prove that requested legacy graph
+        // from an empty legacy map.
+        assert!(strict().validate(Some(&state)).is_err());
+    }
+
     #[test]
     fn c68_recovery_reads_sqlite_without_creating_or_migrating_state() {
         let dir = std::env::temp_dir().join(format!("datum-c68-recovery-{}", Uuid::new_v4()));
