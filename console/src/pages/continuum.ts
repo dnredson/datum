@@ -23,6 +23,7 @@ import type {
   DMonitorConvergence,
 } from "../types/continuum.ts";
 import { el, badge } from "../components/presentation.ts";
+import { terminalMetricPanel } from "../components/terminal-metrics.ts";
 import type { Tone } from "../components/presentation.ts";
 import { GRAPH_CATEGORIES, GRAPH_RELATIONS, graphVisualStyles } from "../components/graph-visuals.ts";
 
@@ -327,28 +328,59 @@ function nodeDetail(node: ContinuumNode, projectNodeIds: Set<string> | undefined
   container.append(resourceHeading);
   if (node.resource_observation) {
     const resource = node.resource_observation;
-    const current = el("dl", "continuum-structure-grid");
-    const currentEntry = (label: string, value: string) => {
-      current.append(el("dt", "small text-secondary", label), el("dd", "small", value));
-    };
-    currentEntry("Resource", resource.resource_id);
-    currentEntry("Observed", `${resource.age_seconds}s ago`);
-    currentEntry("Logical cores (observed)", String(resource.cpu.logical_cores));
-    currentEntry("CPU usage", resource.cpu.usage_percent === undefined ? "Unavailable" : `${resource.cpu.usage_percent.toFixed(1)}%`);
-    currentEntry("Memory used", bytes(resource.memory.used_bytes));
-    currentEntry("Memory available", bytes(resource.memory.available_bytes));
-    currentEntry("Memory total (observed)", bytes(resource.memory.total_bytes));
-    currentEntry("Swap available", bytes(resource.swap.available_bytes));
-    container.append(current);
+    const panel = terminalMetricPanel({
+      title: `NODE :: ${node.node_id}`,
+      subtitle: `${node.structure.platform.os} / ${node.structure.platform.architecture}`,
+      metrics: [
+        {
+          label: "CPU",
+          valueText:
+            resource.cpu.usage_percent === undefined
+              ? "usage unavailable"
+              : `${resource.cpu.usage_percent.toFixed(1)}%`,
+          ratio:
+            resource.cpu.usage_percent === undefined
+              ? null
+              : resource.cpu.usage_percent / 100,
+        },
+        {
+          label: "MEMORY",
+          valueText: `${bytes(resource.memory.used_bytes)} / ${bytes(resource.memory.total_bytes)}`,
+          ratio:
+            resource.memory.total_bytes > 0
+              ? resource.memory.used_bytes / resource.memory.total_bytes
+              : null,
+        },
+        {
+          label: "SWAP",
+          valueText:
+            resource.swap.total_bytes > 0
+              ? `${bytes(resource.swap.used_bytes)} / ${bytes(resource.swap.total_bytes)}`
+              : "not configured",
+          ratio:
+            resource.swap.total_bytes > 0
+              ? resource.swap.used_bytes / resource.swap.total_bytes
+              : null,
+        },
+      ],
+      meta: [
+        ["resource", resource.resource_id],
+        ["cores", String(resource.cpu.logical_cores)],
+        ["mem available", bytes(resource.memory.available_bytes)],
+        ["swap available", bytes(resource.swap.available_bytes)],
+        ["observed", `${resource.age_seconds}s ago`],
+      ],
+    });
+    container.append(panel.element);
     container.append(
       el(
         "p",
-        "small text-secondary",
-        "Observed host resources are live telemetry from the project-scoped physical resource binding. They do not replace declared planning capacity.",
+        "small text-secondary mt-2",
+        "Observed host resources are physical telemetry only. They do not replace declared planning capacity.",
       ),
     );
   } else {
-    container.append(el("p", "small text-secondary", "No current project-scoped host resource observation."));
+    container.append(el("p", "small text-secondary", "No current host resource observation."));
   }
 
   const placementsHeading = el("h3", "h6 small text-uppercase text-secondary mt-3", "Accepted placement");
@@ -401,29 +433,53 @@ function placementDetail(
 
   container.append(el("h3", "h6 small text-uppercase text-secondary mt-3", "Current runtime usage"));
   const usageEvidence =
-    observation?.admitted_evidence.filter(
-      (e) =>
-        e.runtime_usage !== undefined &&
-        e.freshness === "fresh" &&
-        e.authority_correlation === "exact_match",
-    ) ?? [];
+    observation?.admitted_evidence
+      .filter(
+        (e) =>
+          e.runtime_usage !== undefined &&
+          e.freshness === "fresh" &&
+          e.authority_correlation === "exact_match",
+      )
+      .sort((a, b) => a.age_seconds - b.age_seconds) ?? [];
   if (usageEvidence.length === 0) {
     container.append(el("p", "small text-secondary", "No fresh, authority-matched runtime resource telemetry is currently available."));
   } else {
-    const list = el("ul", "continuum-evidence-list");
-    for (const evidence of usageEvidence) {
-      const usage = evidence.runtime_usage!;
-      const item = el("li", "continuum-evidence-row");
-      item.append(
-        el("span", "small", `CPU ${usage.cpu_percent.toFixed(1)}%`),
-        el("span", "small", `Memory ${bytes(usage.memory_used_bytes)} / ${bytes(usage.memory_limit_bytes)}`),
-        el("span", "small", `PIDs ${usage.pids}`),
-        badge(FRESHNESS_LABEL[evidence.freshness], FRESHNESS_TONE[evidence.freshness]),
-        el("span", "small text-secondary", `observed ${evidence.age_seconds}s ago`),
-      );
-      list.append(item);
-    }
-    container.append(list);
+    const evidence = usageEvidence[0];
+    const usage = evidence.runtime_usage!;
+    const panel = terminalMetricPanel({
+      title: `D-SERV :: ${placement.application_id} / ${placement.service_id}`,
+      subtitle: `node ${node.node_id}`,
+      metrics: [
+        {
+          label: "CPU",
+          valueText: `${usage.cpu_percent.toFixed(1)}%`,
+          ratio: usage.cpu_percent / 100,
+        },
+        {
+          label: "MEMORY",
+          valueText:
+            usage.memory_limit_bytes > 0
+              ? `${bytes(usage.memory_used_bytes)} / ${bytes(usage.memory_limit_bytes)}`
+              : `${bytes(usage.memory_used_bytes)} / limit unavailable`,
+          ratio:
+            usage.memory_limit_bytes > 0
+              ? usage.memory_used_bytes / usage.memory_limit_bytes
+              : null,
+        },
+        {
+          label: "PIDs",
+          valueText: String(usage.pids),
+          ratio: null,
+        },
+      ],
+      meta: [
+        ["freshness", FRESHNESS_LABEL[evidence.freshness]],
+        ["authority", evidence.authority_correlation],
+        ["monitor", evidence.monitor_instance_id],
+        ["observed", `${evidence.age_seconds}s ago`],
+      ],
+    });
+    container.append(panel.element);
   }
 
   container.append(el("h3", "h6 small text-uppercase text-secondary mt-3", "DMonitor observation"));
