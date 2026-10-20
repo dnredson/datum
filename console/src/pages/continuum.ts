@@ -386,7 +386,7 @@ function nodeDetail(
       el(
         "p",
         "small text-secondary mt-2",
-        "Observed host resources are physical telemetry only. They do not replace declared planning capacity.",
+        "Observed host resources are live telemetry from the physical resource observation. They do not replace declared planning capacity.",
       ),
     );
   } else {
