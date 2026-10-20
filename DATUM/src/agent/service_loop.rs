@@ -45,6 +45,10 @@ pub struct ServiceLoopOptions {
     pub http_project_id_override: Option<String>,
     pub http_timeout_s_override: Option<u64>,
     pub telemetry_out_override: Option<PathBuf>,
+    /// Use only the structurally read-only observation pipeline as the
+    /// primary collection path. No planner, recovery, transition, executor,
+    /// reconciliation, or DATUM authority is required for this profile.
+    pub monitor_only: bool,
 }
 
 impl Default for ServiceLoopOptions {
@@ -62,6 +66,7 @@ impl Default for ServiceLoopOptions {
             http_project_id_override: None,
             http_timeout_s_override: None,
             telemetry_out_override: None,
+            monitor_only: false,
         }
     }
 }
@@ -274,7 +279,8 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
     );
 
     println!(
-        "mode=smartsentinel event=start node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} telemetry_http_json={} dmonitor_json={} dmonitor_monitor_instance_id={} mutations=disabled",
+        "mode=smartsentinel event=start profile={} node_id={} cycle_s={} heartbeat_s={} stop_file={} lock_file={} file_json={} http_json={} telemetry_http_json={} dmonitor_json={} dmonitor_monitor_instance_id={} mutations=disabled",
+        if options.monitor_only { "monitor-only" } else { "standard" },
         node_id,
         cycle_s,
         options.heartbeat_s,
@@ -298,13 +304,29 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
         collection_sequence = collection_sequence.saturating_add(1);
         let cycle_started = Instant::now();
 
-        match run_cycle_for_node_identity(
-            &node_id,
-            hostname.as_deref(),
-            &cfg.agent.schema_version,
-            &cfg,
-        ) {
+        let primary_snapshot = if options.monitor_only {
+            run_observation_only_cycle_for_node_identity(
+                &node_id,
+                hostname.as_deref(),
+                &cfg.agent.schema_version,
+                &cfg,
+            )
+        } else {
+            run_cycle_for_node_identity(
+                &node_id,
+                hostname.as_deref(),
+                &cfg.agent.schema_version,
+                &cfg,
+            )
+        };
+
+        match primary_snapshot {
             Ok(mut snapshot) => {
+                // In monitor-only mode the primary snapshot is already sourced
+                // from the structurally read-only pipeline. Reuse that exact
+                // observation for DMonitor projection instead of collecting the
+                // host/process/container state a second time.
+                let dmonitor_source_snapshot = options.monitor_only.then(|| snapshot.clone());
                 annotate_heartbeat(
                     &mut snapshot,
                     heartbeat_sequence.load(Ordering::Relaxed),
@@ -378,24 +400,30 @@ pub fn run_service_loop(options: ServiceLoopOptions) -> Result<()> {
                     None => out_status.push("telemetry_http=disabled".to_string()),
                 }
 
-                // Separate, structurally read-only DMonitor-source
-                // collection (section 9) -- never reuses `snapshot`/
-                // `telemetry` above, which came from `run_cycle_for_node_identity`
-                // (unconditionally including the planning/recovery/execution
-                // plugins, even though this loop's own `cfg` mutation at
-                // startup disables them internally). `dmonitor_context` is
-                // NOT reset here: it is the same context created once at
-                // service-loop startup, so its sequence keeps advancing
-                // across every cycle (section 20).
-                match run_observation_only_cycle_for_node_identity(
-                    &node_id,
-                    hostname.as_deref(),
-                    &cfg.agent.schema_version,
-                    &cfg,
-                )
-                .map_err(|error| error.to_string())
-                .and_then(|observation_snapshot| build_host_telemetry(&observation_snapshot, None, 1))
-                {
+                // DMonitor must always project from the structurally
+                // read-only observation pipeline. Standard mode keeps the
+                // historical independent second collection. Monitor-only mode
+                // reuses its already-read-only primary snapshot so constrained
+                // devices do not pay for duplicate Docker/process/host probes.
+                let dmonitor_telemetry = match dmonitor_source_snapshot {
+                    Some(observation_snapshot) => {
+                        build_host_telemetry(&observation_snapshot, None, 1)
+                            .map_err(|error| error.to_string())
+                    }
+                    None => run_observation_only_cycle_for_node_identity(
+                        &node_id,
+                        hostname.as_deref(),
+                        &cfg.agent.schema_version,
+                        &cfg,
+                    )
+                    .map_err(|error| error.to_string())
+                    .and_then(|observation_snapshot| {
+                        build_host_telemetry(&observation_snapshot, None, 1)
+                            .map_err(|error| error.to_string())
+                    }),
+                };
+
+                match dmonitor_telemetry {
                     Ok(observation_telemetry) => {
                         match project_telemetry_to_dmonitor_observations(
                             &observation_telemetry,
