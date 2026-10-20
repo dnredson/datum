@@ -43,6 +43,12 @@ struct Args {
     #[arg(long, default_value_t = false)]
     operational: bool,
 
+    /// Run the lightweight read-only collector pipeline only. This mode
+    /// requires no DServer/project authority and never constructs planning,
+    /// recovery, reconciliation, or mutation stages.
+    #[arg(long, default_value_t = false, conflicts_with = "operational")]
+    monitor_only: bool,
+
     #[arg(long)]
     dserver_url: Option<String>,
 
@@ -183,5 +189,6 @@ fn main() -> Result<()> {
         http_project_id_override: None,
         http_timeout_s_override: None,
         telemetry_out_override: None,
+        monitor_only: args.monitor_only,
     })
 }
