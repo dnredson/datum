@@ -1,0 +1,10 @@
+.git
+.github
+console
+DATUM
+documentation
+docs
+*.md
+**/target
+**/.DS_Store
+**/*.log
