@@ -1,0 +1,11 @@
+[server]
+bind = "0.0.0.0:8080"
+debug = false
+
+# Legacy Firebase-backed endpoints remain compiled for compatibility, but the
+# central control-plane deployment does not depend on Firebase for startup or
+# canonical SQLite control state. Use a deliberately inert project id so this
+# deployment cannot accidentally target a historical project.
+[firebase]
+project_id = "datum-central-unused"
+credentials_path = "/dev/null"
