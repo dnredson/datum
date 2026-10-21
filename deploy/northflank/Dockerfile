@@ -16,7 +16,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /src/dserver/target/release/DServer /usr/local/bin/dserver
-COPY dserver/config.toml /app/config.toml
+COPY deploy/northflank/config.toml /app/config.toml
 
 ENV DATUM_DSERVER_CONFIG_PATH=/app/config.toml
 ENV DATUM_CONTROL_STATE_DB_PATH=/data/datum-control-plane.db
