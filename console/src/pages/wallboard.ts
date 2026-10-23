@@ -24,17 +24,21 @@ export const WALLBOARD_LIMITS = {
   temporal: 10,
   events: 15,
 } as const;
+// Pure predicate, no truncation -- exported separately (Phase 142A review
+// P1-3) so a consumer needing the real count/full list (e.g. DATUM Live's
+// own Attention section and per-node alert counts) never inherits this
+// Wallboard preview panel's own `.slice(0, 8)` bound by accident.
+export function isActiveAttention(alert: OperationalAlert): boolean {
+  return (
+    alert.is_operationally_active &&
+    ["open", "acknowledged", "in_progress"].includes(alert.lifecycle_status)
+  );
+}
 export function activeAttention(
   alerts: OperationalAlert[],
 ): OperationalAlert[] {
   // Phase 127 supplies attention order; never rank using a second health policy.
-  return alerts
-    .filter(
-      (a) =>
-        a.is_operationally_active &&
-        ["open", "acknowledged", "in_progress"].includes(a.lifecycle_status),
-    )
-    .slice(0, WALLBOARD_LIMITS.attention);
+  return alerts.filter(isActiveAttention).slice(0, WALLBOARD_LIMITS.attention);
 }
 export function subjectLabel(subject: OperationalSubject): string {
   const labels: Record<string, string> = {

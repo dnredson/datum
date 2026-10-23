@@ -27,30 +27,33 @@ import { terminalMetricPanel } from "../components/terminal-metrics.ts";
 import type { Tone } from "../components/presentation.ts";
 import { GRAPH_CATEGORIES, GRAPH_RELATIONS, graphVisualStyles } from "../components/graph-visuals.ts";
 
-function bytes(value: number): string {
+// Exported for reuse by the DATUM Live page (Phase 142A), which renders
+// its own compact node cards and reuses this exact full-detail panel for
+// its node drawer -- never a second, re-derived summary of the same data.
+export function bytes(value: number): string {
   if (value >= 1_073_741_824) return `${(value / 1_073_741_824).toFixed(1)} GiB`;
   if (value >= 1_048_576) return `${(value / 1_048_576).toFixed(1)} MiB`;
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
   return `${value} B`;
 }
 
-const FRESHNESS_TONE: Record<DMonitorFreshness, Tone> = {
+export const FRESHNESS_TONE: Record<DMonitorFreshness, Tone> = {
   fresh: "success",
   stale: "warning",
   clock_skew: "danger",
 };
-const FRESHNESS_LABEL: Record<DMonitorFreshness, string> = {
+export const FRESHNESS_LABEL: Record<DMonitorFreshness, string> = {
   fresh: "Fresh",
   stale: "Stale",
   clock_skew: "Clock skew",
 };
-const HEALTH_TONE: Record<DMonitorHealth, Tone> = {
+export const HEALTH_TONE: Record<DMonitorHealth, Tone> = {
   healthy: "success",
   degraded: "warning",
   unhealthy: "danger",
   unknown: "neutral",
 };
-const HEALTH_LABEL: Record<DMonitorHealth, string> = {
+export const HEALTH_LABEL: Record<DMonitorHealth, string> = {
   healthy: "Healthy",
   degraded: "Degraded",
   unhealthy: "Unhealthy",
@@ -68,12 +71,12 @@ const CORRELATION_LABEL: Record<AuthorityCorrelation, string> = {
   ref_missing: "No authority reference",
   not_applicable: "Not applicable",
 };
-const CONVERGENCE_TONE: Record<DMonitorConvergence, Tone> = {
+export const CONVERGENCE_TONE: Record<DMonitorConvergence, Tone> = {
   converged: "success",
   diverged: "danger",
   unknown: "neutral",
 };
-const CONVERGENCE_LABEL: Record<DMonitorConvergence, string> = {
+export const CONVERGENCE_LABEL: Record<DMonitorConvergence, string> = {
   converged: "Converged",
   diverged: "Diverged",
   unknown: "Unknown",
@@ -306,7 +309,9 @@ export interface ContinuumLiveOptions {
 // Shared by both the inspector panel and the accessible list -- a single
 // implementation of the three explicit, never-collapsed sections (Phase
 // 135A, section 6): STRUCTURE / ACCEPTED PLACEMENT / DMONITOR OBSERVATION.
-function nodeDetail(
+// Exported so the DATUM Live page (Phase 142A) can reuse this exact panel
+// as its node drawer body, rather than re-deriving an equivalent summary.
+export function nodeDetail(
   node: ContinuumNode,
   projectNodeIds: Set<string> | undefined,
   liveLabel?: string,

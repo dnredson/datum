@@ -1,0 +1,197 @@
+/* Phase 142A -- DATUM Live. Layout/kiosk styling only; all color/tone
+   semantics (status-badge tones, terminal-metrics panel) are the SAME
+   shared classes the Console already uses from console.css -- never a
+   second color vocabulary for the same evidence. */
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.925rem;
+  background: var(--datum-canvas, #f2f5f7);
+}
+.live-view {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem 3rem;
+}
+.live-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1.1rem;
+}
+.live-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.live-status-row,
+.live-profile-row,
+.live-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.live-profile-select {
+  max-width: 16rem;
+}
+.live-name-input {
+  max-width: 18rem;
+  font-weight: 600;
+}
+.live-storage-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem;
+  background: #fff8e8;
+  border-bottom: 1px solid #e8d8a8;
+}
+.live-counts-strip {
+  margin-bottom: 1.1rem;
+}
+.live-section {
+  margin-bottom: 1.1rem;
+}
+.live-node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.85rem;
+}
+.live-node-card {
+  position: relative;
+  cursor: pointer;
+  outline-offset: 2px;
+}
+.live-node-card:hover,
+.live-node-card:focus-visible {
+  border-color: var(--datum-accent, #176b68);
+}
+.live-node-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.live-node-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.45rem 0;
+}
+.live-node-remove {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  line-height: 1;
+  padding: 0.1rem 0.45rem;
+}
+.live-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(26rem, 100vw);
+  height: 100vh;
+  overflow-y: auto;
+  background: #fff;
+  border-left: 1px solid var(--datum-border, #dce4e9);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  padding: 1.25rem;
+  z-index: 60;
+}
+.live-drawer-close {
+  margin-bottom: 0.75rem;
+}
+.live-drawer-links {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+/* Manage nodes picker */
+.live-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 20, 30, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3rem 1rem;
+  z-index: 80;
+  overflow-y: auto;
+}
+.live-picker-panel {
+  width: min(42rem, 100%);
+  max-height: calc(100vh - 6rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.live-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.live-picker-filters select {
+  max-width: 11rem;
+}
+.live-picker-list {
+  overflow-y: auto;
+  flex: 1;
+  display: grid;
+  gap: 0.3rem;
+  min-height: 6rem;
+}
+.live-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--datum-border, #dce4e9);
+  cursor: pointer;
+}
+.live-picker-row-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.live-picker-missing {
+  border-top: 1px dashed var(--datum-border, #dce4e9);
+  padding-top: 0.5rem;
+}
+.live-picker-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Kiosk mode: larger, denser presentation for a TV/second screen. */
+.live-kiosk {
+  font-size: 1.05rem;
+}
+.live-kiosk .live-node-grid {
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 1.1rem;
+}
+
+/* Hides operator-only chrome (profile management, filters, add-node
+   controls) without hiding any evidence -- the data sections themselves
+   are never hidden by this mode. */
+.live-hide-secondary .live-profile-row,
+.live-hide-secondary .live-filter-row,
+.live-hide-secondary .live-node-remove,
+.live-hide-secondary .live-manage-nodes-button {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .live-view {
+    padding: 1rem 1rem 2.5rem;
+  }
+  .live-drawer {
+    width: 100vw;
+  }
+}
