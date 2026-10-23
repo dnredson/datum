@@ -8,7 +8,9 @@ import {
   computeGlobalCounts,
   filterAlerts,
   filterEvents,
+  computeNodeCardState,
 } from "../src/live/live-view.ts";
+import { isActiveAttention } from "../src/pages/wallboard.ts";
 import { alertFixture, eventFixture } from "./wallboard-fixture.mjs";
 
 async function sourceWithoutComments(path) {
@@ -28,6 +30,32 @@ function node(id, overrides = {}) {
     observations: [],
     observations_truncated: false,
     ...overrides,
+  };
+}
+
+function evidence(health, freshness = "fresh", overrides = {}) {
+  return {
+    monitor_instance_id: "m1",
+    freshness,
+    health,
+    authority_correlation: "exact_match",
+    observed_at_utc: "2026-01-01T00:00:00Z",
+    received_at_utc: "2026-01-01T00:00:00Z",
+    age_seconds: 1,
+    ...overrides,
+  };
+}
+function observation(convergence, admittedEvidence = []) {
+  return {
+    project_id: "alpha",
+    application_id: "app",
+    service_id: "svc",
+    placement_convergence: convergence,
+    convergence_findings: [],
+    admitted_evidence: admittedEvidence,
+    admitted_evidence_truncated: false,
+    excluded_evidence: [],
+    excluded_evidence_truncated: false,
   };
 }
 
@@ -249,4 +277,134 @@ test("live-view.ts exposes exactly the LiveDataSource shape it requires (overvie
   assert.ok(body.includes("overview("));
   assert.ok(body.includes("continuum("));
   assert.ok(!/\b(post|put|patch|delete|create|accept|authorize)\w*\(/iu.test(body));
+});
+
+// ---- Glanceability follow-up: computeNodeCardState pure tone/state derivation ----
+
+test("an active critical alert produces danger tone", () => {
+  const state = computeNodeCardState(node("n1"), [alertFixture("open", "a1")]); // critical severity (wallboard-fixture.mjs)
+  assert.equal(state.tone, "danger");
+  assert.equal(state.label, "Attention required");
+});
+
+test("an active warning-severity alert produces warning tone", () => {
+  const alert = { ...alertFixture("open", "a1"), severity: "warning" };
+  const state = computeNodeCardState(node("n1"), [alert]);
+  assert.equal(state.tone, "warning");
+  assert.equal(state.label, "Warning");
+});
+
+test("no explicit negative verdict but an observation exists -> informational tone, never 'healthy'", () => {
+  const n = node("n1", { observations: [observation("converged", [evidence("healthy", "fresh")])] });
+  const state = computeNodeCardState(n, []);
+  assert.equal(state.tone, "info");
+  assert.equal(state.label, "Observed");
+  assert.ok(!/healthy/iu.test(state.label));
+});
+
+test("no evidence at all (and no alert) -> neutral tone", () => {
+  const state = computeNodeCardState(node("n1"), []);
+  assert.equal(state.tone, "neutral");
+  assert.equal(state.label, "No current evidence");
+});
+
+test("a node missing from the continuum (undefined) is always neutral", () => {
+  const state = computeNodeCardState(undefined, []);
+  assert.equal(state.tone, "neutral");
+});
+
+test("CPU percentage alone never changes tone -- computeNodeCardState never reads cpu/memory at all", () => {
+  const n = node("n1", { resource_observation: { resource_id: "r", observed_at_utc: "t", last_seen_utc: "t", age_seconds: 1, cpu: { logical_cores: 1, usage_percent: 99.9 }, memory: { total_bytes: 100, used_bytes: 1, available_bytes: 99 }, swap: { total_bytes: 0, used_bytes: 0, available_bytes: 0 } } });
+  const state = computeNodeCardState(n, []);
+  // Host telemetry present but no alert/canonical negative verdict -- a
+  // 99.9% CPU reading must never, by itself, push this past "informational".
+  assert.equal(state.tone, "info");
+});
+
+test("memory percentage alone never changes tone -- same guarantee as CPU", () => {
+  const n = node("n1", { resource_observation: { resource_id: "r", observed_at_utc: "t", last_seen_utc: "t", age_seconds: 1, cpu: { logical_cores: 1 }, memory: { total_bytes: 100, used_bytes: 99, available_bytes: 1 }, swap: { total_bytes: 0, used_bytes: 0, available_bytes: 0 } } });
+  const state = computeNodeCardState(n, []);
+  assert.equal(state.tone, "info");
+});
+
+test("absence of alerts alone never produces a positive health claim", () => {
+  // No alerts, no observations, no resource_observation at all.
+  const state = computeNodeCardState(node("n1"), []);
+  assert.equal(state.tone, "neutral");
+  assert.ok(!/healthy|ok|good/iu.test(state.label));
+});
+
+test("canonical unhealthy DMonitor evidence produces danger tone without redefining the enum", () => {
+  const n = node("n1", { observations: [observation("converged", [evidence("unhealthy")])] });
+  const state = computeNodeCardState(n, []);
+  assert.equal(state.tone, "danger");
+});
+
+test("canonical diverged placement_convergence produces danger tone", () => {
+  const n = node("n1", { observations: [observation("diverged")] });
+  const state = computeNodeCardState(n, []);
+  assert.equal(state.tone, "danger");
+});
+
+test("canonical degraded health or stale freshness produces warning tone (no active alert)", () => {
+  const degraded = node("n1", { observations: [observation("converged", [evidence("degraded")])] });
+  assert.equal(computeNodeCardState(degraded, []).tone, "warning");
+  const stale = node("n2", { observations: [observation("converged", [evidence("healthy", "stale")])] });
+  assert.equal(computeNodeCardState(stale, []).tone, "warning");
+});
+
+test("a resolved-only alert does not by itself produce a danger/warning tone (filtered through the same isActiveAttention gate the real caller uses)", () => {
+  const resolved = alertFixture("resolved", "a1");
+  // computeNodeCardState trusts its `activeAlerts` input is already
+  // active-only (the same contract every caller in live-view.ts honors
+  // via `activeAlertsOnly`/`isActiveAttention`) -- so the test replicates
+  // that exact filtering step rather than feeding it a raw, unfiltered alert.
+  const state = computeNodeCardState(node("n1"), [resolved].filter(isActiveAttention));
+  assert.equal(state.tone, "neutral");
+});
+
+// ---- wording: Continuum node observations are placement-scoped ----
+
+test("the empty-DMonitor-evidence wording is accurate: placement-scoped, not global absence", async () => {
+  const code = await sourceWithoutComments("../src/live/live-view.ts");
+  assert.ok(code.includes("No placement-scoped DMonitor evidence."));
+  assert.ok(!code.includes("No current DMonitor evidence."), "must not reintroduce the overly broad wording");
+});
+
+// ---- structural: responsive / reduced-motion CSS ----
+
+test("live.css respects prefers-reduced-motion and never adds a frontend stale/offline timeout", async () => {
+  const css = await readFile(new URL("../src/live/live.css", import.meta.url), "utf8");
+  assert.ok(css.includes("prefers-reduced-motion"));
+  assert.ok(!/age_seconds\s*[<>]/u.test(css));
+  assert.ok(!/setTimeout.*stale|offline/iu.test(css));
+});
+
+test("live.css node grid never exceeds its container width (auto-fit + minmax capped at 100%)", async () => {
+  const css = await readFile(new URL("../src/live/live.css", import.meta.url), "utf8");
+  assert.ok(css.includes(".live-node-grid"));
+  assert.ok(/minmax\(min\([^,]+,\s*100%\)/u.test(css), "grid track minimum must be capped at 100% of the container to avoid horizontal overflow on narrow viewports");
+});
+
+// RPi visual-smoke regression: the shared terminal-metrics component's own
+// fixed grid-template-columns + white-space:nowrap + overflow-x:auto
+// (console.css) must be overridden to a wrapping layout specifically
+// inside the compact node card, without touching console.css itself
+// (which the Continuum page still relies on unchanged).
+test("live.css overrides the shared terminal-metrics row to wrap instead of scrolling horizontally inside a node card", async () => {
+  const css = await readFile(new URL("../src/live/live.css", import.meta.url), "utf8");
+  assert.ok(css.includes(".live-node-card .terminal-metrics"), "must scope the override to the node card, never console.css globally");
+  const rowRuleStart = css.indexOf(".live-node-card .terminal-metric-row {");
+  assert.ok(rowRuleStart !== -1);
+  const rowRule = css.slice(rowRuleStart, css.indexOf("}", rowRuleStart));
+  assert.ok(rowRule.includes("flex-wrap: wrap"));
+  assert.ok(rowRule.includes("white-space: normal"), "the row itself must allow wrapping -- only the bar/value spans keep nowrap");
+  assert.ok(css.includes(".live-node-card .terminal-metrics {") && /overflow-x:\s*visible/.test(css), "the panel must not fall back to an internal horizontal scrollbar inside a node card");
+});
+
+test("console.css (shared with the Continuum page) is not modified by the Live-specific overflow fix", async () => {
+  const css = await readFile(new URL("../src/styles/console.css", import.meta.url), "utf8");
+  // Sanity: the original fixed-grid rule the override replaces for Live
+  // still exists untouched for the Continuum page's own usage.
+  assert.ok(css.includes("grid-template-columns: 5.25rem max-content minmax(7rem, 1fr);"));
 });

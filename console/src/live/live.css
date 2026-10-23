@@ -56,22 +56,32 @@ body {
 }
 .live-node-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: clamp(0.5rem, 1.2vw, 0.85rem);
 }
 .live-node-card {
   position: relative;
   cursor: pointer;
   outline-offset: 2px;
+  border-width: 1px;
+  border-left-width: 5px;
+  min-width: 0;
 }
 .live-node-card:hover,
 .live-node-card:focus-visible {
   border-color: var(--datum-accent, #176b68);
 }
+.live-node-card-title {
+  font-size: clamp(0.85rem, 1.4vw, 1.05rem);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
 .live-node-card-header {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 0.4rem;
 }
@@ -80,6 +90,97 @@ body {
   flex-wrap: wrap;
   gap: 0.35rem;
   margin: 0.45rem 0;
+}
+
+/* RPi visual-smoke fix: the shared `terminal-metrics` component
+   (console.css) lays its rows out as a fixed `grid-template-columns:
+   5.25rem max-content minmax(7rem, 1fr)` with `white-space: nowrap`, and
+   falls back to `overflow-x: auto` on the panel when that doesn't fit --
+   fine in the Continuum page's own wider inspector panel, but it produces
+   an internal horizontal scrollbar in Live's narrow compact kiosk card.
+   This override is scoped to `.live-node-card` only (never touches
+   console.css or the Continuum page's own presentation): the row becomes
+   a wrapping flex layout, with the label forced onto its own line so the
+   bar + value always wrap together underneath it, exactly like:
+     CPU
+     [bar................]  6%
+   No metric information is removed or truncated -- only the layout
+   direction changes under constrained width. */
+.live-node-card .terminal-metrics {
+  overflow-x: visible;
+  min-width: 0;
+}
+.live-node-card .terminal-metrics-rows {
+  min-width: 0;
+}
+.live-node-card .terminal-metric-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+  row-gap: 0.1rem;
+  white-space: normal;
+  min-width: 0;
+}
+.live-node-card .terminal-metric-label {
+  flex: 1 0 100%;
+}
+.live-node-card .terminal-metric-bar {
+  white-space: nowrap;
+}
+.live-node-card .terminal-metric-value-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.live-node-card .terminal-metric-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.5rem;
+  row-gap: 0.1rem;
+  min-width: 0;
+}
+.live-node-card .terminal-metric-meta-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Glanceability: a strong visual state per card -- border + narrow status
+   rail + subtle background tint + the explicit text badge already added
+   in the header. Never color alone. Reuses the EXACT same tone colors as
+   `.status-badge.tone-*` in console.css, scoped under a dedicated class
+   so it never collides with that bare selector. Tone is derived only
+   from canonical backend evidence (see computeNodeCardState in
+   live-view.ts) -- never from CPU/memory/age thresholds. */
+.live-node-card.live-node-card--neutral {
+  border-left-color: #8d9aa6;
+  background: #fff;
+}
+.live-node-card.live-node-card--info {
+  border-left-color: #1c5f85;
+  background: #f5fafd;
+}
+.live-node-card.live-node-card--warning {
+  border-left-color: #c5a52b;
+  background: #fffaf0;
+}
+.live-node-card.live-node-card--danger {
+  border-left-color: #b33d48;
+  background: #fef6f7;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .live-node-card.live-node-card--danger {
+    animation: live-node-card-attention 2.4s ease-in-out infinite;
+  }
+}
+@keyframes live-node-card-attention {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(179, 61, 72, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(179, 61, 72, 0);
+  }
 }
 .live-node-remove {
   position: absolute;
@@ -168,18 +269,32 @@ body {
   align-items: center;
 }
 
-/* Kiosk mode: larger, denser presentation for a TV/second screen. */
+/* Kiosk mode: larger, denser presentation for a TV/second screen. Area of
+   Interest is prioritized; verbose explanatory prose is dropped in favor
+   of identity + status/attention + CPU + memory + evidence indication,
+   all of which remain available in full via the node drawer on click. */
 .live-kiosk {
-  font-size: 1.05rem;
+  font-size: clamp(0.95rem, 1.1vw + 0.6rem, 1.15rem);
 }
 .live-kiosk .live-node-grid {
-  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
-  gap: 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: clamp(0.6rem, 1.4vw, 1.1rem);
+}
+.live-kiosk .live-node-card-prose,
+.live-kiosk .live-counts-strip {
+  display: none;
+}
+.live-kiosk .live-header {
+  gap: 0.3rem;
+  margin-bottom: 0.6rem;
+}
+.live-kiosk .live-section > .section-title {
+  margin-bottom: 0.4rem;
 }
 
 /* Hides operator-only chrome (profile management, filters, add-node
-   controls) without hiding any evidence -- the data sections themselves
-   are never hidden by this mode. */
+   controls) without hiding any evidence -- the data sections themselves,
+   connectivity/polling state, and Attention are never hidden by this mode. */
 .live-hide-secondary .live-profile-row,
 .live-hide-secondary .live-filter-row,
 .live-hide-secondary .live-node-remove,
@@ -187,11 +302,70 @@ body {
   display: none;
 }
 
+/* Fullscreen kiosk: let Area of Interest use the full viewport instead of
+   scrolling for a small node count whenever geometry allows. */
+.live-view:fullscreen,
+.live-view:-webkit-full-screen {
+  max-width: none;
+  min-height: 100vh;
+}
+
+/* Responsive breakpoints -- designed and checked against 1920x1080,
+   1280x720, 1024x600, 800x480 and 480x320. No horizontal page scroll at
+   any of these: the grid itself never exceeds 100% of its container
+   (`auto-fit` + `minmax(min(..., 100%), 1fr)` caps the track at the
+   container width even on the narrowest screens), and `.console-card`'s
+   own `overflow-wrap: anywhere` (console.css) keeps long node ids from
+   forcing overflow. */
+@media (max-width: 1280px) {
+  .live-view {
+    padding: 1.1rem 1.1rem 2.5rem;
+  }
+  .live-counts-strip {
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  }
+}
+@media (max-width: 1024px) {
+  .live-node-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
+  }
+  .live-picker-filters select {
+    max-width: none;
+  }
+}
+@media (max-width: 800px) {
+  .live-view {
+    padding: 0.85rem 0.85rem 2rem;
+  }
+  .live-title-row,
+  .live-status-row,
+  .live-profile-row {
+    gap: 0.4rem;
+  }
+  .live-node-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+    gap: 0.5rem;
+  }
+}
 @media (max-width: 720px) {
   .live-view {
     padding: 1rem 1rem 2.5rem;
   }
   .live-drawer {
     width: 100vw;
+  }
+}
+@media (max-width: 480px) {
+  .live-view {
+    padding: 0.6rem 0.6rem 1.5rem;
+  }
+  .live-node-grid {
+    grid-template-columns: 1fr;
+  }
+  .live-counts-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .live-picker-overlay {
+    padding: 0.75rem;
   }
 }

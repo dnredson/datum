@@ -12,7 +12,8 @@
 // observation) -- no new endpoint was introduced for this page.
 import type { GlobalOverview, OperationalAlert, OperationalEvent } from "../types/operations.ts";
 import type { ContinuumNode, ContinuumView } from "../types/continuum.ts";
-import { el, badge, severityBadge } from "../components/presentation.ts";
+import { el, badge, severityBadge, severityBadges } from "../components/presentation.ts";
+import type { Tone } from "../components/presentation.ts";
 import { terminalMetricPanel } from "../components/terminal-metrics.ts";
 import { isActiveAttention, subjectLabel, duration as formatDuration, kindLabel } from "../pages/wallboard.ts";
 import {
@@ -152,15 +153,70 @@ export function filterEvents(events: OperationalEvent[], filters: Pick<ActivityF
 
 // --------------------------------------------------------------- render
 
+// ---------------------------------------------------- node card tone/state
+//
+// Glanceability follow-up: a single PRESENTATION tone per card, derived
+// ONLY from already-canonical backend evidence (alert severity, DMonitor
+// convergence/health/freshness). This is never a new health authority --
+// no CPU/memory threshold, no age_seconds cutoff, no node_id/hostname
+// heuristic ever contributes to this tone. Absence of alerts never, by
+// itself, produces a positive/healthy claim; it only ever reaches
+// "informational" if there is at least one real observation to point to,
+// and "neutral" otherwise.
+export interface NodeCardState {
+  tone: Tone;
+  label: string;
+}
+const CARD_STATE_LABEL: Record<"danger" | "warning" | "info" | "neutral", string> = {
+  danger: "Attention required",
+  warning: "Warning",
+  info: "Observed",
+  neutral: "No current evidence",
+};
+function alertSeverityTone(severity: string): Tone {
+  return severityBadges[severity]?.[1] ?? "neutral";
+}
+export function computeNodeCardState(node: ContinuumNode | undefined, activeAlerts: OperationalAlert[]): NodeCardState {
+  if (!node) return { tone: "neutral", label: CARD_STATE_LABEL.neutral };
+  // Strongest tone among the node's own active alerts, reusing the EXACT
+  // same severity->tone mapping the rest of the Console already uses
+  // (`severityBadges`) -- never a second, independently-invented ranking.
+  let alertTone: Tone = "neutral";
+  for (const alert of activeAlerts) {
+    const tone = alertSeverityTone(alert.severity);
+    if (tone === "danger") {
+      alertTone = "danger";
+      break;
+    }
+    // Reaching here means `tone` was not "danger" this iteration, and any
+    // earlier "danger" assignment would already have broken the loop --
+    // so `alertTone` can only be "neutral" or "warning" at this point.
+    if (tone === "warning") alertTone = "warning";
+    else if (tone === "info" && alertTone === "neutral") alertTone = "info";
+  }
+  const admittedEvidence = node.observations.flatMap((o) => o.admitted_evidence);
+  const hasUnhealthyOrDiverged =
+    node.observations.some((o) => o.placement_convergence === "diverged") ||
+    admittedEvidence.some((e) => e.health === "unhealthy");
+  const hasDegradedOrStale = admittedEvidence.some((e) => e.health === "degraded" || e.freshness === "stale");
+  const hasAnyEvidence = node.observations.length > 0 || Boolean(node.resource_observation);
+
+  if (alertTone === "danger" || hasUnhealthyOrDiverged) return { tone: "danger", label: CARD_STATE_LABEL.danger };
+  if (alertTone === "warning" || hasDegradedOrStale) return { tone: "warning", label: CARD_STATE_LABEL.warning };
+  if (alertTone === "info" || hasAnyEvidence) return { tone: "info", label: CARD_STATE_LABEL.info };
+  return { tone: "neutral", label: CARD_STATE_LABEL.neutral };
+}
+
 function cpuRatio(usagePercent: number | undefined): number | null {
   return usagePercent === undefined ? null : Math.max(0, Math.min(1, usagePercent / 100));
 }
 
-function compactNodeCard(nodeId: string, node: ContinuumNode | undefined, alertCount: number, onOpen: (nodeId: string) => void): HTMLElement {
-  const card = el("section", "console-card live-node-card");
+function compactNodeCard(nodeId: string, node: ContinuumNode | undefined, activeAlerts: OperationalAlert[], onOpen: (nodeId: string) => void): HTMLElement {
+  const state = computeNodeCardState(node, activeAlerts);
+  const card = el("section", `console-card live-node-card live-node-card--${state.tone}`);
   card.tabIndex = 0;
   card.setAttribute("role", "button");
-  card.setAttribute("aria-label", `D-Node ${nodeId} -- open detail`);
+  card.setAttribute("aria-label", `D-Node ${nodeId} -- ${state.label} -- open detail`);
   const open = () => onOpen(nodeId);
   card.addEventListener("click", open);
   card.addEventListener("keydown", (event) => {
@@ -171,16 +227,21 @@ function compactNodeCard(nodeId: string, node: ContinuumNode | undefined, alertC
   });
   if (!node) {
     card.append(
-      el("h3", "h6 mb-1", nodeId),
+      el("h3", "live-node-card-title mb-1", nodeId),
       badge("Not currently available", "neutral"),
-      el("p", "small text-secondary mb-0 mt-1", "This D-Node is not present in the current continuum registry."),
+      el("p", "small text-secondary mb-0 mt-1 live-node-card-prose", "This D-Node is not present in the current continuum registry."),
     );
     return card;
   }
   const header = el("div", "live-node-card-header");
-  header.append(el("h3", "h6 mb-0", nodeId));
-  if (alertCount > 0) header.append(badge(`${alertCount} active`, "danger"));
+  header.append(el("h3", "live-node-card-title mb-0", nodeId));
+  // Explicit text label, never color alone -- the strongest available
+  // backend-provided signal (alert severity or canonical DMonitor state),
+  // reusing the same tone/label the rest of this function also applies to
+  // the card's border/background.
+  header.append(badge(state.label, state.tone));
   card.append(header);
+  if (activeAlerts.length > 0) card.append(badge(`${activeAlerts.length} active alert(s)`, state.tone === "danger" ? "danger" : "warning"));
 
   const resource = node.resource_observation;
   if (resource) {
@@ -203,7 +264,7 @@ function compactNodeCard(nodeId: string, node: ContinuumNode | undefined, alertC
     });
     card.append(panel.element);
   } else {
-    card.append(el("p", "small text-secondary mb-0", "No current host resource observation."));
+    card.append(el("p", "small text-secondary mb-0 live-node-card-prose", "No current host resource observation."));
   }
 
   if (node.observations.length > 0) {
@@ -222,14 +283,17 @@ function compactNodeCard(nodeId: string, node: ContinuumNode | undefined, alertC
       card.append(evidenceChips);
     }
   } else {
-    card.append(el("p", "small text-secondary mb-0", "No current DMonitor evidence."));
+    // Continuum node observations are placement-scoped (one entry per
+    // accepted placement referencing this node) -- this must never read as
+    // "no DMonitor observation exists anywhere for this node".
+    card.append(el("p", "small text-secondary mb-0 live-node-card-prose", "No placement-scoped DMonitor evidence."));
   }
 
   const placementProjects = [...new Set(node.accepted_placements.map((p) => p.project_id))];
   card.append(
     el(
       "p",
-      "small text-secondary mb-0",
+      "small text-secondary mb-0 live-node-card-prose",
       placementProjects.length
         ? `${node.accepted_placements.length} accepted placement(s) · ${placementProjects.join(", ")}`
         : "No accepted workloads placed on this node.",
@@ -369,6 +433,9 @@ export function liveView(
   function countActiveAlerts(alerts: OperationalAlert[]): number {
     return alerts.filter(isActiveAttention).length;
   }
+  function activeAlertsOnly(alerts: OperationalAlert[]): OperationalAlert[] {
+    return alerts.filter(isActiveAttention);
+  }
 
   const nodePicker = createNodePicker(
     () => continuum,
@@ -493,7 +560,7 @@ export function liveView(
       return;
     }
     for (const pin of pins) {
-      const card = compactNodeCard(pin.nodeId, pin.node, countActiveAlerts(alertsByNode.get(pin.nodeId) ?? []), openDrawer);
+      const card = compactNodeCard(pin.nodeId, pin.node, activeAlertsOnly(alertsByNode.get(pin.nodeId) ?? []), openDrawer);
       const removeButton = el("button", "btn btn-sm btn-outline-secondary live-node-remove", "×");
       removeButton.setAttribute("aria-label", `Remove ${pin.nodeId} from Area of Interest`);
       removeButton.addEventListener("click", (event) => {
